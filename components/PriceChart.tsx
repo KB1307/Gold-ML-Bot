@@ -1,5 +1,6 @@
 import { View, StyleSheet, Platform } from "react-native";
 import { useState, useEffect, useRef } from "react";
+import { WebView } from "react-native-webview";
 
 interface PriceDataPoint {
   timestamp: number;
@@ -18,10 +19,6 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
   useEffect(() => {
     setChartKey(prev => prev + 1);
   }, []);
-
-  if (Platform.OS !== 'web') {
-    return null;
-  }
 
   const chartHTML = `
     <!DOCTYPE html>
@@ -88,20 +85,37 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
     </html>
   `;
 
+  if (Platform.OS === 'web') {
+    return (
+      <View style={styles.container}>
+        <iframe
+          key={chartKey}
+          ref={iframeRef as any}
+          srcDoc={chartHTML}
+          style={{
+            width: '100%',
+            height: 400,
+            border: 'none',
+            borderRadius: 12,
+            overflow: 'hidden',
+          }}
+          title="TradingView Chart"
+        />
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
-      <iframe
+      <WebView
         key={chartKey}
-        ref={iframeRef as any}
-        srcDoc={chartHTML}
-        style={{
-          width: '100%',
-          height: 400,
-          border: 'none',
-          borderRadius: 12,
-          overflow: 'hidden',
-        }}
-        title="TradingView Chart"
+        source={{ html: chartHTML }}
+        style={styles.webview}
+        javaScriptEnabled={true}
+        domStorageEnabled={true}
+        startInLoadingState={true}
+        scalesPageToFit={true}
+        scrollEnabled={false}
       />
     </View>
   );
@@ -111,5 +125,11 @@ const styles = StyleSheet.create({
   container: {
     width: '100%',
     height: 400,
+  },
+  webview: {
+    flex: 1,
+    backgroundColor: '#0F0F0F',
+    borderRadius: 12,
+    overflow: 'hidden',
   },
 });

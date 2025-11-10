@@ -87,15 +87,17 @@ const styles = StyleSheet.create({
     marginBottom: 48,
   },
   logoImageContainer: {
-    width: 200,
-    height: 200,
+    width: 180,
+    height: 180,
     marginBottom: 24,
     justifyContent: 'center',
     alignItems: 'center',
+    borderRadius: 30,
+    overflow: 'hidden',
   },
   logo: {
-    width: 200,
-    height: 200,
+    width: '110%',
+    height: '110%',
   },
   title: {
     fontSize: 32,
