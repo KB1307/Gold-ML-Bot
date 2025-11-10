@@ -5,9 +5,9 @@ import { TradingSignal, Settings, MarketOutlook, PerformanceMetrics, PositionSiz
 import { signalEngine } from "@/services/signalEngine";
 
 const DEFAULT_SETTINGS: Settings = {
-  tp1Pips: 15,
-  tp2Pips: 30,
-  tp3Pips: 75,
+  tp1Pips: 20,
+  tp2Pips: 40,
+  tp3Pips: 65,
   slPips: 120,
   numberOfTPs: 3,
   minConfidence: 0.70,
