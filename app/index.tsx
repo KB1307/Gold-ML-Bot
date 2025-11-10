@@ -1,6 +1,5 @@
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { View, Text, TouchableOpacity, StyleSheet, Image } from "react-native";
 import { useRouter } from "expo-router";
-import { TrendingUp } from "lucide-react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useTrading } from "@/contexts/TradingContext";
 
@@ -20,11 +19,13 @@ export default function LoginScreen() {
     >
         <View style={styles.content}>
           <View style={styles.logoContainer}>
-            <View style={styles.iconWrapper}>
-              <TrendingUp size={48} color="#FFD700" strokeWidth={2.5} />
-            </View>
-            <Text style={styles.title}>XAUUSD Signal Bot</Text>
-            <Text style={styles.subtitle}>AI-Powered Gold Trading Signals</Text>
+            <Image
+              source={{ uri: 'https://pub-e001eb4506b145aa938b5d3badbff6a5.r2.dev/attachments/f5dnmfatca3k1w5p2htci' }}
+              style={styles.logo}
+              resizeMode="contain"
+            />
+            <Text style={styles.title}>GOLD Signal BOT</Text>
+            <Text style={styles.subtitle}>Intelligent trading signals</Text>
           </View>
 
           <View style={styles.featureContainer}>
@@ -83,16 +84,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: 48,
   },
-  iconWrapper: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    backgroundColor: "rgba(255, 215, 0, 0.1)",
-    justifyContent: "center",
-    alignItems: "center",
+  logo: {
+    width: 200,
+    height: 200,
     marginBottom: 24,
-    borderWidth: 2,
-    borderColor: "rgba(255, 215, 0, 0.3)",
   },
   title: {
     fontSize: 32,
