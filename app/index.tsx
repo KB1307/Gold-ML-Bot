@@ -20,11 +20,13 @@ export default function LoginScreen() {
         <View style={styles.content}>
           <View style={styles.logoContainer}>
             <Image
-              source={{ uri: 'https://pub-e001eb4506b145aa938b5d3badbff6a5.r2.dev/attachments/f5dnmfatca3k1w5p2htci' }}
+              source={{ uri: 'https://pub-e001eb4506b145aa938b5d3badbff6a5.r2.dev/attachments/4voi8r0f5fxv3yg5tbldu' }}
               style={styles.logo}
               resizeMode="contain"
+              onError={(error) => console.log('Image load error:', error.nativeEvent.error)}
+              onLoad={() => console.log('Image loaded successfully')}
             />
-            <Text style={styles.title}>Gold Signal Bot</Text>
+            <Text style={styles.title}>GOLD SIGNAL BOT</Text>
             <Text style={styles.subtitle}>Intelligent Trading Signals</Text>
           </View>
 
@@ -88,18 +90,21 @@ const styles = StyleSheet.create({
     width: 200,
     height: 200,
     marginBottom: 24,
+    backgroundColor: 'transparent',
   },
   title: {
     fontSize: 32,
     fontWeight: "700",
-    color: "#fff",
+    color: "#FFD700",
     marginBottom: 8,
-    letterSpacing: 0.5,
+    letterSpacing: 1.2,
+    textAlign: "center",
   } as const,
   subtitle: {
     fontSize: 16,
-    color: "#999",
-    letterSpacing: 1,
+    color: "#00BFFF",
+    letterSpacing: 1.5,
+    textAlign: "center",
   },
   featureContainer: {
     marginBottom: 40,
