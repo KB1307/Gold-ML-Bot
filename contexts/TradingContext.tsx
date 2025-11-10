@@ -57,7 +57,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       await loadPersistedData();
     };
     init();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -88,7 +87,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     updatePrice();
 
     return () => clearInterval(priceInterval);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -99,7 +97,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     updateMarketOutlook();
 
     return () => clearInterval(interval);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadPersistedData = async () => {
@@ -274,8 +271,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const metrics = calculatePerformanceMetrics(signalHistory);
     setPerformanceMetrics(metrics);
     AsyncStorage.setItem("performance_metrics", JSON.stringify(metrics));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signalHistory]);
+  }, [signalHistory, calculatePerformanceMetrics]);
 
   const closeSignal = useCallback((signal: TradingSignal) => {
     const now = new Date();
@@ -382,21 +378,24 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     } catch (error) {
       console.error("Failed to generate signal:", error);
     }
-  }, [currentSignal, settings]);
+  }, [currentSignal, settings, accountBalance]);
 
   useEffect(() => {
-    if (!currentSignal) return;
+    if (!currentSignal) {
+      return;
+    }
 
     const statusInterval = setInterval(() => {
       updateSignalStatus();
     }, 5000);
 
     return () => clearInterval(statusInterval);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentSignal]);
+  }, [currentSignal, updateSignalStatus]);
 
   useEffect(() => {
-    if (!isLoggedIn) return;
+    if (!isLoggedIn) {
+      return;
+    }
 
     const signalInterval = setInterval(() => {
       checkAndGenerateSignal();
@@ -405,8 +404,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     checkAndGenerateSignal();
 
     return () => clearInterval(signalInterval);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoggedIn]);
+  }, [isLoggedIn, checkAndGenerateSignal]);
 
   const login = useCallback(async (username: string) => {
     setIsLoggedIn(true);
