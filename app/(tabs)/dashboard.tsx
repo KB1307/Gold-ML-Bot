@@ -63,53 +63,55 @@ export default function DashboardScreen() {
             contentContainerStyle={styles.scrollContent}
             showsVerticalScrollIndicator={false}
           >
-            <View style={[styles.chartContainer, Platform.OS === 'web' ? { height: Math.min(dimensions.height * 0.4, 500) } : { height: 350 }]}>
-              <iframe
-                key={chartKey}
-                srcDoc={`
-                  <!DOCTYPE html>
-                  <html>
-                  <head>
-                    <style>
-                      body, html { margin: 0; padding: 0; overflow: hidden; height: 100%; width: 100%; }
-                      .tradingview-widget-container { height: 100%; width: 100%; }
-                      .tradingview-widget-container__widget { height: 100% !important; width: 100% !important; }
-                    </style>
-                  </head>
-                  <body>
-                    <div class="tradingview-widget-container">
-                      <div class="tradingview-widget-container__widget"></div>
-                      <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js">
-                      {
-                        "autosize": true,
-                        "symbol": "OANDA:XAUUSD",
-                        "interval": "1",
-                        "timezone": "Africa/Johannesburg",
-                        "theme": "dark",
-                        "style": "1",
-                        "locale": "en",
-                        "backgroundColor": "#0F0F0F",
-                        "gridColor": "rgba(242, 242, 242, 0.06)",
-                        "allow_symbol_change": true,
-                        "hide_side_toolbar": false,
-                        "hide_top_toolbar": false,
-                        "save_image": false,
-                        "calendar": false,
-                        "support_host": "https://www.tradingview.com"
-                      }
-                      </script>
-                    </div>
-                  </body>
-                  </html>
-                `}
-                style={{
-                  width: '100%',
-                  height: '100%',
-                  border: 'none',
-                }}
-                title="TradingView Chart"
-              />
-            </View>
+            {Platform.OS === 'web' && (
+              <View style={[styles.chartContainer, { height: Math.min(dimensions.height * 0.4, 500) }]}>
+                <iframe
+                  key={chartKey}
+                  srcDoc={`
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                      <style>
+                        body, html { margin: 0; padding: 0; overflow: hidden; height: 100%; width: 100%; }
+                        .tradingview-widget-container { height: 100%; width: 100%; }
+                        .tradingview-widget-container__widget { height: 100% !important; width: 100% !important; }
+                      </style>
+                    </head>
+                    <body>
+                      <div class="tradingview-widget-container">
+                        <div class="tradingview-widget-container__widget"></div>
+                        <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js">
+                        {
+                          "autosize": true,
+                          "symbol": "OANDA:XAUUSD",
+                          "interval": "1",
+                          "timezone": "Africa/Johannesburg",
+                          "theme": "dark",
+                          "style": "1",
+                          "locale": "en",
+                          "backgroundColor": "#0F0F0F",
+                          "gridColor": "rgba(242, 242, 242, 0.06)",
+                          "allow_symbol_change": true,
+                          "hide_side_toolbar": false,
+                          "hide_top_toolbar": false,
+                          "save_image": false,
+                          "calendar": false,
+                          "support_host": "https://www.tradingview.com"
+                        }
+                        </script>
+                      </div>
+                    </body>
+                    </html>
+                  `}
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    border: 'none',
+                  }}
+                  title="TradingView Chart"
+                />
+              </View>
+            )}
 
             <View style={styles.header}>
               <View>
