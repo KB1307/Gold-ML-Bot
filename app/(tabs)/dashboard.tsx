@@ -297,7 +297,7 @@ export default function DashboardScreen() {
             {positionSizing && currentSignal && (
               <View style={styles.positionCard}>
                 <View style={styles.positionHeader}>
-                  <Percent size={20} color="#FFD700" />
+                  <Percent size={16} color="#FFD700" />
                   <Text style={styles.sectionTitle}>Dynamic Position Sizing</Text>
                 </View>
                 
@@ -664,7 +664,7 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255, 255, 255, 0.05)",
   },
   sectionTitle: {
-    fontSize: 18,
+    fontSize: 14,
     fontWeight: "700",
     color: "#fff",
     marginBottom: 16,
@@ -842,8 +842,8 @@ const styles = StyleSheet.create({
   } as const,
   positionCard: {
     backgroundColor: "rgba(255, 215, 0, 0.05)",
-    padding: 20,
-    borderRadius: 16,
+    padding: 12,
+    borderRadius: 12,
     marginBottom: 20,
     borderWidth: 1,
     borderColor: "rgba(255, 215, 0, 0.2)",
@@ -851,32 +851,32 @@ const styles = StyleSheet.create({
   positionHeader: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    marginBottom: 16,
+    gap: 6,
+    marginBottom: 10,
   },
   positionGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 12,
+    gap: 8,
   },
   positionItem: {
     flex: 1,
     minWidth: "45%",
     backgroundColor: "rgba(0, 0, 0, 0.3)",
-    padding: 16,
-    borderRadius: 12,
+    padding: 10,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: "rgba(255, 215, 0, 0.1)",
   },
   positionLabel: {
-    fontSize: 11,
+    fontSize: 9,
     color: "#999",
-    marginBottom: 6,
+    marginBottom: 4,
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
   positionValue: {
-    fontSize: 18,
+    fontSize: 14,
     fontWeight: "700",
     color: "#fff",
   } as const,

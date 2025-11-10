@@ -136,29 +136,58 @@ export default function HistoryScreen() {
                         </View>
                         <View style={styles.priceColumn}>
                           <Text style={styles.priceLabel}>TP1</Text>
-                          <Text style={[
-                            styles.priceValue, 
-                            { color: signal.targetsHit >= 1 ? "#22c55e" : "#666" }
-                          ]}>${signal.tp1.toFixed(1)}</Text>
+                          <View style={styles.targetStatusRow}>
+                            <Text style={[
+                              styles.priceValue, 
+                              { color: signal.targetsHit >= 1 ? "#22c55e" : "#666" }
+                            ]}>${signal.tp1.toFixed(1)}</Text>
+                            {signal.status === "ACTIVE" || signal.status === "TP1_HIT" || signal.status === "TP2_HIT" || signal.status === "TP3_HIT" || signal.status === "ALL_TARGETS_HIT" ? (
+                              <Text style={[
+                                styles.checkmark,
+                                { color: signal.targetsHit >= 1 ? "#22c55e" : "#666" }
+                              ]}>✓</Text>
+                            ) : null}
+                          </View>
                         </View>
                         <View style={styles.priceColumn}>
                           <Text style={styles.priceLabel}>TP2</Text>
-                          <Text style={[
-                            styles.priceValue, 
-                            { color: signal.targetsHit >= 2 ? "#22c55e" : "#666" }
-                          ]}>${signal.tp2.toFixed(1)}</Text>
+                          <View style={styles.targetStatusRow}>
+                            <Text style={[
+                              styles.priceValue, 
+                              { color: signal.targetsHit >= 2 ? "#22c55e" : "#666" }
+                            ]}>${signal.tp2.toFixed(1)}</Text>
+                            {signal.status === "ACTIVE" || signal.status === "TP1_HIT" || signal.status === "TP2_HIT" || signal.status === "TP3_HIT" || signal.status === "ALL_TARGETS_HIT" ? (
+                              <Text style={[
+                                styles.checkmark,
+                                { color: signal.targetsHit >= 2 ? "#22c55e" : "#666" }
+                              ]}>✓</Text>
+                            ) : null}
+                          </View>
                         </View>
                         <View style={styles.priceColumn}>
                           <Text style={styles.priceLabel}>TP3</Text>
-                          <Text style={[
-                            styles.priceValue, 
-                            { color: signal.targetsHit >= 3 ? "#22c55e" : "#666" }
-                          ]}>${signal.tp3.toFixed(1)}</Text>
+                          <View style={styles.targetStatusRow}>
+                            <Text style={[
+                              styles.priceValue, 
+                              { color: signal.targetsHit >= 3 ? "#22c55e" : "#666" }
+                            ]}>${signal.tp3.toFixed(1)}</Text>
+                            {signal.status === "ACTIVE" || signal.status === "TP1_HIT" || signal.status === "TP2_HIT" || signal.status === "TP3_HIT" || signal.status === "ALL_TARGETS_HIT" ? (
+                              <Text style={[
+                                styles.checkmark,
+                                { color: signal.targetsHit >= 3 ? "#22c55e" : "#666" }
+                              ]}>✓</Text>
+                            ) : null}
+                          </View>
                         </View>
                       </View>
 
                       <View style={styles.slRow}>
-                        <Text style={styles.slLabel}>Stop Loss</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text style={styles.slLabel}>Stop Loss</Text>
+                          {signal.status === "SL_HIT" && (
+                            <Text style={[styles.checkmark, { color: "#ef4444" }]}>✗</Text>
+                          )}
+                        </View>
                         <Text style={[
                           styles.slValue,
                           { color: signal.status === "SL_HIT" ? "#ef4444" : "#999" }
@@ -359,6 +388,15 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: "#999",
   },
+  targetStatusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  checkmark: {
+    fontSize: 14,
+    fontWeight: "700",
+  } as const,
   infoCard: {
     backgroundColor: "rgba(255, 255, 255, 0.03)",
     padding: 16,

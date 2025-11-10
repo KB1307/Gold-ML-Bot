@@ -7,12 +7,12 @@ import { signalEngine } from "@/services/signalEngine";
 const DEFAULT_SETTINGS: Settings = {
   tp1Pips: 15,
   tp2Pips: 30,
-  tp3Pips: 100,
+  tp3Pips: 75,
   slPips: 120,
   numberOfTPs: 3,
   minConfidence: 0.70,
   enableNotifications: true,
-  basePositionSize: 1.0,
+  basePositionSize: 0.01,
   maxRiskPercentage: 2.0,
   useKellyCriterion: true,
 };
@@ -369,6 +369,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       if (signal) {
         console.log("New signal generated:", signal);
         setCurrentSignal(signal);
+
+        setSignalHistory((prev) => {
+          const updated = [signal, ...prev];
+          AsyncStorage.setItem("signal_history", JSON.stringify(updated));
+          return updated;
+        });
 
         const sizing = signalEngine.calculatePositionSizing(signal.confidence, settings, accountBalance);
         setPositionSizing(sizing);
