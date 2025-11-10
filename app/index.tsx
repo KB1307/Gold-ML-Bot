@@ -24,8 +24,8 @@ export default function LoginScreen() {
               style={styles.logo}
               resizeMode="contain"
             />
-            <Text style={styles.title}>GOLD Signal BOT</Text>
-            <Text style={styles.subtitle}>Intelligent trading signals</Text>
+            <Text style={styles.title}>Gold Signal Bot</Text>
+            <Text style={styles.subtitle}>Intelligent Trading Signals</Text>
           </View>
 
           <View style={styles.featureContainer}>
