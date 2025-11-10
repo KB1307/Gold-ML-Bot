@@ -1,5 +1,5 @@
-import { View, StyleSheet } from "react-native";
-import Svg, { Path, Line, Text as SvgText, Circle } from "react-native-svg";
+import { View, StyleSheet, Platform } from "react-native";
+import { useState, useEffect, useRef } from "react";
 
 interface PriceDataPoint {
   timestamp: number;
@@ -12,105 +12,97 @@ interface PriceChartProps {
 }
 
 export default function PriceChart({ data, currentPrice }: PriceChartProps) {
-  if (!data || data.length < 2) return null;
+  const [chartKey, setChartKey] = useState<number>(0);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
-  const width = 350;
-  const height = 200;
-  const padding = { top: 20, right: 10, bottom: 30, left: 50 };
-  const chartWidth = width - padding.left - padding.right;
-  const chartHeight = height - padding.top - padding.bottom;
+  useEffect(() => {
+    setChartKey(prev => prev + 1);
+  }, []);
 
-  const prices = data.map(d => d.price);
-  const minPrice = Math.min(...prices);
-  const maxPrice = Math.max(...prices);
-  const priceRange = maxPrice - minPrice || 1;
+  if (Platform.OS !== 'web') {
+    return null;
+  }
 
-  const xScale = (index: number) => padding.left + (index / (data.length - 1)) * chartWidth;
-  const yScale = (price: number) => padding.top + chartHeight - ((price - minPrice) / priceRange) * chartHeight;
-
-  const pathData = data.map((point, i) => {
-    const x = xScale(i);
-    const y = yScale(point.price);
-    return i === 0 ? `M ${x} ${y}` : `L ${x} ${y}`;
-  }).join(' ');
-
-  const currentY = yScale(currentPrice);
-
-  const gridLines = 5;
-  const gridPrices = Array.from({ length: gridLines }, (_, i) => {
-    return minPrice + (priceRange / (gridLines - 1)) * i;
-  });
+  const chartHTML = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <style>
+          body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #0F0F0F;
+          }
+          .tradingview-widget-container {
+            height: 100%;
+            width: 100%;
+          }
+          .tradingview-widget-container__widget {
+            height: calc(100% - 32px);
+            width: 100%;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="tradingview-widget-container">
+          <div class="tradingview-widget-container__widget"></div>
+          <div class="tradingview-widget-copyright">
+            <a href="https://www.tradingview.com/symbols/XAUUSD/?exchange=OANDA" rel="noopener nofollow" target="_blank">
+              <span class="blue-text">XAUUSD chart</span>
+            </a>
+            <span class="trademark"> by TradingView</span>
+          </div>
+          <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
+          {
+            "allow_symbol_change": true,
+            "calendar": false,
+            "details": false,
+            "hide_side_toolbar": false,
+            "hide_top_toolbar": false,
+            "hide_legend": false,
+            "hide_volume": false,
+            "hotlist": false,
+            "interval": "1",
+            "locale": "en",
+            "save_image": true,
+            "style": "1",
+            "symbol": "OANDA:XAUUSD",
+            "theme": "dark",
+            "timezone": "Etc/UTC",
+            "backgroundColor": "#0F0F0F",
+            "gridColor": "rgba(242, 242, 242, 0.06)",
+            "watchlist": [],
+            "withdateranges": false,
+            "compareSymbols": [],
+            "studies": [],
+            "autosize": true
+          }
+          </script>
+        </div>
+      </body>
+    </html>
+  `;
 
   return (
     <View style={styles.container}>
-      <Svg width={width} height={height}>
-        {gridPrices.map((price, i) => {
-          const y = yScale(price);
-          return (
-            <Line
-              key={`grid-${i}`}
-              x1={padding.left}
-              y1={y}
-              x2={width - padding.right}
-              y2={y}
-              stroke="rgba(255, 255, 255, 0.05)"
-              strokeWidth="1"
-            />
-          );
-        })}
-        
-        {gridPrices.map((price, i) => {
-          const y = yScale(price);
-          return (
-            <SvgText
-              key={`label-${i}`}
-              x={padding.left - 10}
-              y={y + 4}
-              fontSize="10"
-              fill="#666"
-              textAnchor="end"
-            >
-              {price.toFixed(0)}
-            </SvgText>
-          );
-        })}
-
-        <Line
-          x1={padding.left}
-          y1={currentY}
-          x2={width - padding.right}
-          y2={currentY}
-          stroke="#FFD700"
-          strokeWidth="1"
-          strokeDasharray="4,4"
-        />
-
-        <Path
-          d={pathData}
-          stroke="#22c55e"
-          strokeWidth="2"
-          fill="none"
-        />
-
-        {data.map((point, i) => {
-          const x = xScale(i);
-          const y = yScale(point.price);
-          if (i === data.length - 1) {
-            return (
-              <Circle
-                key={`point-${i}`}
-                cx={x}
-                cy={y}
-                r="4"
-                fill="#FFD700"
-                stroke="#0a0a0a"
-                strokeWidth="2"
-              />
-            );
-          }
-          return null;
-        })}
-      </Svg>
+      <iframe
+        key={chartKey}
+        ref={iframeRef as any}
+        srcDoc={chartHTML}
+        style={{
+          width: '100%',
+          height: 400,
+          border: 'none',
+          borderRadius: 12,
+          overflow: 'hidden',
+        }}
+        title="TradingView Chart"
+      />
     </View>
   );
 }
@@ -118,7 +110,6 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
 const styles = StyleSheet.create({
   container: {
     width: '100%',
-    alignItems: 'center',
-    justifyContent: 'center',
+    height: 400,
   },
 });
