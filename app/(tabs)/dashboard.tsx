@@ -1,20 +1,11 @@
-import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Platform, useWindowDimensions } from "react-native";
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Platform } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { TrendingUp, TrendingDown, Target, Shield, Clock, Zap, BarChart3, Percent, AlertTriangle, Activity } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
-import { useState, useEffect } from "react";
 import { Stack } from "expo-router";
 
 export default function DashboardScreen() {
   const { currentSignal, marketOutlook, performanceMetrics, positionSizing, currentPrice } = useTrading();
-  const [chartKey, setChartKey] = useState<number>(0);
-  const dimensions = useWindowDimensions();
-
-  useEffect(() => {
-    if (Platform.OS === 'web') {
-      setChartKey(prev => prev + 1);
-    }
-  }, [dimensions.width, dimensions.height]);
 
   if (!marketOutlook) {
     return (
@@ -63,56 +54,6 @@ export default function DashboardScreen() {
             contentContainerStyle={styles.scrollContent}
             showsVerticalScrollIndicator={false}
           >
-            {Platform.OS === 'web' && (
-              <View style={[styles.chartContainer, { height: Math.min(dimensions.height * 0.4, 500) }]}>
-                <iframe
-                  key={chartKey}
-                  srcDoc={`
-                    <!DOCTYPE html>
-                    <html>
-                    <head>
-                      <style>
-                        body, html { margin: 0; padding: 0; overflow: hidden; height: 100%; width: 100%; }
-                        .tradingview-widget-container { height: 100%; width: 100%; }
-                        .tradingview-widget-container__widget { height: 100% !important; width: 100% !important; }
-                      </style>
-                    </head>
-                    <body>
-                      <div class="tradingview-widget-container">
-                        <div class="tradingview-widget-container__widget"></div>
-                        <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js">
-                        {
-                          "autosize": true,
-                          "symbol": "OANDA:XAUUSD",
-                          "interval": "1",
-                          "timezone": "Africa/Johannesburg",
-                          "theme": "dark",
-                          "style": "1",
-                          "locale": "en",
-                          "backgroundColor": "#0F0F0F",
-                          "gridColor": "rgba(242, 242, 242, 0.06)",
-                          "allow_symbol_change": true,
-                          "hide_side_toolbar": false,
-                          "hide_top_toolbar": false,
-                          "save_image": false,
-                          "calendar": false,
-                          "support_host": "https://www.tradingview.com"
-                        }
-                        </script>
-                      </div>
-                    </body>
-                    </html>
-                  `}
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    border: 'none',
-                  }}
-                  title="TradingView Chart"
-                />
-              </View>
-            )}
-
             <View style={styles.header}>
               <View>
                 <Text style={styles.headerTitle}>XAUUSD</Text>
@@ -167,13 +108,6 @@ export default function DashboardScreen() {
                     <View style={styles.warningBanner}>
                       <AlertTriangle size={14} color="#FFA500" />
                       <Text style={styles.warningText}>High Latency: {currentSignal.latencyWarning}ms - Entry price may have shifted</Text>
-                    </View>
-                  )}
-
-                  {currentSignal.timeToLive && (
-                    <View style={styles.infoBanner}>
-                      <Clock size={14} color="#64B5F6" />
-                      <Text style={styles.infoText}>Time-To-Live: ~{currentSignal.timeToLive} minutes</Text>
                     </View>
                   )}
 
@@ -787,15 +721,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#fff",
   } as const,
-  chartContainer: {
-    width: "100%",
-    marginBottom: 20,
-    borderRadius: 16,
-    overflow: "hidden",
-    backgroundColor: "#0F0F0F",
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.1)",
-  },
   srTitle: {
     fontSize: 14,
     fontWeight: "600",
@@ -961,24 +886,6 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 11,
     color: "#FFA500",
-    marginLeft: 8,
-    lineHeight: 16,
-  },
-  infoBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(100, 181, 246, 0.1)",
-    padding: 12,
-    borderRadius: 8,
-    marginTop: 8,
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: "rgba(100, 181, 246, 0.3)",
-  },
-  infoText: {
-    flex: 1,
-    fontSize: 11,
-    color: "#64B5F6",
     marginLeft: 8,
     lineHeight: 16,
   },
