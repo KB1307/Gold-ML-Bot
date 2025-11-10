@@ -327,24 +327,36 @@ export default function DashboardScreen() {
             <View style={styles.marketInfoCard}>
               <Text style={styles.sectionTitle}>Market Status</Text>
               <View style={styles.sessionGrid}>
-                {marketOutlook.sessions.map((session) => (
-                  <View 
-                    key={session.name} 
-                    style={[
-                      styles.sessionCard,
-                      session.isActive && styles.sessionCardActive
-                    ]}
-                  >
-                    <View style={[
-                      styles.sessionIndicator,
-                      session.isActive && styles.sessionIndicatorActive
-                    ]} />
-                    <Text style={[
-                      styles.sessionName,
-                      session.isActive && styles.sessionNameActive
-                    ]}>{session.name}</Text>
-                  </View>
-                ))}
+                {marketOutlook.sessions.map((session) => {
+                  let hours = "";
+                  if (session.name === "ASIAN") {
+                    hours = "00:00-06:00\n21:00-24:00 UTC";
+                  } else if (session.name === "LONDON") {
+                    hours = "06:00-13:00 UTC";
+                  } else if (session.name === "NEW_YORK") {
+                    hours = "13:00-21:00 UTC";
+                  }
+                  
+                  return (
+                    <View 
+                      key={session.name} 
+                      style={[
+                        styles.sessionCard,
+                        session.isActive && styles.sessionCardActive
+                      ]}
+                    >
+                      <View style={[
+                        styles.sessionIndicator,
+                        session.isActive && styles.sessionIndicatorActive
+                      ]} />
+                      <Text style={[
+                        styles.sessionName,
+                        session.isActive && styles.sessionNameActive
+                      ]}>{session.name}</Text>
+                      <Text style={styles.sessionHours}>{hours}</Text>
+                    </View>
+                  );
+                })}
               </View>
               
               <View style={styles.statsRow}>
@@ -682,6 +694,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderWidth: 1,
     borderColor: "rgba(255, 255, 255, 0.05)",
+    minHeight: 90,
   },
   sessionCardActive: {
     backgroundColor: "rgba(34, 197, 94, 0.1)",
@@ -705,6 +718,13 @@ const styles = StyleSheet.create({
   } as const,
   sessionNameActive: {
     color: "#22c55e",
+  },
+  sessionHours: {
+    fontSize: 8,
+    color: "#555",
+    textAlign: "center",
+    marginTop: 6,
+    lineHeight: 11,
   },
   statsRow: {
     flexDirection: "row",
