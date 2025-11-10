@@ -73,7 +73,6 @@ export default function DashboardScreen() {
 
             {priceHistory && priceHistory.length > 1 && (
               <View style={styles.chartCard}>
-                <Text style={styles.chartTitle}>Gold Price (15min)</Text>
                 <View style={styles.chartContainer}>
                   <PriceChart data={priceHistory} currentPrice={currentPrice} />
                 </View>
