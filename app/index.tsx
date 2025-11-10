@@ -1,4 +1,4 @@
-import { View, Text, TouchableOpacity, StyleSheet, Image } from "react-native";
+import { View, Text, TouchableOpacity, StyleSheet, Image, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import { useTrading } from "@/contexts/TradingContext";
@@ -19,13 +19,13 @@ export default function LoginScreen() {
     >
         <View style={styles.content}>
           <View style={styles.logoContainer}>
-            <Image
-              source={{ uri: 'https://pub-e001eb4506b145aa938b5d3badbff6a5.r2.dev/attachments/4voi8r0f5fxv3yg5tbldu' }}
-              style={styles.logo}
-              resizeMode="contain"
-              onError={(error) => console.log('Image load error:', error.nativeEvent.error)}
-              onLoad={() => console.log('Image loaded successfully')}
-            />
+            <View style={styles.logoImageContainer}>
+              <Image
+                source={{ uri: 'https://pub-e001eb4506b145aa938b5d3badbff6a5.r2.dev/attachments/4voi8r0f5fxv3yg5tbldu' }}
+                style={styles.logo}
+                resizeMode="contain"
+              />
+            </View>
             <Text style={styles.title}>GOLD SIGNAL BOT</Text>
             <Text style={styles.subtitle}>Intelligent Trading Signals</Text>
           </View>
@@ -86,11 +86,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: 48,
   },
-  logo: {
+  logoImageContainer: {
     width: 200,
     height: 200,
     marginBottom: 24,
-    backgroundColor: 'transparent',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  logo: {
+    width: 200,
+    height: 200,
   },
   title: {
     fontSize: 32,

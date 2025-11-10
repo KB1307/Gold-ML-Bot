@@ -33,6 +33,11 @@ const DEFAULT_METRICS: PerformanceMetrics = {
   expectancy: 0,
 };
 
+interface PriceDataPoint {
+  timestamp: number;
+  price: number;
+}
+
 export const [TradingProvider, useTrading] = createContextHook(() => {
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(false);
   const [currentSignal, setCurrentSignal] = useState<TradingSignal | null>(null);
@@ -44,6 +49,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [positionSizing, setPositionSizing] = useState<PositionSizing | null>(null);
   const [accountBalance, setAccountBalance] = useState<number>(10000);
   const [currentPrice, setCurrentPrice] = useState<number>(2650);
+  const [priceHistory, setPriceHistory] = useState<PriceDataPoint[]>([]);
 
   useEffect(() => {
     const init = async () => {
@@ -60,6 +66,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         await signalEngine.updateCurrentPrice();
         const price = signalEngine.getCurrentPrice();
         setCurrentPrice(price);
+        
+        const now = Date.now();
+        setPriceHistory(prev => {
+          const newHistory = [...prev, { timestamp: now, price }];
+          const maxPoints = 60;
+          if (newHistory.length > maxPoints) {
+            return newHistory.slice(newHistory.length - maxPoints);
+          }
+          return newHistory;
+        });
       } catch (error) {
         console.error('Failed to update price:', error);
       }
@@ -435,6 +451,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     positionSizing,
     accountBalance,
     currentPrice,
+    priceHistory,
     login,
     logout,
     updateSettings,

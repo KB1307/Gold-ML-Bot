@@ -3,9 +3,10 @@ import { LinearGradient } from "expo-linear-gradient";
 import { TrendingUp, TrendingDown, Target, Shield, Clock, Zap, BarChart3, Percent, AlertTriangle, Activity } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
 import { Stack } from "expo-router";
+import PriceChart from "@/components/PriceChart";
 
 export default function DashboardScreen() {
-  const { currentSignal, marketOutlook, performanceMetrics, positionSizing, currentPrice } = useTrading();
+  const { currentSignal, marketOutlook, performanceMetrics, positionSizing, currentPrice, priceHistory } = useTrading();
 
   if (!marketOutlook) {
     return (
@@ -69,6 +70,15 @@ export default function DashboardScreen() {
                 </View>
               </View>
             </View>
+
+            {priceHistory && priceHistory.length > 1 && (
+              <View style={styles.chartCard}>
+                <Text style={styles.chartTitle}>Gold Price (15min)</Text>
+                <View style={styles.chartContainer}>
+                  <PriceChart data={priceHistory} currentPrice={currentPrice} />
+                </View>
+              </View>
+            )}
 
             {!marketOutlook.isMarketOpen && (
               <View style={styles.closedBanner}>
@@ -940,5 +950,23 @@ const styles = StyleSheet.create({
     color: "#FFA500",
     marginTop: 4,
     fontStyle: "italic",
+  },
+  chartCard: {
+    backgroundColor: "rgba(255, 255, 255, 0.03)",
+    padding: 20,
+    borderRadius: 16,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.05)",
+  },
+  chartTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#fff",
+    marginBottom: 16,
+  } as const,
+  chartContainer: {
+    width: "100%",
+    alignItems: "center",
   },
 });
