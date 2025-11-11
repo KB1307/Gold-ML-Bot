@@ -1290,7 +1290,7 @@ class SignalGenerationEngine {
     console.log(`📊 Market Regime: ${features.marketRegime.type} (Strength: ${(features.marketRegime.strength * 100).toFixed(0)}%, Confidence: ${(features.marketRegime.confidence * 100).toFixed(0)}%)`);
     console.log(`🎯 Signal Generation Rate: ${signalFrequencyRate}% (${this.successfulSignalsGenerated} signals / ${this.signalGenerationAttempts} attempts)`);
     console.log(`⏱️ Next Dynamic Cooldown: ${(dynamicCooldown / 1000).toFixed(1)}s`);
-    console.log(`⏰ Time-To-Live (TTL): ~${timeToLiveMinutes} minutes`);
+    console.log(`⏰ Time-To-Live: DYNAMIC (Expires on Regime Change or 2h max)`);
     if (latencyWarning) {
       console.log(`⚠️ Latency Warning: ${latencyWarning}ms`);
     }
@@ -1328,6 +1328,11 @@ class SignalGenerationEngine {
       tp1Distance: parseFloat(tp1Distance.toFixed(1)),
       tp2Distance: parseFloat(tp2Distance.toFixed(1)),
       tp3Distance: parseFloat(tp3Distance.toFixed(1)),
+      generatedRegime: {
+        type: features.marketRegime.type,
+        strength: features.marketRegime.strength,
+        confidence: features.marketRegime.confidence,
+      },
     };
   }
   

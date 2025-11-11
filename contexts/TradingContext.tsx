@@ -10,7 +10,7 @@ const DEFAULT_SETTINGS: Settings = {
   tp3Pips: 65,
   slPips: 70,
   numberOfTPs: 3,
-  minConfidence: 0.70,
+  minConfidence: 0.75,
   enableNotifications: true,
   basePositionSize: 0.01,
   maxRiskPercentage: 2.0,
@@ -291,7 +291,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     signalEngine.resetSignalLock();
   }, []);
 
-  const updateSignalStatus = useCallback(() => {
+  const updateSignalStatus = useCallback(async () => {
     if (!currentSignal) return;
 
     const price = signalEngine.getCurrentPrice();
@@ -301,8 +301,43 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const signalAge = Date.now() - new Date(currentSignal.timestamp).getTime();
     const twoHoursInMs = 2 * 60 * 60 * 1000;
 
+    const currentMarketOutlook = await signalEngine.getMarketOutlook();
+    const currentRegimeType = marketOutlook?.trend === "BULLISH" || marketOutlook?.trend === "BEARISH" 
+      ? "TRENDING" 
+      : marketOutlook?.volatility === "HIGH" 
+      ? "VOLATILE" 
+      : marketOutlook?.volatility === "LOW" 
+      ? "QUIET" 
+      : "RANGING";
+
+    const hasRegimeChanged = currentSignal.generatedRegime && 
+      currentSignal.generatedRegime.type !== currentRegimeType;
+
+    if (hasRegimeChanged) {
+      console.log(`🔄 Signal ${currentSignal.id} expired due to REGIME CHANGE: ${currentSignal.generatedRegime?.type} → ${currentRegimeType}`);
+      newStatus = "CLOSED";
+      const now = new Date();
+      const expiredSignal = {
+        ...currentSignal,
+        status: "CLOSED" as const,
+        exitTime: `${now.getUTCHours().toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
+      };
+
+      setSignalHistory((prev) => {
+        const updated = prev.map(s => 
+          s.id === currentSignal.id ? expiredSignal : s
+        );
+        AsyncStorage.setItem("signal_history", JSON.stringify(updated));
+        return updated;
+      });
+
+      setCurrentSignal(null);
+      signalEngine.resetSignalLock();
+      return;
+    }
+
     if (signalAge > twoHoursInMs) {
-      console.log(`Signal ${currentSignal.id} expired after 2 hours`);
+      console.log(`Signal ${currentSignal.id} expired after 2 hours (fallback)`);
       newStatus = "CLOSED";
       const now = new Date();
       const expiredSignal = {
@@ -423,16 +458,38 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     }
   }, [currentSignal, settings, accountBalance]);
 
-  const updateAllSignalsStatus = useCallback(() => {
+  const updateAllSignalsStatus = useCallback(async () => {
     const price = signalEngine.getCurrentPrice();
     const now = Date.now();
     const twoHoursInMs = 2 * 60 * 60 * 1000;
+
+    const currentMarketOutlook = await signalEngine.getMarketOutlook();
+    const currentRegimeType = currentMarketOutlook?.trend === "BULLISH" || currentMarketOutlook?.trend === "BEARISH" 
+      ? "TRENDING" 
+      : currentMarketOutlook?.volatility === "HIGH" 
+      ? "VOLATILE" 
+      : currentMarketOutlook?.volatility === "LOW" 
+      ? "QUIET" 
+      : "RANGING";
 
     setSignalHistory((prev) => {
       let updated = false;
       const updatedHistory = prev.map(signal => {
         if (signal.status === "CLOSED" || signal.status === "SL_HIT" || signal.status === "ALL_TARGETS_HIT") {
           return signal;
+        }
+
+        const hasRegimeChanged = signal.generatedRegime && 
+          signal.generatedRegime.type !== currentRegimeType;
+
+        if (hasRegimeChanged) {
+          updated = true;
+          console.log(`🔄 Signal ${signal.id} expired due to REGIME CHANGE: ${signal.generatedRegime?.type} → ${currentRegimeType}`);
+          return {
+            ...signal,
+            status: "CLOSED" as const,
+            exitTime: `${new Date().getUTCHours().toString().padStart(2, "0")}:${new Date().getUTCMinutes().toString().padStart(2, "0")}`,
+          };
         }
 
         const signalAge = now - new Date(signal.timestamp).getTime();

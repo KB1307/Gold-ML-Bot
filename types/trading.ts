@@ -41,6 +41,11 @@ export interface TradingSignal {
   slippageBuffer?: number;
   actualFillPrice?: number;
   hypotheticalOutcome?: string;
+  generatedRegime?: {
+    type: 'TRENDING' | 'RANGING' | 'VOLATILE' | 'QUIET';
+    strength: number;
+    confidence: number;
+  };
 }
 
 export interface MarketSession {
