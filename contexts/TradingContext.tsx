@@ -326,20 +326,29 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       }
     }
 
-    if (newStatus !== currentSignal.status) {
+    if (newStatus !== currentSignal.status || targetsHit !== currentSignal.targetsHit) {
       const updatedSignal = { ...currentSignal, status: newStatus, targetsHit };
       setCurrentSignal(updatedSignal);
 
+      setSignalHistory((prev) => {
+        const updatedHistory = prev.map(s => 
+          s.id === currentSignal.id ? updatedSignal : s
+        );
+        AsyncStorage.setItem("signal_history", JSON.stringify(updatedHistory));
+        return updatedHistory;
+      });
+
       if (newStatus === "SL_HIT" || newStatus === "ALL_TARGETS_HIT") {
         const now = new Date();
-        const closedSignal = {
+        const finalSignal = {
           ...updatedSignal,
-          status: "CLOSED" as const,
           exitTime: `${now.getUTCHours().toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
         };
 
         setSignalHistory((prev) => {
-          const updated = [closedSignal, ...prev];
+          const updated = prev.map(s => 
+            s.id === currentSignal.id ? finalSignal : s
+          );
           AsyncStorage.setItem("signal_history", JSON.stringify(updated));
           return updated;
         });
@@ -444,6 +453,14 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     }
   }, [currentSignal, closeSignal]);
 
+  const refreshData = useCallback(async () => {
+    await updateMarketOutlook();
+    await signalEngine.updateCurrentPrice();
+    const price = signalEngine.getCurrentPrice();
+    setCurrentPrice(price);
+    console.log('Data refreshed successfully');
+  }, []);
+
   return {
     isLoggedIn,
     isLoading,
@@ -461,5 +478,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     updateSettings,
     deleteSignalFromHistory,
     manualCloseSignal,
+    refreshData,
   };
 });

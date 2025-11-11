@@ -48,8 +48,10 @@ export default function HistoryScreen() {
   };
 
   const getStatusLabel = (status: TradingSignal["status"], targetsHit: number) => {
-    if (status === "SL_HIT" || status === "CLOSED") return "Stop Loss Hit";
-    if (status === "ALL_TARGETS_HIT") return "All Targets Hit";
+    if (status === "CLOSED" && targetsHit === 3) return "All Targets Acquired";
+    if (status === "CLOSED" && targetsHit < 3) return "Stop Loss Hit";
+    if (status === "SL_HIT") return "Stop Loss Hit";
+    if (status === "ALL_TARGETS_HIT" || targetsHit === 3) return "All Targets Acquired";
     if (targetsHit > 0) return `${targetsHit}/3 Targets Hit`;
     return "Active";
   };
@@ -134,25 +136,34 @@ export default function HistoryScreen() {
                           <Text style={styles.priceLabel}>Entry</Text>
                           <Text style={styles.priceValue}>${signal.entryPrice.toFixed(1)}</Text>
                         </View>
-                        <View style={[styles.priceColumn, signal.targetsHit >= 1 && styles.targetHit]}>
+                        <View style={[
+                          styles.priceColumn, 
+                          signal.targetsHit >= 1 && styles.targetHit
+                        ]}>
                           <Text style={styles.priceLabel}>TP1</Text>
                           <Text style={[
                             styles.priceValue, 
-                            { color: signal.targetsHit >= 1 ? "#22c55e" : "#fff" }
+                            signal.targetsHit >= 1 && { color: "#22c55e" }
                           ]}>${signal.tp1.toFixed(1)}</Text>
                         </View>
-                        <View style={[styles.priceColumn, signal.targetsHit >= 2 && styles.targetHit]}>
+                        <View style={[
+                          styles.priceColumn, 
+                          signal.targetsHit >= 2 && styles.targetHit
+                        ]}>
                           <Text style={styles.priceLabel}>TP2</Text>
                           <Text style={[
                             styles.priceValue, 
-                            { color: signal.targetsHit >= 2 ? "#22c55e" : "#fff" }
+                            signal.targetsHit >= 2 && { color: "#22c55e" }
                           ]}>${signal.tp2.toFixed(1)}</Text>
                         </View>
-                        <View style={[styles.priceColumn, signal.targetsHit >= 3 && styles.targetHit]}>
+                        <View style={[
+                          styles.priceColumn, 
+                          signal.targetsHit >= 3 && styles.targetHit
+                        ]}>
                           <Text style={styles.priceLabel}>TP3</Text>
                           <Text style={[
                             styles.priceValue, 
-                            { color: signal.targetsHit >= 3 ? "#22c55e" : "#fff" }
+                            signal.targetsHit >= 3 && { color: "#22c55e" }
                           ]}>${signal.tp3.toFixed(1)}</Text>
                         </View>
                       </View>

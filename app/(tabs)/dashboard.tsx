@@ -1,4 +1,5 @@
-import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Platform } from "react-native";
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Platform, RefreshControl } from "react-native";
+import { useState, useEffect, useCallback } from "react";
 import { LinearGradient } from "expo-linear-gradient";
 import { TrendingUp, TrendingDown, Target, Shield, Clock, Zap, BarChart3, Percent, AlertTriangle, Activity } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
@@ -6,7 +7,23 @@ import { Stack } from "expo-router";
 import PriceChart from "@/components/PriceChart";
 
 export default function DashboardScreen() {
-  const { currentSignal, marketOutlook, performanceMetrics, positionSizing, currentPrice, priceHistory } = useTrading();
+  const { currentSignal, marketOutlook, performanceMetrics, positionSizing, currentPrice, priceHistory, refreshData } = useTrading();
+  const [refreshing, setRefreshing] = useState(false);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await refreshData();
+    setRefreshing(false);
+  }, [refreshData]);
+
+  useEffect(() => {
+    const autoRefreshInterval = setInterval(() => {
+      console.log('Auto-refreshing dashboard data...');
+      refreshData();
+    }, 60000);
+
+    return () => clearInterval(autoRefreshInterval);
+  }, [refreshData]);
 
   if (!marketOutlook) {
     return (
@@ -54,6 +71,14 @@ export default function DashboardScreen() {
             style={styles.scrollView}
             contentContainerStyle={styles.scrollContent}
             showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor="#FFD700"
+                colors={["#FFD700"]}
+              />
+            }
           >
             <View style={styles.header}>
               <View>
@@ -104,7 +129,7 @@ export default function DashboardScreen() {
                       )}
                       <View>
                         <Text style={styles.signalType}>{currentSignal.type} SIGNAL</Text>
-                        <Text style={styles.signalTime}>{currentSignal.entryTime} UTC</Text>
+                        <Text style={styles.signalTime}>{new Date(currentSignal.timestamp).toLocaleString()}</Text>
                       </View>
                     </View>
                     <View style={styles.confidenceContainer}>
@@ -156,30 +181,48 @@ export default function DashboardScreen() {
                   </View>
 
                   <View style={styles.targetsContainer}>
-                    <View style={styles.targetRow}>
-                      <Target size={16} color="#22c55e" />
+                    <View style={[
+                      styles.targetRow,
+                      currentSignal.targetsHit >= 1 && styles.targetRowActive
+                    ]}>
+                      <Target size={16} color={currentSignal.targetsHit >= 1 ? "#22c55e" : "#666"} />
                       <Text style={styles.targetLabel}>TP1</Text>
-                      <Text style={styles.targetValue}>${currentSignal.tp1.toFixed(1)}</Text>
+                      <Text style={[
+                        styles.targetValue,
+                        currentSignal.targetsHit >= 1 && { color: "#22c55e" }
+                      ]}>${currentSignal.tp1.toFixed(1)}</Text>
                       {currentSignal.targetsHit >= 1 && (
                         <View style={styles.hitBadge}>
                           <Text style={styles.hitText}>HIT</Text>
                         </View>
                       )}
                     </View>
-                    <View style={styles.targetRow}>
-                      <Target size={16} color="#22c55e" />
+                    <View style={[
+                      styles.targetRow,
+                      currentSignal.targetsHit >= 2 && styles.targetRowActive
+                    ]}>
+                      <Target size={16} color={currentSignal.targetsHit >= 2 ? "#22c55e" : "#666"} />
                       <Text style={styles.targetLabel}>TP2</Text>
-                      <Text style={styles.targetValue}>${currentSignal.tp2.toFixed(1)}</Text>
+                      <Text style={[
+                        styles.targetValue,
+                        currentSignal.targetsHit >= 2 && { color: "#22c55e" }
+                      ]}>${currentSignal.tp2.toFixed(1)}</Text>
                       {currentSignal.targetsHit >= 2 && (
                         <View style={styles.hitBadge}>
                           <Text style={styles.hitText}>HIT</Text>
                         </View>
                       )}
                     </View>
-                    <View style={styles.targetRow}>
-                      <Target size={16} color="#22c55e" />
+                    <View style={[
+                      styles.targetRow,
+                      currentSignal.targetsHit >= 3 && styles.targetRowActive
+                    ]}>
+                      <Target size={16} color={currentSignal.targetsHit >= 3 ? "#22c55e" : "#666"} />
                       <Text style={styles.targetLabel}>TP3</Text>
-                      <Text style={styles.targetValue}>${currentSignal.tp3.toFixed(1)}</Text>
+                      <Text style={[
+                        styles.targetValue,
+                        currentSignal.targetsHit >= 3 && { color: "#22c55e" }
+                      ]}>${currentSignal.tp3.toFixed(1)}</Text>
                       {currentSignal.targetsHit >= 3 && (
                         <View style={styles.hitBadge}>
                           <Text style={styles.hitText}>HIT</Text>
@@ -329,12 +372,18 @@ export default function DashboardScreen() {
               <View style={styles.sessionGrid}>
                 {marketOutlook.sessions.map((session) => {
                   let hours = "";
+                  const getLocalTime = (utcHour: number) => {
+                    const date = new Date();
+                    date.setUTCHours(utcHour, 0, 0, 0);
+                    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+                  };
+                  
                   if (session.name === "ASIAN") {
-                    hours = "00:00-06:00\n21:00-24:00 UTC";
+                    hours = `${getLocalTime(0)}-${getLocalTime(6)}\n${getLocalTime(21)}-${getLocalTime(24)}`;
                   } else if (session.name === "LONDON") {
-                    hours = "06:00-13:00 UTC";
+                    hours = `${getLocalTime(6)}-${getLocalTime(13)}`;
                   } else if (session.name === "NEW_YORK") {
-                    hours = "13:00-21:00 UTC";
+                    hours = `${getLocalTime(13)}-${getLocalTime(21)}`;
                   }
                   
                   return (
@@ -620,6 +669,11 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "rgba(255, 255, 255, 0.05)",
+  },
+  targetRowActive: {
+    backgroundColor: "rgba(34, 197, 94, 0.15)",
+    borderColor: "rgba(34, 197, 94, 0.3)",
+    borderWidth: 1.5,
   },
   targetLabel: {
     fontSize: 14,
