@@ -8,7 +8,7 @@ const DEFAULT_SETTINGS: Settings = {
   tp1Pips: 20,
   tp2Pips: 40,
   tp3Pips: 65,
-  slPips: 120,
+  slPips: 70,
   numberOfTPs: 3,
   minConfidence: 0.70,
   enableNotifications: true,
@@ -298,9 +298,36 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     let newStatus = currentSignal.status;
     let targetsHit = currentSignal.targetsHit;
 
+    const signalAge = Date.now() - new Date(currentSignal.timestamp).getTime();
+    const twoHoursInMs = 2 * 60 * 60 * 1000;
+
+    if (signalAge > twoHoursInMs) {
+      console.log(`Signal ${currentSignal.id} expired after 2 hours`);
+      newStatus = "CLOSED";
+      const now = new Date();
+      const expiredSignal = {
+        ...currentSignal,
+        status: "CLOSED" as const,
+        exitTime: `${now.getUTCHours().toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
+      };
+
+      setSignalHistory((prev) => {
+        const updated = prev.map(s => 
+          s.id === currentSignal.id ? expiredSignal : s
+        );
+        AsyncStorage.setItem("signal_history", JSON.stringify(updated));
+        return updated;
+      });
+
+      setCurrentSignal(null);
+      signalEngine.resetSignalLock();
+      return;
+    }
+
     if (currentSignal.type === "BUY") {
       if (price <= currentSignal.sl) {
         newStatus = "SL_HIT";
+        targetsHit = 0;
       } else if (price >= currentSignal.tp3) {
         newStatus = "ALL_TARGETS_HIT";
         targetsHit = 3;
@@ -314,6 +341,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     } else {
       if (price >= currentSignal.sl) {
         newStatus = "SL_HIT";
+        targetsHit = 0;
       } else if (price <= currentSignal.tp3) {
         newStatus = "ALL_TARGETS_HIT";
         targetsHit = 3;
@@ -395,6 +423,92 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     }
   }, [currentSignal, settings, accountBalance]);
 
+  const updateAllSignalsStatus = useCallback(() => {
+    const price = signalEngine.getCurrentPrice();
+    const now = Date.now();
+    const twoHoursInMs = 2 * 60 * 60 * 1000;
+
+    setSignalHistory((prev) => {
+      let updated = false;
+      const updatedHistory = prev.map(signal => {
+        if (signal.status === "CLOSED" || signal.status === "SL_HIT" || signal.status === "ALL_TARGETS_HIT") {
+          return signal;
+        }
+
+        const signalAge = now - new Date(signal.timestamp).getTime();
+        if (signalAge > twoHoursInMs) {
+          updated = true;
+          return {
+            ...signal,
+            status: "CLOSED" as const,
+            exitTime: `${new Date().getUTCHours().toString().padStart(2, "0")}:${new Date().getUTCMinutes().toString().padStart(2, "0")}`,
+          };
+        }
+
+        let newStatus = signal.status;
+        let targetsHit = signal.targetsHit;
+
+        if (signal.type === "BUY") {
+          if (price <= signal.sl) {
+            newStatus = "SL_HIT";
+            targetsHit = 0;
+            updated = true;
+          } else if (price >= signal.tp3) {
+            newStatus = "ALL_TARGETS_HIT";
+            targetsHit = 3;
+            updated = true;
+          } else if (price >= signal.tp2 && targetsHit < 2) {
+            newStatus = "TP2_HIT";
+            targetsHit = 2;
+            updated = true;
+          } else if (price >= signal.tp1 && targetsHit < 1) {
+            newStatus = "TP1_HIT";
+            targetsHit = 1;
+            updated = true;
+          }
+        } else {
+          if (price >= signal.sl) {
+            newStatus = "SL_HIT";
+            targetsHit = 0;
+            updated = true;
+          } else if (price <= signal.tp3) {
+            newStatus = "ALL_TARGETS_HIT";
+            targetsHit = 3;
+            updated = true;
+          } else if (price <= signal.tp2 && targetsHit < 2) {
+            newStatus = "TP2_HIT";
+            targetsHit = 2;
+            updated = true;
+          } else if (price <= signal.tp1 && targetsHit < 1) {
+            newStatus = "TP1_HIT";
+            targetsHit = 1;
+            updated = true;
+          }
+        }
+
+        if (newStatus !== signal.status || targetsHit !== signal.targetsHit) {
+          if (newStatus === "SL_HIT" || newStatus === "ALL_TARGETS_HIT") {
+            return {
+              ...signal,
+              status: newStatus,
+              targetsHit,
+              exitTime: `${new Date().getUTCHours().toString().padStart(2, "0")}:${new Date().getUTCMinutes().toString().padStart(2, "0")}`,
+            };
+          }
+          return { ...signal, status: newStatus, targetsHit };
+        }
+
+        return signal;
+      });
+
+      if (updated) {
+        AsyncStorage.setItem("signal_history", JSON.stringify(updatedHistory));
+      }
+
+      return updated ? updatedHistory : prev;
+    });
+  }, []);
+
   useEffect(() => {
     if (!currentSignal) {
       return undefined;
@@ -406,6 +520,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
     return () => clearInterval(statusInterval);
   }, [currentSignal, updateSignalStatus]);
+
+  useEffect(() => {
+    const allSignalsInterval = setInterval(() => {
+      updateAllSignalsStatus();
+    }, 5000);
+
+    updateAllSignalsStatus();
+
+    return () => clearInterval(allSignalsInterval);
+  }, [updateAllSignalsStatus]);
 
   useEffect(() => {
     if (!isLoggedIn) {

@@ -48,10 +48,13 @@ export default function HistoryScreen() {
   };
 
   const getStatusLabel = (status: TradingSignal["status"], targetsHit: number) => {
-    if (status === "CLOSED" && targetsHit === 3) return "All Targets Acquired";
-    if (status === "CLOSED" && targetsHit < 3) return "Stop Loss Hit";
     if (status === "SL_HIT") return "Stop Loss Hit";
     if (status === "ALL_TARGETS_HIT" || targetsHit === 3) return "All Targets Acquired";
+    if (status === "CLOSED") {
+      if (targetsHit === 3) return "All Targets Acquired";
+      if (targetsHit > 0) return `Expired (${targetsHit}/3 Targets)`;
+      return "Expired";
+    }
     if (targetsHit > 0) return `${targetsHit}/3 Targets Hit`;
     return "Active";
   };
@@ -168,11 +171,14 @@ export default function HistoryScreen() {
                         </View>
                       </View>
 
-                      <View style={styles.slRow}>
+                      <View style={[
+                        styles.slRow,
+                        signal.status === "SL_HIT" && { backgroundColor: "rgba(239, 68, 68, 0.15)", borderColor: "rgba(239, 68, 68, 0.3)" }
+                      ]}>
                         <Text style={styles.slLabel}>Stop Loss</Text>
                         <Text style={[
                           styles.slValue,
-                          { color: signal.status === "SL_HIT" || signal.status === "CLOSED" ? "#ef4444" : "#999" }
+                          { color: signal.status === "SL_HIT" ? "#ef4444" : "#999" }
                         ]}>${signal.sl.toFixed(1)}</Text>
                       </View>
 
