@@ -511,7 +511,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   useEffect(() => {
     if (!currentSignal) {
-      return undefined;
+      return;
     }
 
     const statusInterval = setInterval(() => {
@@ -533,7 +533,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   useEffect(() => {
     if (!isLoggedIn) {
-      return undefined;
+      return;
     }
 
     const signalInterval = setInterval(() => {
