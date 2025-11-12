@@ -90,6 +90,14 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     return () => clearInterval(priceInterval);
   }, []);
 
+  useEffect(() => {
+    const signalGenerationTimer = setInterval(() => {
+      checkAndGenerateSignal();
+    }, 30000);
+
+    return () => clearInterval(signalGenerationTimer);
+  }, [checkAndGenerateSignal]);
+
 
 
   const loadPersistedData = async () => {
@@ -644,10 +652,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     console.log('✅ Manual refresh completed');
   }, [updateAllSignalsStatus]);
 
-  const manualGenerateSignal = useCallback(async () => {
-    await checkAndGenerateSignal();
-    console.log('✅ Manual signal generation triggered');
-  }, [checkAndGenerateSignal]);
+  const clearHistoryCache = useCallback(async () => {
+    setSignalHistory([]);
+    await AsyncStorage.removeItem('signal_history');
+    console.log('✅ History cache cleared');
+  }, []);
 
   return {
     isLoggedIn,
@@ -667,6 +676,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     deleteSignalFromHistory,
     manualCloseSignal,
     refreshData,
-    manualGenerateSignal,
+    clearHistoryCache,
   };
 });

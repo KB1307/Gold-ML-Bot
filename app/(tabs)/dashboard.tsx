@@ -7,7 +7,7 @@ import { Stack } from "expo-router";
 import PriceChart from "@/components/PriceChart";
 
 export default function DashboardScreen() {
-  const { currentSignal, marketOutlook, performanceMetrics, positionSizing, currentPrice, priceHistory, refreshData, manualGenerateSignal } = useTrading();
+  const { currentSignal, marketOutlook, performanceMetrics, positionSizing, currentPrice, priceHistory, refreshData } = useTrading();
   const [refreshing, setRefreshing] = useState(false);
 
   const onRefresh = useCallback(async () => {
@@ -89,16 +89,7 @@ export default function DashboardScreen() {
               </View>
             </View>
 
-            {marketOutlook.isMarketOpen && !currentSignal && (
-              <TouchableOpacity 
-                style={styles.generateButton} 
-                onPress={manualGenerateSignal}
-                activeOpacity={0.7}
-              >
-                <RefreshCw size={20} color="#FFD700" />
-                <Text style={styles.generateButtonText}>Generate New Signal</Text>
-              </TouchableOpacity>
-            )}
+
 
             {priceHistory && priceHistory.length > 1 && (
               <View style={styles.chartCard}>
