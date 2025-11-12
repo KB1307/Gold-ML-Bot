@@ -1174,6 +1174,23 @@ class SignalGenerationEngine {
     console.log(`   Fully Active Signals: ${fullyActiveSignals.length}`);
     console.log(`   Partially Managed Signals: ${partiallyManagedSignals.length} (lock released, monitoring continues)`);
     
+    const marketRegimePreCheck = await this.detectMarketRegime();
+    const preliminaryConfidence = 0.75;
+    const preliminaryCooldown = this.calculateDynamicCooldown(marketRegimePreCheck, preliminaryConfidence);
+    const cooldownElapsed = now - this.lastSignalTime;
+    
+    console.log(`⏱️ EARLY COOLDOWN CHECK:`);
+    console.log(`   Cooldown Elapsed: ${(cooldownElapsed / 1000).toFixed(1)}s / Required: ${(preliminaryCooldown / 1000).toFixed(1)}s`);
+    console.log(`   Market Regime: ${marketRegimePreCheck.type}`);
+    
+    if (this.lastSignalTime > 0 && cooldownElapsed < preliminaryCooldown) {
+      const remainingCooldown = ((preliminaryCooldown - cooldownElapsed) / 1000).toFixed(1);
+      console.log(`❌ REJECTED (EARLY): Dynamic cooldown active: ${remainingCooldown}s remaining (Regime: ${marketRegimePreCheck.type})`);
+      console.log(`💡 TIP: Skipping expensive transformer analysis to save resources`);
+      console.log(`${'='.repeat(80)}\n`);
+      return null;
+    }
+    
     await this.updateCurrentPrice();
     const features = await this.calculateMarketFeatures();
     
@@ -1182,13 +1199,12 @@ class SignalGenerationEngine {
     
     const analysis = this.enhancedTransformerAnalysis(features);
     const dynamicCooldown = this.calculateDynamicCooldown(features.marketRegime, analysis.confidence);
-    const cooldownElapsed = now - this.lastSignalTime;
     
     console.log(`🎯 Preliminary Analysis:`);
     console.log(`   Signal Type: ${analysis.signalType}`);
     console.log(`   Confidence: ${(analysis.confidence * 100).toFixed(1)}% (Min Required: ${(settings.minConfidence * 100).toFixed(0)}%)`);
     console.log(`   Market Regime: ${features.marketRegime.type} (Strength: ${(features.marketRegime.strength * 100).toFixed(0)}%)`);
-    console.log(`   Cooldown Elapsed: ${(cooldownElapsed / 1000).toFixed(1)}s / Required: ${(dynamicCooldown / 1000).toFixed(1)}s`);
+    console.log(`   Final Cooldown: ${(dynamicCooldown / 1000).toFixed(1)}s`);
     
     if (this.lastSignalTime > 0 && cooldownElapsed < dynamicCooldown) {
       const remainingCooldown = ((dynamicCooldown - cooldownElapsed) / 1000).toFixed(1);

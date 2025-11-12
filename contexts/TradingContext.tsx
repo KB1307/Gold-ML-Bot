@@ -414,8 +414,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
         let newStatus = signal.status;
         let targetsHit = signal.targetsHit;
-        let slMovedToBreakEven = signal.slMovedToBreakEven || false;
-        let updatedSL = signal.sl;
 
         if (signal.type === "BUY") {
           if (price >= signal.tp3) {
@@ -429,20 +427,14 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             updated = true;
             console.log(`🎯 TP2 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
           } else if (price >= signal.tp1 && targetsHit < 1) {
-            newStatus = "PARTIALLY_MANAGED";
+            newStatus = "TP1_HIT";
             targetsHit = 1;
-            slMovedToBreakEven = true;
-            updatedSL = signal.entryPriceWithSlippage;
             updated = true;
-            console.log(`🔓 DYNAMIC LOCK RELEASE: Signal ${signal.id.slice(-6)} hit TP1 @ ${price.toFixed(1)}`);
-            console.log(`   🛡️ SL moved to break-even @ ${updatedSL.toFixed(1)}`);
-            console.log(`   ✅ Lock released - new signals can be generated while monitoring TP2/TP3`);
+            console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
           } else if (price <= signal.sl) {
-            const slType = slMovedToBreakEven ? "break-even" : "original";
             newStatus = "SL_HIT";
-            targetsHit = slMovedToBreakEven ? 1 : 0;
             updated = true;
-            console.log(`⚠️ SL HIT (${slType}): Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
+            console.log(`⚠️ SL HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
           }
         } else {
           if (price <= signal.tp3) {
@@ -456,36 +448,28 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             updated = true;
             console.log(`🎯 TP2 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
           } else if (price <= signal.tp1 && targetsHit < 1) {
-            newStatus = "PARTIALLY_MANAGED";
+            newStatus = "TP1_HIT";
             targetsHit = 1;
-            slMovedToBreakEven = true;
-            updatedSL = signal.entryPriceWithSlippage;
             updated = true;
-            console.log(`🔓 DYNAMIC LOCK RELEASE: Signal ${signal.id.slice(-6)} hit TP1 @ ${price.toFixed(1)}`);
-            console.log(`   🛡️ SL moved to break-even @ ${updatedSL.toFixed(1)}`);
-            console.log(`   ✅ Lock released - new signals can be generated while monitoring TP2/TP3`);
+            console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
           } else if (price >= signal.sl) {
-            const slType = slMovedToBreakEven ? "break-even" : "original";
             newStatus = "SL_HIT";
-            targetsHit = slMovedToBreakEven ? 1 : 0;
             updated = true;
-            console.log(`⚠️ SL HIT (${slType}): Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
+            console.log(`⚠️ SL HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
           }
         }
 
-        if (newStatus !== signal.status || targetsHit !== signal.targetsHit || slMovedToBreakEven !== signal.slMovedToBreakEven) {
+        if (newStatus !== signal.status || targetsHit !== signal.targetsHit) {
           if (newStatus === "SL_HIT" || newStatus === "ALL_TARGETS_HIT") {
             const exitDate = new Date();
             return {
               ...signal,
               status: newStatus,
               targetsHit,
-              sl: updatedSL,
-              slMovedToBreakEven,
               exitTime: exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
             };
           }
-          return { ...signal, status: newStatus, targetsHit, sl: updatedSL, slMovedToBreakEven };
+          return { ...signal, status: newStatus, targetsHit };
         }
 
         return signal;
@@ -544,6 +528,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     await AsyncStorage.setItem("is_logged_in", JSON.stringify(false));
   }, []);
 
+  const clearHistory = useCallback(async () => {
+    setSignalHistory([]);
+    await AsyncStorage.setItem("signal_history", JSON.stringify([]));
+    console.log('🧹 Signal history cleared');
+  }, []);
+
   const updateSettings = useCallback(async (newSettings: Partial<Settings>) => {
     const updated = { ...settings, ...newSettings };
     setSettings(updated);
@@ -583,6 +573,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     priceHistory,
     login,
     logout,
+    clearHistory,
     updateSettings,
     deleteSignalFromHistory,
     manualCloseSignal,

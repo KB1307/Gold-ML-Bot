@@ -1,12 +1,12 @@
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Platform, Switch, Alert } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { Settings as SettingsIcon, Target, Shield, TrendingUp, LogOut, Save } from "lucide-react-native";
+import { Settings as SettingsIcon, Target, Shield, TrendingUp, LogOut, Save, Trash2 } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
 import { useState } from "react";
 import { Stack, useRouter } from "expo-router";
 
 export default function SettingsScreen() {
-  const { settings, updateSettings, logout } = useTrading();
+  const { settings, updateSettings, logout, clearHistory } = useTrading();
   const router = useRouter();
   
   const [tp1Pips, setTp1Pips] = useState<string>(settings.tp1Pips.toString());
@@ -36,6 +36,32 @@ export default function SettingsScreen() {
   const handleLogout = async () => {
     await logout();
     router.replace("/");
+  };
+
+  const handleClearHistory = async () => {
+    if (Platform.OS === 'web') {
+      const confirm = window.confirm('Are you sure you want to clear all signal history? This cannot be undone.');
+      if (confirm) {
+        await clearHistory();
+        alert('Signal history cleared successfully!');
+      }
+    } else {
+      Alert.alert(
+        'Clear History',
+        'Are you sure you want to clear all signal history? This cannot be undone.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { 
+            text: 'Clear', 
+            style: 'destructive',
+            onPress: async () => {
+              await clearHistory();
+              Alert.alert('Success', 'Signal history cleared successfully!');
+            }
+          },
+        ]
+      );
+    }
   };
 
   return (
@@ -217,6 +243,11 @@ export default function SettingsScreen() {
               </Text>
             </View>
 
+            <TouchableOpacity style={styles.clearButton} onPress={handleClearHistory}>
+              <Trash2 size={20} color="#f97316" />
+              <Text style={styles.clearText}>Clear Signal History</Text>
+            </TouchableOpacity>
+
             <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
               <LogOut size={20} color="#ef4444" />
               <Text style={styles.logoutText}>Logout</Text>
@@ -395,6 +426,23 @@ const styles = StyleSheet.create({
     color: "#ccc",
     lineHeight: 20,
   },
+  clearButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(249, 115, 22, 0.1)",
+    paddingVertical: 16,
+    borderRadius: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "rgba(249, 115, 22, 0.3)",
+    gap: 8,
+  },
+  clearText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#f97316",
+  } as const,
   logoutButton: {
     flexDirection: "row",
     alignItems: "center",

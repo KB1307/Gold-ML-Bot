@@ -38,11 +38,6 @@ export interface TradingSignal {
   tp1Distance?: number;
   tp2Distance?: number;
   tp3Distance?: number;
-  slippageBuffer?: number;
-  actualFillPrice?: number;
-  hypotheticalOutcome?: string;
-  breakEvenActive?: boolean;
-  slMovedToBreakEven?: boolean;
   createdAt?: number;
 }
 
