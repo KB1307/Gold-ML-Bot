@@ -1167,6 +1167,13 @@ class SignalGenerationEngine {
     console.log(`📊 SIGNAL GENERATION ATTEMPT #${this.signalGenerationAttempts}`);
     console.log(`${'='.repeat(80)}`);
     
+    const fullyActiveSignals = activeSignals.filter(s => s.status === "ACTIVE");
+    const partiallyManagedSignals = activeSignals.filter(s => s.status === "PARTIALLY_MANAGED" || s.status === "TP1_HIT" || s.status === "TP2_HIT");
+    
+    console.log(`🔍 Signal Status Check:`);
+    console.log(`   Fully Active Signals: ${fullyActiveSignals.length}`);
+    console.log(`   Partially Managed Signals: ${partiallyManagedSignals.length} (lock released, monitoring continues)`);
+    
     await this.updateCurrentPrice();
     const features = await this.calculateMarketFeatures();
     
@@ -1372,7 +1379,7 @@ class SignalGenerationEngine {
     const now = Date.now();
     
     const recentActiveSignals = activeSignals.filter(signal => {
-      if (signal.status !== "ACTIVE") return false;
+      if (signal.status !== "ACTIVE" && signal.status !== "PARTIALLY_MANAGED") return false;
       if (signal.type !== proposedType) return false;
       
       const signalAge = now - new Date(signal.timestamp).getTime();

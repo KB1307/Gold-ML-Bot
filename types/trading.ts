@@ -1,6 +1,6 @@
 export type SignalType = "BUY" | "SELL";
 
-export type SignalStatus = "ACTIVE" | "TP1_HIT" | "TP2_HIT" | "TP3_HIT" | "ALL_TARGETS_HIT" | "SL_HIT" | "CLOSED";
+export type SignalStatus = "ACTIVE" | "TP1_HIT" | "TP2_HIT" | "TP3_HIT" | "ALL_TARGETS_HIT" | "SL_HIT" | "CLOSED" | "PARTIALLY_MANAGED";
 
 export interface FeatureConfidence {
   feature: string;
@@ -41,6 +41,8 @@ export interface TradingSignal {
   slippageBuffer?: number;
   actualFillPrice?: number;
   hypotheticalOutcome?: string;
+  breakEvenActive?: boolean;
+  slMovedToBreakEven?: boolean;
 }
 
 export interface MarketSession {

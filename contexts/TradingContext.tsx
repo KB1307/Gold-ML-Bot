@@ -154,7 +154,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       };
     }
 
-    const closedTrades = history.filter(s => s.status === "CLOSED" || s.status === "SL_HIT" || s.status === "ALL_TARGETS_HIT");
+    const closedTrades = history.filter(s => 
+      s.status === "CLOSED" || s.status === "SL_HIT" || s.status === "ALL_TARGETS_HIT"
+    );
     
     const totalTrades = closedTrades.length;
     let winningTrades = 0;
@@ -303,12 +305,20 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     console.log(`Market Open: ${outlook.isMarketOpen}`);
     console.log(`Current Session: ${outlook.currentSession}`);
     
-    const activeSignals = signalHistory.filter(s => 
-      s.status === "ACTIVE" || s.status === "TP1_HIT" || s.status === "TP2_HIT"
+    const fullyActiveSignals = signalHistory.filter(s => s.status === "ACTIVE");
+    const partiallyManagedSignals = signalHistory.filter(s => 
+      s.status === "PARTIALLY_MANAGED" || s.status === "TP1_HIT" || s.status === "TP2_HIT"
     );
-    console.log(`Active Signals: ${activeSignals.length}`);
-    activeSignals.forEach(s => {
-      console.log(`  - ${s.type} @ ${s.entryPrice} (${s.status})`);
+    
+    const allActiveSignals = signalHistory.filter(s => 
+      s.status === "ACTIVE" || s.status === "PARTIALLY_MANAGED" || s.status === "TP1_HIT" || s.status === "TP2_HIT"
+    );
+    
+    console.log(`Active Signals: ${fullyActiveSignals.length}`);
+    console.log(`Partially Managed Signals: ${partiallyManagedSignals.length} (lock released)`);
+    allActiveSignals.forEach(s => {
+      const lockStatus = s.status === "ACTIVE" ? "LOCKED" : "LOCK RELEASED";
+      console.log(`  - ${s.type} @ ${s.entryPrice} (${s.status} - ${lockStatus})`);
     });
     
     console.log(`Min Confidence: ${(settings.minConfidence * 100).toFixed(0)}%`);
@@ -327,9 +337,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log(`   Account Balance: ${accountBalance}`);
       
       const activeSignalsForEngine = signalHistory.filter(s => 
-        s.status === "ACTIVE" || s.status === "TP1_HIT" || s.status === "TP2_HIT"
+        s.status === "ACTIVE" || s.status === "PARTIALLY_MANAGED" || s.status === "TP1_HIT" || s.status === "TP2_HIT"
       );
-      console.log(`   Active Signals Count: ${activeSignalsForEngine.length}`);
+      console.log(`   Signals for Proximity Check: ${activeSignalsForEngine.length} (includes partially managed)`);
       
       const signal = await signalEngine.generateSignal(settings, accountBalance, activeSignalsForEngine);
       
@@ -387,6 +397,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         if (signalAge > twoHoursInMs) {
           updated = true;
           const exitDate = new Date();
+          console.log(`⏰ Signal ${signal.id.slice(-6)} expired after 2 hours`);
           return {
             ...signal,
             status: "CLOSED" as const,
@@ -396,56 +407,78 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
         let newStatus = signal.status;
         let targetsHit = signal.targetsHit;
+        let slMovedToBreakEven = signal.slMovedToBreakEven || false;
+        let updatedSL = signal.sl;
 
         if (signal.type === "BUY") {
-          if (price <= signal.sl) {
-            newStatus = "SL_HIT";
-            targetsHit = 0;
-            updated = true;
-          } else if (price >= signal.tp3) {
+          if (price >= signal.tp3) {
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
             updated = true;
+            console.log(`🎯 ALL TARGETS HIT: Signal ${signal.id.slice(-6)} reached TP3 @ ${price.toFixed(1)}`);
           } else if (price >= signal.tp2 && targetsHit < 2) {
             newStatus = "TP2_HIT";
             targetsHit = 2;
             updated = true;
+            console.log(`🎯 TP2 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
           } else if (price >= signal.tp1 && targetsHit < 1) {
-            newStatus = "TP1_HIT";
+            newStatus = "PARTIALLY_MANAGED";
             targetsHit = 1;
+            slMovedToBreakEven = true;
+            updatedSL = signal.entryPriceWithSlippage;
             updated = true;
+            console.log(`🔓 DYNAMIC LOCK RELEASE: Signal ${signal.id.slice(-6)} hit TP1 @ ${price.toFixed(1)}`);
+            console.log(`   🛡️ SL moved to break-even @ ${updatedSL.toFixed(1)}`);
+            console.log(`   ✅ Lock released - new signals can be generated while monitoring TP2/TP3`);
+          } else if (price <= signal.sl) {
+            const slType = slMovedToBreakEven ? "break-even" : "original";
+            newStatus = "SL_HIT";
+            targetsHit = slMovedToBreakEven ? 1 : 0;
+            updated = true;
+            console.log(`⚠️ SL HIT (${slType}): Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
           }
         } else {
-          if (price >= signal.sl) {
-            newStatus = "SL_HIT";
-            targetsHit = 0;
-            updated = true;
-          } else if (price <= signal.tp3) {
+          if (price <= signal.tp3) {
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
             updated = true;
+            console.log(`🎯 ALL TARGETS HIT: Signal ${signal.id.slice(-6)} reached TP3 @ ${price.toFixed(1)}`);
           } else if (price <= signal.tp2 && targetsHit < 2) {
             newStatus = "TP2_HIT";
             targetsHit = 2;
             updated = true;
+            console.log(`🎯 TP2 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
           } else if (price <= signal.tp1 && targetsHit < 1) {
-            newStatus = "TP1_HIT";
+            newStatus = "PARTIALLY_MANAGED";
             targetsHit = 1;
+            slMovedToBreakEven = true;
+            updatedSL = signal.entryPriceWithSlippage;
             updated = true;
+            console.log(`🔓 DYNAMIC LOCK RELEASE: Signal ${signal.id.slice(-6)} hit TP1 @ ${price.toFixed(1)}`);
+            console.log(`   🛡️ SL moved to break-even @ ${updatedSL.toFixed(1)}`);
+            console.log(`   ✅ Lock released - new signals can be generated while monitoring TP2/TP3`);
+          } else if (price >= signal.sl) {
+            const slType = slMovedToBreakEven ? "break-even" : "original";
+            newStatus = "SL_HIT";
+            targetsHit = slMovedToBreakEven ? 1 : 0;
+            updated = true;
+            console.log(`⚠️ SL HIT (${slType}): Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
           }
         }
 
-        if (newStatus !== signal.status || targetsHit !== signal.targetsHit) {
+        if (newStatus !== signal.status || targetsHit !== signal.targetsHit || slMovedToBreakEven !== signal.slMovedToBreakEven) {
           if (newStatus === "SL_HIT" || newStatus === "ALL_TARGETS_HIT") {
             const exitDate = new Date();
             return {
               ...signal,
               status: newStatus,
               targetsHit,
+              sl: updatedSL,
+              slMovedToBreakEven,
               exitTime: exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
             };
           }
-          return { ...signal, status: newStatus, targetsHit };
+          return { ...signal, status: newStatus, targetsHit, sl: updatedSL, slMovedToBreakEven };
         }
 
         return signal;
