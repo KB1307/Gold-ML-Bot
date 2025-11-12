@@ -96,7 +96,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     }, 30000);
 
     return () => clearInterval(signalGenerationTimer);
-  }, []);
+  }, [checkAndGenerateSignal]);
 
 
 
@@ -304,46 +304,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const signalAge = Date.now() - new Date(currentSignal.timestamp).getTime();
     const twoHoursInMs = 2 * 60 * 60 * 1000;
 
-    const currentMarketOutlook = await signalEngine.getMarketOutlook();
-    const currentRegimeType = currentMarketOutlook?.trend === "BULLISH" || currentMarketOutlook?.trend === "BEARISH" 
-      ? "TRENDING" 
-      : currentMarketOutlook?.volatility === "HIGH" 
-      ? "VOLATILE" 
-      : currentMarketOutlook?.volatility === "LOW" 
-      ? "QUIET" 
-      : "RANGING";
-
-    const hasRegimeChanged = currentSignal.generatedRegime && 
-      currentSignal.generatedRegime.type !== currentRegimeType;
-
-    if (hasRegimeChanged) {
-      console.log(`🔄 Signal ${currentSignal.id} expired due to REGIME CHANGE: ${currentSignal.generatedRegime?.type} → ${currentRegimeType}`);
-      newStatus = "CLOSED";
-      const now = new Date();
-      const utc2Hours = (now.getUTCHours() + 2) % 24;
-      const expiredSignal = {
-        ...currentSignal,
-        status: "CLOSED" as const,
-        exitTime: `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
-      };
-
-      signalEngine.updateSignalLockStatus(currentSignal.id, "CLOSED");
-      
-      setSignalHistory((prev) => {
-        const updated = prev.map(s => 
-          s.id === currentSignal.id ? expiredSignal : s
-        );
-        AsyncStorage.setItem("signal_history", JSON.stringify(updated));
-        return updated;
-      });
-
-      setCurrentSignal(null);
-      return;
-    }
-
     if (signalAge > twoHoursInMs) {
-      console.log(`Signal ${currentSignal.id} expired after 2 hours (fallback)`);
-      newStatus = "CLOSED";
+      console.log(`⏰ Signal ${currentSignal.id} expired after 2 hours`);
       const now = new Date();
       const utc2Hours = (now.getUTCHours() + 2) % 24;
       const expiredSignal = {
@@ -429,7 +391,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         setCurrentSignal(null);
       }
     }
-  }, [currentSignal, marketOutlook]);
+  }, [currentSignal]);
 
   const checkAndGenerateSignal = useCallback(async () => {
     const outlook = await signalEngine.getMarketOutlook();
