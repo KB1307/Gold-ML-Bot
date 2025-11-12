@@ -306,19 +306,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     console.log(`Current Session: ${outlook.currentSession}`);
     
     const fullyActiveSignals = signalHistory.filter(s => s.status === "ACTIVE");
-    const partiallyManagedSignals = signalHistory.filter(s => 
-      s.status === "PARTIALLY_MANAGED" || s.status === "TP1_HIT" || s.status === "TP2_HIT"
-    );
-    
-    const allActiveSignals = signalHistory.filter(s => 
-      s.status === "ACTIVE" || s.status === "PARTIALLY_MANAGED" || s.status === "TP1_HIT" || s.status === "TP2_HIT"
-    );
     
     console.log(`Active Signals: ${fullyActiveSignals.length}`);
-    console.log(`Partially Managed Signals: ${partiallyManagedSignals.length} (lock released)`);
-    allActiveSignals.forEach(s => {
-      const lockStatus = s.status === "ACTIVE" ? "LOCKED" : "LOCK RELEASED";
-      console.log(`  - ${s.type} @ ${s.entryPrice} (${s.status} - ${lockStatus})`);
+    fullyActiveSignals.forEach(s => {
+      const signalAge = (Date.now() - new Date(s.timestamp).getTime()) / 1000 / 60;
+      console.log(`  - ${s.type} @ ${s.entryPrice} (Age: ${signalAge.toFixed(1)}m, Targets: ${s.targetsHit}/3)`);
     });
     
     console.log(`Min Confidence: ${(settings.minConfidence * 100).toFixed(0)}%`);
@@ -332,9 +324,31 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     }
 
     if (fullyActiveSignals.length > 0) {
-      console.log("❌ BLOCKED: Active signal already exists. Skipping generation.");
-      console.log(`   Active Signal: ${fullyActiveSignals[0].type} @ ${fullyActiveSignals[0].entryPrice}`);
-      return;
+      const activeSignal = fullyActiveSignals[0];
+      const signalAgeMs = Date.now() - new Date(activeSignal.timestamp).getTime();
+      const twoHoursMs = 2 * 60 * 60 * 1000;
+      
+      const canGenerateNewSignal = (
+        activeSignal.targetsHit >= 2 || 
+        signalAgeMs > twoHoursMs
+      );
+      
+      if (!canGenerateNewSignal) {
+        console.log("❌ BLOCKED: Active signal exists and conditions not met for new signal.");
+        console.log(`   Active Signal: ${activeSignal.type} @ ${activeSignal.entryPrice}`);
+        console.log(`   Targets Hit: ${activeSignal.targetsHit}/3`);
+        console.log(`   Age: ${(signalAgeMs / 1000 / 60).toFixed(1)} minutes`);
+        console.log(`   💡 New signal allowed when: TP2+ hit, SL hit, or 2+ hours elapsed`);
+        return;
+      }
+      
+      console.log(`✅ Active signal qualifies for new signal generation:`);
+      if (activeSignal.targetsHit >= 2) {
+        console.log(`   - TP2+ already hit (${activeSignal.targetsHit}/3 targets)`);
+      }
+      if (signalAgeMs > twoHoursMs) {
+        console.log(`   - Signal age exceeds 2 hours (${(signalAgeMs / 1000 / 60).toFixed(1)}m)`);
+      }
     }
 
     try {
@@ -342,26 +356,33 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log(`   Settings: minConfidence=${(settings.minConfidence * 100).toFixed(0)}%`);
       console.log(`   Account Balance: ${accountBalance}`);
       
-      const activeSignalsForEngine = signalHistory.filter(s => 
-        s.status === "ACTIVE" || s.status === "PARTIALLY_MANAGED" || s.status === "TP1_HIT" || s.status === "TP2_HIT"
-      );
-      console.log(`   Signals for Proximity Check: ${activeSignalsForEngine.length} (includes partially managed)`);
-      
-      const signal = await signalEngine.generateSignal(settings, accountBalance, activeSignalsForEngine);
+      const signal = await signalEngine.generateSignal(settings, accountBalance, signalHistory);
       
       if (signal) {
         setSignalHistory((prev) => {
-          const now = Date.now();
-          
-          const isExactDuplicate = prev.some(s => {
-            const timeDiff = Math.abs(new Date(s.timestamp).getTime() - now);
-            const priceDiff = Math.abs(s.entryPrice - signal.entryPrice);
-            return timeDiff < 10000 && priceDiff < 0.1 && s.type === signal.type;
+          const isDuplicate = prev.some(s => {
+            if (s.status !== "ACTIVE") return false;
+            
+            const entryPriceDiff = Math.abs(s.entryPrice - signal.entryPrice);
+            const tp1Diff = Math.abs(s.tp1 - signal.tp1);
+            const tp3Diff = Math.abs(s.tp3 - signal.tp3);
+            const isSameType = s.type === signal.type;
+            
+            const isInSameZone = entryPriceDiff < 5 && tp1Diff < 5 && tp3Diff < 10 && isSameType;
+            
+            if (isInSameZone) {
+              console.log(`⚠️ DUPLICATE ZONE DETECTED:`);
+              console.log(`   Existing: ${s.type} @ ${s.entryPrice} -> TP1: ${s.tp1}, TP3: ${s.tp3}`);
+              console.log(`   New: ${signal.type} @ ${signal.entryPrice} -> TP1: ${signal.tp1}, TP3: ${signal.tp3}`);
+              console.log(`   Entry diff: ${entryPriceDiff.toFixed(1)}, TP1 diff: ${tp1Diff.toFixed(1)}, TP3 diff: ${tp3Diff.toFixed(1)}`);
+              return true;
+            }
+            
+            return false;
           });
           
-          if (isExactDuplicate) {
-            console.log("⚠️ EXACT DUPLICATE SIGNAL DETECTED - Skipping add to history");
-            console.log(`   Entry=${signal.entryPrice}, Type=${signal.type}`);
+          if (isDuplicate) {
+            console.log("❌ REJECTED: Duplicate signal in same entry/TP zone - Skipping");
             return prev;
           }
           

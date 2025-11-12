@@ -1168,27 +1168,39 @@ class SignalGenerationEngine {
     console.log(`${'='.repeat(80)}`);
     
     const fullyActiveSignals = activeSignals.filter(s => s.status === "ACTIVE");
-    const partiallyManagedSignals = activeSignals.filter(s => s.status === "PARTIALLY_MANAGED" || s.status === "TP1_HIT" || s.status === "TP2_HIT");
     
     console.log(`🔍 Signal Status Check:`);
-    console.log(`   Fully Active Signals: ${fullyActiveSignals.length}`);
-    console.log(`   Partially Managed Signals: ${partiallyManagedSignals.length} (lock released, monitoring continues)`);
+    console.log(`   Active Signals: ${fullyActiveSignals.length}`);
     
-    const marketRegimePreCheck = await this.detectMarketRegime();
-    const preliminaryConfidence = 0.75;
-    const preliminaryCooldown = this.calculateDynamicCooldown(marketRegimePreCheck, preliminaryConfidence);
-    const cooldownElapsed = now - this.lastSignalTime;
+    const trendChangeDetected = this.detectTrendChange();
+    const largePriceMovement = this.detectLargePriceMovement();
     
-    console.log(`⏱️ EARLY COOLDOWN CHECK:`);
-    console.log(`   Cooldown Elapsed: ${(cooldownElapsed / 1000).toFixed(1)}s / Required: ${(preliminaryCooldown / 1000).toFixed(1)}s`);
-    console.log(`   Market Regime: ${marketRegimePreCheck.type}`);
-    
-    if (this.lastSignalTime > 0 && cooldownElapsed < preliminaryCooldown) {
-      const remainingCooldown = ((preliminaryCooldown - cooldownElapsed) / 1000).toFixed(1);
-      console.log(`❌ REJECTED (EARLY): Dynamic cooldown active: ${remainingCooldown}s remaining (Regime: ${marketRegimePreCheck.type})`);
-      console.log(`💡 TIP: Skipping expensive transformer analysis to save resources`);
-      console.log(`${'='.repeat(80)}\n`);
-      return null;
+    if (trendChangeDetected || largePriceMovement) {
+      console.log(`\n🚨 EXCEPTION DETECTED - Override Conditions:`);
+      if (trendChangeDetected) {
+        console.log(`   ✅ TREND CHANGE: Market regime shift detected`);
+      }
+      if (largePriceMovement) {
+        console.log(`   ✅ LARGE PRICE MOVEMENT: Significant price action (${largePriceMovement.toFixed(1)} pips in 5 minutes)`);
+      }
+      console.log(`   → Bypassing standard cooldown and proximity filters\n`);
+    } else {
+      const marketRegimePreCheck = await this.detectMarketRegime();
+      const preliminaryConfidence = 0.75;
+      const preliminaryCooldown = this.calculateDynamicCooldown(marketRegimePreCheck, preliminaryConfidence);
+      const cooldownElapsed = now - this.lastSignalTime;
+      
+      console.log(`⏱️ EARLY COOLDOWN CHECK:`);
+      console.log(`   Cooldown Elapsed: ${(cooldownElapsed / 1000).toFixed(1)}s / Required: ${(preliminaryCooldown / 1000).toFixed(1)}s`);
+      console.log(`   Market Regime: ${marketRegimePreCheck.type}`);
+      
+      if (this.lastSignalTime > 0 && cooldownElapsed < preliminaryCooldown) {
+        const remainingCooldown = ((preliminaryCooldown - cooldownElapsed) / 1000).toFixed(1);
+        console.log(`❌ REJECTED (EARLY): Dynamic cooldown active: ${remainingCooldown}s remaining (Regime: ${marketRegimePreCheck.type})`);
+        console.log(`💡 TIP: Skipping expensive transformer analysis to save resources`);
+        console.log(`${'='.repeat(80)}\n`);
+        return null;
+      }
     }
     
     await this.updateCurrentPrice();
@@ -1233,13 +1245,17 @@ class SignalGenerationEngine {
       return null;
     }
     
-    const proximityCheck = this.checkPriceProximity(activeSignals, analysis.signalType, dynamicCooldown);
-    if (proximityCheck.blocked) {
-      console.log(`❌ REJECTED: Price Proximity Filter Block`);
-      console.log(`   ${proximityCheck.reason}`);
-      console.log(`   💡 TIP: ${proximityCheck.tip}`);
-      console.log(`${'='.repeat(80)}\n`);
-      return null;
+    if (!trendChangeDetected && !largePriceMovement) {
+      const proximityCheck = this.checkPriceProximity(activeSignals, analysis.signalType, dynamicCooldown);
+      if (proximityCheck.blocked) {
+        console.log(`❌ REJECTED: Price Proximity Filter Block`);
+        console.log(`   ${proximityCheck.reason}`);
+        console.log(`   💡 TIP: ${proximityCheck.tip}`);
+        console.log(`${'='.repeat(80)}\n`);
+        return null;
+      }
+    } else {
+      console.log(`✅ PROXIMITY CHECK BYPASSED: Exception condition active`);
     }
     
     if (this.lastSignalType !== null && this.lastSignalType !== analysis.signalType) {
@@ -1386,6 +1402,48 @@ class SignalGenerationEngine {
     };
   }
   
+  private detectTrendChange(): boolean {
+    if (this.priceHistory.length < 10) return false;
+    
+    if (!this.lastMarketRegime) return false;
+    
+    const recentPrices = this.priceHistory.slice(-10);
+    const oldPrices = this.priceHistory.slice(-20, -10);
+    
+    if (oldPrices.length === 0) return false;
+    
+    const recentAvg = recentPrices.reduce((a, b) => a + b, 0) / recentPrices.length;
+    const oldAvg = oldPrices.reduce((a, b) => a + b, 0) / oldPrices.length;
+    
+    const priceDifference = Math.abs(recentAvg - oldAvg);
+    
+    const significantTrendChange = priceDifference > 15;
+    
+    if (significantTrendChange) {
+      console.log(`📊 TREND CHANGE: Recent avg: ${recentAvg.toFixed(1)}, Old avg: ${oldAvg.toFixed(1)}, Diff: ${priceDifference.toFixed(1)} pips`);
+    }
+    
+    return significantTrendChange;
+  }
+  
+  private detectLargePriceMovement(): number | false {
+    if (this.priceHistory.length < 5) return false;
+    
+    const recentPrices = this.priceHistory.slice(-5);
+    const highest = Math.max(...recentPrices);
+    const lowest = Math.min(...recentPrices);
+    const range = Math.abs(highest - lowest);
+    
+    const isLargeMovement = range > 20;
+    
+    if (isLargeMovement) {
+      console.log(`📈 LARGE PRICE MOVEMENT: Range of ${range.toFixed(1)} pips in last 5 data points`);
+      return range;
+    }
+    
+    return false;
+  }
+  
   private checkPriceProximity(
     activeSignals: TradingSignal[],
     proposedType: SignalType,
@@ -1396,7 +1454,7 @@ class SignalGenerationEngine {
     const now = Date.now();
     
     const recentActiveSignals = activeSignals.filter(signal => {
-      if (signal.status !== "ACTIVE" && signal.status !== "PARTIALLY_MANAGED") return false;
+      if (signal.status !== "ACTIVE") return false;
       if (signal.type !== proposedType) return false;
       
       const signalAge = now - new Date(signal.timestamp).getTime();
