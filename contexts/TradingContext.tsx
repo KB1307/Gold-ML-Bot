@@ -605,7 +605,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
     const statusInterval = setInterval(() => {
       updateSignalStatus();
-    }, 5000);
+    }, 10000);
 
     return () => clearInterval(statusInterval);
   }, [currentSignal, updateSignalStatus]);
@@ -613,7 +613,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   useEffect(() => {
     const allSignalsInterval = setInterval(() => {
       updateAllSignalsStatus();
-    }, 5000);
+    }, 30000);
 
     updateAllSignalsStatus();
 
