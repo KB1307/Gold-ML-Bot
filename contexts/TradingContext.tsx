@@ -617,9 +617,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   }, [updateAllSignalsStatus]);
 
   const clearHistoryCache = useCallback(async () => {
-    setSignalHistory([]);
-    await AsyncStorage.removeItem('signal_history');
-    console.log('✅ History cache cleared');
+    setSignalHistory((prev) => {
+      const activeSignals = prev.filter(
+        (signal) => signal.status !== "CLOSED" && 
+                    signal.status !== "SL_HIT" && 
+                    signal.status !== "ALL_TARGETS_HIT"
+      );
+      AsyncStorage.setItem('signal_history', JSON.stringify(activeSignals));
+      console.log(`✅ Cleared ${prev.length - activeSignals.length} expired signals, kept ${activeSignals.length} active`);
+      return activeSignals;
+    });
   }, []);
 
   return {
