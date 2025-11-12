@@ -275,10 +275,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   const closeSignal = useCallback((signal: TradingSignal) => {
     const now = new Date();
+    const utc2Hours = (now.getUTCHours() + 2) % 24;
     const closedSignal = {
       ...signal,
       status: "CLOSED" as const,
-      exitTime: `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`,
+      exitTime: `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
     };
 
     setSignalHistory((prev) => {
@@ -317,10 +318,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log(`🔄 Signal ${currentSignal.id} expired due to REGIME CHANGE: ${currentSignal.generatedRegime?.type} → ${currentRegimeType}`);
       newStatus = "CLOSED";
       const now = new Date();
+      const utc2Hours = (now.getUTCHours() + 2) % 24;
       const expiredSignal = {
         ...currentSignal,
         status: "CLOSED" as const,
-        exitTime: `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`,
+        exitTime: `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
       };
 
       setSignalHistory((prev) => {
@@ -340,10 +342,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log(`Signal ${currentSignal.id} expired after 2 hours (fallback)`);
       newStatus = "CLOSED";
       const now = new Date();
+      const utc2Hours = (now.getUTCHours() + 2) % 24;
       const expiredSignal = {
         ...currentSignal,
         status: "CLOSED" as const,
-        exitTime: `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`,
+        exitTime: `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
       };
 
       setSignalHistory((prev) => {
@@ -403,9 +406,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       if (newStatus === "SL_HIT" || newStatus === "ALL_TARGETS_HIT") {
         const now = new Date();
+        const utc2Hours = (now.getUTCHours() + 2) % 24;
         const finalSignal = {
           ...updatedSignal,
-          exitTime: `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`,
+          exitTime: `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
         };
 
         setSignalHistory((prev) => {
@@ -488,7 +492,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           return {
             ...signal,
             status: "CLOSED" as const,
-            exitTime: `${new Date().getHours().toString().padStart(2, "0")}:${new Date().getMinutes().toString().padStart(2, "0")}`,
+            exitTime: (() => {
+              const now = new Date();
+              const utc2Hours = (now.getUTCHours() + 2) % 24;
+              return `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`;
+            })(),
           };
         }
 
@@ -498,7 +506,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           return {
             ...signal,
             status: "CLOSED" as const,
-            exitTime: `${new Date().getHours().toString().padStart(2, "0")}:${new Date().getMinutes().toString().padStart(2, "0")}`,
+            exitTime: (() => {
+              const now = new Date();
+              const utc2Hours = (now.getUTCHours() + 2) % 24;
+              return `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`;
+            })(),
           };
         }
 
@@ -549,7 +561,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
               ...signal,
               status: newStatus,
               targetsHit,
-              exitTime: `${new Date().getHours().toString().padStart(2, "0")}:${new Date().getMinutes().toString().padStart(2, "0")}`,
+              exitTime: (() => {
+                const now = new Date();
+                const utc2Hours = (now.getUTCHours() + 2) % 24;
+                return `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`;
+              })(),
             };
           }
           return { ...signal, status: newStatus, targetsHit };
