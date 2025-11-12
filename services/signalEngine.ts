@@ -1160,6 +1160,10 @@ class SignalGenerationEngine {
     const startTime = performance.now();
     this.signalGenerationAttempts++;
     
+    console.log(`\n${'='.repeat(80)}`);
+    console.log(`📊 SIGNAL GENERATION ATTEMPT #${this.signalGenerationAttempts}`);
+    console.log(`${'='.repeat(80)}`);
+    
     await this.updateCurrentPrice();
     const features = await this.calculateMarketFeatures();
     
@@ -1170,30 +1174,45 @@ class SignalGenerationEngine {
     const dynamicCooldown = this.calculateDynamicCooldown(features.marketRegime, analysis.confidence);
     const cooldownElapsed = now - this.lastSignalTime;
     
+    console.log(`🎯 Preliminary Analysis:`);
+    console.log(`   Signal Type: ${analysis.signalType}`);
+    console.log(`   Confidence: ${(analysis.confidence * 100).toFixed(1)}% (Min Required: ${(settings.minConfidence * 100).toFixed(0)}%)`);
+    console.log(`   Market Regime: ${features.marketRegime.type} (Strength: ${(features.marketRegime.strength * 100).toFixed(0)}%)`);
+    console.log(`   Cooldown Elapsed: ${(cooldownElapsed / 1000).toFixed(1)}s / Required: ${(dynamicCooldown / 1000).toFixed(1)}s`);
+    
     if (this.lastSignalTime > 0 && cooldownElapsed < dynamicCooldown) {
       const remainingCooldown = ((dynamicCooldown - cooldownElapsed) / 1000).toFixed(1);
-      console.log(`⏱️ Dynamic cooldown active: ${remainingCooldown}s remaining (Regime: ${features.marketRegime.type})`);
+      console.log(`❌ REJECTED: Dynamic cooldown active: ${remainingCooldown}s remaining (Regime: ${features.marketRegime.type})`);
+      console.log(`${'='.repeat(80)}\n`);
       return null;
     }
     
     const macroEvent = this.detectMacroEvents();
     if (this.shouldSuppressMacroEvent(macroEvent)) {
+      console.log(`❌ REJECTED: Macro event suppression (${macroEvent?.name})`);
+      console.log(`${'='.repeat(80)}\n`);
       return null;
     }
     
     if (analysis.confidence < settings.minConfidence) {
-      console.log(`❌ Signal confidence ${(analysis.confidence * 100).toFixed(1)}% below threshold ${(settings.minConfidence * 100).toFixed(0)}%. Signal REJECTED.`);
+      console.log(`❌ REJECTED: Confidence ${(analysis.confidence * 100).toFixed(1)}% below threshold ${(settings.minConfidence * 100).toFixed(0)}%`);
+      console.log(`   💡 TIP: Lower minConfidence in settings to ${Math.max(60, Math.floor(analysis.confidence * 100))}% or wait for better setup`);
+      console.log(`${'='.repeat(80)}\n`);
       return null;
     }
     
     if (analysis.confidence < 0.60) {
-      console.log(`❌ Signal confidence ${(analysis.confidence * 100).toFixed(1)}% below absolute minimum (60%). Signal REJECTED.`);
+      console.log(`❌ REJECTED: Confidence ${(analysis.confidence * 100).toFixed(1)}% below absolute minimum (60%)`);
+      console.log(`${'='.repeat(80)}\n`);
       return null;
     }
     
     if (this.lastSignalType !== null && this.lastSignalType !== analysis.signalType) {
       if (analysis.confidence < 0.95) {
-        console.log(`⚠️ Signal conflict: Opposite signal detected (${this.lastSignalType} -> ${analysis.signalType}). Confidence ${(analysis.confidence * 100).toFixed(1)}% insufficient for override. Signal REJECTED.`);
+        console.log(`❌ REJECTED: Signal conflict - Opposite direction (${this.lastSignalType} -> ${analysis.signalType})`);
+        console.log(`   Confidence ${(analysis.confidence * 100).toFixed(1)}% insufficient for override (need 95%+)`);
+        console.log(`   💡 TIP: Wait for current signal to close or confidence to reach 95%+`);
+        console.log(`${'='.repeat(80)}\n`);
         return null;
       } else {
         console.log(`🔄 SIGNAL OVERRIDE: Ultra-high confidence ${(analysis.confidence * 100).toFixed(1)}% allows direction change (${this.lastSignalType} -> ${analysis.signalType})`);
