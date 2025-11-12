@@ -1366,6 +1366,7 @@ class SignalGenerationEngine {
       tp1Distance: parseFloat(tp1Distance.toFixed(1)),
       tp2Distance: parseFloat(tp2Distance.toFixed(1)),
       tp3Distance: parseFloat(tp3Distance.toFixed(1)),
+      createdAt: Date.now(),
     };
   }
   

@@ -43,6 +43,7 @@ export interface TradingSignal {
   hypotheticalOutcome?: string;
   breakEvenActive?: boolean;
   slMovedToBreakEven?: boolean;
+  createdAt?: number;
 }
 
 export interface MarketSession {

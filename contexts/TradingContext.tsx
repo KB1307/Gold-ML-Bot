@@ -385,6 +385,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const price = signalEngine.getCurrentPrice();
     const now = Date.now();
     const twoHoursInMs = 2 * 60 * 60 * 1000;
+    const GRACE_PERIOD_MS = 5000;
 
     setSignalHistory((prev) => {
       let updated = false;
@@ -394,6 +395,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         }
 
         const signalAge = now - new Date(signal.timestamp).getTime();
+        const signalCreationAge = signal.createdAt ? now - signal.createdAt : signalAge;
+        
+        if (signalCreationAge < GRACE_PERIOD_MS) {
+          console.log(`⏱️ Grace Period: Signal ${signal.id.slice(-6)} is ${(signalCreationAge / 1000).toFixed(1)}s old - skipping monitoring`);
+          return signal;
+        }
         if (signalAge > twoHoursInMs) {
           updated = true;
           const exitDate = new Date();
