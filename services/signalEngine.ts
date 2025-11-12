@@ -1231,6 +1231,7 @@ class SignalGenerationEngine {
     
     const trendChangeDetected = this.detectTrendChange();
     const largePriceMovement = this.detectLargePriceMovement();
+    const cooldownElapsed = now - this.lastSignalTime;
     
     if (trendChangeDetected || largePriceMovement) {
       console.log(`\n🚨 EXCEPTION DETECTED - Override Conditions:`);
@@ -1245,7 +1246,6 @@ class SignalGenerationEngine {
       const marketRegimePreCheck = await this.detectMarketRegime();
       const preliminaryConfidence = 0.75;
       const preliminaryCooldown = this.calculateDynamicCooldown(marketRegimePreCheck, preliminaryConfidence);
-      const cooldownElapsed = now - this.lastSignalTime;
       
       console.log(`⏱️ EARLY COOLDOWN CHECK:`);
       console.log(`   Cooldown Elapsed: ${(cooldownElapsed / 1000).toFixed(1)}s / Required: ${(preliminaryCooldown / 1000).toFixed(1)}s`);
