@@ -40,7 +40,6 @@ interface PriceDataPoint {
 
 export const [TradingProvider, useTrading] = createContextHook(() => {
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(true);
-  const [currentSignal, setCurrentSignal] = useState<TradingSignal | null>(null);
   const [signalHistory, setSignalHistory] = useState<TradingSignal[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [marketOutlook, setMarketOutlook] = useState<MarketOutlook | null>(null);
@@ -273,119 +272,26 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     AsyncStorage.setItem("performance_metrics", JSON.stringify(metrics));
   }, [signalHistory, calculatePerformanceMetrics]);
 
-  const closeSignal = useCallback((signal: TradingSignal) => {
+  const closeSignal = useCallback((signalId: string) => {
     const now = new Date();
-    const closedSignal = {
-      ...signal,
-      status: "CLOSED" as const,
-      exitTime: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
-    };
 
     setSignalHistory((prev) => {
-      const updated = [closedSignal, ...prev];
+      const updated = prev.map(signal => {
+        if (signal.id === signalId) {
+          return {
+            ...signal,
+            status: "CLOSED" as const,
+            exitTime: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+          };
+        }
+        return signal;
+      });
       AsyncStorage.setItem("signal_history", JSON.stringify(updated));
       return updated;
     });
-
-    setCurrentSignal(null);
-    signalEngine.resetSignalLock();
   }, []);
 
-  const updateSignalStatus = useCallback(() => {
-    if (!currentSignal) return;
 
-    const price = signalEngine.getCurrentPrice();
-    let newStatus = currentSignal.status;
-    let targetsHit = currentSignal.targetsHit;
-
-    const signalAge = Date.now() - new Date(currentSignal.timestamp).getTime();
-    const twoHoursInMs = 2 * 60 * 60 * 1000;
-
-    if (signalAge > twoHoursInMs) {
-      console.log(`Signal ${currentSignal.id} expired after 2 hours`);
-      newStatus = "CLOSED";
-      const now = new Date();
-      const expiredSignal = {
-        ...currentSignal,
-        status: "CLOSED" as const,
-        exitTime: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
-      };
-
-      setSignalHistory((prev) => {
-        const updated = prev.map(s => 
-          s.id === currentSignal.id ? expiredSignal : s
-        );
-        AsyncStorage.setItem("signal_history", JSON.stringify(updated));
-        return updated;
-      });
-
-      setCurrentSignal(null);
-      signalEngine.resetSignalLock();
-      return;
-    }
-
-    if (currentSignal.type === "BUY") {
-      if (price <= currentSignal.sl) {
-        newStatus = "SL_HIT";
-        targetsHit = 0;
-      } else if (price >= currentSignal.tp3) {
-        newStatus = "ALL_TARGETS_HIT";
-        targetsHit = 3;
-      } else if (price >= currentSignal.tp2) {
-        newStatus = "TP2_HIT";
-        targetsHit = 2;
-      } else if (price >= currentSignal.tp1) {
-        newStatus = "TP1_HIT";
-        targetsHit = 1;
-      }
-    } else {
-      if (price >= currentSignal.sl) {
-        newStatus = "SL_HIT";
-        targetsHit = 0;
-      } else if (price <= currentSignal.tp3) {
-        newStatus = "ALL_TARGETS_HIT";
-        targetsHit = 3;
-      } else if (price <= currentSignal.tp2) {
-        newStatus = "TP2_HIT";
-        targetsHit = 2;
-      } else if (price <= currentSignal.tp1) {
-        newStatus = "TP1_HIT";
-        targetsHit = 1;
-      }
-    }
-
-    if (newStatus !== currentSignal.status || targetsHit !== currentSignal.targetsHit) {
-      const updatedSignal = { ...currentSignal, status: newStatus, targetsHit };
-      setCurrentSignal(updatedSignal);
-
-      setSignalHistory((prev) => {
-        const updatedHistory = prev.map(s => 
-          s.id === currentSignal.id ? updatedSignal : s
-        );
-        AsyncStorage.setItem("signal_history", JSON.stringify(updatedHistory));
-        return updatedHistory;
-      });
-
-      if (newStatus === "SL_HIT" || newStatus === "ALL_TARGETS_HIT") {
-        const now = new Date();
-        const finalSignal = {
-          ...updatedSignal,
-          exitTime: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
-        };
-
-        setSignalHistory((prev) => {
-          const updated = prev.map(s => 
-            s.id === currentSignal.id ? finalSignal : s
-          );
-          AsyncStorage.setItem("signal_history", JSON.stringify(updated));
-          return updated;
-        });
-
-        setCurrentSignal(null);
-        signalEngine.resetSignalLock();
-      }
-    }
-  }, [currentSignal]);
 
   const checkAndGenerateSignal = useCallback(async () => {
     const outlook = await signalEngine.getMarketOutlook();
@@ -396,7 +302,15 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     console.log(`${'='.repeat(60)}`);
     console.log(`Market Open: ${outlook.isMarketOpen}`);
     console.log(`Current Session: ${outlook.currentSession}`);
-    console.log(`Current Signal: ${currentSignal ? `${currentSignal.type} - ${currentSignal.status}` : 'NONE'}`);
+    
+    const activeSignals = signalHistory.filter(s => 
+      s.status === "ACTIVE" || s.status === "TP1_HIT" || s.status === "TP2_HIT"
+    );
+    console.log(`Active Signals: ${activeSignals.length}`);
+    activeSignals.forEach(s => {
+      console.log(`  - ${s.type} @ ${s.entryPrice} (${s.status})`);
+    });
+    
     console.log(`Min Confidence: ${(settings.minConfidence * 100).toFixed(0)}%`);
     console.log(`Account Balance: ${accountBalance}`);
     console.log(`Settings - TP1: ${settings.tp1Pips}, TP2: ${settings.tp2Pips}, TP3: ${settings.tp3Pips}, SL: ${settings.slPips}`);
@@ -407,24 +321,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       return;
     }
 
-    if (currentSignal && currentSignal.status === "ACTIVE") {
-      console.log("⚠️ BLOCKED: Active signal already exists. Skipping generation.");
-      console.log(`   Current Signal ID: ${currentSignal.id}`);
-      console.log(`   Signal Type: ${currentSignal.type}`);
-      console.log(`   Entry Price: ${currentSignal.entryPrice}`);
-      console.log(`   Current Status: ${currentSignal.status}`);
-      return;
-    }
-
     try {
       console.log(`🎯 ATTEMPTING SIGNAL GENERATION...`);
       console.log(`   Settings: minConfidence=${(settings.minConfidence * 100).toFixed(0)}%`);
       console.log(`   Account Balance: ${accountBalance}`);
       
-      const activeSignals = signalHistory.filter(s => s.status === "ACTIVE");
-      console.log(`   Active Signals Count: ${activeSignals.length}`);
+      const activeSignalsForEngine = signalHistory.filter(s => 
+        s.status === "ACTIVE" || s.status === "TP1_HIT" || s.status === "TP2_HIT"
+      );
+      console.log(`   Active Signals Count: ${activeSignalsForEngine.length}`);
       
-      const signal = await signalEngine.generateSignal(settings, accountBalance, activeSignals);
+      const signal = await signalEngine.generateSignal(settings, accountBalance, activeSignalsForEngine);
       
       if (signal) {
         console.log("\n" + "=".repeat(60));
@@ -436,8 +343,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         console.log(`TP1: ${signal.tp1} | TP2: ${signal.tp2} | TP3: ${signal.tp3}`);
         console.log(`SL: ${signal.sl}`);
         console.log("=".repeat(60) + "\n");
-        
-        setCurrentSignal(signal);
 
         setSignalHistory((prev) => {
           const updated = [signal, ...prev];
@@ -456,14 +361,15 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         console.log("  - Confidence below threshold");
         console.log("  - Dynamic cooldown still active");
         console.log("  - Macro event suppression");
-        console.log("  - Signal conflict (opposite direction)\n");
+        console.log("  - Signal conflict (opposite direction)");
+        console.log("  - Price proximity filter (too close to existing signal)\n");
       }
     } catch (error) {
       console.error("\n❌ ❌ ❌ CRITICAL ERROR IN SIGNAL GENERATION ❌ ❌ ❌");
       console.error("Error:", error);
       console.error("Stack:", error instanceof Error ? error.stack : 'No stack trace');
     }
-  }, [currentSignal, settings, accountBalance, signalHistory]);
+  }, [settings, accountBalance, signalHistory]);
 
   const updateAllSignalsStatus = useCallback(() => {
     const price = signalEngine.getCurrentPrice();
@@ -553,17 +459,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     });
   }, []);
 
-  useEffect(() => {
-    if (!currentSignal) {
-      return;
-    }
 
-    const statusInterval = setInterval(() => {
-      updateSignalStatus();
-    }, 5000);
-
-    return () => clearInterval(statusInterval);
-  }, [currentSignal, updateSignalStatus]);
 
   useEffect(() => {
     const allSignalsInterval = setInterval(() => {
@@ -605,7 +501,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   const logout = useCallback(async () => {
     setIsLoggedIn(false);
-    setCurrentSignal(null);
     await AsyncStorage.setItem("is_logged_in", JSON.stringify(false));
   }, []);
 
@@ -623,11 +518,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     });
   }, []);
 
-  const manualCloseSignal = useCallback(() => {
-    if (currentSignal) {
-      closeSignal(currentSignal);
-    }
-  }, [currentSignal, closeSignal]);
+  const manualCloseSignal = useCallback((signalId: string) => {
+    closeSignal(signalId);
+  }, [closeSignal]);
 
   const refreshData = useCallback(async () => {
     await updateMarketOutlook();
@@ -640,7 +533,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   return {
     isLoggedIn,
     isLoading,
-    currentSignal,
     signalHistory,
     settings,
     marketOutlook,
