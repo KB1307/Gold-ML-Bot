@@ -644,12 +644,12 @@ class SignalGenerationEngine {
     const dailyPivot = (yesterdayHigh + yesterdayLow + yesterdayClose) / 3;
     const dailyRange = yesterdayHigh - yesterdayLow;
     
-    const r1 = (2 * dailyPivot) - yesterdayLow;
-    const s1 = (2 * dailyPivot) - yesterdayHigh;
-    const r2 = dailyPivot + dailyRange;
-    const s2 = dailyPivot - dailyRange;
-    const r3 = yesterdayHigh + 2 * (dailyPivot - yesterdayLow);
-    const s3 = yesterdayLow - 2 * (yesterdayHigh - dailyPivot);
+    const r1 = yesterdayClose + (dailyRange / 12);
+    const s1 = yesterdayClose - (dailyRange / 12);
+    const r2 = yesterdayClose + (dailyRange / 6);
+    const s2 = yesterdayClose - (dailyRange / 6);
+    const r3 = yesterdayClose + (dailyRange / 4);
+    const s3 = yesterdayClose - (dailyRange / 4);
     
     const rsi = 45 + Math.random() * 20;
     const atr = 8 + Math.random() * 4;
@@ -707,7 +707,7 @@ class SignalGenerationEngine {
       this.volumeHistory.shift();
     }
     
-    console.log(`📊 Pivot Points Calculated:`);    console.log(`   Daily Pivot: ${dailyPivot.toFixed(1)} (H: ${yesterdayHigh.toFixed(1)}, L: ${yesterdayLow.toFixed(1)}, C: ${yesterdayClose.toFixed(1)})`);
+    console.log(`📊 Camarilla Pivot Points Calculated:`);    console.log(`   Daily Pivot: ${dailyPivot.toFixed(1)} (H: ${yesterdayHigh.toFixed(1)}, L: ${yesterdayLow.toFixed(1)}, C: ${yesterdayClose.toFixed(1)})`);
     console.log(`   R1: ${r1.toFixed(1)} | R2: ${r2.toFixed(1)} | R3: ${r3.toFixed(1)}`);
     console.log(`   S1: ${s1.toFixed(1)} | S2: ${s2.toFixed(1)} | S3: ${s3.toFixed(1)}`);
     console.log(`   Weekly Pivot: ${weeklyPivot.toFixed(1)}`);
