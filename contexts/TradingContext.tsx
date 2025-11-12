@@ -55,7 +55,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const init = async () => {
       await signalEngine.loadPersistedLearningData();
       await loadPersistedData();
-      await updateMarketOutlook();
     };
     init();
   }, []);
@@ -91,14 +90,14 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   }, []);
 
   useEffect(() => {
-    const signalGenerationTimer = setInterval(() => {
-      checkAndGenerateSignal();
-    }, 30000);
+    const interval = setInterval(() => {
+      updateMarketOutlook();
+    }, 5000);
 
-    return () => clearInterval(signalGenerationTimer);
+    updateMarketOutlook();
+
+    return () => clearInterval(interval);
   }, []);
-
-
 
   const loadPersistedData = async () => {
     try {
@@ -305,11 +304,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const twoHoursInMs = 2 * 60 * 60 * 1000;
 
     const currentMarketOutlook = await signalEngine.getMarketOutlook();
-    const currentRegimeType = currentMarketOutlook?.trend === "BULLISH" || currentMarketOutlook?.trend === "BEARISH" 
+    const currentRegimeType = marketOutlook?.trend === "BULLISH" || marketOutlook?.trend === "BEARISH" 
       ? "TRENDING" 
-      : currentMarketOutlook?.volatility === "HIGH" 
+      : marketOutlook?.volatility === "HIGH" 
       ? "VOLATILE" 
-      : currentMarketOutlook?.volatility === "LOW" 
+      : marketOutlook?.volatility === "LOW" 
       ? "QUIET" 
       : "RANGING";
 
@@ -429,7 +428,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         setCurrentSignal(null);
       }
     }
-  }, [currentSignal, marketOutlook]);
+  }, [currentSignal]);
 
   const checkAndGenerateSignal = useCallback(async () => {
     const outlook = await signalEngine.getMarketOutlook();
@@ -480,10 +479,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       : currentMarketOutlook?.volatility === "LOW" 
       ? "QUIET" 
       : "RANGING";
-
-    const activeSignals = signalHistory.filter(s => 
-      s.status !== "CLOSED" && s.status !== "SL_HIT" && s.status !== "ALL_TARGETS_HIT"
-    );
 
     setSignalHistory((prev) => {
       let updated = false;
@@ -593,7 +588,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       return updated ? updatedHistory : prev;
     });
-  }, [signalHistory]);
+  }, []);
 
   useEffect(() => {
     if (!currentSignal) {
@@ -602,14 +597,34 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
     const statusInterval = setInterval(() => {
       updateSignalStatus();
-    }, 10000);
+    }, 5000);
 
     return () => clearInterval(statusInterval);
   }, [currentSignal, updateSignalStatus]);
 
+  useEffect(() => {
+    const allSignalsInterval = setInterval(() => {
+      updateAllSignalsStatus();
+    }, 5000);
 
+    updateAllSignalsStatus();
 
+    return () => clearInterval(allSignalsInterval);
+  }, [updateAllSignalsStatus]);
 
+  useEffect(() => {
+    if (!isLoggedIn) {
+      return;
+    }
+
+    const signalInterval = setInterval(() => {
+      checkAndGenerateSignal();
+    }, 30000);
+
+    checkAndGenerateSignal();
+
+    return () => clearInterval(signalInterval);
+  }, [isLoggedIn, checkAndGenerateSignal]);
 
   const login = useCallback(async (username: string) => {
     setIsLoggedIn(true);
@@ -648,14 +663,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     await signalEngine.updateCurrentPrice();
     const price = signalEngine.getCurrentPrice();
     setCurrentPrice(price);
-    await updateAllSignalsStatus();
-    console.log('✅ Manual refresh completed');
-  }, [updateAllSignalsStatus]);
-
-  const clearHistoryCache = useCallback(async () => {
-    setSignalHistory([]);
-    await AsyncStorage.removeItem('signal_history');
-    console.log('✅ History cache cleared');
+    console.log('Data refreshed successfully');
   }, []);
 
   return {
@@ -676,6 +684,5 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     deleteSignalFromHistory,
     manualCloseSignal,
     refreshData,
-    clearHistoryCache,
   };
 });

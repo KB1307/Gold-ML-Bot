@@ -1,20 +1,12 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Alert, RefreshControl } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Alert } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { History, TrendingUp, TrendingDown, Trash2, CheckCircle, XCircle, AlertTriangle } from "lucide-react-native";
+import { History, TrendingUp, TrendingDown, Trash2, CheckCircle, XCircle } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
 import { Stack } from "expo-router";
 import { TradingSignal } from "@/types/trading";
-import { useState, useCallback } from "react";
 
 export default function HistoryScreen() {
-  const { signalHistory, deleteSignalFromHistory, clearHistoryCache, refreshData } = useTrading();
-  const [refreshing, setRefreshing] = useState(false);
-
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await refreshData();
-    setRefreshing(false);
-  }, [refreshData]);
+  const { signalHistory, deleteSignalFromHistory } = useTrading();
 
   const handleDelete = (signalId: string) => {
     if (Platform.OS === "web") {
@@ -81,14 +73,6 @@ export default function HistoryScreen() {
             style={styles.scrollView}
             contentContainerStyle={styles.scrollContent}
             showsVerticalScrollIndicator={false}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={onRefresh}
-                tintColor="#FFD700"
-                colors={["#FFD700"]}
-              />
-            }
           >
             <View style={styles.header}>
               <History size={32} color="#FFD700" strokeWidth={2} />
@@ -97,31 +81,6 @@ export default function HistoryScreen() {
                 <Text style={styles.headerSubtitle}>{signalHistory.length} Total Signals</Text>
               </View>
             </View>
-
-            {signalHistory.length > 0 && (
-              <TouchableOpacity 
-                style={styles.clearButton}
-                onPress={() => {
-                  if (Platform.OS === "web") {
-                    if (confirm("Clear all history? This will reset performance metrics but not affect the learning engine.")) {
-                      clearHistoryCache();
-                    }
-                  } else {
-                    Alert.alert(
-                      "Clear History",
-                      "Reset all history and performance metrics? This will not affect the learning engine.",
-                      [
-                        { text: "Cancel", style: "cancel" },
-                        { text: "Clear", style: "destructive", onPress: clearHistoryCache },
-                      ]
-                    );
-                  }
-                }}
-              >
-                <AlertTriangle size={16} color="#ef4444" />
-                <Text style={styles.clearButtonText}>Clear All History</Text>
-              </TouchableOpacity>
-            )}
 
             {signalHistory.length === 0 ? (
               <View style={styles.emptyState}>
@@ -440,22 +399,4 @@ const styles = StyleSheet.create({
     color: "#999",
     lineHeight: 18,
   },
-  clearButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(239, 68, 68, 0.1)",
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: 10,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: "rgba(239, 68, 68, 0.3)",
-    gap: 8,
-  },
-  clearButtonText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#ef4444",
-  } as const,
 });
