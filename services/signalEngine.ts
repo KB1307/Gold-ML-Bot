@@ -1,4 +1,4 @@
-import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent } from "@/types/trading";
+import { TradingSignal, SignalType, SignalStatus, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent } from "@/types/trading";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 interface OrderFlowData {
@@ -259,7 +259,8 @@ class SignalGenerationEngine {
   private lastFeatureCorrelationCheck: number = 0;
   private featureCorrelationStatus: string = 'HEALTHY';
   private modelHealthScore: number = 100;
-  private isSignalActive: boolean = false;
+  private activeSignalId: string | null = null;
+  private activeSignalStatus: SignalStatus | null = null;
   
   async updateCurrentPrice(): Promise<number> {
     try {
@@ -1157,8 +1158,8 @@ class SignalGenerationEngine {
     settings: { tp1Pips: number; tp2Pips: number; tp3Pips: number; slPips: number; minConfidence: number },
     accountBalance: number = 10000
   ): Promise<TradingSignal | null> {
-    if (this.isSignalActive) {
-      console.log('🔒 SIGNAL LOCK ACTIVE: Existing signal is being monitored. Skipping generation.');
+    if (this.isSignalLocked()) {
+      console.log(`🔒 SIGNAL LOCK ACTIVE: Signal ${this.activeSignalId} (${this.activeSignalStatus}) is being monitored. Skipping generation.`);
       return null;
     }
 
@@ -1280,12 +1281,17 @@ class SignalGenerationEngine {
       nextMoveContext = `NOTE: Trending regime detected. Continuation ${analysis.signalType} signal likely if TP1 hit.`;
     }
     
+    const signalId = `signal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
     this.lastSignalType = analysis.signalType;
     this.lastSignalTime = now;
     this.lastMarketRegime = features.marketRegime;
     this.successfulSignalsGenerated++;
-    this.isSignalActive = true;
-    console.log('🔒 Signal lock ENABLED. No new signals will be generated until this signal is closed.');
+    
+    this.activeSignalId = signalId;
+    this.activeSignalStatus = "ACTIVE";
+    console.log(`🔒 Signal lock ENABLED for Signal ${signalId}. No new signals will be generated until this signal is closed.`);
+    console.log('📋 Lock Release Conditions: SL_HIT | ALL_TARGETS_HIT | REGIME_CHANGE | 2-HOUR EXPIRY');
 
     
     const signalFrequencyRate = this.signalGenerationAttempts > 0 
@@ -1316,7 +1322,7 @@ class SignalGenerationEngine {
     this.logSignalGenerationMetrics();
     
     return {
-      id: `signal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      id: signalId,
       timestamp: new Date(),
       type: analysis.signalType,
       entryPrice: parseFloat(entryPrice.toFixed(1)),
@@ -1347,11 +1353,50 @@ class SignalGenerationEngine {
     };
   }
   
+  private isSignalLocked(): boolean {
+    if (!this.activeSignalId || !this.activeSignalStatus) {
+      return false;
+    }
+    
+    const lockReleaseStatuses: SignalStatus[] = ["SL_HIT", "ALL_TARGETS_HIT", "CLOSED"];
+    const shouldUnlock = lockReleaseStatuses.includes(this.activeSignalStatus);
+    
+    if (shouldUnlock) {
+      console.log(`🔓 Signal ${this.activeSignalId} reached terminal state (${this.activeSignalStatus}). Auto-unlocking.`);
+      this.resetSignalLock();
+      return false;
+    }
+    
+    return true;
+  }
+  
+  updateSignalLockStatus(signalId: string, newStatus: SignalStatus): void {
+    if (this.activeSignalId === signalId) {
+      const previousStatus = this.activeSignalStatus;
+      this.activeSignalStatus = newStatus;
+      console.log(`🔄 Signal Lock Status Update: ${signalId} | ${previousStatus} → ${newStatus}`);
+      
+      const terminalStatuses: SignalStatus[] = ["SL_HIT", "ALL_TARGETS_HIT", "CLOSED"];
+      if (terminalStatuses.includes(newStatus)) {
+        console.log(`✅ Terminal state reached. Signal ${signalId} will release lock on next generation attempt.`);
+      }
+    }
+  }
+  
   resetSignalLock(): void {
+    const previousSignalId = this.activeSignalId;
+    const previousStatus = this.activeSignalStatus;
+    
+    this.activeSignalId = null;
+    this.activeSignalStatus = null;
     this.lastSignalType = null;
     this.lastSignalTime = 0;
-    this.isSignalActive = false;
-    console.log('🔓 Signal lock reset. New signals can be generated.');
+    
+    if (previousSignalId) {
+      console.log(`🔓 Signal lock RELEASED for ${previousSignalId} (Final: ${previousStatus}). New signals can be generated.`);
+    } else {
+      console.log('🔓 Signal lock reset. New signals can be generated.');
+    }
   }
   
   private logSignalGenerationMetrics(): void {

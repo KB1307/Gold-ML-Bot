@@ -281,6 +281,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       status: "CLOSED" as const,
       exitTime: `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
     };
+    
+    signalEngine.updateSignalLockStatus(signal.id, "CLOSED");
 
     setSignalHistory((prev) => {
       const updated = [closedSignal, ...prev];
@@ -289,7 +291,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     });
 
     setCurrentSignal(null);
-    signalEngine.resetSignalLock();
   }, []);
 
   const updateSignalStatus = useCallback(async () => {
@@ -325,6 +326,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         exitTime: `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
       };
 
+      signalEngine.updateSignalLockStatus(currentSignal.id, "CLOSED");
+      
       setSignalHistory((prev) => {
         const updated = prev.map(s => 
           s.id === currentSignal.id ? expiredSignal : s
@@ -334,7 +337,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       });
 
       setCurrentSignal(null);
-      signalEngine.resetSignalLock();
       return;
     }
 
@@ -349,6 +351,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         exitTime: `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
       };
 
+      signalEngine.updateSignalLockStatus(currentSignal.id, "CLOSED");
+      
       setSignalHistory((prev) => {
         const updated = prev.map(s => 
           s.id === currentSignal.id ? expiredSignal : s
@@ -358,7 +362,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       });
 
       setCurrentSignal(null);
-      signalEngine.resetSignalLock();
       return;
     }
 
@@ -395,6 +398,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     if (newStatus !== currentSignal.status || targetsHit !== currentSignal.targetsHit) {
       const updatedSignal = { ...currentSignal, status: newStatus, targetsHit };
       setCurrentSignal(updatedSignal);
+      
+      signalEngine.updateSignalLockStatus(currentSignal.id, newStatus);
 
       setSignalHistory((prev) => {
         const updatedHistory = prev.map(s => 
@@ -421,7 +426,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         });
 
         setCurrentSignal(null);
-        signalEngine.resetSignalLock();
       }
     }
   }, [currentSignal]);
@@ -489,6 +493,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         if (hasRegimeChanged) {
           updated = true;
           console.log(`🔄 Signal ${signal.id} expired due to REGIME CHANGE: ${signal.generatedRegime?.type} → ${currentRegimeType}`);
+          signalEngine.updateSignalLockStatus(signal.id, "CLOSED");
           return {
             ...signal,
             status: "CLOSED" as const,
@@ -503,6 +508,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         const signalAge = now - new Date(signal.timestamp).getTime();
         if (signalAge > twoHoursInMs) {
           updated = true;
+          signalEngine.updateSignalLockStatus(signal.id, "CLOSED");
           return {
             ...signal,
             status: "CLOSED" as const,
@@ -556,6 +562,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         }
 
         if (newStatus !== signal.status || targetsHit !== signal.targetsHit) {
+          signalEngine.updateSignalLockStatus(signal.id, newStatus);
+          
           if (newStatus === "SL_HIT" || newStatus === "ALL_TARGETS_HIT") {
             return {
               ...signal,
