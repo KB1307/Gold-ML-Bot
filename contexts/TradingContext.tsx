@@ -296,11 +296,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const twoHoursInMs = 2 * 60 * 60 * 1000;
 
     const currentMarketOutlook = await signalEngine.getMarketOutlook();
-    const currentRegimeType = marketOutlook?.trend === "BULLISH" || marketOutlook?.trend === "BEARISH" 
+    const currentRegimeType = currentMarketOutlook?.trend === "BULLISH" || currentMarketOutlook?.trend === "BEARISH" 
       ? "TRENDING" 
-      : marketOutlook?.volatility === "HIGH" 
+      : currentMarketOutlook?.volatility === "HIGH" 
       ? "VOLATILE" 
-      : marketOutlook?.volatility === "LOW" 
+      : currentMarketOutlook?.volatility === "LOW" 
       ? "QUIET" 
       : "RANGING";
 
@@ -420,7 +420,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         setCurrentSignal(null);
       }
     }
-  }, [currentSignal]);
+  }, [currentSignal, marketOutlook]);
 
   const checkAndGenerateSignal = useCallback(async () => {
     const outlook = await signalEngine.getMarketOutlook();
@@ -475,10 +475,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const activeSignals = signalHistory.filter(s => 
       s.status !== "CLOSED" && s.status !== "SL_HIT" && s.status !== "ALL_TARGETS_HIT"
     );
-
-    if (activeSignals.length === 0) {
-      return;
-    }
 
     setSignalHistory((prev) => {
       let updated = false;
@@ -588,7 +584,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       return updated ? updatedHistory : prev;
     });
-  }, []);
+  }, [signalHistory]);
 
   useEffect(() => {
     if (!currentSignal) {
