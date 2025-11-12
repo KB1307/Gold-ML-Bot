@@ -111,11 +111,7 @@ export default function HistoryScreen() {
                           <View style={styles.signalInfo}>
                             <Text style={styles.signalType}>{signal.type} XAUUSD</Text>
                             <Text style={styles.signalDate}>
-                              {(() => {
-                                const date = new Date(signal.timestamp);
-                                const utc2Date = new Date(date.getTime() + 2 * 60 * 60 * 1000);
-                                return `${utc2Date.toLocaleDateString('en-GB', { timeZone: 'UTC' })}, ${signal.entryTime}`;
-                              })()}
+                              {signal.timestamp.toLocaleDateString()} {signal.entryTime} UTC
                             </Text>
                           </View>
                         </View>
@@ -188,7 +184,7 @@ export default function HistoryScreen() {
 
                       {signal.exitTime && (
                         <View style={styles.exitInfo}>
-                          <Text style={styles.exitText}>Exit: {signal.exitTime}</Text>
+                          <Text style={styles.exitText}>Exit: {signal.exitTime} UTC</Text>
                         </View>
                       )}
                     </LinearGradient>

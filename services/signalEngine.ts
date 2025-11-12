@@ -1,4 +1,4 @@
-import { TradingSignal, SignalType, SignalStatus, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent } from "@/types/trading";
+import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent } from "@/types/trading";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 interface OrderFlowData {
@@ -259,8 +259,6 @@ class SignalGenerationEngine {
   private lastFeatureCorrelationCheck: number = 0;
   private featureCorrelationStatus: string = 'HEALTHY';
   private modelHealthScore: number = 100;
-  private activeSignalId: string | null = null;
-  private activeSignalStatus: SignalStatus | null = null;
   
   async updateCurrentPrice(): Promise<number> {
     try {
@@ -1158,11 +1156,6 @@ class SignalGenerationEngine {
     settings: { tp1Pips: number; tp2Pips: number; tp3Pips: number; slPips: number; minConfidence: number },
     accountBalance: number = 10000
   ): Promise<TradingSignal | null> {
-    if (this.isSignalLocked()) {
-      console.log(`🔒 SIGNAL LOCK ACTIVE: Signal ${this.activeSignalId} (${this.activeSignalStatus}) is being monitored. Skipping generation.`);
-      return null;
-    }
-
     const now = Date.now();
     const startTime = performance.now();
     this.signalGenerationAttempts++;
@@ -1257,9 +1250,7 @@ class SignalGenerationEngine {
       score: parseFloat((Math.abs(score) * 100).toFixed(1)),
     }));
     
-    const timeNow = new Date();
-    const utc2Hours = (timeNow.getUTCHours() + 2) % 24;
-    const timeString = `${utc2Hours.toString().padStart(2, "0")}:${timeNow.getUTCMinutes().toString().padStart(2, "0")}`;
+    const timeString = `${new Date().getUTCHours().toString().padStart(2, "0")}:${new Date().getUTCMinutes().toString().padStart(2, "0")}`;
     
     let latencyWarning: number | undefined;
     if (latency > LATENCY_WARNING_THRESHOLD_MS) {
@@ -1281,18 +1272,10 @@ class SignalGenerationEngine {
       nextMoveContext = `NOTE: Trending regime detected. Continuation ${analysis.signalType} signal likely if TP1 hit.`;
     }
     
-    const signalId = `signal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
     this.lastSignalType = analysis.signalType;
     this.lastSignalTime = now;
     this.lastMarketRegime = features.marketRegime;
     this.successfulSignalsGenerated++;
-    
-    this.activeSignalId = signalId;
-    this.activeSignalStatus = "ACTIVE";
-    console.log(`🔒 Signal lock ENABLED for Signal ${signalId}. No new signals will be generated until this signal is closed.`);
-    console.log('📋 Lock Release Conditions: SL_HIT | ALL_TARGETS_HIT | REGIME_CHANGE | 2-HOUR EXPIRY');
-
     
     const signalFrequencyRate = this.signalGenerationAttempts > 0 
       ? ((this.successfulSignalsGenerated / this.signalGenerationAttempts) * 100).toFixed(1)
@@ -1307,7 +1290,7 @@ class SignalGenerationEngine {
     console.log(`📊 Market Regime: ${features.marketRegime.type} (Strength: ${(features.marketRegime.strength * 100).toFixed(0)}%, Confidence: ${(features.marketRegime.confidence * 100).toFixed(0)}%)`);
     console.log(`🎯 Signal Generation Rate: ${signalFrequencyRate}% (${this.successfulSignalsGenerated} signals / ${this.signalGenerationAttempts} attempts)`);
     console.log(`⏱️ Next Dynamic Cooldown: ${(dynamicCooldown / 1000).toFixed(1)}s`);
-    console.log(`⏰ Time-To-Live: DYNAMIC (Expires on Regime Change or 2h max)`);
+    console.log(`⏰ Time-To-Live (TTL): ~${timeToLiveMinutes} minutes`);
     if (latencyWarning) {
       console.log(`⚠️ Latency Warning: ${latencyWarning}ms`);
     }
@@ -1322,7 +1305,7 @@ class SignalGenerationEngine {
     this.logSignalGenerationMetrics();
     
     return {
-      id: signalId,
+      id: `signal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       timestamp: new Date(),
       type: analysis.signalType,
       entryPrice: parseFloat(entryPrice.toFixed(1)),
@@ -1345,58 +1328,13 @@ class SignalGenerationEngine {
       tp1Distance: parseFloat(tp1Distance.toFixed(1)),
       tp2Distance: parseFloat(tp2Distance.toFixed(1)),
       tp3Distance: parseFloat(tp3Distance.toFixed(1)),
-      generatedRegime: {
-        type: features.marketRegime.type,
-        strength: features.marketRegime.strength,
-        confidence: features.marketRegime.confidence,
-      },
     };
   }
   
-  private isSignalLocked(): boolean {
-    if (!this.activeSignalId || !this.activeSignalStatus) {
-      return false;
-    }
-    
-    const lockReleaseStatuses: SignalStatus[] = ["SL_HIT", "ALL_TARGETS_HIT", "CLOSED"];
-    const shouldUnlock = lockReleaseStatuses.includes(this.activeSignalStatus);
-    
-    if (shouldUnlock) {
-      console.log(`🔓 Signal ${this.activeSignalId} reached terminal state (${this.activeSignalStatus}). Auto-unlocking.`);
-      this.resetSignalLock();
-      return false;
-    }
-    
-    return true;
-  }
-  
-  updateSignalLockStatus(signalId: string, newStatus: SignalStatus): void {
-    if (this.activeSignalId === signalId) {
-      const previousStatus = this.activeSignalStatus;
-      this.activeSignalStatus = newStatus;
-      console.log(`🔄 Signal Lock Status Update: ${signalId} | ${previousStatus} → ${newStatus}`);
-      
-      const terminalStatuses: SignalStatus[] = ["SL_HIT", "ALL_TARGETS_HIT", "CLOSED"];
-      if (terminalStatuses.includes(newStatus)) {
-        console.log(`✅ Terminal state reached. Signal ${signalId} will release lock on next generation attempt.`);
-      }
-    }
-  }
-  
   resetSignalLock(): void {
-    const previousSignalId = this.activeSignalId;
-    const previousStatus = this.activeSignalStatus;
-    
-    this.activeSignalId = null;
-    this.activeSignalStatus = null;
     this.lastSignalType = null;
     this.lastSignalTime = 0;
-    
-    if (previousSignalId) {
-      console.log(`🔓 Signal lock RELEASED for ${previousSignalId} (Final: ${previousStatus}). New signals can be generated.`);
-    } else {
-      console.log('🔓 Signal lock reset. New signals can be generated.');
-    }
+    console.log('🔓 Signal lock reset. New signals can be generated.');
   }
   
   private logSignalGenerationMetrics(): void {

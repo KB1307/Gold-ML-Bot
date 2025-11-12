@@ -129,13 +129,7 @@ export default function DashboardScreen() {
                       )}
                       <View>
                         <Text style={styles.signalType}>{currentSignal.type} SIGNAL</Text>
-                        <Text style={styles.signalTime}>
-                          {(() => {
-                            const date = new Date(currentSignal.timestamp);
-                            const utc2Date = new Date(date.getTime() + 2 * 60 * 60 * 1000);
-                            return `${utc2Date.toLocaleDateString('en-GB', { timeZone: 'UTC' })}, ${currentSignal.entryTime}`;
-                          })()}
-                        </Text>
+                        <Text style={styles.signalTime}>{new Date(currentSignal.timestamp).toLocaleString()}</Text>
                       </View>
                     </View>
                     <View style={styles.confidenceContainer}>

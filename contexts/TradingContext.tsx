@@ -10,7 +10,7 @@ const DEFAULT_SETTINGS: Settings = {
   tp3Pips: 65,
   slPips: 70,
   numberOfTPs: 3,
-  minConfidence: 0.75,
+  minConfidence: 0.70,
   enableNotifications: true,
   basePositionSize: 0.01,
   maxRiskPercentage: 2.0,
@@ -275,14 +275,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   const closeSignal = useCallback((signal: TradingSignal) => {
     const now = new Date();
-    const utc2Hours = (now.getUTCHours() + 2) % 24;
     const closedSignal = {
       ...signal,
       status: "CLOSED" as const,
-      exitTime: `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
+      exitTime: `${now.getUTCHours().toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
     };
-    
-    signalEngine.updateSignalLockStatus(signal.id, "CLOSED");
 
     setSignalHistory((prev) => {
       const updated = [closedSignal, ...prev];
@@ -291,9 +288,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     });
 
     setCurrentSignal(null);
+    signalEngine.resetSignalLock();
   }, []);
 
-  const updateSignalStatus = useCallback(async () => {
+  const updateSignalStatus = useCallback(() => {
     if (!currentSignal) return;
 
     const price = signalEngine.getCurrentPrice();
@@ -303,56 +301,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const signalAge = Date.now() - new Date(currentSignal.timestamp).getTime();
     const twoHoursInMs = 2 * 60 * 60 * 1000;
 
-    const currentMarketOutlook = await signalEngine.getMarketOutlook();
-    const currentRegimeType = marketOutlook?.trend === "BULLISH" || marketOutlook?.trend === "BEARISH" 
-      ? "TRENDING" 
-      : marketOutlook?.volatility === "HIGH" 
-      ? "VOLATILE" 
-      : marketOutlook?.volatility === "LOW" 
-      ? "QUIET" 
-      : "RANGING";
-
-    const hasRegimeChanged = currentSignal.generatedRegime && 
-      currentSignal.generatedRegime.type !== currentRegimeType;
-
-    if (hasRegimeChanged) {
-      console.log(`🔄 Signal ${currentSignal.id} expired due to REGIME CHANGE: ${currentSignal.generatedRegime?.type} → ${currentRegimeType}`);
-      newStatus = "CLOSED";
-      const now = new Date();
-      const utc2Hours = (now.getUTCHours() + 2) % 24;
-      const expiredSignal = {
-        ...currentSignal,
-        status: "CLOSED" as const,
-        exitTime: `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
-      };
-
-      signalEngine.updateSignalLockStatus(currentSignal.id, "CLOSED");
-      
-      setSignalHistory((prev) => {
-        const updated = prev.map(s => 
-          s.id === currentSignal.id ? expiredSignal : s
-        );
-        AsyncStorage.setItem("signal_history", JSON.stringify(updated));
-        return updated;
-      });
-
-      setCurrentSignal(null);
-      return;
-    }
-
     if (signalAge > twoHoursInMs) {
-      console.log(`Signal ${currentSignal.id} expired after 2 hours (fallback)`);
+      console.log(`Signal ${currentSignal.id} expired after 2 hours`);
       newStatus = "CLOSED";
       const now = new Date();
-      const utc2Hours = (now.getUTCHours() + 2) % 24;
       const expiredSignal = {
         ...currentSignal,
         status: "CLOSED" as const,
-        exitTime: `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
+        exitTime: `${now.getUTCHours().toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
       };
 
-      signalEngine.updateSignalLockStatus(currentSignal.id, "CLOSED");
-      
       setSignalHistory((prev) => {
         const updated = prev.map(s => 
           s.id === currentSignal.id ? expiredSignal : s
@@ -362,6 +320,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       });
 
       setCurrentSignal(null);
+      signalEngine.resetSignalLock();
       return;
     }
 
@@ -398,8 +357,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     if (newStatus !== currentSignal.status || targetsHit !== currentSignal.targetsHit) {
       const updatedSignal = { ...currentSignal, status: newStatus, targetsHit };
       setCurrentSignal(updatedSignal);
-      
-      signalEngine.updateSignalLockStatus(currentSignal.id, newStatus);
 
       setSignalHistory((prev) => {
         const updatedHistory = prev.map(s => 
@@ -411,10 +368,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       if (newStatus === "SL_HIT" || newStatus === "ALL_TARGETS_HIT") {
         const now = new Date();
-        const utc2Hours = (now.getUTCHours() + 2) % 24;
         const finalSignal = {
           ...updatedSignal,
-          exitTime: `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
+          exitTime: `${now.getUTCHours().toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
         };
 
         setSignalHistory((prev) => {
@@ -426,6 +382,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         });
 
         setCurrentSignal(null);
+        signalEngine.resetSignalLock();
       }
     }
   }, [currentSignal]);
@@ -466,19 +423,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     }
   }, [currentSignal, settings, accountBalance]);
 
-  const updateAllSignalsStatus = useCallback(async () => {
+  const updateAllSignalsStatus = useCallback(() => {
     const price = signalEngine.getCurrentPrice();
     const now = Date.now();
     const twoHoursInMs = 2 * 60 * 60 * 1000;
-
-    const currentMarketOutlook = await signalEngine.getMarketOutlook();
-    const currentRegimeType = currentMarketOutlook?.trend === "BULLISH" || currentMarketOutlook?.trend === "BEARISH" 
-      ? "TRENDING" 
-      : currentMarketOutlook?.volatility === "HIGH" 
-      ? "VOLATILE" 
-      : currentMarketOutlook?.volatility === "LOW" 
-      ? "QUIET" 
-      : "RANGING";
 
     setSignalHistory((prev) => {
       let updated = false;
@@ -487,36 +435,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           return signal;
         }
 
-        const hasRegimeChanged = signal.generatedRegime && 
-          signal.generatedRegime.type !== currentRegimeType;
-
-        if (hasRegimeChanged) {
-          updated = true;
-          console.log(`🔄 Signal ${signal.id} expired due to REGIME CHANGE: ${signal.generatedRegime?.type} → ${currentRegimeType}`);
-          signalEngine.updateSignalLockStatus(signal.id, "CLOSED");
-          return {
-            ...signal,
-            status: "CLOSED" as const,
-            exitTime: (() => {
-              const now = new Date();
-              const utc2Hours = (now.getUTCHours() + 2) % 24;
-              return `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`;
-            })(),
-          };
-        }
-
         const signalAge = now - new Date(signal.timestamp).getTime();
         if (signalAge > twoHoursInMs) {
           updated = true;
-          signalEngine.updateSignalLockStatus(signal.id, "CLOSED");
           return {
             ...signal,
             status: "CLOSED" as const,
-            exitTime: (() => {
-              const now = new Date();
-              const utc2Hours = (now.getUTCHours() + 2) % 24;
-              return `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`;
-            })(),
+            exitTime: `${new Date().getUTCHours().toString().padStart(2, "0")}:${new Date().getUTCMinutes().toString().padStart(2, "0")}`,
           };
         }
 
@@ -562,18 +487,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         }
 
         if (newStatus !== signal.status || targetsHit !== signal.targetsHit) {
-          signalEngine.updateSignalLockStatus(signal.id, newStatus);
-          
           if (newStatus === "SL_HIT" || newStatus === "ALL_TARGETS_HIT") {
             return {
               ...signal,
               status: newStatus,
               targetsHit,
-              exitTime: (() => {
-                const now = new Date();
-                const utc2Hours = (now.getUTCHours() + 2) % 24;
-                return `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`;
-              })(),
+              exitTime: `${new Date().getUTCHours().toString().padStart(2, "0")}:${new Date().getUTCMinutes().toString().padStart(2, "0")}`,
             };
           }
           return { ...signal, status: newStatus, targetsHit };
