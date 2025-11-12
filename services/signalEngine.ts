@@ -259,6 +259,7 @@ class SignalGenerationEngine {
   private lastFeatureCorrelationCheck: number = 0;
   private featureCorrelationStatus: string = 'HEALTHY';
   private modelHealthScore: number = 100;
+  private isSignalActive: boolean = false;
   
   async updateCurrentPrice(): Promise<number> {
     try {
@@ -1156,6 +1157,11 @@ class SignalGenerationEngine {
     settings: { tp1Pips: number; tp2Pips: number; tp3Pips: number; slPips: number; minConfidence: number },
     accountBalance: number = 10000
   ): Promise<TradingSignal | null> {
+    if (this.isSignalActive) {
+      console.log('🔒 SIGNAL LOCK ACTIVE: Existing signal is being monitored. Skipping generation.');
+      return null;
+    }
+
     const now = Date.now();
     const startTime = performance.now();
     this.signalGenerationAttempts++;
@@ -1278,6 +1284,9 @@ class SignalGenerationEngine {
     this.lastSignalTime = now;
     this.lastMarketRegime = features.marketRegime;
     this.successfulSignalsGenerated++;
+    this.isSignalActive = true;
+    console.log('🔒 Signal lock ENABLED. No new signals will be generated until this signal is closed.');
+
     
     const signalFrequencyRate = this.signalGenerationAttempts > 0 
       ? ((this.successfulSignalsGenerated / this.signalGenerationAttempts) * 100).toFixed(1)
@@ -1341,6 +1350,7 @@ class SignalGenerationEngine {
   resetSignalLock(): void {
     this.lastSignalType = null;
     this.lastSignalTime = 0;
+    this.isSignalActive = false;
     console.log('🔓 Signal lock reset. New signals can be generated.');
   }
   
