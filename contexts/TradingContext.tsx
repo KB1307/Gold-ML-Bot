@@ -421,7 +421,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log(`   Settings: minConfidence=${(settings.minConfidence * 100).toFixed(0)}%`);
       console.log(`   Account Balance: ${accountBalance}`);
       
-      const signal = await signalEngine.generateSignal(settings, accountBalance);
+      const activeSignals = signalHistory.filter(s => s.status === "ACTIVE");
+      console.log(`   Active Signals Count: ${activeSignals.length}`);
+      
+      const signal = await signalEngine.generateSignal(settings, accountBalance, activeSignals);
       
       if (signal) {
         console.log("\n" + "=".repeat(60));
@@ -460,7 +463,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.error("Error:", error);
       console.error("Stack:", error instanceof Error ? error.stack : 'No stack trace');
     }
-  }, [currentSignal, settings, accountBalance]);
+  }, [currentSignal, settings, accountBalance, signalHistory]);
 
   const updateAllSignalsStatus = useCallback(() => {
     const price = signalEngine.getCurrentPrice();

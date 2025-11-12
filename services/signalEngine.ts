@@ -114,6 +114,8 @@ const LATENCY_WARNING_THRESHOLD_MS = 100;
 const FEATURE_CORRELATION_CHECK_INTERVAL = 30 * 24 * 60 * 60 * 1000;
 const INTERMARKET_CACHE_DURATION = 10000;
 const HYPOTHETICAL_TRADE_HISTORY_LIMIT = 100;
+const MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL = 15;
+const MAX_RECENT_SIGNAL_TIME_MINUTES = 5;
 
 async function fetchIntermarketData(): Promise<IntermarketData> {
   const now = Date.now();
@@ -1154,7 +1156,8 @@ class SignalGenerationEngine {
   
   async generateSignal(
     settings: { tp1Pips: number; tp2Pips: number; tp3Pips: number; slPips: number; minConfidence: number },
-    accountBalance: number = 10000
+    accountBalance: number = 10000,
+    activeSignals: TradingSignal[] = []
   ): Promise<TradingSignal | null> {
     const now = Date.now();
     const startTime = performance.now();
@@ -1203,6 +1206,15 @@ class SignalGenerationEngine {
     
     if (analysis.confidence < 0.60) {
       console.log(`❌ REJECTED: Confidence ${(analysis.confidence * 100).toFixed(1)}% below absolute minimum (60%)`);
+      console.log(`${'='.repeat(80)}\n`);
+      return null;
+    }
+    
+    const proximityCheck = this.checkPriceProximity(activeSignals, analysis.signalType, dynamicCooldown);
+    if (proximityCheck.blocked) {
+      console.log(`❌ REJECTED: Price Proximity Filter Block`);
+      console.log(`   ${proximityCheck.reason}`);
+      console.log(`   💡 TIP: ${proximityCheck.tip}`);
       console.log(`${'='.repeat(80)}\n`);
       return null;
     }
@@ -1348,6 +1360,49 @@ class SignalGenerationEngine {
       tp2Distance: parseFloat(tp2Distance.toFixed(1)),
       tp3Distance: parseFloat(tp3Distance.toFixed(1)),
     };
+  }
+  
+  private checkPriceProximity(
+    activeSignals: TradingSignal[],
+    proposedType: SignalType,
+    dynamicCooldown: number
+  ): { blocked: boolean; reason?: string; tip?: string } {
+    const proposedEntryPrice = this.currentPrice;
+    const maxSignalAge = MAX_RECENT_SIGNAL_TIME_MINUTES * 60 * 1000;
+    const now = Date.now();
+    
+    const recentActiveSignals = activeSignals.filter(signal => {
+      if (signal.status !== "ACTIVE") return false;
+      if (signal.type !== proposedType) return false;
+      
+      const signalAge = now - new Date(signal.timestamp).getTime();
+      return signalAge < maxSignalAge;
+    });
+    
+    if (recentActiveSignals.length === 0) {
+      console.log('✓ Price Proximity Check: No recent active signals of same type');
+      return { blocked: false };
+    }
+    
+    for (const signal of recentActiveSignals) {
+      const priceDifference = Math.abs(proposedEntryPrice - signal.entryPrice) * 1000;
+      const signalAge = ((now - new Date(signal.timestamp).getTime()) / 1000 / 60).toFixed(1);
+      
+      console.log(`🔍 Proximity Check: Comparing with Signal #${signal.id.slice(-6)}`);
+      console.log(`   Active Signal Entry: ${signal.entryPrice.toFixed(1)} | Proposed: ${proposedEntryPrice.toFixed(1)}`);
+      console.log(`   Price Difference: ${priceDifference.toFixed(1)} pips | Signal Age: ${signalAge}m`);
+      
+      if (priceDifference < MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL) {
+        return {
+          blocked: true,
+          reason: `Active signal #${signal.id.slice(-6)} at ${signal.entryPrice.toFixed(1)} is within ${MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL} pips of proposed entry (${priceDifference.toFixed(1)} pips difference).`,
+          tip: `Next attempt in ${(dynamicCooldown / 1000).toFixed(0)}s. Price must move >${MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL} pips from existing ${proposedType} signals.`
+        };
+      }
+    }
+    
+    console.log(`✓ Price Proximity Check: All active signals are >${MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL} pips away`);
+    return { blocked: false };
   }
   
   resetSignalLock(): void {
