@@ -328,23 +328,26 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       const signalAgeMs = Date.now() - new Date(activeSignal.timestamp).getTime();
       const twoHoursMs = 2 * 60 * 60 * 1000;
       
+      const lockReleased = activeSignal.targetsHit >= 2;
+      
       const canGenerateNewSignal = (
-        activeSignal.targetsHit >= 2 || 
+        lockReleased || 
         signalAgeMs > twoHoursMs
       );
       
       if (!canGenerateNewSignal) {
-        console.log("❌ BLOCKED: Active signal exists and conditions not met for new signal.");
+        console.log("❌ BLOCKED: Active signal exists and lock not released.");
         console.log(`   Active Signal: ${activeSignal.type} @ ${activeSignal.entryPrice}`);
-        console.log(`   Targets Hit: ${activeSignal.targetsHit}/3`);
+        console.log(`   Targets Hit: ${activeSignal.targetsHit}/3 (Lock releases at TP2)`);
         console.log(`   Age: ${(signalAgeMs / 1000 / 60).toFixed(1)} minutes`);
         console.log(`   💡 New signal allowed when: TP2+ hit, SL hit, or 2+ hours elapsed`);
         return;
       }
       
-      console.log(`✅ Active signal qualifies for new signal generation:`);
-      if (activeSignal.targetsHit >= 2) {
-        console.log(`   - TP2+ already hit (${activeSignal.targetsHit}/3 targets)`);
+      console.log(`✅ Lock released - New signal generation allowed:`);
+      if (lockReleased) {
+        console.log(`   - TP2 hit (${activeSignal.targetsHit}/3 targets) - Lock released`);
+        console.log(`   - Previous signal continues to be monitored until terminal status`);
       }
       if (signalAgeMs > twoHoursMs) {
         console.log(`   - Signal age exceeds 2 hours (${(signalAgeMs / 1000 / 60).toFixed(1)}m)`);
@@ -394,6 +397,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           console.log(`Confidence: ${(signal.confidence * 100).toFixed(1)}%`);
           console.log(`TP1: ${signal.tp1} | TP2: ${signal.tp2} | TP3: ${signal.tp3}`);
           console.log(`SL: ${signal.sl}`);
+          console.log(`📊 Signal added to dashboard AND history immediately`);
           console.log("=".repeat(60) + "\n");
           
           const updated = [signal, ...prev];
@@ -503,6 +507,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         if (newStatus !== signal.status || targetsHit !== signal.targetsHit) {
           if (newStatus === "SL_HIT" || newStatus === "ALL_TARGETS_HIT") {
             const exitDate = new Date();
+            console.log(`✅ Terminal status reached: Signal ${signal.id.slice(-6)} will remain in history only`);
             return {
               ...signal,
               status: newStatus,
@@ -510,6 +515,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
               exitTime: exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
             };
           }
+          
+          if (targetsHit === 2 && signal.targetsHit < 2) {
+            console.log(`🔓 LOCK RELEASED: Signal ${signal.id.slice(-6)} hit TP2 - New signals can now be generated`);
+            console.log(`   This signal continues to be monitored for TP3 or SL`);
+          }
+          
           return { ...signal, status: newStatus, targetsHit };
         }
 
