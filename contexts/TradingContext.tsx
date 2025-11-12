@@ -461,7 +461,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         let targetsHit = signal.targetsHit;
 
         if (signal.type === "BUY") {
-          if (price >= signal.tp3) {
+          if (price >= signal.tp3 && targetsHit < 3) {
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
             updated = true;
@@ -476,13 +476,15 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             targetsHit = 1;
             updated = true;
             console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
-          } else if (price <= signal.sl) {
+          }
+          
+          if (price <= signal.sl && newStatus !== "ALL_TARGETS_HIT") {
             newStatus = "SL_HIT";
             updated = true;
             console.log(`⚠️ SL HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
           }
         } else {
-          if (price <= signal.tp3) {
+          if (price <= signal.tp3 && targetsHit < 3) {
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
             updated = true;
@@ -497,7 +499,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             targetsHit = 1;
             updated = true;
             console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
-          } else if (price >= signal.sl) {
+          }
+          
+          if (price >= signal.sl && newStatus !== "ALL_TARGETS_HIT") {
             newStatus = "SL_HIT";
             updated = true;
             console.log(`⚠️ SL HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
