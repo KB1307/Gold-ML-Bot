@@ -111,7 +111,7 @@ export default function HistoryScreen() {
                           <View style={styles.signalInfo}>
                             <Text style={styles.signalType}>{signal.type} XAUUSD</Text>
                             <Text style={styles.signalDate}>
-                              {signal.timestamp.toLocaleDateString()} {signal.entryTime} UTC
+                              {new Date(signal.timestamp).toLocaleString()}
                             </Text>
                           </View>
                         </View>
@@ -184,7 +184,7 @@ export default function HistoryScreen() {
 
                       {signal.exitTime && (
                         <View style={styles.exitInfo}>
-                          <Text style={styles.exitText}>Exit: {signal.exitTime} UTC</Text>
+                          <Text style={styles.exitText}>Exit: {signal.exitTime}</Text>
                         </View>
                       )}
                     </LinearGradient>

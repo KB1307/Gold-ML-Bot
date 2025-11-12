@@ -278,7 +278,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const closedSignal = {
       ...signal,
       status: "CLOSED" as const,
-      exitTime: `${now.getUTCHours().toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
+      exitTime: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
     };
 
     setSignalHistory((prev) => {
@@ -308,7 +308,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       const expiredSignal = {
         ...currentSignal,
         status: "CLOSED" as const,
-        exitTime: `${now.getUTCHours().toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
+        exitTime: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
       };
 
       setSignalHistory((prev) => {
@@ -370,7 +370,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         const now = new Date();
         const finalSignal = {
           ...updatedSignal,
-          exitTime: `${now.getUTCHours().toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
+          exitTime: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
         };
 
         setSignalHistory((prev) => {
@@ -477,10 +477,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         const signalAge = now - new Date(signal.timestamp).getTime();
         if (signalAge > twoHoursInMs) {
           updated = true;
+          const exitDate = new Date();
           return {
             ...signal,
             status: "CLOSED" as const,
-            exitTime: `${new Date().getUTCHours().toString().padStart(2, "0")}:${new Date().getUTCMinutes().toString().padStart(2, "0")}`,
+            exitTime: exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
           };
         }
 
@@ -527,11 +528,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
         if (newStatus !== signal.status || targetsHit !== signal.targetsHit) {
           if (newStatus === "SL_HIT" || newStatus === "ALL_TARGETS_HIT") {
+            const exitDate = new Date();
             return {
               ...signal,
               status: newStatus,
               targetsHit,
-              exitTime: `${new Date().getUTCHours().toString().padStart(2, "0")}:${new Date().getUTCMinutes().toString().padStart(2, "0")}`,
+              exitTime: exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
             };
           }
           return { ...signal, status: newStatus, targetsHit };
