@@ -1,4 +1,5 @@
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Alert } from "react-native";
+import { useEffect } from "react";
 import { LinearGradient } from "expo-linear-gradient";
 import { History, TrendingUp, TrendingDown, Trash2, CheckCircle, XCircle } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
@@ -6,7 +7,11 @@ import { Stack } from "expo-router";
 import { TradingSignal } from "@/types/trading";
 
 export default function HistoryScreen() {
-  const { signalHistory, deleteSignalFromHistory } = useTrading();
+  const { signalHistory, deleteSignalFromHistory, signalUpdateTrigger } = useTrading();
+
+  useEffect(() => {
+    console.log(`📋 History UI update triggered (TP status changed) - Trigger: ${signalUpdateTrigger}`);
+  }, [signalUpdateTrigger, signalHistory]);
 
   const handleDelete = (signalId: string) => {
     if (Platform.OS === "web") {

@@ -50,6 +50,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [currentPrice, setCurrentPrice] = useState<number>(2650);
   const [priceHistory, setPriceHistory] = useState<PriceDataPoint[]>([]);
   const [dailyOHLCHistory, setDailyOHLCHistory] = useState<DailyOHLC[]>([]);
+  const [signalUpdateTrigger, setSignalUpdateTrigger] = useState<number>(0);
 
   useEffect(() => {
     const init = async () => {
@@ -463,9 +464,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const twoHoursInMs = 2 * 60 * 60 * 1000;
     const GRACE_PERIOD_MS = 5000;
 
-    setSignalHistory((prev) => {
+    setSignalHistory((prevHistory) => {
       let updated = false;
-      const updatedHistory = prev.map(signal => {
+      const updatedHistory = prevHistory.map(signal => {
         if (signal.status === "CLOSED" || signal.status === "SL_HIT" || signal.status === "ALL_TARGETS_HIT") {
           return signal;
         }
@@ -543,6 +544,24 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           if (newStatus === "SL_HIT" || newStatus === "ALL_TARGETS_HIT") {
             const exitDate = new Date();
             console.log(`✅ Terminal status reached: Signal ${signal.id.slice(-6)} will remain in history only`);
+            
+            const exitPrice = newStatus === "ALL_TARGETS_HIT" ? signal.tp3 : signal.sl;
+            const result = newStatus === "ALL_TARGETS_HIT" ? "WIN" : "LOSS";
+            
+            signalEngine.recordTradeOutcome(
+              signal.id,
+              signal.entryPrice,
+              exitPrice,
+              result,
+              {} as any,
+              undefined,
+              now - new Date(signal.timestamp).getTime()
+            ).catch(err => {
+              console.error(`Failed to record trade outcome for ${signal.id}:`, err);
+            });
+            
+            console.log(`📊 Learning System: Recorded ${result} outcome for signal ${signal.id.slice(-6)}`);
+            
             return {
               ...signal,
               status: newStatus,
@@ -564,9 +583,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       if (updated) {
         AsyncStorage.setItem("signal_history", JSON.stringify(updatedHistory));
+        setSignalUpdateTrigger(prev => prev + 1);
       }
 
-      return updated ? updatedHistory : prev;
+      return updated ? updatedHistory : prevHistory;
     });
   }, []);
 
@@ -660,6 +680,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     currentPrice,
     priceHistory,
     dailyOHLCHistory,
+    signalUpdateTrigger,
     login,
     logout,
     clearHistory,

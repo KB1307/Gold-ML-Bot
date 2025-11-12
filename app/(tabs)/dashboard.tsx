@@ -7,7 +7,7 @@ import { Stack } from "expo-router";
 import PriceChart from "@/components/PriceChart";
 
 export default function DashboardScreen() {
-  const { signalHistory, marketOutlook, performanceMetrics, positionSizing, currentPrice, priceHistory, refreshData } = useTrading();
+  const { signalHistory, marketOutlook, performanceMetrics, positionSizing, currentPrice, priceHistory, refreshData, signalUpdateTrigger } = useTrading();
   
   const currentSignal = signalHistory.find(s => s.status === "ACTIVE" || s.status === "PARTIALLY_MANAGED" || s.status === "TP1_HIT" || s.status === "TP2_HIT") || null;
   const [refreshing, setRefreshing] = useState(false);
@@ -26,6 +26,10 @@ export default function DashboardScreen() {
 
     return () => clearInterval(autoRefreshInterval);
   }, [refreshData]);
+
+  useEffect(() => {
+    console.log(`📊 Dashboard UI update triggered (TP status changed) - Trigger: ${signalUpdateTrigger}`);
+  }, [signalUpdateTrigger, signalHistory]);
 
   if (!marketOutlook) {
     return (
