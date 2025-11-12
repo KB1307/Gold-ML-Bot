@@ -508,15 +508,10 @@ class SignalGenerationEngine {
     const asianHigh = currentPrice + Math.random() * 20 + 10;
     const asianLow = currentPrice - Math.random() * 20 - 10;
     
-    const yesterdayHigh = this.highHistory.length > 20 
-      ? Math.max(...this.highHistory.slice(-20))
-      : currentPrice + 30;
-    const yesterdayLow = this.lowHistory.length > 20
-      ? Math.min(...this.lowHistory.slice(-20))
-      : currentPrice - 30;
-    const yesterdayClose = this.priceHistory.length > 0
-      ? this.priceHistory[this.priceHistory.length - 1]
-      : currentPrice;
+    const volatilityRange = currentPrice * 0.015;
+    const yesterdayHigh = currentPrice + (Math.random() * volatilityRange);
+    const yesterdayLow = currentPrice - (Math.random() * volatilityRange);
+    const yesterdayClose = currentPrice - (Math.random() - 0.5) * (volatilityRange * 0.5);
     
     const dailyPivot = (yesterdayHigh + yesterdayLow + yesterdayClose) / 3;
     const dailyRange = yesterdayHigh - yesterdayLow;
@@ -533,24 +528,16 @@ class SignalGenerationEngine {
     const dxyChange = (Math.random() - 0.5) * 0.5;
     const volumeRatio = 0.8 + Math.random() * 0.4;
     
-    const weeklyHigh = this.highHistory.length > 50
-      ? Math.max(...this.highHistory.slice(-50))
-      : currentPrice + 50;
-    const weeklyLow = this.lowHistory.length > 50
-      ? Math.min(...this.lowHistory.slice(-50))
-      : currentPrice - 50;
-    const weeklyClose = this.priceHistory.length > 0
-      ? this.priceHistory[this.priceHistory.length - 1]
-      : currentPrice;
+    const weeklyVolatilityRange = currentPrice * 0.025;
+    const weeklyHigh = currentPrice + (Math.random() * weeklyVolatilityRange);
+    const weeklyLow = currentPrice - (Math.random() * weeklyVolatilityRange);
+    const weeklyClose = currentPrice - (Math.random() - 0.5) * (weeklyVolatilityRange * 0.5);
     
     const weeklyPivot = (weeklyHigh + weeklyLow + weeklyClose) / 3;
     
-    const recentHigh = this.highHistory.length > 0 
-      ? Math.max(...this.highHistory.slice(-20))
-      : currentPrice + 50;
-    const recentLow = this.lowHistory.length > 0
-      ? Math.min(...this.lowHistory.slice(-20))
-      : currentPrice - 50;
+    const recentVolatilityRange = currentPrice * 0.012;
+    const recentHigh = currentPrice + (Math.random() * recentVolatilityRange);
+    const recentLow = currentPrice - (Math.random() * recentVolatilityRange);
     
     const fractalResistance = recentHigh + Math.random() * 10;
     const fractalSupport = recentLow - Math.random() * 10;
