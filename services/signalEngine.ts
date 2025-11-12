@@ -502,16 +502,60 @@ class SignalGenerationEngine {
     };
   }
   
+  private getDerivedDailyOHLC(): { yesterdayHigh: number; yesterdayLow: number; yesterdayClose: number; yesterdayOpen: number } {
+    const now = new Date();
+    const nowUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours(), now.getUTCMinutes());
+    
+    const NY_CLOSE_HOUR_UTC = 21;
+    
+    let todayNYClose = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), NY_CLOSE_HOUR_UTC, 0, 0);
+    if (nowUTC < todayNYClose) {
+      todayNYClose -= 24 * 60 * 60 * 1000;
+    }
+    
+    const yesterdayNYClose = todayNYClose - (24 * 60 * 60 * 1000);
+    
+    const relevantPrices = this.priceHistory.filter((price, index) => {
+      if (index === 0) return false;
+      
+      const priceTime = Date.now() - ((this.priceHistory.length - 1 - index) * 3000);
+      return priceTime >= yesterdayNYClose && priceTime < todayNYClose;
+    });
+    
+    if (relevantPrices.length === 0) {
+      console.log('⚠️ No historical price data for previous day - using scaled fallback');
+      const currentPrice = this.currentPrice;
+      const volatilityRange = currentPrice * 0.015;
+      return {
+        yesterdayHigh: currentPrice + (volatilityRange / 2),
+        yesterdayLow: currentPrice - (volatilityRange / 2),
+        yesterdayClose: currentPrice,
+        yesterdayOpen: currentPrice - (volatilityRange * 0.3),
+      };
+    }
+    
+    const yesterdayHigh = Math.max(...relevantPrices);
+    const yesterdayLow = Math.min(...relevantPrices);
+    const yesterdayClose = relevantPrices[relevantPrices.length - 1];
+    const yesterdayOpen = relevantPrices[0];
+    
+    console.log(`📊 Derived OHLC from ${relevantPrices.length} historical data points`);
+    console.log(`   Time Window: ${new Date(yesterdayNYClose).toUTCString()} -> ${new Date(todayNYClose).toUTCString()}`);
+    console.log(`   Open: ${yesterdayOpen.toFixed(1)} | High: ${yesterdayHigh.toFixed(1)} | Low: ${yesterdayLow.toFixed(1)} | Close: ${yesterdayClose.toFixed(1)}`);
+    
+    return { yesterdayHigh, yesterdayLow, yesterdayClose, yesterdayOpen };
+  }
+
   private async calculateMarketFeatures(): Promise<MarketFeatures> {
     const currentPrice = this.currentPrice;
     
     const asianHigh = currentPrice + Math.random() * 20 + 10;
     const asianLow = currentPrice - Math.random() * 20 - 10;
     
-    const volatilityRange = currentPrice * 0.015;
-    const yesterdayHigh = currentPrice + (Math.random() * volatilityRange);
-    const yesterdayLow = currentPrice - (Math.random() * volatilityRange);
-    const yesterdayClose = currentPrice - (Math.random() - 0.5) * (volatilityRange * 0.5);
+    const ohlc = this.getDerivedDailyOHLC();
+    const yesterdayHigh = ohlc.yesterdayHigh;
+    const yesterdayLow = ohlc.yesterdayLow;
+    const yesterdayClose = ohlc.yesterdayClose;
     
     const dailyPivot = (yesterdayHigh + yesterdayLow + yesterdayClose) / 3;
     const dailyRange = yesterdayHigh - yesterdayLow;
