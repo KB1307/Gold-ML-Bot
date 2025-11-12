@@ -432,13 +432,9 @@ if (score < 70) → Warning: "System check recommended"
 
 ### 4. Review Performance
 - Go to History tab
-- See all past signals (active and closed)
+- See all past signals
 - Check win rate, profit factor
 - Review model health score
-- **Clear expired signals**: Remove closed/completed signals while keeping active ones
-  - Button: "Clear Expired Signals"
-  - Only removes: CLOSED, SL_HIT, ALL_TARGETS_HIT
-  - Preserves: ACTIVE, TP1_HIT, TP2_HIT (in progress)
 
 ### 5. Adjust Settings
 - Go to Settings tab
@@ -503,20 +499,6 @@ if (score < 70) → Warning: "System check recommended"
 
 ---
 
-## 📝 Changelog
-
-### Version 1.2.1 (2025-11-12)
-**Changes:**
-- ✅ Updated "Clear History" button to only remove expired signals
-  - Old behavior: Cleared ALL signals including active ones
-  - New behavior: Only removes CLOSED, SL_HIT, and ALL_TARGETS_HIT signals
-  - Benefit: Preserves active signals while cleaning up completed trades
-  - Console log: Shows count of cleared vs kept signals
-- ✅ Updated button text: "Clear All History" → "Clear Expired Signals"
-- ✅ Updated confirmation dialog to reflect new behavior
-
----
-
 **Last Updated**: 2025-11-12
-**System Version**: 1.2.1
+**System Version**: 1.2
 **Status**: ✅ Production Ready

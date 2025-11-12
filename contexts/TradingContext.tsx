@@ -90,7 +90,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     return () => clearInterval(priceInterval);
   }, []);
 
+  useEffect(() => {
+    const signalGenerationTimer = setInterval(() => {
+      checkAndGenerateSignal();
+    }, 30000);
 
+    return () => clearInterval(signalGenerationTimer);
+  }, []);
 
 
 
@@ -298,8 +304,46 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const signalAge = Date.now() - new Date(currentSignal.timestamp).getTime();
     const twoHoursInMs = 2 * 60 * 60 * 1000;
 
+    const currentMarketOutlook = await signalEngine.getMarketOutlook();
+    const currentRegimeType = currentMarketOutlook?.trend === "BULLISH" || currentMarketOutlook?.trend === "BEARISH" 
+      ? "TRENDING" 
+      : currentMarketOutlook?.volatility === "HIGH" 
+      ? "VOLATILE" 
+      : currentMarketOutlook?.volatility === "LOW" 
+      ? "QUIET" 
+      : "RANGING";
+
+    const hasRegimeChanged = currentSignal.generatedRegime && 
+      currentSignal.generatedRegime.type !== currentRegimeType;
+
+    if (hasRegimeChanged) {
+      console.log(`🔄 Signal ${currentSignal.id} expired due to REGIME CHANGE: ${currentSignal.generatedRegime?.type} → ${currentRegimeType}`);
+      newStatus = "CLOSED";
+      const now = new Date();
+      const utc2Hours = (now.getUTCHours() + 2) % 24;
+      const expiredSignal = {
+        ...currentSignal,
+        status: "CLOSED" as const,
+        exitTime: `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`,
+      };
+
+      signalEngine.updateSignalLockStatus(currentSignal.id, "CLOSED");
+      
+      setSignalHistory((prev) => {
+        const updated = prev.map(s => 
+          s.id === currentSignal.id ? expiredSignal : s
+        );
+        AsyncStorage.setItem("signal_history", JSON.stringify(updated));
+        return updated;
+      });
+
+      setCurrentSignal(null);
+      return;
+    }
+
     if (signalAge > twoHoursInMs) {
-      console.log(`⏰ Signal ${currentSignal.id} expired after 2 hours`);
+      console.log(`Signal ${currentSignal.id} expired after 2 hours (fallback)`);
+      newStatus = "CLOSED";
       const now = new Date();
       const utc2Hours = (now.getUTCHours() + 2) % 24;
       const expiredSignal = {
@@ -385,7 +429,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         setCurrentSignal(null);
       }
     }
-  }, [currentSignal]);
+  }, [currentSignal, marketOutlook]);
 
   const checkAndGenerateSignal = useCallback(async () => {
     const outlook = await signalEngine.getMarketOutlook();
@@ -422,14 +466,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.error("Failed to generate signal:", error);
     }
   }, [currentSignal, settings, accountBalance]);
-
-  useEffect(() => {
-    const signalGenerationTimer = setInterval(() => {
-      checkAndGenerateSignal();
-    }, 30000);
-
-    return () => clearInterval(signalGenerationTimer);
-  }, [checkAndGenerateSignal]);
 
   const updateAllSignalsStatus = useCallback(async () => {
     const price = signalEngine.getCurrentPrice();
@@ -617,16 +653,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   }, [updateAllSignalsStatus]);
 
   const clearHistoryCache = useCallback(async () => {
-    setSignalHistory((prev) => {
-      const activeSignals = prev.filter(
-        (signal) => signal.status !== "CLOSED" && 
-                    signal.status !== "SL_HIT" && 
-                    signal.status !== "ALL_TARGETS_HIT"
-      );
-      AsyncStorage.setItem('signal_history', JSON.stringify(activeSignals));
-      console.log(`✅ Cleared ${prev.length - activeSignals.length} expired signals, kept ${activeSignals.length} active`);
-      return activeSignals;
-    });
+    setSignalHistory([]);
+    await AsyncStorage.removeItem('signal_history');
+    console.log('✅ History cache cleared');
   }, []);
 
   return {

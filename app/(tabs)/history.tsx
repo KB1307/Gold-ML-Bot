@@ -103,13 +103,13 @@ export default function HistoryScreen() {
                 style={styles.clearButton}
                 onPress={() => {
                   if (Platform.OS === "web") {
-                    if (confirm("Clear all expired signals? Active signals will remain visible.")) {
+                    if (confirm("Clear all history? This will reset performance metrics but not affect the learning engine.")) {
                       clearHistoryCache();
                     }
                   } else {
                     Alert.alert(
-                      "Clear Expired Signals",
-                      "Remove all expired, closed, and completed signals? Active signals will be kept.",
+                      "Clear History",
+                      "Reset all history and performance metrics? This will not affect the learning engine.",
                       [
                         { text: "Cancel", style: "cancel" },
                         { text: "Clear", style: "destructive", onPress: clearHistoryCache },
@@ -119,7 +119,7 @@ export default function HistoryScreen() {
                 }}
               >
                 <AlertTriangle size={16} color="#ef4444" />
-                <Text style={styles.clearButtonText}>Clear Expired Signals</Text>
+                <Text style={styles.clearButtonText}>Clear All History</Text>
               </TouchableOpacity>
             )}
 
