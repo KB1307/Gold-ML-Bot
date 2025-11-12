@@ -111,7 +111,11 @@ export default function HistoryScreen() {
                           <View style={styles.signalInfo}>
                             <Text style={styles.signalType}>{signal.type} XAUUSD</Text>
                             <Text style={styles.signalDate}>
-                              {new Date(signal.timestamp.getTime() + 2 * 60 * 60 * 1000).toLocaleDateString('en-GB', { timeZone: 'UTC' })} {signal.entryTime}
+                              {(() => {
+                                const date = new Date(signal.timestamp);
+                                const utc2Date = new Date(date.getTime() + 2 * 60 * 60 * 1000);
+                                return `${utc2Date.toLocaleDateString('en-GB', { timeZone: 'UTC' })}, ${signal.entryTime}`;
+                              })()}
                             </Text>
                           </View>
                         </View>
