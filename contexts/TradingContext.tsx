@@ -96,7 +96,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     }, 30000);
 
     return () => clearInterval(signalGenerationTimer);
-  }, [checkAndGenerateSignal]);
+  }, []);
 
 
 
