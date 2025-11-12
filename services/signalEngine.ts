@@ -1250,7 +1250,7 @@ class SignalGenerationEngine {
       score: parseFloat((Math.abs(score) * 100).toFixed(1)),
     }));
     
-    const timeString = `${new Date().getUTCHours().toString().padStart(2, "0")}:${new Date().getUTCMinutes().toString().padStart(2, "0")}`;
+    const timeString = `${new Date().getHours().toString().padStart(2, "0")}:${new Date().getMinutes().toString().padStart(2, "0")}`;
     
     let latencyWarning: number | undefined;
     if (latency > LATENCY_WARNING_THRESHOLD_MS) {
