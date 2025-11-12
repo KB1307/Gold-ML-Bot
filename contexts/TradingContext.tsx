@@ -390,21 +390,24 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const checkAndGenerateSignal = useCallback(async () => {
     const outlook = await signalEngine.getMarketOutlook();
     
+    console.log(`🔍 Check Signal Generation: Market Open=${outlook.isMarketOpen}, Current Signal=${currentSignal ? 'EXISTS' : 'NONE'}`);
+    
     if (!outlook.isMarketOpen) {
-      console.log("Market is closed. No signal generation.");
+      console.log("❌ Market is closed. No signal generation.");
       return;
     }
 
     if (currentSignal && currentSignal.status === "ACTIVE") {
-      console.log("Active signal already exists. Skipping generation.");
+      console.log("⚠️ Active signal already exists. Skipping generation.");
       return;
     }
 
     try {
+      console.log(`🎯 Attempting signal generation with minConfidence=${settings.minConfidence}`);
       const signal = await signalEngine.generateSignal(settings, accountBalance);
       
       if (signal) {
-        console.log("New signal generated:", signal);
+        console.log("✅ New signal generated:", signal.type, "@ ", signal.entryPrice, "Confidence:", signal.confidence);
         setCurrentSignal(signal);
 
         setSignalHistory((prev) => {
@@ -417,9 +420,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         setPositionSizing(sizing);
         console.log("Position sizing calculated:", sizing);
         console.log(`💰 Fractional Kelly: ${sizing.fractionalKelly * 100}% | Optimal: ${sizing.optimalKellyPercentage}% of Account`);
+      } else {
+        console.log("⚠️ Signal generation returned NULL - Check logs above for rejection reason");
       }
     } catch (error) {
-      console.error("Failed to generate signal:", error);
+      console.error("❌ Failed to generate signal:", error);
     }
   }, [currentSignal, settings, accountBalance]);
 
@@ -533,16 +538,24 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   useEffect(() => {
     if (!isLoggedIn) {
+      console.log('⚠️ User not logged in - signal generation paused');
       return;
     }
 
+    console.log('✅ Signal generation system activated - checking every 30s');
+    
     const signalInterval = setInterval(() => {
+      console.log('⏰ 30s interval - checking for signal generation...');
       checkAndGenerateSignal();
     }, 30000);
 
+    console.log('🚀 Initial signal generation check...');
     checkAndGenerateSignal();
 
-    return () => clearInterval(signalInterval);
+    return () => {
+      console.log('🛑 Signal generation system deactivated');
+      clearInterval(signalInterval);
+    };
   }, [isLoggedIn, checkAndGenerateSignal]);
 
   const login = useCallback(async (username: string) => {
