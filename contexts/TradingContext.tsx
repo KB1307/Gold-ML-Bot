@@ -90,13 +90,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     return () => clearInterval(priceInterval);
   }, []);
 
-  useEffect(() => {
-    const signalGenerationTimer = setInterval(() => {
-      checkAndGenerateSignal();
-    }, 30000);
 
-    return () => clearInterval(signalGenerationTimer);
-  }, [checkAndGenerateSignal]);
 
 
 
@@ -428,6 +422,14 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.error("Failed to generate signal:", error);
     }
   }, [currentSignal, settings, accountBalance]);
+
+  useEffect(() => {
+    const signalGenerationTimer = setInterval(() => {
+      checkAndGenerateSignal();
+    }, 30000);
+
+    return () => clearInterval(signalGenerationTimer);
+  }, [checkAndGenerateSignal]);
 
   const updateAllSignalsStatus = useCallback(async () => {
     const price = signalEngine.getCurrentPrice();
