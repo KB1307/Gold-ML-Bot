@@ -480,6 +480,14 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       ? "QUIET" 
       : "RANGING";
 
+    const activeSignals = signalHistory.filter(s => 
+      s.status !== "CLOSED" && s.status !== "SL_HIT" && s.status !== "ALL_TARGETS_HIT"
+    );
+
+    if (activeSignals.length === 0) {
+      return;
+    }
+
     setSignalHistory((prev) => {
       let updated = false;
       const updatedHistory = prev.map(signal => {
