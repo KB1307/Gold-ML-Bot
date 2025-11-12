@@ -1250,9 +1250,9 @@ class SignalGenerationEngine {
       score: parseFloat((Math.abs(score) * 100).toFixed(1)),
     }));
     
-    const now = new Date();
-    const utc2Hours = (now.getUTCHours() + 2) % 24;
-    const timeString = `${utc2Hours.toString().padStart(2, "0")}:${now.getUTCMinutes().toString().padStart(2, "0")}`;
+    const timeNow = new Date();
+    const utc2Hours = (timeNow.getUTCHours() + 2) % 24;
+    const timeString = `${utc2Hours.toString().padStart(2, "0")}:${timeNow.getUTCMinutes().toString().padStart(2, "0")}`;
     
     let latencyWarning: number | undefined;
     if (latency > LATENCY_WARNING_THRESHOLD_MS) {
