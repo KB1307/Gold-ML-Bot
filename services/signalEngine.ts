@@ -505,18 +505,20 @@ class SignalGenerationEngine {
   private async calculateMarketFeatures(): Promise<MarketFeatures> {
     const currentPrice = this.currentPrice;
     
-    const asianHigh = currentPrice + Math.random() * 20 + 10;
-    const asianLow = currentPrice - Math.random() * 20 - 10;
+    const recentHigh = this.highHistory.length > 0 ? Math.max(...this.highHistory.slice(-20)) : currentPrice + 30;
+    const recentLow = this.lowHistory.length > 0 ? Math.min(...this.lowHistory.slice(-20)) : currentPrice - 30;
     
-    const dailyPivot = currentPrice;
-    const pivotRange = 50;
+    const asianHigh = recentHigh;
+    const asianLow = recentLow;
     
-    const r1 = dailyPivot + pivotRange * 0.382;
-    const r2 = dailyPivot + pivotRange * 0.618;
-    const r3 = dailyPivot + pivotRange * 1.0;
-    const s1 = dailyPivot - pivotRange * 0.382;
-    const s2 = dailyPivot - pivotRange * 0.618;
-    const s3 = dailyPivot - pivotRange * 1.0;
+    const dailyPivot = (recentHigh + recentLow + currentPrice) / 3;
+    
+    const r1 = 2 * dailyPivot - recentLow;
+    const r2 = dailyPivot + (recentHigh - recentLow);
+    const r3 = recentHigh + 2 * (dailyPivot - recentLow);
+    const s1 = 2 * dailyPivot - recentHigh;
+    const s2 = dailyPivot - (recentHigh - recentLow);
+    const s3 = recentLow - 2 * (recentHigh - dailyPivot);
     
     const rsi = 45 + Math.random() * 20;
     const atr = 8 + Math.random() * 4;
@@ -524,13 +526,6 @@ class SignalGenerationEngine {
     const volumeRatio = 0.8 + Math.random() * 0.4;
     
     const weeklyPivot = dailyPivot + (Math.random() - 0.5) * 100;
-    
-    const recentHigh = this.highHistory.length > 0 
-      ? Math.max(...this.highHistory.slice(-20))
-      : currentPrice + 50;
-    const recentLow = this.lowHistory.length > 0
-      ? Math.min(...this.lowHistory.slice(-20))
-      : currentPrice - 50;
     
     const fractalResistance = recentHigh + Math.random() * 10;
     const fractalSupport = recentLow - Math.random() * 10;
