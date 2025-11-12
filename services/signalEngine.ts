@@ -508,22 +508,42 @@ class SignalGenerationEngine {
     const asianHigh = currentPrice + Math.random() * 20 + 10;
     const asianLow = currentPrice - Math.random() * 20 - 10;
     
-    const dailyPivot = currentPrice;
-    const pivotRange = 50;
+    const yesterdayHigh = this.highHistory.length > 20 
+      ? Math.max(...this.highHistory.slice(-20))
+      : currentPrice + 30;
+    const yesterdayLow = this.lowHistory.length > 20
+      ? Math.min(...this.lowHistory.slice(-20))
+      : currentPrice - 30;
+    const yesterdayClose = this.priceHistory.length > 0
+      ? this.priceHistory[this.priceHistory.length - 1]
+      : currentPrice;
     
-    const r1 = dailyPivot + pivotRange * 0.382;
-    const r2 = dailyPivot + pivotRange * 0.618;
-    const r3 = dailyPivot + pivotRange * 1.0;
-    const s1 = dailyPivot - pivotRange * 0.382;
-    const s2 = dailyPivot - pivotRange * 0.618;
-    const s3 = dailyPivot - pivotRange * 1.0;
+    const dailyPivot = (yesterdayHigh + yesterdayLow + yesterdayClose) / 3;
+    const dailyRange = yesterdayHigh - yesterdayLow;
+    
+    const r1 = (2 * dailyPivot) - yesterdayLow;
+    const s1 = (2 * dailyPivot) - yesterdayHigh;
+    const r2 = dailyPivot + dailyRange;
+    const s2 = dailyPivot - dailyRange;
+    const r3 = yesterdayHigh + 2 * (dailyPivot - yesterdayLow);
+    const s3 = yesterdayLow - 2 * (yesterdayHigh - dailyPivot);
     
     const rsi = 45 + Math.random() * 20;
     const atr = 8 + Math.random() * 4;
     const dxyChange = (Math.random() - 0.5) * 0.5;
     const volumeRatio = 0.8 + Math.random() * 0.4;
     
-    const weeklyPivot = dailyPivot + (Math.random() - 0.5) * 100;
+    const weeklyHigh = this.highHistory.length > 50
+      ? Math.max(...this.highHistory.slice(-50))
+      : currentPrice + 50;
+    const weeklyLow = this.lowHistory.length > 50
+      ? Math.min(...this.lowHistory.slice(-50))
+      : currentPrice - 50;
+    const weeklyClose = this.priceHistory.length > 0
+      ? this.priceHistory[this.priceHistory.length - 1]
+      : currentPrice;
+    
+    const weeklyPivot = (weeklyHigh + weeklyLow + weeklyClose) / 3;
     
     const recentHigh = this.highHistory.length > 0 
       ? Math.max(...this.highHistory.slice(-20))
@@ -572,21 +592,27 @@ class SignalGenerationEngine {
       this.volumeHistory.shift();
     }
     
+    console.log(`📊 Pivot Points Calculated:`);    console.log(`   Daily Pivot: ${dailyPivot.toFixed(1)} (H: ${yesterdayHigh.toFixed(1)}, L: ${yesterdayLow.toFixed(1)}, C: ${yesterdayClose.toFixed(1)})`);
+    console.log(`   R1: ${r1.toFixed(1)} | R2: ${r2.toFixed(1)} | R3: ${r3.toFixed(1)}`);
+    console.log(`   S1: ${s1.toFixed(1)} | S2: ${s2.toFixed(1)} | S3: ${s3.toFixed(1)}`);
+    console.log(`   Weekly Pivot: ${weeklyPivot.toFixed(1)}`);
+    console.log(`   Current Price: ${currentPrice.toFixed(1)}`);
+    
     return {
       asianHigh,
       asianLow,
-      dailyPivot,
-      r1,
-      r2,
-      r3,
-      s1,
-      s2,
-      s3,
+      dailyPivot: parseFloat(dailyPivot.toFixed(1)),
+      r1: parseFloat(r1.toFixed(1)),
+      r2: parseFloat(r2.toFixed(1)),
+      r3: parseFloat(r3.toFixed(1)),
+      s1: parseFloat(s1.toFixed(1)),
+      s2: parseFloat(s2.toFixed(1)),
+      s3: parseFloat(s3.toFixed(1)),
       rsi,
       atr,
       dxyChange,
       volumeRatio,
-      weeklyPivot,
+      weeklyPivot: parseFloat(weeklyPivot.toFixed(1)),
       fractalResistance,
       fractalSupport,
       macdHistogram,
