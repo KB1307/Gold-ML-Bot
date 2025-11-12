@@ -1,13 +1,13 @@
-import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Platform, RefreshControl } from "react-native";
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Platform, RefreshControl, TouchableOpacity } from "react-native";
 import { useState, useEffect, useCallback } from "react";
 import { LinearGradient } from "expo-linear-gradient";
-import { TrendingUp, TrendingDown, Target, Shield, Clock, Zap, BarChart3, Percent, AlertTriangle, Activity } from "lucide-react-native";
+import { TrendingUp, TrendingDown, Target, Shield, Clock, Zap, BarChart3, Percent, AlertTriangle, Activity, RefreshCw } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
 import { Stack } from "expo-router";
 import PriceChart from "@/components/PriceChart";
 
 export default function DashboardScreen() {
-  const { currentSignal, marketOutlook, performanceMetrics, positionSizing, currentPrice, priceHistory, refreshData } = useTrading();
+  const { currentSignal, marketOutlook, performanceMetrics, positionSizing, currentPrice, priceHistory, refreshData, manualGenerateSignal } = useTrading();
   const [refreshing, setRefreshing] = useState(false);
 
   const onRefresh = useCallback(async () => {
@@ -16,14 +16,7 @@ export default function DashboardScreen() {
     setRefreshing(false);
   }, [refreshData]);
 
-  useEffect(() => {
-    const autoRefreshInterval = setInterval(() => {
-      console.log('Auto-refreshing dashboard data...');
-      refreshData();
-    }, 60000);
 
-    return () => clearInterval(autoRefreshInterval);
-  }, [refreshData]);
 
   if (!marketOutlook) {
     return (
@@ -95,6 +88,17 @@ export default function DashboardScreen() {
                 </View>
               </View>
             </View>
+
+            {marketOutlook.isMarketOpen && !currentSignal && (
+              <TouchableOpacity 
+                style={styles.generateButton} 
+                onPress={manualGenerateSignal}
+                activeOpacity={0.7}
+              >
+                <RefreshCw size={20} color="#FFD700" />
+                <Text style={styles.generateButtonText}>Generate New Signal</Text>
+              </TouchableOpacity>
+            )}
 
             {priceHistory && priceHistory.length > 1 && (
               <View style={styles.chartCard}>
@@ -1048,4 +1052,22 @@ const styles = StyleSheet.create({
     width: "100%",
     alignItems: "center",
   },
+  generateButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255, 215, 0, 0.15)",
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: "rgba(255, 215, 0, 0.3)",
+    gap: 8,
+  },
+  generateButtonText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFD700",
+  } as const,
 });

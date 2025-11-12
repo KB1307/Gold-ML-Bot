@@ -89,15 +89,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     return () => clearInterval(priceInterval);
   }, []);
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      updateMarketOutlook();
-    }, 5000);
 
-    updateMarketOutlook();
-
-    return () => clearInterval(interval);
-  }, []);
 
   const loadPersistedData = async () => {
     try {
@@ -610,29 +602,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     return () => clearInterval(statusInterval);
   }, [currentSignal, updateSignalStatus]);
 
-  useEffect(() => {
-    const allSignalsInterval = setInterval(() => {
-      updateAllSignalsStatus();
-    }, 30000);
 
-    updateAllSignalsStatus();
 
-    return () => clearInterval(allSignalsInterval);
-  }, [updateAllSignalsStatus]);
 
-  useEffect(() => {
-    if (!isLoggedIn) {
-      return;
-    }
-
-    const signalInterval = setInterval(() => {
-      checkAndGenerateSignal();
-    }, 30000);
-
-    checkAndGenerateSignal();
-
-    return () => clearInterval(signalInterval);
-  }, [isLoggedIn, checkAndGenerateSignal]);
 
   const login = useCallback(async (username: string) => {
     setIsLoggedIn(true);
@@ -671,8 +643,14 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     await signalEngine.updateCurrentPrice();
     const price = signalEngine.getCurrentPrice();
     setCurrentPrice(price);
-    console.log('Data refreshed successfully');
-  }, []);
+    await updateAllSignalsStatus();
+    console.log('✅ Manual refresh completed');
+  }, [updateAllSignalsStatus]);
+
+  const manualGenerateSignal = useCallback(async () => {
+    await checkAndGenerateSignal();
+    console.log('✅ Manual signal generation triggered');
+  }, [checkAndGenerateSignal]);
 
   return {
     isLoggedIn,
@@ -692,5 +670,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     deleteSignalFromHistory,
     manualCloseSignal,
     refreshData,
+    manualGenerateSignal,
   };
 });
