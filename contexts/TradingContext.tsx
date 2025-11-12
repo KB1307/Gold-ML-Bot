@@ -55,6 +55,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const init = async () => {
       await signalEngine.loadPersistedLearningData();
       await loadPersistedData();
+      await updateMarketOutlook();
     };
     init();
   }, []);
