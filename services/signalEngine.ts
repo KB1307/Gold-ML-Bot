@@ -1,4 +1,4 @@
-import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent } from "@/types/trading";
+import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric } from "@/types/trading";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 interface OrderFlowData {
@@ -116,6 +116,8 @@ const INTERMARKET_CACHE_DURATION = 10000;
 const HYPOTHETICAL_TRADE_HISTORY_LIMIT = 100;
 const MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL = 15;
 const MAX_RECENT_SIGNAL_TIME_MINUTES = 5;
+const DRIFT_CHECK_INTERVAL = 24 * 60 * 60 * 1000;
+const FEATURE_DRIFT_STORAGE_KEY = 'feature_drift_history_v1';
 
 async function fetchIntermarketData(): Promise<IntermarketData> {
   const now = Date.now();
@@ -261,6 +263,11 @@ class SignalGenerationEngine {
   private lastFeatureCorrelationCheck: number = 0;
   private featureCorrelationStatus: string = 'HEALTHY';
   private modelHealthScore: number = 100;
+  private lastDriftCheck: number = 0;
+  private featureDistributionHistory: Map<string, number[]> = new Map();
+  private featureImportanceHistory: Map<string, number[]> = new Map();
+  private conceptDriftScore: number = 0;
+  private driftAlertLevel: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' = 'NONE';
   
   async updateCurrentPrice(): Promise<number> {
     try {
@@ -822,12 +829,219 @@ class SignalGenerationEngine {
       healthScore -= 30;
     }
     
+    if (this.conceptDriftScore > 0.3) {
+      healthScore -= Math.min(25, this.conceptDriftScore * 50);
+    }
+    
     this.modelHealthScore = Math.max(0, Math.min(100, healthScore));
     
-    console.log(`🏥 Model Health Score: ${this.modelHealthScore.toFixed(0)}/100 (Days: ${daysSinceRetraining.toFixed(1)}, ConfDeg: ${(confidenceDegradation * 100).toFixed(1)}%, FeatureCorr: ${this.featureCorrelationStatus})`);
+    console.log(`🏥 Model Health Score: ${this.modelHealthScore.toFixed(0)}/100 (Days: ${daysSinceRetraining.toFixed(1)}, ConfDeg: ${(confidenceDegradation * 100).toFixed(1)}%, FeatureCorr: ${this.featureCorrelationStatus}, Drift: ${this.conceptDriftScore.toFixed(2)})`);
     
     if (this.modelHealthScore < 70) {
       console.log('🚨 WARN: Model Health Score below 70. System check recommended before degradation.');
+    }
+  }
+  
+  private async detectConceptDrift(features: MarketFeatures): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastDriftCheck < DRIFT_CHECK_INTERVAL) {
+      return;
+    }
+    
+    this.lastDriftCheck = now;
+    
+    if (this.tradeOutcomes.length < 30) {
+      console.log('⚠️ Insufficient data for drift detection (need 30+ outcomes)');
+      return;
+    }
+    
+    console.log('\n🔍 DRIFT DETECTION ANALYSIS');
+    console.log('='.repeat(60));
+    
+    const featureKeys = ['rsi', 'atr', 'dxyChange', 'volumeRatio', 'sentiment_score', 'orderFlow_volumeImbalance'];
+    
+    for (const key of featureKeys) {
+      let currentValue: number;
+      
+      switch (key) {
+        case 'rsi':
+          currentValue = features.rsi;
+          break;
+        case 'atr':
+          currentValue = features.atr;
+          break;
+        case 'dxyChange':
+          currentValue = features.dxyChange;
+          break;
+        case 'volumeRatio':
+          currentValue = features.volumeRatio;
+          break;
+        case 'sentiment_score':
+          currentValue = features.sentiment.score;
+          break;
+        case 'orderFlow_volumeImbalance':
+          currentValue = features.orderFlow.volumeImbalance;
+          break;
+        default:
+          continue;
+      }
+      
+      if (!this.featureDistributionHistory.has(key)) {
+        this.featureDistributionHistory.set(key, []);
+      }
+      
+      const history = this.featureDistributionHistory.get(key)!;
+      history.push(currentValue);
+      
+      if (history.length > 100) {
+        history.shift();
+      }
+      
+      this.featureDistributionHistory.set(key, history);
+    }
+    
+    let totalDrift = 0;
+    let driftCount = 0;
+    
+    for (const [key, values] of this.featureDistributionHistory.entries()) {
+      if (values.length < 30) continue;
+      
+      const recent = values.slice(-10);
+      const historical = values.slice(0, -10);
+      
+      const recentMean = recent.reduce((a, b) => a + b, 0) / recent.length;
+      const historicalMean = historical.reduce((a, b) => a + b, 0) / historical.length;
+      
+      const recentStd = Math.sqrt(recent.reduce((sum, val) => sum + Math.pow(val - recentMean, 2), 0) / recent.length);
+      const historicalStd = Math.sqrt(historical.reduce((sum, val) => sum + Math.pow(val - historicalMean, 2), 0) / historical.length);
+      
+      const meanShift = Math.abs(recentMean - historicalMean) / (historicalStd + 0.01);
+      const stdShift = Math.abs(recentStd - historicalStd) / (historicalStd + 0.01);
+      
+      const drift = (meanShift + stdShift) / 2;
+      totalDrift += drift;
+      driftCount++;
+      
+      console.log(`   ${key}: Mean ${historicalMean.toFixed(2)} -> ${recentMean.toFixed(2)} | Drift: ${drift.toFixed(2)}`);
+    }
+    
+    this.conceptDriftScore = driftCount > 0 ? totalDrift / driftCount : 0;
+    
+    if (this.conceptDriftScore < 0.2) {
+      this.driftAlertLevel = 'NONE';
+      console.log(`✅ Concept Drift: STABLE (${this.conceptDriftScore.toFixed(2)})`);
+    } else if (this.conceptDriftScore < 0.4) {
+      this.driftAlertLevel = 'LOW';
+      console.log(`⚠️ Concept Drift: LOW (${this.conceptDriftScore.toFixed(2)})`);
+    } else if (this.conceptDriftScore < 0.6) {
+      this.driftAlertLevel = 'MEDIUM';
+      console.log(`🔶 Concept Drift: MEDIUM (${this.conceptDriftScore.toFixed(2)}) - Monitor closely`);
+    } else {
+      this.driftAlertLevel = 'HIGH';
+      console.log(`🚨 Concept Drift: HIGH (${this.conceptDriftScore.toFixed(2)}) - RETRAINING RECOMMENDED`);
+    }
+    
+    console.log('='.repeat(60) + '\n');
+    
+    await this.saveFeatureDriftHistory();
+  }
+  
+  private analyzeFeatureImportanceDrift(): FeatureDriftMetric[] {
+    if (this.tradeOutcomes.length < 20) {
+      return [];
+    }
+    
+    const recentOutcomes = this.tradeOutcomes.slice(-20);
+    const olderOutcomes = this.tradeOutcomes.slice(-40, -20);
+    
+    if (olderOutcomes.length < 10) {
+      return [];
+    }
+    
+    const metrics: FeatureDriftMetric[] = [];
+    
+    const featureNames = ['rsi', 'atr', 'volumeRatio', 'sentiment', 'dxyChange'];
+    
+    for (const featureName of featureNames) {
+      const recentWinFeatures = recentOutcomes.filter(o => o.result === 'WIN');
+      const olderWinFeatures = olderOutcomes.filter(o => o.result === 'WIN');
+      
+      if (recentWinFeatures.length === 0 || olderWinFeatures.length === 0) continue;
+      
+      let recentAvg = 0;
+      let olderAvg = 0;
+      
+      if (featureName === 'rsi') {
+        recentAvg = recentWinFeatures.reduce((sum, o) => sum + o.features.rsi, 0) / recentWinFeatures.length;
+        olderAvg = olderWinFeatures.reduce((sum, o) => sum + o.features.rsi, 0) / olderWinFeatures.length;
+      } else if (featureName === 'atr') {
+        recentAvg = recentWinFeatures.reduce((sum, o) => sum + o.features.atr, 0) / recentWinFeatures.length;
+        olderAvg = olderWinFeatures.reduce((sum, o) => sum + o.features.atr, 0) / olderWinFeatures.length;
+      } else if (featureName === 'volumeRatio') {
+        recentAvg = recentWinFeatures.reduce((sum, o) => sum + o.features.volumeRatio, 0) / recentWinFeatures.length;
+        olderAvg = olderWinFeatures.reduce((sum, o) => sum + o.features.volumeRatio, 0) / olderWinFeatures.length;
+      } else if (featureName === 'sentiment') {
+        recentAvg = recentWinFeatures.reduce((sum, o) => sum + o.features.sentiment.score, 0) / recentWinFeatures.length;
+        olderAvg = olderWinFeatures.reduce((sum, o) => sum + o.features.sentiment.score, 0) / olderWinFeatures.length;
+      } else if (featureName === 'dxyChange') {
+        recentAvg = recentWinFeatures.reduce((sum, o) => sum + o.features.dxyChange, 0) / recentWinFeatures.length;
+        olderAvg = olderWinFeatures.reduce((sum, o) => sum + o.features.dxyChange, 0) / olderWinFeatures.length;
+      }
+      
+      const historicalImportance = Math.abs(olderAvg);
+      const currentImportance = Math.abs(recentAvg);
+      const drift = Math.abs(currentImportance - historicalImportance) / (historicalImportance + 0.01);
+      
+      let status: 'STABLE' | 'DEGRADING' | 'CRITICAL';
+      if (drift < 0.3) {
+        status = 'STABLE';
+      } else if (drift < 0.6) {
+        status = 'DEGRADING';
+      } else {
+        status = 'CRITICAL';
+      }
+      
+      metrics.push({
+        feature: featureName,
+        currentImportance: parseFloat(currentImportance.toFixed(3)),
+        historicalImportance: parseFloat(historicalImportance.toFixed(3)),
+        drift: parseFloat(drift.toFixed(3)),
+        status,
+      });
+      
+      console.log(`   📊 ${featureName}: ${status} (Historical: ${historicalImportance.toFixed(3)}, Current: ${currentImportance.toFixed(3)}, Drift: ${(drift * 100).toFixed(1)}%)`);
+    }
+    
+    return metrics;
+  }
+  
+  private async saveFeatureDriftHistory(): Promise<void> {
+    try {
+      const data = {
+        featureDistributionHistory: Array.from(this.featureDistributionHistory.entries()),
+        conceptDriftScore: this.conceptDriftScore,
+        driftAlertLevel: this.driftAlertLevel,
+        lastDriftCheck: this.lastDriftCheck,
+      };
+      await AsyncStorage.setItem(FEATURE_DRIFT_STORAGE_KEY, JSON.stringify(data));
+    } catch (error) {
+      console.error('Failed to save drift history:', error);
+    }
+  }
+  
+  private async loadFeatureDriftHistory(): Promise<void> {
+    try {
+      const data = await AsyncStorage.getItem(FEATURE_DRIFT_STORAGE_KEY);
+      if (data) {
+        const parsed = JSON.parse(data);
+        this.featureDistributionHistory = new Map(parsed.featureDistributionHistory);
+        this.conceptDriftScore = parsed.conceptDriftScore || 0;
+        this.driftAlertLevel = parsed.driftAlertLevel || 'NONE';
+        this.lastDriftCheck = parsed.lastDriftCheck || 0;
+        console.log('✓ Loaded drift detection history');
+      }
+    } catch (error) {
+      console.error('Failed to load drift history:', error);
     }
   }
   
@@ -1141,6 +1355,8 @@ class SignalGenerationEngine {
         this.modelWeights = new Map(weights);
         console.log('✓ Loaded model weights from storage');
       }
+      
+      await this.loadFeatureDriftHistory();
     } catch (error) {
       console.error('Failed to load learning data:', error);
     }
@@ -1262,6 +1478,8 @@ class SignalGenerationEngine {
     
     await this.updateCurrentPrice();
     const features = await this.calculateMarketFeatures();
+    
+    await this.detectConceptDrift(features);
     
     const endTime = performance.now();
     const latency = endTime - startTime;
@@ -1641,12 +1859,30 @@ class SignalGenerationEngine {
   }
   
   getModelHealthMetrics() {
+    const featureDriftMetrics = this.analyzeFeatureImportanceDrift();
+    const timeSinceRetraining = Date.now() - this.lastTrainingTime;
+    const daysSinceRetrain = timeSinceRetraining / (24 * 60 * 60 * 1000);
+    
+    const confidenceDegradation = this.performanceMetrics.recentWinningConfidences.length > 0
+      ? MIN_CONFIDENCE_FOR_RETRAINING - (this.performanceMetrics.recentWinningConfidences.reduce((a, b) => a + b, 0) / this.performanceMetrics.recentWinningConfidences.length)
+      : 0;
+    
+    const retrainingRecommended = (
+      this.driftAlertLevel === 'HIGH' ||
+      this.conceptDriftScore > 0.5 ||
+      confidenceDegradation > 0.10 ||
+      daysSinceRetrain > 10
+    );
+    
     return {
       modelHealthScore: this.modelHealthScore,
       featureCorrelationStatus: this.featureCorrelationStatus,
-      confidenceDegradation: this.performanceMetrics.recentWinningConfidences.length > 0
-        ? MIN_CONFIDENCE_FOR_RETRAINING - (this.performanceMetrics.recentWinningConfidences.reduce((a, b) => a + b, 0) / this.performanceMetrics.recentWinningConfidences.length)
-        : 0,
+      confidenceDegradation,
+      conceptDriftScore: this.conceptDriftScore,
+      featureImportanceDrift: featureDriftMetrics,
+      driftAlertLevel: this.driftAlertLevel,
+      daysSinceRetrain: parseFloat(daysSinceRetrain.toFixed(1)),
+      retrainingRecommended,
     };
   }
 

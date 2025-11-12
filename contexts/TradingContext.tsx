@@ -151,6 +151,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         modelHealthScore: healthMetrics.modelHealthScore,
         featureCorrelationStatus: healthMetrics.featureCorrelationStatus,
         confidenceDegradation: healthMetrics.confidenceDegradation,
+        conceptDriftScore: healthMetrics.conceptDriftScore,
+        featureImportanceDrift: healthMetrics.featureImportanceDrift,
+        driftAlertLevel: healthMetrics.driftAlertLevel,
+        daysSinceRetrain: healthMetrics.daysSinceRetrain,
+        retrainingRecommended: healthMetrics.retrainingRecommended,
       };
     }
 
@@ -265,6 +270,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       modelHealthScore: healthMetrics.modelHealthScore,
       featureCorrelationStatus: healthMetrics.featureCorrelationStatus,
       confidenceDegradation: healthMetrics.confidenceDegradation,
+      conceptDriftScore: healthMetrics.conceptDriftScore,
+      featureImportanceDrift: healthMetrics.featureImportanceDrift,
+      driftAlertLevel: healthMetrics.driftAlertLevel,
+      daysSinceRetrain: healthMetrics.daysSinceRetrain,
+      retrainingRecommended: healthMetrics.retrainingRecommended,
     };
   }, [accountBalance, settings.basePositionSize]);
 

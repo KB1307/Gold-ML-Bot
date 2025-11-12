@@ -1,12 +1,12 @@
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Platform, Switch, Alert } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { Settings as SettingsIcon, Target, Shield, TrendingUp, LogOut, Save, Trash2 } from "lucide-react-native";
+import { Settings as SettingsIcon, Target, Shield, TrendingUp, LogOut, Save, Trash2, Activity, AlertTriangle } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
 import { useState } from "react";
 import { Stack, useRouter } from "expo-router";
 
 export default function SettingsScreen() {
-  const { settings, updateSettings, logout, clearHistory } = useTrading();
+  const { settings, updateSettings, logout, clearHistory, performanceMetrics } = useTrading();
   const router = useRouter();
   
   const [tp1Pips, setTp1Pips] = useState<string>(settings.tp1Pips.toString());
@@ -228,6 +228,113 @@ export default function SettingsScreen() {
                   ios_backgroundColor="#333"
                 />
               </View>
+            </View>
+
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <Activity size={20} color="#8b5cf6" />
+                <Text style={styles.sectionTitle}>Model Health & Drift Detection</Text>
+              </View>
+              
+              <View style={styles.healthRow}>
+                <Text style={styles.healthLabel}>Model Health Score</Text>
+                <View style={styles.healthValueContainer}>
+                  <Text style={[
+                    styles.healthValue,
+                    (performanceMetrics.modelHealthScore || 100) >= 80 && styles.healthValueGood,
+                    (performanceMetrics.modelHealthScore || 100) >= 50 && (performanceMetrics.modelHealthScore || 100) < 80 && styles.healthValueWarning,
+                    (performanceMetrics.modelHealthScore || 100) < 50 && styles.healthValueCritical,
+                  ]}>
+                    {(performanceMetrics.modelHealthScore || 100).toFixed(0)}/100
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.healthRow}>
+                <Text style={styles.healthLabel}>Concept Drift Score</Text>
+                <View style={styles.healthValueContainer}>
+                  <Text style={[
+                    styles.healthValue,
+                    (performanceMetrics.conceptDriftScore || 0) < 0.2 && styles.healthValueGood,
+                    (performanceMetrics.conceptDriftScore || 0) >= 0.2 && (performanceMetrics.conceptDriftScore || 0) < 0.4 && styles.healthValueWarning,
+                    (performanceMetrics.conceptDriftScore || 0) >= 0.4 && styles.healthValueCritical,
+                  ]}>
+                    {(performanceMetrics.conceptDriftScore || 0).toFixed(2)}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.healthRow}>
+                <Text style={styles.healthLabel}>Drift Alert Level</Text>
+                <View style={[
+                  styles.alertBadge,
+                  performanceMetrics.driftAlertLevel === 'NONE' && styles.alertBadgeNone,
+                  performanceMetrics.driftAlertLevel === 'LOW' && styles.alertBadgeLow,
+                  performanceMetrics.driftAlertLevel === 'MEDIUM' && styles.alertBadgeMedium,
+                  performanceMetrics.driftAlertLevel === 'HIGH' && styles.alertBadgeHigh,
+                ]}>
+                  <Text style={styles.alertBadgeText}>
+                    {performanceMetrics.driftAlertLevel || 'NONE'}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.healthRow}>
+                <Text style={styles.healthLabel}>Days Since Retrain</Text>
+                <Text style={[
+                  styles.healthValue,
+                  (performanceMetrics.daysSinceRetrain || 0) < 7 && styles.healthValueGood,
+                  (performanceMetrics.daysSinceRetrain || 0) >= 7 && (performanceMetrics.daysSinceRetrain || 0) < 14 && styles.healthValueWarning,
+                  (performanceMetrics.daysSinceRetrain || 0) >= 14 && styles.healthValueCritical,
+                ]}>
+                  {(performanceMetrics.daysSinceRetrain || 0).toFixed(1)} days
+                </Text>
+              </View>
+
+              <View style={styles.healthRow}>
+                <Text style={styles.healthLabel}>Feature Correlation</Text>
+                <Text style={[
+                  styles.healthValue,
+                  performanceMetrics.featureCorrelationStatus === 'HEALTHY' && styles.healthValueGood,
+                  performanceMetrics.featureCorrelationStatus === 'MODERATE' && styles.healthValueWarning,
+                  performanceMetrics.featureCorrelationStatus === 'POOR' && styles.healthValueCritical,
+                ]}>
+                  {performanceMetrics.featureCorrelationStatus || 'HEALTHY'}
+                </Text>
+              </View>
+
+              {performanceMetrics.retrainingRecommended && (
+                <View style={styles.retrainAlert}>
+                  <AlertTriangle size={16} color="#f59e0b" />
+                  <Text style={styles.retrainAlertText}>
+                    Model retraining recommended. Drift detected or confidence degradation.
+                  </Text>
+                </View>
+              )}
+
+              {performanceMetrics.featureImportanceDrift && performanceMetrics.featureImportanceDrift.length > 0 && (
+                <View style={styles.featureDriftContainer}>
+                  <Text style={styles.featureDriftTitle}>Feature Importance Drift</Text>
+                  {performanceMetrics.featureImportanceDrift.map((metric, idx) => (
+                    <View key={idx} style={styles.featureDriftRow}>
+                      <Text style={styles.featureDriftName}>{metric.feature}</Text>
+                      <View style={styles.featureDriftValues}>
+                        <Text style={styles.featureDriftText}>
+                          {metric.historicalImportance.toFixed(3)} → {metric.currentImportance.toFixed(3)}
+                        </Text>
+                        <View style={[
+                          styles.featureStatusBadge,
+                          metric.status === 'STABLE' && styles.featureStatusStable,
+                          metric.status === 'DEGRADING' && styles.featureStatusDegrading,
+                          metric.status === 'CRITICAL' && styles.featureStatusCritical,
+                        ]}>
+                          <Text style={styles.featureStatusText}>{metric.status}</Text>
+                        </View>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              )}
             </View>
 
             <View style={styles.infoCard}>
@@ -469,6 +576,129 @@ const styles = StyleSheet.create({
     color: "#666",
     marginBottom: 4,
   },
+  healthRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 14,
+    paddingVertical: 8,
+  },
+  healthLabel: {
+    fontSize: 14,
+    color: "#999",
+    fontWeight: "500",
+  } as const,
+  healthValueContainer: {
+    alignItems: "flex-end",
+  },
+  healthValue: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#fff",
+  } as const,
+  healthValueGood: {
+    color: "#22c55e",
+  },
+  healthValueWarning: {
+    color: "#f59e0b",
+  },
+  healthValueCritical: {
+    color: "#ef4444",
+  },
+  alertBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  alertBadgeNone: {
+    backgroundColor: "rgba(34, 197, 94, 0.15)",
+  },
+  alertBadgeLow: {
+    backgroundColor: "rgba(245, 158, 11, 0.15)",
+  },
+  alertBadgeMedium: {
+    backgroundColor: "rgba(249, 115, 22, 0.15)",
+  },
+  alertBadgeHigh: {
+    backgroundColor: "rgba(239, 68, 68, 0.15)",
+  },
+  alertBadgeText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#fff",
+  } as const,
+  retrainAlert: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(245, 158, 11, 0.1)",
+    padding: 14,
+    borderRadius: 10,
+    marginTop: 12,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: "rgba(245, 158, 11, 0.3)",
+  },
+  retrainAlertText: {
+    flex: 1,
+    fontSize: 13,
+    color: "#f59e0b",
+    lineHeight: 18,
+  },
+  featureDriftContainer: {
+    marginTop: 16,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255, 255, 255, 0.05)",
+  },
+  featureDriftTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#8b5cf6",
+    marginBottom: 12,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  } as const,
+  featureDriftRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  featureDriftName: {
+    fontSize: 13,
+    color: "#999",
+    textTransform: "capitalize",
+  },
+  featureDriftValues: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  featureDriftText: {
+    fontSize: 12,
+    color: "#666",
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  featureStatusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  featureStatusStable: {
+    backgroundColor: "rgba(34, 197, 94, 0.15)",
+  },
+  featureStatusDegrading: {
+    backgroundColor: "rgba(245, 158, 11, 0.15)",
+  },
+  featureStatusCritical: {
+    backgroundColor: "rgba(239, 68, 68, 0.15)",
+  },
+  featureStatusText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#fff",
+    textTransform: "uppercase",
+  } as const,
   saveButton: {
     flexDirection: "row",
     alignItems: "center",

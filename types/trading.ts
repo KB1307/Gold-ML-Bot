@@ -94,6 +94,19 @@ export interface PerformanceMetrics {
   confidenceDegradation?: number;
   avgSlippageDiff?: number;
   hypotheticalAccuracy?: number;
+  conceptDriftScore?: number;
+  featureImportanceDrift?: FeatureDriftMetric[];
+  driftAlertLevel?: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH';
+  daysSinceRetrain?: number;
+  retrainingRecommended?: boolean;
+}
+
+export interface FeatureDriftMetric {
+  feature: string;
+  currentImportance: number;
+  historicalImportance: number;
+  drift: number;
+  status: 'STABLE' | 'DEGRADING' | 'CRITICAL';
 }
 
 export interface PositionSizing {
