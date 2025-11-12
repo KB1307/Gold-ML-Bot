@@ -7,7 +7,9 @@ import { Stack } from "expo-router";
 import PriceChart from "@/components/PriceChart";
 
 export default function DashboardScreen() {
-  const { currentSignal, marketOutlook, performanceMetrics, positionSizing, currentPrice, priceHistory, refreshData } = useTrading();
+  const { signalHistory, marketOutlook, performanceMetrics, positionSizing, currentPrice, priceHistory, refreshData } = useTrading();
+  
+  const currentSignal = signalHistory.find(s => s.status === "ACTIVE" || s.status === "PARTIALLY_MANAGED" || s.status === "TP1_HIT" || s.status === "TP2_HIT") || null;
   const [refreshing, setRefreshing] = useState(false);
 
   const onRefresh = useCallback(async () => {

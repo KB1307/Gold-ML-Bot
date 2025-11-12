@@ -331,6 +331,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       return;
     }
 
+    if (fullyActiveSignals.length > 0) {
+      console.log("❌ BLOCKED: Active signal already exists. Skipping generation.");
+      console.log(`   Active Signal: ${fullyActiveSignals[0].type} @ ${fullyActiveSignals[0].entryPrice}`);
+      return;
+    }
+
     try {
       console.log(`🎯 ATTEMPTING SIGNAL GENERATION...`);
       console.log(`   Settings: minConfidence=${(settings.minConfidence * 100).toFixed(0)}%`);
@@ -344,17 +350,28 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       const signal = await signalEngine.generateSignal(settings, accountBalance, activeSignalsForEngine);
       
       if (signal) {
-        console.log("\n" + "=".repeat(60));
-        console.log("✅ ✅ ✅ NEW SIGNAL GENERATED ✅ ✅ ✅");
-        console.log("=".repeat(60));
-        console.log(`Type: ${signal.type}`);
-        console.log(`Entry: ${signal.entryPrice}`);
-        console.log(`Confidence: ${(signal.confidence * 100).toFixed(1)}%`);
-        console.log(`TP1: ${signal.tp1} | TP2: ${signal.tp2} | TP3: ${signal.tp3}`);
-        console.log(`SL: ${signal.sl}`);
-        console.log("=".repeat(60) + "\n");
-
         setSignalHistory((prev) => {
+          const isDuplicate = prev.some(s => 
+            Math.abs(s.entryPrice - signal.entryPrice) < 1 && 
+            s.type === signal.type && 
+            (s.status === "ACTIVE" || s.status === "PARTIALLY_MANAGED" || s.status === "TP1_HIT" || s.status === "TP2_HIT")
+          );
+          
+          if (isDuplicate) {
+            console.log("⚠️ DUPLICATE SIGNAL DETECTED - Skipping add to history");
+            return prev;
+          }
+          
+          console.log("\n" + "=".repeat(60));
+          console.log("✅ ✅ ✅ NEW SIGNAL GENERATED ✅ ✅ ✅");
+          console.log("=".repeat(60));
+          console.log(`Type: ${signal.type}`);
+          console.log(`Entry: ${signal.entryPrice}`);
+          console.log(`Confidence: ${(signal.confidence * 100).toFixed(1)}%`);
+          console.log(`TP1: ${signal.tp1} | TP2: ${signal.tp2} | TP3: ${signal.tp3}`);
+          console.log(`SL: ${signal.sl}`);
+          console.log("=".repeat(60) + "\n");
+          
           const updated = [signal, ...prev];
           AsyncStorage.setItem("signal_history", JSON.stringify(updated));
           return updated;
