@@ -1,4 +1,4 @@
-import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric } from "@/types/trading";
+import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC } from "@/types/trading";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 interface OrderFlowData {
@@ -105,6 +105,7 @@ let cachedVIX: number | null = null;
 let lastIntermarketFetchTime: number = 0;
 const LEARNING_STORAGE_KEY = 'trade_outcomes_learning';
 const MODEL_WEIGHTS_KEY = 'model_weights_v1';
+const DAILY_OHLC_STORAGE_KEY = 'daily_ohlc_history_v1';
 const WALK_FORWARD_WINDOW = 12 * 7 * 24 * 60 * 60 * 1000;
 const TRAINING_WINDOW_DAYS = 90;
 const MIN_CONFIDENCE_FOR_RETRAINING = 0.75;
@@ -268,6 +269,9 @@ class SignalGenerationEngine {
   private featureImportanceHistory: Map<string, number[]> = new Map();
   private conceptDriftScore: number = 0;
   private driftAlertLevel: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' = 'NONE';
+  private dailyOHLCHistory: DailyOHLC[] = [];
+  private currentDayOHLC: { open: number; high: number; low: number; close: number; date: string } | null = null;
+  private lastNYCloseCheck: number = 0;
   
   async updateCurrentPrice(): Promise<number> {
     try {
@@ -294,6 +298,80 @@ class SignalGenerationEngine {
       console.error('Failed to update current price:', error);
       return this.currentPrice;
     }
+  }
+
+  async updateDailyOHLC(currentPrice: number): Promise<DailyOHLC | null> {
+    const now = new Date();
+    const NY_CLOSE_HOUR_UTC = 21;
+    
+    const dateKey = this.getNYTradingDayKey(now);
+    
+    if (!this.currentDayOHLC || this.currentDayOHLC.date !== dateKey) {
+      console.log(`📅 Starting new trading day: ${dateKey}`);
+      this.currentDayOHLC = {
+        date: dateKey,
+        open: currentPrice,
+        high: currentPrice,
+        low: currentPrice,
+        close: currentPrice,
+      };
+    } else {
+      this.currentDayOHLC.high = Math.max(this.currentDayOHLC.high, currentPrice);
+      this.currentDayOHLC.low = Math.min(this.currentDayOHLC.low, currentPrice);
+      this.currentDayOHLC.close = currentPrice;
+    }
+    
+    const nowUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours(), now.getUTCMinutes());
+    const todayNYClose = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), NY_CLOSE_HOUR_UTC, 0, 0);
+    const timeSinceNYClose = Math.abs(nowUTC - todayNYClose);
+    const fiveMinutesMs = 5 * 60 * 1000;
+    
+    if (timeSinceNYClose < fiveMinutesMs && Date.now() - this.lastNYCloseCheck > 60000) {
+      this.lastNYCloseCheck = Date.now();
+      
+      const completedBar: DailyOHLC = {
+        date: this.currentDayOHLC.date,
+        open: this.currentDayOHLC.open,
+        high: this.currentDayOHLC.high,
+        low: this.currentDayOHLC.low,
+        close: this.currentDayOHLC.close,
+        timestamp: todayNYClose,
+      };
+      
+      const existingIndex = this.dailyOHLCHistory.findIndex(d => d.date === completedBar.date);
+      if (existingIndex >= 0) {
+        this.dailyOHLCHistory[existingIndex] = completedBar;
+      } else {
+        this.dailyOHLCHistory.push(completedBar);
+        if (this.dailyOHLCHistory.length > 30) {
+          this.dailyOHLCHistory = this.dailyOHLCHistory.slice(-30);
+        }
+      }
+      
+      console.log(`📊 NY Close Snapshot: ${completedBar.date} | O: ${completedBar.open.toFixed(1)} H: ${completedBar.high.toFixed(1)} L: ${completedBar.low.toFixed(1)} C: ${completedBar.close.toFixed(1)}`);
+      
+      await this.saveDailyOHLCHistory();
+      
+      return completedBar;
+    }
+    
+    return null;
+  }
+  
+  private getNYTradingDayKey(date: Date): string {
+    const NY_CLOSE_HOUR_UTC = 21;
+    const hour = date.getUTCHours();
+    
+    const tradingDate = new Date(date);
+    if (hour >= NY_CLOSE_HOUR_UTC) {
+      tradingDate.setUTCDate(tradingDate.getUTCDate() + 1);
+    }
+    
+    const year = tradingDate.getUTCFullYear();
+    const month = String(tradingDate.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(tradingDate.getUTCDate()).padStart(2, '0');
+    
+    return `${year}-${month}-${day}`;
   }
   
   getCurrentPrice(): number {
@@ -510,27 +588,8 @@ class SignalGenerationEngine {
   }
   
   private getDerivedDailyOHLC(): { yesterdayHigh: number; yesterdayLow: number; yesterdayClose: number; yesterdayOpen: number } {
-    const now = new Date();
-    const nowUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours(), now.getUTCMinutes());
-    
-    const NY_CLOSE_HOUR_UTC = 21;
-    
-    let todayNYClose = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), NY_CLOSE_HOUR_UTC, 0, 0);
-    if (nowUTC < todayNYClose) {
-      todayNYClose -= 24 * 60 * 60 * 1000;
-    }
-    
-    const yesterdayNYClose = todayNYClose - (24 * 60 * 60 * 1000);
-    
-    const relevantPrices = this.priceHistory.filter((price, index) => {
-      if (index === 0) return false;
-      
-      const priceTime = Date.now() - ((this.priceHistory.length - 1 - index) * 3000);
-      return priceTime >= yesterdayNYClose && priceTime < todayNYClose;
-    });
-    
-    if (relevantPrices.length === 0) {
-      console.log('⚠️ No historical price data for previous day - using scaled fallback');
+    if (this.dailyOHLCHistory.length === 0) {
+      console.log('⚠️ No dailyOHLCHistory available - using scaled fallback');
       const currentPrice = this.currentPrice;
       const volatilityRange = currentPrice * 0.015;
       return {
@@ -541,16 +600,34 @@ class SignalGenerationEngine {
       };
     }
     
-    const yesterdayHigh = Math.max(...relevantPrices);
-    const yesterdayLow = Math.min(...relevantPrices);
-    const yesterdayClose = relevantPrices[relevantPrices.length - 1];
-    const yesterdayOpen = relevantPrices[0];
+    const sortedHistory = [...this.dailyOHLCHistory].sort((a, b) => b.timestamp - a.timestamp);
+    const mostRecentBar = sortedHistory[0];
+    const now = Date.now();
+    const timeSinceBar = now - mostRecentBar.timestamp;
+    const sixHoursMs = 6 * 60 * 60 * 1000;
     
-    console.log(`📊 Derived OHLC from ${relevantPrices.length} historical data points`);
-    console.log(`   Time Window: ${new Date(yesterdayNYClose).toUTCString()} -> ${new Date(todayNYClose).toUTCString()}`);
-    console.log(`   Open: ${yesterdayOpen.toFixed(1)} | High: ${yesterdayHigh.toFixed(1)} | Low: ${yesterdayLow.toFixed(1)} | Close: ${yesterdayClose.toFixed(1)}`);
+    if (timeSinceBar < sixHoursMs && sortedHistory.length > 1) {
+      const previousBar = sortedHistory[1];
+      console.log(`📊 Using Previous Day's Completed Bar: ${previousBar.date}`);
+      console.log(`   Open: ${previousBar.open.toFixed(1)} | High: ${previousBar.high.toFixed(1)} | Low: ${previousBar.low.toFixed(1)} | Close: ${previousBar.close.toFixed(1)}`);
+      
+      return {
+        yesterdayHigh: previousBar.high,
+        yesterdayLow: previousBar.low,
+        yesterdayClose: previousBar.close,
+        yesterdayOpen: previousBar.open,
+      };
+    }
     
-    return { yesterdayHigh, yesterdayLow, yesterdayClose, yesterdayOpen };
+    console.log(`📊 Using Most Recent Completed Bar: ${mostRecentBar.date}`);
+    console.log(`   Open: ${mostRecentBar.open.toFixed(1)} | High: ${mostRecentBar.high.toFixed(1)} | Low: ${mostRecentBar.low.toFixed(1)} | Close: ${mostRecentBar.close.toFixed(1)}`);
+    
+    return {
+      yesterdayHigh: mostRecentBar.high,
+      yesterdayLow: mostRecentBar.low,
+      yesterdayClose: mostRecentBar.close,
+      yesterdayOpen: mostRecentBar.open,
+    };
   }
 
   private async calculateMarketFeatures(): Promise<MarketFeatures> {
@@ -1338,11 +1415,12 @@ class SignalGenerationEngine {
     });
   }
   
-  async loadPersistedLearningData(): Promise<void> {
+  async loadPersistedLearningData(): Promise<DailyOHLC[]> {
     try {
-      const [outcomesData, weightsData] = await Promise.all([
+      const [outcomesData, weightsData, dailyOHLCData] = await Promise.all([
         AsyncStorage.getItem(LEARNING_STORAGE_KEY),
         AsyncStorage.getItem(MODEL_WEIGHTS_KEY),
+        AsyncStorage.getItem(DAILY_OHLC_STORAGE_KEY),
       ]);
       
       if (outcomesData) {
@@ -1356,9 +1434,30 @@ class SignalGenerationEngine {
         console.log('✓ Loaded model weights from storage');
       }
       
+      if (dailyOHLCData) {
+        this.dailyOHLCHistory = JSON.parse(dailyOHLCData);
+        console.log(`✓ Loaded ${this.dailyOHLCHistory.length} daily OHLC bars from storage`);
+        if (this.dailyOHLCHistory.length > 0) {
+          const latest = this.dailyOHLCHistory[this.dailyOHLCHistory.length - 1];
+          console.log(`   Latest bar: ${latest.date} (Close: ${latest.close.toFixed(1)})`);
+        }
+      }
+      
       await this.loadFeatureDriftHistory();
+      
+      return this.dailyOHLCHistory;
     } catch (error) {
       console.error('Failed to load learning data:', error);
+      return [];
+    }
+  }
+  
+  private async saveDailyOHLCHistory(): Promise<void> {
+    try {
+      await AsyncStorage.setItem(DAILY_OHLC_STORAGE_KEY, JSON.stringify(this.dailyOHLCHistory));
+      console.log(`✓ Saved ${this.dailyOHLCHistory.length} daily OHLC bars to storage`);
+    } catch (error) {
+      console.error('Failed to save daily OHLC history:', error);
     }
   }
   

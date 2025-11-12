@@ -109,6 +109,15 @@ export interface FeatureDriftMetric {
   status: 'STABLE' | 'DEGRADING' | 'CRITICAL';
 }
 
+export interface DailyOHLC {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  timestamp: number;
+}
+
 export interface PositionSizing {
   baseSize: number;
   confidenceMultiplier: number;

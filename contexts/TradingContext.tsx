@@ -1,7 +1,7 @@
 import createContextHook from "@nkzw/create-context-hook";
 import { useState, useEffect, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { TradingSignal, Settings, MarketOutlook, PerformanceMetrics, PositionSizing } from "@/types/trading";
+import { TradingSignal, Settings, MarketOutlook, PerformanceMetrics, PositionSizing, DailyOHLC } from "@/types/trading";
 import { signalEngine } from "@/services/signalEngine";
 
 const DEFAULT_SETTINGS: Settings = {
@@ -49,11 +49,15 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [accountBalance, setAccountBalance] = useState<number>(10000);
   const [currentPrice, setCurrentPrice] = useState<number>(2650);
   const [priceHistory, setPriceHistory] = useState<PriceDataPoint[]>([]);
+  const [dailyOHLCHistory, setDailyOHLCHistory] = useState<DailyOHLC[]>([]);
 
   useEffect(() => {
     const init = async () => {
-      await signalEngine.loadPersistedLearningData();
+      const loadedDailyOHLC = await signalEngine.loadPersistedLearningData();
       await loadPersistedData();
+      if (loadedDailyOHLC && loadedDailyOHLC.length > 0) {
+        setDailyOHLCHistory(loadedDailyOHLC);
+      }
     };
     init();
   }, []);
@@ -74,6 +78,23 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           }
           return newHistory;
         });
+
+        const updatedOHLC = await signalEngine.updateDailyOHLC(price);
+        if (updatedOHLC) {
+          setDailyOHLCHistory(prev => {
+            const existingIndex = prev.findIndex(d => d.date === updatedOHLC.date);
+            if (existingIndex >= 0) {
+              const updated = [...prev];
+              updated[existingIndex] = updatedOHLC;
+              return updated;
+            }
+            const newHistory = [...prev, updatedOHLC];
+            if (newHistory.length > 30) {
+              return newHistory.slice(-30);
+            }
+            return newHistory;
+          });
+        }
       } catch (error) {
         console.error('Failed to update price:', error);
       }
@@ -638,6 +659,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     accountBalance,
     currentPrice,
     priceHistory,
+    dailyOHLCHistory,
     login,
     logout,
     clearHistory,
