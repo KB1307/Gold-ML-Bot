@@ -505,21 +505,18 @@ class SignalGenerationEngine {
   private async calculateMarketFeatures(): Promise<MarketFeatures> {
     const currentPrice = this.currentPrice;
     
-    const dailyHigh = this.highHistory.length > 0 ? Math.max(...this.highHistory) : currentPrice + 30;
-    const dailyLow = this.lowHistory.length > 0 ? Math.min(...this.lowHistory) : currentPrice - 30;
-    const dailyClose = this.priceHistory.length > 0 ? this.priceHistory[this.priceHistory.length - 1] : currentPrice;
+    const asianHigh = currentPrice + Math.random() * 20 + 10;
+    const asianLow = currentPrice - Math.random() * 20 - 10;
     
-    const asianHigh = this.highHistory.length > 20 ? Math.max(...this.highHistory.slice(-20)) : dailyHigh;
-    const asianLow = this.lowHistory.length > 20 ? Math.min(...this.lowHistory.slice(-20)) : dailyLow;
+    const dailyPivot = currentPrice;
+    const pivotRange = 50;
     
-    const dailyPivot = (dailyHigh + dailyLow + dailyClose) / 3;
-    
-    const r1 = 2 * dailyPivot - dailyLow;
-    const r2 = dailyPivot + (dailyHigh - dailyLow);
-    const r3 = dailyHigh + 2 * (dailyPivot - dailyLow);
-    const s1 = 2 * dailyPivot - dailyHigh;
-    const s2 = dailyPivot - (dailyHigh - dailyLow);
-    const s3 = dailyLow - 2 * (dailyHigh - dailyPivot);
+    const r1 = dailyPivot + pivotRange * 0.382;
+    const r2 = dailyPivot + pivotRange * 0.618;
+    const r3 = dailyPivot + pivotRange * 1.0;
+    const s1 = dailyPivot - pivotRange * 0.382;
+    const s2 = dailyPivot - pivotRange * 0.618;
+    const s3 = dailyPivot - pivotRange * 1.0;
     
     const rsi = 45 + Math.random() * 20;
     const atr = 8 + Math.random() * 4;
@@ -528,8 +525,15 @@ class SignalGenerationEngine {
     
     const weeklyPivot = dailyPivot + (Math.random() - 0.5) * 100;
     
-    const fractalResistance = dailyHigh + Math.random() * 10;
-    const fractalSupport = dailyLow - Math.random() * 10;
+    const recentHigh = this.highHistory.length > 0 
+      ? Math.max(...this.highHistory.slice(-20))
+      : currentPrice + 50;
+    const recentLow = this.lowHistory.length > 0
+      ? Math.min(...this.lowHistory.slice(-20))
+      : currentPrice - 50;
+    
+    const fractalResistance = recentHigh + Math.random() * 10;
+    const fractalSupport = recentLow - Math.random() * 10;
     
     const macdHistogram = (Math.random() - 0.5) * 2;
     const emaCrossover = (Math.random() - 0.5) * 1.5;
@@ -552,7 +556,7 @@ class SignalGenerationEngine {
     
     const sessionVolatilityIndex = volumeRatio * atr / 10;
     
-    const fibonacci = this.calculateFibonacciLevels(dailyHigh, dailyLow);
+    const fibonacci = this.calculateFibonacciLevels(recentHigh, recentLow);
     const sentiment = this.generateSentimentAnalysis();
     const orderFlow = this.calculateOrderFlow();
     const volumeProfile = this.calculateVolumeProfile();
