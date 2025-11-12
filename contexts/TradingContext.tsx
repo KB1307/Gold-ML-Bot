@@ -351,14 +351,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       
       if (signal) {
         setSignalHistory((prev) => {
-          const isDuplicate = prev.some(s => 
-            Math.abs(s.entryPrice - signal.entryPrice) < 1 && 
-            s.type === signal.type && 
-            (s.status === "ACTIVE" || s.status === "PARTIALLY_MANAGED" || s.status === "TP1_HIT" || s.status === "TP2_HIT")
-          );
+          const now = Date.now();
           
-          if (isDuplicate) {
-            console.log("⚠️ DUPLICATE SIGNAL DETECTED - Skipping add to history");
+          const isExactDuplicate = prev.some(s => {
+            const timeDiff = Math.abs(new Date(s.timestamp).getTime() - now);
+            const priceDiff = Math.abs(s.entryPrice - signal.entryPrice);
+            return timeDiff < 10000 && priceDiff < 0.1 && s.type === signal.type;
+          });
+          
+          if (isExactDuplicate) {
+            console.log("⚠️ EXACT DUPLICATE SIGNAL DETECTED - Skipping add to history");
+            console.log(`   Entry=${signal.entryPrice}, Type=${signal.type}`);
             return prev;
           }
           
@@ -549,6 +552,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     setSignalHistory([]);
     await AsyncStorage.setItem("signal_history", JSON.stringify([]));
     console.log('🧹 Signal history cleared');
+    console.log('✅ All signals removed from storage and UI');
   }, []);
 
   const updateSettings = useCallback(async (newSettings: Partial<Settings>) => {
