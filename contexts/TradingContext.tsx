@@ -389,25 +389,51 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   const checkAndGenerateSignal = useCallback(async () => {
     const outlook = await signalEngine.getMarketOutlook();
+    const now = new Date();
     
-    console.log(`🔍 Check Signal Generation: Market Open=${outlook.isMarketOpen}, Current Signal=${currentSignal ? 'EXISTS' : 'NONE'}`);
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`🔍 SIGNAL CHECK [${now.toLocaleTimeString()}]`);
+    console.log(`${'='.repeat(60)}`);
+    console.log(`Market Open: ${outlook.isMarketOpen}`);
+    console.log(`Current Session: ${outlook.currentSession}`);
+    console.log(`Current Signal: ${currentSignal ? `${currentSignal.type} - ${currentSignal.status}` : 'NONE'}`);
+    console.log(`Min Confidence: ${(settings.minConfidence * 100).toFixed(0)}%`);
+    console.log(`Account Balance: ${accountBalance}`);
+    console.log(`Settings - TP1: ${settings.tp1Pips}, TP2: ${settings.tp2Pips}, TP3: ${settings.tp3Pips}, SL: ${settings.slPips}`);
+    console.log(`${'='.repeat(60)}\n`);
     
     if (!outlook.isMarketOpen) {
-      console.log("❌ Market is closed. No signal generation.");
+      console.log("❌ BLOCKED: Market is closed. No signal generation.");
       return;
     }
 
     if (currentSignal && currentSignal.status === "ACTIVE") {
-      console.log("⚠️ Active signal already exists. Skipping generation.");
+      console.log("⚠️ BLOCKED: Active signal already exists. Skipping generation.");
+      console.log(`   Current Signal ID: ${currentSignal.id}`);
+      console.log(`   Signal Type: ${currentSignal.type}`);
+      console.log(`   Entry Price: ${currentSignal.entryPrice}`);
+      console.log(`   Current Status: ${currentSignal.status}`);
       return;
     }
 
     try {
-      console.log(`🎯 Attempting signal generation with minConfidence=${settings.minConfidence}`);
+      console.log(`🎯 ATTEMPTING SIGNAL GENERATION...`);
+      console.log(`   Settings: minConfidence=${(settings.minConfidence * 100).toFixed(0)}%`);
+      console.log(`   Account Balance: ${accountBalance}`);
+      
       const signal = await signalEngine.generateSignal(settings, accountBalance);
       
       if (signal) {
-        console.log("✅ New signal generated:", signal.type, "@ ", signal.entryPrice, "Confidence:", signal.confidence);
+        console.log("\n" + "=".repeat(60));
+        console.log("✅ ✅ ✅ NEW SIGNAL GENERATED ✅ ✅ ✅");
+        console.log("=".repeat(60));
+        console.log(`Type: ${signal.type}`);
+        console.log(`Entry: ${signal.entryPrice}`);
+        console.log(`Confidence: ${(signal.confidence * 100).toFixed(1)}%`);
+        console.log(`TP1: ${signal.tp1} | TP2: ${signal.tp2} | TP3: ${signal.tp3}`);
+        console.log(`SL: ${signal.sl}`);
+        console.log("=".repeat(60) + "\n");
+        
         setCurrentSignal(signal);
 
         setSignalHistory((prev) => {
@@ -418,13 +444,21 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
         const sizing = signalEngine.calculatePositionSizing(signal.confidence, settings, accountBalance);
         setPositionSizing(sizing);
-        console.log("Position sizing calculated:", sizing);
+        console.log("📊 Position sizing calculated:", sizing);
         console.log(`💰 Fractional Kelly: ${sizing.fractionalKelly * 100}% | Optimal: ${sizing.optimalKellyPercentage}% of Account`);
       } else {
-        console.log("⚠️ Signal generation returned NULL - Check logs above for rejection reason");
+        console.log("\n⚠️ ⚠️ ⚠️ SIGNAL GENERATION RETURNED NULL ⚠️ ⚠️ ⚠️");
+        console.log("Check the detailed logs above for the specific rejection reason.");
+        console.log("Common reasons:");
+        console.log("  - Confidence below threshold");
+        console.log("  - Dynamic cooldown still active");
+        console.log("  - Macro event suppression");
+        console.log("  - Signal conflict (opposite direction)\n");
       }
     } catch (error) {
-      console.error("❌ Failed to generate signal:", error);
+      console.error("\n❌ ❌ ❌ CRITICAL ERROR IN SIGNAL GENERATION ❌ ❌ ❌");
+      console.error("Error:", error);
+      console.error("Stack:", error instanceof Error ? error.stack : 'No stack trace');
     }
   }, [currentSignal, settings, accountBalance]);
 
