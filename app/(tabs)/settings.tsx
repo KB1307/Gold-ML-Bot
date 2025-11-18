@@ -1,13 +1,14 @@
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Platform, Switch, Alert } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { Settings as SettingsIcon, Target, Shield, TrendingUp, LogOut, Save, Trash2, Activity, AlertTriangle } from "lucide-react-native";
+import { Settings as SettingsIcon, Target, Shield, TrendingUp, LogOut, Save, Trash2, Activity, AlertTriangle, RefreshCw } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
 import { useState } from "react";
 import { Stack, useRouter } from "expo-router";
 
 export default function SettingsScreen() {
-  const { settings, updateSettings, logout, clearHistory, performanceMetrics } = useTrading();
+  const { settings, updateSettings, logout, clearHistory, performanceMetrics, triggerManualRetrain } = useTrading();
   const router = useRouter();
+  const [isRetraining, setIsRetraining] = useState<boolean>(false);
   
   const [tp1Pips, setTp1Pips] = useState<string>(settings.tp1Pips.toString());
   const [tp2Pips, setTp2Pips] = useState<string>(settings.tp2Pips.toString());
@@ -61,6 +62,44 @@ export default function SettingsScreen() {
           },
         ]
       );
+    }
+  };
+
+  const handleManualRetrain = async () => {
+    if (Platform.OS === 'web') {
+      const confirm = window.confirm('Trigger manual model retraining? This will recalculate feature weights based on recent trade outcomes.');
+      if (!confirm) return;
+    } else {
+      await new Promise<void>((resolve) => {
+        Alert.alert(
+          'Manual Retraining',
+          'Trigger manual model retraining? This will recalculate feature weights based on recent trade outcomes.',
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve() },
+            { 
+              text: 'Retrain', 
+              onPress: () => resolve()
+            },
+          ]
+        );
+      });
+    }
+
+    setIsRetraining(true);
+    
+    try {
+      const result = await triggerManualRetrain('User-Initiated Bias Correction');
+      
+      if (Platform.OS === 'web') {
+        alert(result.success ? `✅ ${result.message}` : `❌ ${result.message}`);
+      } else {
+        Alert.alert(
+          result.success ? 'Success' : 'Error',
+          result.message
+        );
+      }
+    } finally {
+      setIsRetraining(false);
     }
   };
 
@@ -349,6 +388,17 @@ export default function SettingsScreen() {
                 The model continuously learns from live signal performance through reinforcement learning.
               </Text>
             </View>
+
+            <TouchableOpacity 
+              style={[styles.retrainButton, isRetraining && styles.retrainButtonDisabled]} 
+              onPress={handleManualRetrain}
+              disabled={isRetraining}
+            >
+              <RefreshCw size={20} color={isRetraining ? "#666" : "#8b5cf6"} />
+              <Text style={[styles.retrainText, isRetraining && styles.retrainTextDisabled]}>
+                {isRetraining ? 'Retraining Model...' : 'Manual Model Retrain'}
+              </Text>
+            </TouchableOpacity>
 
             <TouchableOpacity style={styles.clearButton} onPress={handleClearHistory}>
               <Trash2 size={20} color="#f97316" />
@@ -716,4 +766,28 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#FFD700",
   } as const,
+  retrainButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(139, 92, 246, 0.1)",
+    paddingVertical: 16,
+    borderRadius: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "rgba(139, 92, 246, 0.3)",
+    gap: 8,
+  },
+  retrainButtonDisabled: {
+    backgroundColor: "rgba(255, 255, 255, 0.03)",
+    borderColor: "rgba(255, 255, 255, 0.05)",
+  },
+  retrainText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#8b5cf6",
+  } as const,
+  retrainTextDisabled: {
+    color: "#666",
+  },
 });

@@ -635,6 +635,18 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     console.log('Data refreshed successfully');
   }, []);
 
+  const triggerManualRetrain = useCallback(async (reason?: string) => {
+    const result = await signalEngine.manualRetrain(reason || 'User Triggered');
+    
+    if (result.success) {
+      const metrics = calculatePerformanceMetrics(signalHistory);
+      setPerformanceMetrics(metrics);
+      console.log('✅ Manual retrain completed - performance metrics refreshed');
+    }
+    
+    return result;
+  }, [signalHistory, calculatePerformanceMetrics]);
+
   return {
     isLoggedIn,
     isLoading,
@@ -655,5 +667,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     deleteSignalFromHistory,
     manualCloseSignal,
     refreshData,
+    triggerManualRetrain,
   };
 });

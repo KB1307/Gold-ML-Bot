@@ -116,7 +116,9 @@ const FEATURE_CORRELATION_CHECK_INTERVAL = 30 * 24 * 60 * 60 * 1000;
 const INTERMARKET_CACHE_DURATION = 10000;
 const HYPOTHETICAL_TRADE_HISTORY_LIMIT = 100;
 const MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL = 15;
+const MIN_PIP_DIFFERENCE_FOR_PARTIALLY_MANAGED = 25;
 const MAX_RECENT_SIGNAL_TIME_MINUTES = 5;
+const POST_TP1_COOLDOWN_MS = 5 * 60 * 1000;
 const DRIFT_CHECK_INTERVAL = 24 * 60 * 60 * 1000;
 const FEATURE_DRIFT_STORAGE_KEY = 'feature_drift_history_v1';
 
@@ -1681,14 +1683,16 @@ class SignalGenerationEngine {
     }
     
     if (this.lastSignalType !== null && this.lastSignalType !== analysis.signalType) {
-      if (analysis.confidence < 0.95) {
+      if (analysis.confidence < 0.80) {
         console.log(`❌ REJECTED: Signal conflict - Opposite direction (${this.lastSignalType} -> ${analysis.signalType})`);
-        console.log(`   Confidence ${(analysis.confidence * 100).toFixed(1)}% insufficient for override (need 95%+)`);
-        console.log(`   💡 TIP: Wait for current signal to close or confidence to reach 95%+`);
+        console.log(`   Confidence ${(analysis.confidence * 100).toFixed(1)}% insufficient for override (need 80%+)`);
+        console.log(`   💡 TIP: Wait for current signal to close or confidence to reach 80%+`);
+        console.log(`   NOTE: Override threshold lowered from 95% to 80% to improve sell signal generation`);
         console.log(`${'='.repeat(80)}\n`);
         return null;
       } else {
-        console.log(`🔄 SIGNAL OVERRIDE: Ultra-high confidence ${(analysis.confidence * 100).toFixed(1)}% allows direction change (${this.lastSignalType} -> ${analysis.signalType})`);
+        console.log(`🔄 SIGNAL OVERRIDE: High confidence ${(analysis.confidence * 100).toFixed(1)}% allows direction change (${this.lastSignalType} -> ${analysis.signalType})`);
+        console.log(`   NOTE: Override threshold is now 80% (previously 95%) to reduce bias toward one direction`);
         this.resetSignalLock();
       }
     }
@@ -1875,8 +1879,38 @@ class SignalGenerationEngine {
     const maxSignalAge = MAX_RECENT_SIGNAL_TIME_MINUTES * 60 * 1000;
     const now = Date.now();
     
+    const partiallyManagedSignals = activeSignals.filter(signal => {
+      if (signal.type !== proposedType) return false;
+      
+      const isPartiallyManaged = signal.targetsHit >= 1 && signal.status !== "ALL_TARGETS_HIT" && signal.status !== "SL_HIT" && signal.status !== "CLOSED";
+      
+      if (!isPartiallyManaged) return false;
+      
+      const tp1HitTime = signal.createdAt ? signal.createdAt : new Date(signal.timestamp).getTime();
+      const timeSinceTP1 = now - tp1HitTime;
+      
+      return timeSinceTP1 < POST_TP1_COOLDOWN_MS;
+    });
+    
+    if (partiallyManagedSignals.length > 0) {
+      const signal = partiallyManagedSignals[0];
+      const tp1HitTime = signal.createdAt ? signal.createdAt : new Date(signal.timestamp).getTime();
+      const timeSinceTP1 = now - tp1HitTime;
+      const remainingCooldown = ((POST_TP1_COOLDOWN_MS - timeSinceTP1) / 1000).toFixed(0);
+      
+      console.log(`🔒 POST-TP1 COOLDOWN CHECK:`);
+      console.log(`   Signal #${signal.id.slice(-6)} hit TP${signal.targetsHit} ${(timeSinceTP1 / 1000).toFixed(0)}s ago`);
+      console.log(`   Cooldown Remaining: ${remainingCooldown}s`);
+      
+      return {
+        blocked: true,
+        reason: `Post-TP1 cooldown active for signal #${signal.id.slice(-6)}. Time since TP1: ${(timeSinceTP1 / 1000).toFixed(0)}s`,
+        tip: `Wait ${remainingCooldown}s before new ${proposedType} signal. This prevents immediate re-entry at TP1 level.`
+      };
+    }
+    
     const recentActiveSignals = activeSignals.filter(signal => {
-      if (signal.status !== "ACTIVE") return false;
+      if (signal.status !== "ACTIVE" && signal.status !== "TP1_HIT" && signal.status !== "TP2_HIT") return false;
       if (signal.type !== proposedType) return false;
       
       const signalAge = now - new Date(signal.timestamp).getTime();
@@ -1892,20 +1926,25 @@ class SignalGenerationEngine {
       const priceDifference = Math.abs(proposedEntryPrice - signal.entryPrice) * 1000;
       const signalAge = ((now - new Date(signal.timestamp).getTime()) / 1000 / 60).toFixed(1);
       
+      const isPartiallyManaged = signal.targetsHit >= 1;
+      const requiredDistance = isPartiallyManaged ? MIN_PIP_DIFFERENCE_FOR_PARTIALLY_MANAGED : MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL;
+      
       console.log(`🔍 Proximity Check: Comparing with Signal #${signal.id.slice(-6)}`);
+      console.log(`   Status: ${signal.status} | Targets: ${signal.targetsHit}/3`);
       console.log(`   Active Signal Entry: ${signal.entryPrice.toFixed(1)} | Proposed: ${proposedEntryPrice.toFixed(1)}`);
       console.log(`   Price Difference: ${priceDifference.toFixed(1)} pips | Signal Age: ${signalAge}m`);
+      console.log(`   Required Distance: ${requiredDistance} pips (${isPartiallyManaged ? 'PARTIALLY MANAGED' : 'ACTIVE'})`);
       
-      if (priceDifference < MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL) {
+      if (priceDifference < requiredDistance) {
         return {
           blocked: true,
-          reason: `Active signal #${signal.id.slice(-6)} at ${signal.entryPrice.toFixed(1)} is within ${MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL} pips of proposed entry (${priceDifference.toFixed(1)} pips difference).`,
-          tip: `Next attempt in ${(dynamicCooldown / 1000).toFixed(0)}s. Price must move >${MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL} pips from existing ${proposedType} signals.`
+          reason: `Signal #${signal.id.slice(-6)} at ${signal.entryPrice.toFixed(1)} is within ${requiredDistance} pips (${priceDifference.toFixed(1)} pips difference). Status: ${signal.status}`,
+          tip: `Price must move >${requiredDistance} pips from ${isPartiallyManaged ? 'partially managed' : 'active'} ${proposedType} signals. ${isPartiallyManaged ? 'Stricter distance required for partially managed signals.' : ''}`
         };
       }
     }
     
-    console.log(`✓ Price Proximity Check: All active signals are >${MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL} pips away`);
+    console.log(`✓ Price Proximity Check: All signals are beyond required distance`);
     return { blocked: false };
   }
   
@@ -2154,6 +2193,49 @@ class SignalGenerationEngine {
       avgSlippageDiff: parseFloat(avgSlippageDiff.toFixed(2)),
       hypotheticalAccuracy: parseFloat(accuracy.toFixed(1)),
     };
+  }
+  
+  async manualRetrain(reason: string = 'Manual Trigger'): Promise<{ success: boolean; message: string }> {
+    console.log(`\n${'='.repeat(80)}`);
+    console.log(`🔧 MANUAL RETRAINING INITIATED`);
+    console.log(`${'='.repeat(80)}`);
+    console.log(`   Reason: ${reason}`);
+    console.log(`   Triggered at: ${new Date().toISOString()}`);
+    console.log(`   Current Trade Outcomes: ${this.tradeOutcomes.length}`);
+    
+    if (this.tradeOutcomes.length < 10) {
+      const message = `Insufficient data for retraining. Need at least 10 outcomes, have ${this.tradeOutcomes.length}.`;
+      console.log(`   ❌ ${message}`);
+      console.log(`${'='.repeat(80)}\n`);
+      return {
+        success: false,
+        message
+      };
+    }
+    
+    try {
+      await this.walkForwardOptimization(reason);
+      
+      const message = `Model successfully retrained with ${this.tradeOutcomes.length} outcomes. Training time: ${new Date(this.lastTrainingTime).toISOString()}`;
+      console.log(`   ✅ ${message}`);
+      console.log(`   New Model Health Score: ${this.modelHealthScore.toFixed(0)}/100`);
+      console.log(`${'='.repeat(80)}\n`);
+      
+      return {
+        success: true,
+        message
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const message = `Failed to retrain model: ${errorMessage}`;
+      console.error(`   ❌ ${message}`);
+      console.log(`${'='.repeat(80)}\n`);
+      
+      return {
+        success: false,
+        message
+      };
+    }
   }
 }
 
