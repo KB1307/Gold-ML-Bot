@@ -107,7 +107,7 @@ const LEARNING_STORAGE_KEY = 'trade_outcomes_learning';
 const MODEL_WEIGHTS_KEY = 'model_weights_v1';
 const DAILY_OHLC_STORAGE_KEY = 'daily_ohlc_history_v1';
 const WALK_FORWARD_WINDOW = 12 * 7 * 24 * 60 * 60 * 1000;
-const TRAINING_WINDOW_DAYS = 90;
+const TRAINING_WINDOW_DAYS = 30;
 const MIN_CONFIDENCE_FOR_RETRAINING = 0.75;
 const BASE_SLIPPAGE_BUFFER_PIPS = 0.5;
 const CONFIDENCE_SMOOTHING_WINDOW = 5;
@@ -896,8 +896,11 @@ class SignalGenerationEngine {
     if (this.lastTrainingTime === 0) {
       healthScore = 85;
       console.log('⚠️ Model never trained - starting with baseline health of 85/100');
-    } else if (daysSinceRetraining > 7) {
-      healthScore -= Math.min(30, (daysSinceRetraining - 7) * 3);
+    } else if (daysSinceRetraining > 2) {
+      healthScore -= Math.min(40, (daysSinceRetraining - 2) * 5);
+      if (daysSinceRetraining > 2) {
+        console.log(`⚠️ Model is ${daysSinceRetraining.toFixed(1)} days old (48-hour schedule exceeded)`);
+      }
     }
     
     const avgRecentWinConfidence = this.performanceMetrics.recentWinningConfidences.length > 0
@@ -1361,7 +1364,7 @@ class SignalGenerationEngine {
     });
     
     const now = Date.now();
-    const shouldRetrainScheduled = now - this.lastTrainingTime > 7 * 24 * 60 * 60 * 1000;
+    const shouldRetrainScheduled = now - this.lastTrainingTime > 48 * 60 * 60 * 1000;
     
     const avgRecentWinConfidence = this.performanceMetrics.recentWinningConfidences.length > 0
       ? this.performanceMetrics.recentWinningConfidences.reduce((a, b) => a + b, 0) / this.performanceMetrics.recentWinningConfidences.length
@@ -1371,13 +1374,14 @@ class SignalGenerationEngine {
     if (shouldRetrainScheduled || shouldRetrainConfidenceDrop) {
       const reason = shouldRetrainConfidenceDrop 
         ? `Confidence Degradation (avg: ${(avgRecentWinConfidence * 100).toFixed(1)}%)`
-        : 'Scheduled Weekly Retrain';
+        : 'Scheduled 48-Hour Retrain';
       console.log(`🔔 RETRAINING TRIGGERED: ${reason}`);
       console.log(`   Scheduled: ${shouldRetrainScheduled}, ConfDrop: ${shouldRetrainConfidenceDrop}`);
       console.log(`   Avg Win Conf: ${(avgRecentWinConfidence * 100).toFixed(1)}%, Threshold: ${(MIN_CONFIDENCE_FOR_RETRAINING * 100).toFixed(1)}%`);
       await this.walkForwardOptimization(reason);
     } else {
-      console.log(`✅ No retraining needed - Days: ${((now - this.lastTrainingTime) / (24*60*60*1000)).toFixed(1)}, AvgConf: ${(avgRecentWinConfidence * 100).toFixed(1)}%`);
+      const hoursSinceRetrain = ((now - this.lastTrainingTime) / (60*60*1000)).toFixed(1);
+      console.log(`✅ No retraining needed - Hours: ${hoursSinceRetrain}/48.0, AvgConf: ${(avgRecentWinConfidence * 100).toFixed(1)}%`);
     }
     
     this.calculateFeatureCorrelation();
@@ -1403,33 +1407,72 @@ class SignalGenerationEngine {
     const trainingData = this.tradeOutcomes.filter(o => new Date(o.timestamp) >= cutoffDate);
     
     if (trainingData.length < 10) {
-      console.log(`⚠️ Time-based window yielded only ${trainingData.length} outcomes. Using last 84 trades as fallback.`);
-      const fallbackData = this.tradeOutcomes.slice(-84);
+      console.log(`⚠️ Time-based window yielded only ${trainingData.length} outcomes. Using all available trades as fallback.`);
+      const fallbackData = this.tradeOutcomes.slice(-100);
       this.retrainModel(fallbackData);
       return;
     }
     
     console.log(`✓ Training on ${trainingData.length} outcomes from last ${TRAINING_WINDOW_DAYS} days`);
+    console.log(`   Exponential decay weighting: Last 7 days will have 80-90% influence`);
     this.retrainModel(trainingData);
   }
   
   private retrainModel(trainingData: TradeOutcome[]): void {
-    const winningFeatures = trainingData.filter(o => o.result === 'WIN').map(o => o.features);
-    const losingFeatures = trainingData.filter(o => o.result === 'LOSS').map(o => o.features);
+    const now = Date.now();
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    
+    const dataWithWeights = trainingData.map(outcome => {
+      const age = now - new Date(outcome.timestamp).getTime();
+      const daysSinceOutcome = age / (24 * 60 * 60 * 1000);
+      
+      let weight = 1.0;
+      if (daysSinceOutcome <= 7) {
+        weight = Math.exp(-daysSinceOutcome / 10);
+        weight = Math.max(0.5, weight);
+      } else {
+        weight = 0.1 * Math.exp(-(daysSinceOutcome - 7) / 15);
+        weight = Math.max(0.05, weight);
+      }
+      
+      return { outcome, weight };
+    });
+    
+    const totalWeight = dataWithWeights.reduce((sum, d) => sum + d.weight, 0);
+    const normalizedData = dataWithWeights.map(d => ({
+      ...d,
+      weight: d.weight / totalWeight
+    }));
+    
+    const recentDataInfluence = normalizedData
+      .filter(d => (now - new Date(d.outcome.timestamp).getTime()) <= sevenDaysMs)
+      .reduce((sum, d) => sum + d.weight, 0);
+    
+    console.log(`\n📊 EXPONENTIAL DECAY WEIGHTING:`);    console.log(`   Last 7 Days Influence: ${(recentDataInfluence * 100).toFixed(1)}%`);
+    console.log(`   Older Data Influence: ${((1 - recentDataInfluence) * 100).toFixed(1)}%`);
+    
+    const winningData = normalizedData.filter(d => d.outcome.result === 'WIN');
+    const losingData = normalizedData.filter(d => d.outcome.result === 'LOSS');
     
     this.modelWeights.clear();
     
-    const avgWinRSI = winningFeatures.reduce((sum, f) => sum + f.rsi, 0) / winningFeatures.length;
-    const avgLossRSI = losingFeatures.reduce((sum, f) => sum + f.rsi, 0) / losingFeatures.length;
-    this.modelWeights.set('rsi_weight', (avgWinRSI - avgLossRSI) / 100);
+    const weightedAvgWinRSI = winningData.reduce((sum, d) => sum + d.outcome.features.rsi * d.weight, 0) / 
+      winningData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgLossRSI = losingData.reduce((sum, d) => sum + d.outcome.features.rsi * d.weight, 0) / 
+      losingData.reduce((sum, d) => sum + d.weight, 0);
+    this.modelWeights.set('rsi_weight', (weightedAvgWinRSI - weightedAvgLossRSI) / 100);
     
-    const avgWinVolume = winningFeatures.reduce((sum, f) => sum + f.volumeRatio, 0) / winningFeatures.length;
-    const avgLossVolume = losingFeatures.reduce((sum, f) => sum + f.volumeRatio, 0) / losingFeatures.length;
-    this.modelWeights.set('volume_weight', avgWinVolume - avgLossVolume);
+    const weightedAvgWinVolume = winningData.reduce((sum, d) => sum + d.outcome.features.volumeRatio * d.weight, 0) / 
+      winningData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgLossVolume = losingData.reduce((sum, d) => sum + d.outcome.features.volumeRatio * d.weight, 0) / 
+      losingData.reduce((sum, d) => sum + d.weight, 0);
+    this.modelWeights.set('volume_weight', weightedAvgWinVolume - weightedAvgLossVolume);
     
-    const avgWinSentiment = winningFeatures.reduce((sum, f) => sum + f.sentiment.score, 0) / winningFeatures.length;
-    const avgLossSentiment = losingFeatures.reduce((sum, f) => sum + f.sentiment.score, 0) / losingFeatures.length;
-    this.modelWeights.set('sentiment_weight', (avgWinSentiment - avgLossSentiment) * 2);
+    const weightedAvgWinSentiment = winningData.reduce((sum, d) => sum + d.outcome.features.sentiment.score * d.weight, 0) / 
+      winningData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgLossSentiment = losingData.reduce((sum, d) => sum + d.outcome.features.sentiment.score * d.weight, 0) / 
+      losingData.reduce((sum, d) => sum + d.weight, 0);
+    this.modelWeights.set('sentiment_weight', (weightedAvgWinSentiment - weightedAvgLossSentiment) * 2);
     
     this.lastTrainingTime = Date.now();
     
@@ -1437,9 +1480,12 @@ class SignalGenerationEngine {
     console.log('✅✅✅ MODEL RETRAINED ✅✅✅');
     console.log('='.repeat(80));
     console.log(`   Training Time: ${new Date(this.lastTrainingTime).toISOString()}`);
+    console.log(`   Retraining Strategy: 48-Hour Schedule + Confidence Degradation`);
+    console.log(`   Training Window: ${TRAINING_WINDOW_DAYS} days with exponential decay`);
     console.log(`   New weights:`, Array.from(this.modelWeights.entries()));
     console.log(`   Training Data Size: ${trainingData.length} outcomes`);
-    console.log(`   Wins: ${trainingData.filter(o => o.result === 'WIN').length}, Losses: ${trainingData.filter(o => o.result === 'LOSS').length}`);
+    console.log(`   Wins: ${winningData.length}, Losses: ${losingData.length}`);
+    console.log(`   Recent Data Weight: ${(recentDataInfluence * 100).toFixed(1)}% (Last 7 days)`);
     console.log('='.repeat(80) + '\n');
     
     const persistData = {
