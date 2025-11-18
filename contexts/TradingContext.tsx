@@ -1,7 +1,7 @@
 import createContextHook from "@nkzw/create-context-hook";
 import { useState, useEffect, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { TradingSignal, Settings, MarketOutlook, PerformanceMetrics, PositionSizing, DailyOHLC } from "@/types/trading";
+import { TradingSignal, SignalStatus, Settings, MarketOutlook, PerformanceMetrics, PositionSizing, DailyOHLC } from "@/types/trading";
 import { signalEngine } from "@/services/signalEngine";
 
 const DEFAULT_SETTINGS: Settings = {
@@ -103,7 +103,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
     const priceInterval = setInterval(() => {
       updatePrice();
-    }, 3000);
+    }, 1000);
 
     updatePrice();
 
@@ -395,32 +395,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       
       if (signal) {
         setSignalHistory((prev) => {
-          const isDuplicate = prev.some(s => {
-            if (s.status !== "ACTIVE") return false;
-            
-            const entryPriceDiff = Math.abs(s.entryPrice - signal.entryPrice);
-            const tp1Diff = Math.abs(s.tp1 - signal.tp1);
-            const tp3Diff = Math.abs(s.tp3 - signal.tp3);
-            const isSameType = s.type === signal.type;
-            
-            const isInSameZone = entryPriceDiff < 5 && tp1Diff < 5 && tp3Diff < 10 && isSameType;
-            
-            if (isInSameZone) {
-              console.log(`⚠️ DUPLICATE ZONE DETECTED:`);
-              console.log(`   Existing: ${s.type} @ ${s.entryPrice} -> TP1: ${s.tp1}, TP3: ${s.tp3}`);
-              console.log(`   New: ${signal.type} @ ${signal.entryPrice} -> TP1: ${signal.tp1}, TP3: ${signal.tp3}`);
-              console.log(`   Entry diff: ${entryPriceDiff.toFixed(1)}, TP1 diff: ${tp1Diff.toFixed(1)}, TP3 diff: ${tp3Diff.toFixed(1)}`);
-              return true;
-            }
-            
-            return false;
-          });
-          
-          if (isDuplicate) {
-            console.log("❌ REJECTED: Duplicate signal in same entry/TP zone - Skipping");
-            return prev;
-          }
-          
           console.log("\n" + "=".repeat(60));
           console.log("✅ ✅ ✅ NEW SIGNAL GENERATED ✅ ✅ ✅");
           console.log("=".repeat(60));
@@ -475,7 +449,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         const signalCreationAge = signal.createdAt ? now - signal.createdAt : signalAge;
         
         if (signalCreationAge < GRACE_PERIOD_MS) {
-          console.log(`⏱️ Grace Period: Signal ${signal.id.slice(-6)} is ${(signalCreationAge / 1000).toFixed(1)}s old - skipping monitoring`);
           return signal;
         }
         if (signalAge > twoHoursInMs) {
@@ -489,11 +462,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           };
         }
 
-        let newStatus = signal.status;
+        let newStatus: SignalStatus = signal.status as SignalStatus;
         let targetsHit = signal.targetsHit;
+        let updatedSignal = signal;
 
         if (signal.type === "BUY") {
-          if (price >= signal.tp3 && targetsHit < 3) {
+          if (price <= signal.sl) {
+            newStatus = "SL_HIT";
+            updated = true;
+            console.log(`⚠️ SL HIT: BUY Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (SL: ${signal.sl.toFixed(1)})`);
+          } else if (price >= signal.tp3 && targetsHit < 3) {
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
             updated = true;
@@ -507,16 +485,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             newStatus = "TP1_HIT";
             targetsHit = 1;
             updated = true;
-            console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
-          }
-          
-          if (price <= signal.sl && newStatus !== "ALL_TARGETS_HIT") {
-            newStatus = "SL_HIT";
-            updated = true;
-            console.log(`⚠️ SL HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
+            const breakEvenSL = signal.entryPriceWithSlippage;
+            updatedSignal = { ...signal, sl: breakEvenSL };
+            console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} - SL moved to break-even @ ${breakEvenSL.toFixed(1)}`);
           }
         } else {
-          if (price <= signal.tp3 && targetsHit < 3) {
+          if (price >= signal.sl) {
+            newStatus = "SL_HIT";
+            updated = true;
+            console.log(`⚠️ SL HIT: SELL Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (SL: ${signal.sl.toFixed(1)})`);
+          } else if (price <= signal.tp3 && targetsHit < 3) {
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
             updated = true;
@@ -530,13 +508,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             newStatus = "TP1_HIT";
             targetsHit = 1;
             updated = true;
-            console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
-          }
-          
-          if (price >= signal.sl && newStatus !== "ALL_TARGETS_HIT") {
-            newStatus = "SL_HIT";
-            updated = true;
-            console.log(`⚠️ SL HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
+            const breakEvenSL = signal.entryPriceWithSlippage;
+            updatedSignal = { ...signal, sl: breakEvenSL };
+            console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} - SL moved to break-even @ ${breakEvenSL.toFixed(1)}`);
           }
         }
 
@@ -545,7 +519,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             const exitDate = new Date();
             console.log(`✅ Terminal status reached: Signal ${signal.id.slice(-6)} will remain in history only`);
             
-            const exitPrice = newStatus === "ALL_TARGETS_HIT" ? signal.tp3 : signal.sl;
+            const exitPrice = newStatus === "ALL_TARGETS_HIT" ? signal.tp3 : updatedSignal.sl;
             const result = newStatus === "ALL_TARGETS_HIT" ? "WIN" : "LOSS";
             
             signalEngine.recordTradeOutcome(
@@ -563,7 +537,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             console.log(`📊 Learning System: Recorded ${result} outcome for signal ${signal.id.slice(-6)}`);
             
             return {
-              ...signal,
+              ...updatedSignal,
               status: newStatus,
               targetsHit,
               exitTime: exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
@@ -575,7 +549,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             console.log(`   This signal continues to be monitored for TP3 or SL`);
           }
           
-          return { ...signal, status: newStatus, targetsHit };
+          return { ...updatedSignal, status: newStatus, targetsHit };
         }
 
         return signal;
@@ -588,19 +562,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       return updated ? updatedHistory : prevHistory;
     });
-  }, []);
+  }, [setSignalUpdateTrigger]);
 
 
 
   useEffect(() => {
-    const allSignalsInterval = setInterval(() => {
-      updateAllSignalsStatus();
-    }, 5000);
-
     updateAllSignalsStatus();
-
-    return () => clearInterval(allSignalsInterval);
-  }, [updateAllSignalsStatus]);
+  }, [currentPrice, updateAllSignalsStatus]);
 
   useEffect(() => {
     if (!isLoggedIn) {
