@@ -1061,7 +1061,24 @@ class SignalGenerationEngine {
       console.log(`🔶 Concept Drift: MEDIUM (${this.conceptDriftScore.toFixed(2)}) - Monitor closely`);
     } else {
       this.driftAlertLevel = 'HIGH';
-      console.log(`🚨 Concept Drift: HIGH (${this.conceptDriftScore.toFixed(2)}) - RETRAINING RECOMMENDED`);
+      console.log(`🚨 Concept Drift: HIGH (${this.conceptDriftScore.toFixed(2)}) - AUTOMATED ACTION TRIGGERED`);
+      
+      console.log('\n' + '🔥'.repeat(30));
+      console.log('⚡ CONCEPT DRIFT AUTO-RESPONSE SYSTEM ACTIVATED');
+      console.log('🔥'.repeat(30));
+      console.log(`   Drift Score: ${this.conceptDriftScore.toFixed(2)} (Threshold: 0.6)`);
+      console.log(`   Alert Level: HIGH`);
+      console.log(`   Action 1: Triggering immediate model retrain`);
+      console.log(`   Action 2: Temporarily increasing confidence threshold 70% -> 80%`);
+      console.log('🔥'.repeat(30) + '\n');
+      
+      await this.manualRetrain('High Concept Drift Alert (Auto-Triggered)');
+      
+      console.log('\n✅ Concept Drift Response Complete');
+      console.log('   - Model retrained with latest data');
+      console.log('   - Feature weights normalized');
+      console.log('   - Confidence threshold temporarily elevated to 80%');
+      console.log('   - System will automatically revert threshold after 48 hours\n');
     }
     
     console.log('='.repeat(60) + '\n');
@@ -1500,23 +1517,66 @@ class SignalGenerationEngine {
     
     this.modelWeights.clear();
     
+    const rawWeights: { [key: string]: number } = {};
+    
     const weightedAvgWinRSI = winningData.reduce((sum, d) => sum + d.outcome.features.rsi * d.weight, 0) / 
       winningData.reduce((sum, d) => sum + d.weight, 0);
     const weightedAvgLossRSI = losingData.reduce((sum, d) => sum + d.outcome.features.rsi * d.weight, 0) / 
       losingData.reduce((sum, d) => sum + d.weight, 0);
-    this.modelWeights.set('rsi_weight', (weightedAvgWinRSI - weightedAvgLossRSI) / 100);
+    rawWeights['rsi_weight'] = (weightedAvgWinRSI - weightedAvgLossRSI) / 100;
     
     const weightedAvgWinVolume = winningData.reduce((sum, d) => sum + d.outcome.features.volumeRatio * d.weight, 0) / 
       winningData.reduce((sum, d) => sum + d.weight, 0);
     const weightedAvgLossVolume = losingData.reduce((sum, d) => sum + d.outcome.features.volumeRatio * d.weight, 0) / 
       losingData.reduce((sum, d) => sum + d.weight, 0);
-    this.modelWeights.set('volume_weight', weightedAvgWinVolume - weightedAvgLossVolume);
+    rawWeights['volume_weight'] = weightedAvgWinVolume - weightedAvgLossVolume;
     
     const weightedAvgWinSentiment = winningData.reduce((sum, d) => sum + d.outcome.features.sentiment.score * d.weight, 0) / 
       winningData.reduce((sum, d) => sum + d.weight, 0);
     const weightedAvgLossSentiment = losingData.reduce((sum, d) => sum + d.outcome.features.sentiment.score * d.weight, 0) / 
       losingData.reduce((sum, d) => sum + d.weight, 0);
-    this.modelWeights.set('sentiment_weight', (weightedAvgWinSentiment - weightedAvgLossSentiment) * 2);
+    rawWeights['sentiment_weight'] = (weightedAvgWinSentiment - weightedAvgLossSentiment) * 2;
+    
+    const weightedAvgWinATR = winningData.reduce((sum, d) => sum + d.outcome.features.atr * d.weight, 0) / 
+      winningData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgLossATR = losingData.reduce((sum, d) => sum + d.outcome.features.atr * d.weight, 0) / 
+      losingData.reduce((sum, d) => sum + d.weight, 0);
+    rawWeights['atr_weight'] = (weightedAvgWinATR - weightedAvgLossATR) / 10;
+    
+    const weightedAvgWinDXY = winningData.reduce((sum, d) => sum + d.outcome.features.dxyChange * d.weight, 0) / 
+      winningData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgLossDXY = losingData.reduce((sum, d) => sum + d.outcome.features.dxyChange * d.weight, 0) / 
+      losingData.reduce((sum, d) => sum + d.weight, 0);
+    rawWeights['dxy_weight'] = (weightedAvgWinDXY - weightedAvgLossDXY) * 2;
+    
+    console.log('\n📐 WEIGHT NORMALIZATION:');
+    console.log('   Raw Weights (before normalization):');
+    Object.entries(rawWeights).forEach(([key, value]) => {
+      console.log(`      ${key}: ${value.toFixed(4)}`);
+    });
+    
+    const sumAbsoluteWeights = Object.values(rawWeights).reduce((sum, w) => sum + Math.abs(w), 0);
+    console.log(`   Sum of Absolute Weights: ${sumAbsoluteWeights.toFixed(4)}`);
+    
+    if (sumAbsoluteWeights > 0) {
+      Object.entries(rawWeights).forEach(([key, value]) => {
+        const normalizedWeight = value / sumAbsoluteWeights;
+        this.modelWeights.set(key, normalizedWeight);
+      });
+      
+      console.log('   Normalized Weights (sum = 1.0):');
+      let verificationSum = 0;
+      this.modelWeights.forEach((value, key) => {
+        console.log(`      ${key}: ${value.toFixed(4)} (${(Math.abs(value) * 100).toFixed(1)}% influence)`);
+        verificationSum += Math.abs(value);
+      });
+      console.log(`   Verification Sum: ${verificationSum.toFixed(4)} ✅`);
+    } else {
+      console.log('   ⚠️ Warning: All weights are zero. Using equal distribution.');
+      Object.keys(rawWeights).forEach(key => {
+        this.modelWeights.set(key, 1.0 / Object.keys(rawWeights).length);
+      });
+    }
     
     this.lastTrainingTime = Date.now();
     
@@ -1524,14 +1584,15 @@ class SignalGenerationEngine {
     console.log('✅✅✅ MODEL RETRAINED ✅✅✅');
     console.log('='.repeat(80));
     console.log(`   Training Time: ${new Date(this.lastTrainingTime).toISOString()}`);
-    console.log(`   Retraining Strategy: 48-Hour Schedule + Confidence Degradation`);
+    console.log(`   Retraining Strategy: 48-Hour Schedule + Confidence Degradation + Drift Detection`);
     console.log(`   Training Window: ${TRAINING_WINDOW_DAYS} days with exponential decay`);
-    console.log(`   New weights:`, Array.from(this.modelWeights.entries()));
+    console.log(`   Normalized weights:`, Array.from(this.modelWeights.entries()));
     console.log(`   Training Data Size: ${trainingData.length} outcomes`);
     console.log(`   Wins: ${winningData.length}, Losses: ${losingData.length}`);
     console.log(`   Last 3 Days Weight: ${(last3DaysInfluence * 100).toFixed(1)}%`);
     console.log(`   Last 7 Days Weight: ${(last7DaysInfluence * 100).toFixed(1)}%`);
     console.log(`   Target: 80-90% influence from last 3-7 days`);
+    console.log(`   Weight Normalization: ✅ Complete (prevents single feature monopolization)`);
     console.log('='.repeat(80) + '\n');
     
     const persistData = {
@@ -1748,8 +1809,22 @@ class SignalGenerationEngine {
       return null;
     }
     
-    if (analysis.confidence < settings.minConfidence) {
-      console.log(`❌ REJECTED: Confidence ${(analysis.confidence * 100).toFixed(1)}% below threshold ${(settings.minConfidence * 100).toFixed(0)}%`);
+    let effectiveMinConfidence = settings.minConfidence;
+    
+    if (this.driftAlertLevel === 'HIGH') {
+      effectiveMinConfidence = Math.max(settings.minConfidence, 0.80);
+      console.log(`🔶 HIGH DRIFT DETECTED: Confidence threshold temporarily elevated`);
+      console.log(`   Base Threshold: ${(settings.minConfidence * 100).toFixed(0)}%`);
+      console.log(`   Elevated Threshold: ${(effectiveMinConfidence * 100).toFixed(0)}%`);
+      console.log(`   Reason: Protecting capital during market regime shift`);
+      console.log(`   Duration: Until next model retrain (48h max)\n`);
+    }
+    
+    if (analysis.confidence < effectiveMinConfidence) {
+      console.log(`❌ REJECTED: Confidence ${(analysis.confidence * 100).toFixed(1)}% below threshold ${(effectiveMinConfidence * 100).toFixed(0)}%`);
+      if (this.driftAlertLevel === 'HIGH') {
+        console.log(`   ⚠️ Elevated threshold active due to HIGH CONCEPT DRIFT`);
+      }
       console.log(`   💡 TIP: Lower minConfidence in settings to ${Math.max(60, Math.floor(analysis.confidence * 100))}% or wait for better setup`);
       console.log(`${'='.repeat(80)}\n`);
       return null;
