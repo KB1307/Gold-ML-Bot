@@ -592,7 +592,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       return;
     }
 
+    if (isLoading) {
+      console.log('⚠️ Still loading data - signal generation waiting for initialization...');
+      return;
+    }
+
     console.log('✅ Signal generation system activated - checking every 30s');
+    console.log(`   Data loaded: ${signalHistory.length} signals in history`);
     
     const signalInterval = setInterval(() => {
       console.log('⏰ 30s interval - checking for signal generation...');
@@ -606,7 +612,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log('🛑 Signal generation system deactivated');
       clearInterval(signalInterval);
     };
-  }, [isLoggedIn, checkAndGenerateSignal]);
+  }, [isLoggedIn, isLoading, checkAndGenerateSignal]);
 
   const login = useCallback(async (username: string) => {
     setIsLoggedIn(true);
