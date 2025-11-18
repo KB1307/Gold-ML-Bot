@@ -1472,9 +1472,14 @@ class SignalGenerationEngine {
           const daysSince = (Date.now() - this.lastTrainingTime) / (24 * 60 * 60 * 1000);
           console.log(`✓ Loaded model weights and training time from storage: ${new Date(this.lastTrainingTime).toISOString()} (${daysSince.toFixed(1)} days ago)`);
         } else {
-          this.lastTrainingTime = 0;
-          console.log('⚠️ Loaded model weights from storage but no training time found - model never trained');
+          console.log('⚠️ No previous training time found - initializing fresh model');
+          this.lastTrainingTime = Date.now();
+          console.log(`✓ Model initialized at: ${new Date(this.lastTrainingTime).toISOString()}`);
         }
+      } else {
+        console.log('⚠️ No model weights found in storage - initializing fresh model');
+        this.lastTrainingTime = Date.now();
+        console.log(`✓ Model initialized at: ${new Date(this.lastTrainingTime).toISOString()}`);
       }
       
       if (dailyOHLCData) {
@@ -2002,8 +2007,8 @@ class SignalGenerationEngine {
   
   getModelHealthMetrics() {
     const featureDriftMetrics = this.analyzeFeatureImportanceDrift();
-    const timeSinceRetraining = Date.now() - this.lastTrainingTime;
-    const daysSinceRetrain = timeSinceRetraining / (24 * 60 * 60 * 1000);
+    const timeSinceRetraining = this.lastTrainingTime > 0 ? Date.now() - this.lastTrainingTime : 0;
+    const daysSinceRetrain = this.lastTrainingTime > 0 ? timeSinceRetraining / (24 * 60 * 60 * 1000) : 0;
     
     const confidenceDegradation = this.performanceMetrics.recentWinningConfidences.length > 0
       ? MIN_CONFIDENCE_FOR_RETRAINING - (this.performanceMetrics.recentWinningConfidences.reduce((a, b) => a + b, 0) / this.performanceMetrics.recentWinningConfidences.length)
