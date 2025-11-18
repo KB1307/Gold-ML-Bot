@@ -487,7 +487,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             newStatus = "TP1_HIT";
             targetsHit = 1;
             updated = true;
-            const breakEvenSL = signal.entryPriceWithSlippage;
+            const breakEvenSL = signal.entryPrice;
             updatedSignal = { ...signal, sl: breakEvenSL };
             console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)}) - SL moved to break-even @ ${breakEvenSL.toFixed(1)}`);
           }
@@ -510,7 +510,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             newStatus = "TP1_HIT";
             targetsHit = 1;
             updated = true;
-            const breakEvenSL = signal.entryPriceWithSlippage;
+            const breakEvenSL = signal.entryPrice;
             updatedSignal = { ...signal, sl: breakEvenSL };
             console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)}) - SL moved to break-even @ ${breakEvenSL.toFixed(1)}`);
           }
