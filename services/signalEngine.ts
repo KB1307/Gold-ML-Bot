@@ -248,7 +248,7 @@ class SignalGenerationEngine {
   private volumeHistory: number[] = [];
   private tradeOutcomes: TradeOutcome[] = [];
   private modelWeights: Map<string, number> = new Map();
-  private lastTrainingTime: number = Date.now();
+  private lastTrainingTime: number = 0;
   private performanceMetrics: {
     recentWinRate: number;
     profitFactor: number;
@@ -886,11 +886,15 @@ class SignalGenerationEngine {
   private updateModelHealthScore(): void {
     let healthScore = 100;
     
-    const timeSinceRetraining = Date.now() - this.lastTrainingTime;
-    const daysSinceRetraining = timeSinceRetraining / (24 * 60 * 60 * 1000);
+    const timeSinceRetraining = this.lastTrainingTime > 0 ? Date.now() - this.lastTrainingTime : 0;
+    const daysSinceRetraining = this.lastTrainingTime > 0 ? timeSinceRetraining / (24 * 60 * 60 * 1000) : 0;
     
-    console.log(`📊 Model Health Debug: lastTrainingTime=${new Date(this.lastTrainingTime).toISOString()}, timeSince=${(timeSinceRetraining/1000/60).toFixed(1)}min, days=${daysSinceRetraining.toFixed(2)}`);
-    if (daysSinceRetraining > 7) {
+    console.log(`📊 Model Health Debug: lastTrainingTime=${this.lastTrainingTime > 0 ? new Date(this.lastTrainingTime).toISOString() : 'NEVER_TRAINED'}, timeSince=${this.lastTrainingTime > 0 ? (timeSinceRetraining/1000/60).toFixed(1) + 'min' : 'N/A'}, days=${daysSinceRetraining.toFixed(2)}`);
+    
+    if (this.lastTrainingTime === 0) {
+      healthScore = 85;
+      console.log('⚠️ Model never trained - starting with baseline health of 85/100');
+    } else if (daysSinceRetraining > 7) {
       healthScore -= Math.min(30, (daysSinceRetraining - 7) * 3);
     }
     
@@ -923,7 +927,10 @@ class SignalGenerationEngine {
   
   private async detectConceptDrift(features: MarketFeatures): Promise<void> {
     const now = Date.now();
-    if (now - this.lastDriftCheck < DRIFT_CHECK_INTERVAL) {
+    if (this.lastDriftCheck > 0 && now - this.lastDriftCheck < DRIFT_CHECK_INTERVAL) {
+      const nextCheck = new Date(this.lastDriftCheck + DRIFT_CHECK_INTERVAL);
+      const hoursRemaining = ((this.lastDriftCheck + DRIFT_CHECK_INTERVAL - now) / (1000 * 60 * 60)).toFixed(1);
+      console.log(`⏰ Next Drift Check in ${hoursRemaining}h (scheduled: ${nextCheck.toLocaleTimeString()})`);
       return;
     }
     
@@ -1023,10 +1030,12 @@ class SignalGenerationEngine {
     console.log('='.repeat(60) + '\n');
     
     await this.saveFeatureDriftHistory();
+    this.updateModelHealthScore();
   }
   
   private analyzeFeatureImportanceDrift(): FeatureDriftMetric[] {
     if (this.tradeOutcomes.length < 20) {
+      console.log('⚠️ Feature Importance Drift: Insufficient data (need 20+ outcomes, have ' + this.tradeOutcomes.length + ')');
       return [];
     }
     
@@ -1088,7 +1097,14 @@ class SignalGenerationEngine {
         status,
       });
       
-      console.log(`   📊 ${featureName}: ${status} (Historical: ${historicalImportance.toFixed(3)}, Current: ${currentImportance.toFixed(3)}, Drift: ${(drift * 100).toFixed(1)}%)`);
+      const impact = drift > 0.6 ? '🚨 CRITICAL' : drift > 0.3 ? '⚠️ WARNING' : '✅ STABLE';
+      console.log(`   📊 ${featureName}: ${impact} (Historical: ${historicalImportance.toFixed(3)}, Current: ${currentImportance.toFixed(3)}, Drift: ${(drift * 100).toFixed(1)}%)`);
+      
+      if (status === 'CRITICAL') {
+        console.log(`      🔥 Feature ${featureName} showing critical drift - may need to be removed or retrained`);
+      } else if (status === 'DEGRADING') {
+        console.log(`      ⚠️ Feature ${featureName} degrading - monitor for continued deterioration`);
+      }
     }
     
     return metrics;
@@ -1415,11 +1431,14 @@ class SignalGenerationEngine {
     
     this.lastTrainingTime = Date.now();
     
+    console.log('\n' + '='.repeat(80));
     console.log('✅✅✅ MODEL RETRAINED ✅✅✅');
+    console.log('='.repeat(80));
     console.log(`   Training Time: ${new Date(this.lastTrainingTime).toISOString()}`);
     console.log(`   New weights:`, Array.from(this.modelWeights.entries()));
     console.log(`   Training Data Size: ${trainingData.length} outcomes`);
     console.log(`   Wins: ${trainingData.filter(o => o.result === 'WIN').length}, Losses: ${trainingData.filter(o => o.result === 'LOSS').length}`);
+    console.log('='.repeat(80) + '\n');
     
     const persistData = {
       weights: Array.from(this.modelWeights.entries()),
@@ -1428,6 +1447,8 @@ class SignalGenerationEngine {
     AsyncStorage.setItem(MODEL_WEIGHTS_KEY, JSON.stringify(persistData)).catch(error => {
       console.error('Failed to persist model weights:', error);
     });
+    
+    this.updateModelHealthScore();
   }
   
   async loadPersistedLearningData(): Promise<DailyOHLC[]> {
@@ -1446,11 +1467,13 @@ class SignalGenerationEngine {
       if (weightsData) {
         const weightsObj = JSON.parse(weightsData);
         this.modelWeights = new Map(weightsObj.weights || weightsObj);
-        if (weightsObj.lastTrainingTime) {
+        if (weightsObj.lastTrainingTime && weightsObj.lastTrainingTime > 0) {
           this.lastTrainingTime = weightsObj.lastTrainingTime;
-          console.log(`✓ Loaded model weights and training time from storage: ${new Date(this.lastTrainingTime).toISOString()}`);
+          const daysSince = (Date.now() - this.lastTrainingTime) / (24 * 60 * 60 * 1000);
+          console.log(`✓ Loaded model weights and training time from storage: ${new Date(this.lastTrainingTime).toISOString()} (${daysSince.toFixed(1)} days ago)`);
         } else {
-          console.log('✓ Loaded model weights from storage (no training time found)');
+          this.lastTrainingTime = 0;
+          console.log('⚠️ Loaded model weights from storage but no training time found - model never trained');
         }
       }
       
