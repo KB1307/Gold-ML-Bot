@@ -140,39 +140,72 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
   }
 
   try {
-    const dxyResponse = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB');
+    const dxyResponse = await fetch('https://query2.finance.yahoo.com/v8/finance/chart/DX=F?interval=1m&range=1d', {
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
     const dxyData = await dxyResponse.json();
     if (dxyData?.chart?.result?.[0]?.meta?.regularMarketPrice) {
       cachedDXY = parseFloat(dxyData.chart.result[0].meta.regularMarketPrice);
       console.log('✓ Fetched DXY:', cachedDXY);
+    } else if (!cachedDXY) {
+      cachedDXY = 103.5 + (Math.random() - 0.5) * 2;
+      console.log('⚠️ DXY: Using simulated price:', cachedDXY.toFixed(2));
     }
   } catch (error) {
-    console.warn('DXY fetch failed, using fallback:', error);
-    cachedDXY = 103.5 + (Math.random() - 0.5) * 2;
+    if (!cachedDXY) {
+      cachedDXY = 103.5 + (Math.random() - 0.5) * 2;
+      console.log('⚠️ DXY fetch failed, using simulated price:', cachedDXY.toFixed(2));
+    } else {
+      console.log('⚠️ DXY fetch failed, using last cached price:', cachedDXY.toFixed(2));
+    }
   }
 
   try {
-    const yieldResponse = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5ETNX');
+    const yieldResponse = await fetch('https://query2.finance.yahoo.com/v8/finance/chart/%5ETNX?interval=1m&range=1d', {
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
     const yieldData = await yieldResponse.json();
     if (yieldData?.chart?.result?.[0]?.meta?.regularMarketPrice) {
       cachedUS10Y = parseFloat(yieldData.chart.result[0].meta.regularMarketPrice);
       console.log('✓ Fetched US10Y:', cachedUS10Y);
+    } else if (!cachedUS10Y) {
+      cachedUS10Y = 4.2 + (Math.random() - 0.5) * 0.5;
+      console.log('⚠️ US10Y: Using simulated yield:', cachedUS10Y.toFixed(2));
     }
   } catch (error) {
-    console.warn('US10Y fetch failed, using fallback:', error);
-    cachedUS10Y = 4.2 + (Math.random() - 0.5) * 0.5;
+    if (!cachedUS10Y) {
+      cachedUS10Y = 4.2 + (Math.random() - 0.5) * 0.5;
+      console.log('⚠️ US10Y fetch failed, using simulated yield:', cachedUS10Y.toFixed(2));
+    } else {
+      console.log('⚠️ US10Y fetch failed, using last cached yield:', cachedUS10Y.toFixed(2));
+    }
   }
 
   try {
-    const vixResponse = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX');
+    const vixResponse = await fetch('https://query2.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1m&range=1d', {
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
     const vixData = await vixResponse.json();
     if (vixData?.chart?.result?.[0]?.meta?.regularMarketPrice) {
       cachedVIX = parseFloat(vixData.chart.result[0].meta.regularMarketPrice);
       console.log('✓ Fetched VIX:', cachedVIX);
+    } else if (!cachedVIX) {
+      cachedVIX = 18 + (Math.random() - 0.5) * 5;
+      console.log('⚠️ VIX: Using simulated price:', cachedVIX.toFixed(2));
     }
   } catch (error) {
-    console.warn('VIX fetch failed, using fallback:', error);
-    cachedVIX = 18 + (Math.random() - 0.5) * 5;
+    if (!cachedVIX) {
+      cachedVIX = 18 + (Math.random() - 0.5) * 5;
+      console.log('⚠️ VIX fetch failed, using simulated price:', cachedVIX.toFixed(2));
+    } else {
+      console.log('⚠️ VIX fetch failed, using last cached price:', cachedVIX.toFixed(2));
+    }
   }
 
   lastIntermarketFetchTime = now;
@@ -591,7 +624,6 @@ class SignalGenerationEngine {
   
   private getDerivedDailyOHLC(): { yesterdayHigh: number; yesterdayLow: number; yesterdayClose: number; yesterdayOpen: number } {
     if (this.dailyOHLCHistory.length === 0) {
-      console.log('⚠️ No dailyOHLCHistory available - using scaled fallback');
       const currentPrice = this.currentPrice;
       const volatilityRange = currentPrice * 0.015;
       return {
