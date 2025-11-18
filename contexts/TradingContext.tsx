@@ -466,51 +466,53 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         let targetsHit = signal.targetsHit;
         let updatedSignal = signal;
 
+        console.log(`🔍 Monitoring Signal ${signal.id.slice(-6)}: Type=${signal.type}, Status=${signal.status}, Targets=${targetsHit}/3, Price=${price.toFixed(1)}, TP1=${signal.tp1.toFixed(1)}, TP2=${signal.tp2.toFixed(1)}, TP3=${signal.tp3.toFixed(1)}, SL=${signal.sl.toFixed(1)}`);
+
         if (signal.type === "BUY") {
           if (price <= signal.sl) {
             newStatus = "SL_HIT";
             updated = true;
-            console.log(`⚠️ SL HIT: BUY Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (SL: ${signal.sl.toFixed(1)})`);
+            console.log(`⚠️ ⚠️ ⚠️ SL HIT: BUY Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (SL: ${signal.sl.toFixed(1)})`);
           } else if (price >= signal.tp3 && targetsHit < 3) {
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
             updated = true;
-            console.log(`🎯 ALL TARGETS HIT: Signal ${signal.id.slice(-6)} reached TP3 @ ${price.toFixed(1)}`);
+            console.log(`🎯 🎯 🎯 ALL TARGETS HIT: Signal ${signal.id.slice(-6)} reached TP3 @ ${price.toFixed(1)}`);
           } else if (price >= signal.tp2 && targetsHit < 2) {
             newStatus = "TP2_HIT";
             targetsHit = 2;
             updated = true;
-            console.log(`🎯 TP2 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
+            console.log(`🎯 🎯 TP2 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP2: ${signal.tp2.toFixed(1)})`);
           } else if (price >= signal.tp1 && targetsHit < 1) {
             newStatus = "TP1_HIT";
             targetsHit = 1;
             updated = true;
             const breakEvenSL = signal.entryPriceWithSlippage;
             updatedSignal = { ...signal, sl: breakEvenSL };
-            console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} - SL moved to break-even @ ${breakEvenSL.toFixed(1)}`);
+            console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)}) - SL moved to break-even @ ${breakEvenSL.toFixed(1)}`);
           }
         } else {
           if (price >= signal.sl) {
             newStatus = "SL_HIT";
             updated = true;
-            console.log(`⚠️ SL HIT: SELL Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (SL: ${signal.sl.toFixed(1)})`);
+            console.log(`⚠️ ⚠️ ⚠️ SL HIT: SELL Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (SL: ${signal.sl.toFixed(1)})`);
           } else if (price <= signal.tp3 && targetsHit < 3) {
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
             updated = true;
-            console.log(`🎯 ALL TARGETS HIT: Signal ${signal.id.slice(-6)} reached TP3 @ ${price.toFixed(1)}`);
+            console.log(`🎯 🎯 🎯 ALL TARGETS HIT: Signal ${signal.id.slice(-6)} reached TP3 @ ${price.toFixed(1)}`);
           } else if (price <= signal.tp2 && targetsHit < 2) {
             newStatus = "TP2_HIT";
             targetsHit = 2;
             updated = true;
-            console.log(`🎯 TP2 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
+            console.log(`🎯 🎯 TP2 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP2: ${signal.tp2.toFixed(1)})`);
           } else if (price <= signal.tp1 && targetsHit < 1) {
             newStatus = "TP1_HIT";
             targetsHit = 1;
             updated = true;
             const breakEvenSL = signal.entryPriceWithSlippage;
             updatedSignal = { ...signal, sl: breakEvenSL };
-            console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} - SL moved to break-even @ ${breakEvenSL.toFixed(1)}`);
+            console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)}) - SL moved to break-even @ ${breakEvenSL.toFixed(1)}`);
           }
         }
 
@@ -556,6 +558,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       });
 
       if (updated) {
+        console.log(`✅ Signal status updated - triggering UI refresh (trigger: ${signalUpdateTrigger + 1})`);
         AsyncStorage.setItem("signal_history", JSON.stringify(updatedHistory));
         setSignalUpdateTrigger(prev => prev + 1);
       }

@@ -248,7 +248,7 @@ class SignalGenerationEngine {
   private volumeHistory: number[] = [];
   private tradeOutcomes: TradeOutcome[] = [];
   private modelWeights: Map<string, number> = new Map();
-  private lastTrainingTime: number = 0;
+  private lastTrainingTime: number = Date.now();
   private performanceMetrics: {
     recentWinRate: number;
     profitFactor: number;
@@ -888,6 +888,8 @@ class SignalGenerationEngine {
     
     const timeSinceRetraining = Date.now() - this.lastTrainingTime;
     const daysSinceRetraining = timeSinceRetraining / (24 * 60 * 60 * 1000);
+    
+    console.log(`📊 Model Health Debug: lastTrainingTime=${new Date(this.lastTrainingTime).toISOString()}, timeSince=${(timeSinceRetraining/1000/60).toFixed(1)}min, days=${daysSinceRetraining.toFixed(2)}`);
     if (daysSinceRetraining > 7) {
       healthScore -= Math.min(30, (daysSinceRetraining - 7) * 3);
     }
@@ -1352,7 +1354,12 @@ class SignalGenerationEngine {
       const reason = shouldRetrainConfidenceDrop 
         ? `Confidence Degradation (avg: ${(avgRecentWinConfidence * 100).toFixed(1)}%)`
         : 'Scheduled Weekly Retrain';
+      console.log(`🔔 RETRAINING TRIGGERED: ${reason}`);
+      console.log(`   Scheduled: ${shouldRetrainScheduled}, ConfDrop: ${shouldRetrainConfidenceDrop}`);
+      console.log(`   Avg Win Conf: ${(avgRecentWinConfidence * 100).toFixed(1)}%, Threshold: ${(MIN_CONFIDENCE_FOR_RETRAINING * 100).toFixed(1)}%`);
       await this.walkForwardOptimization(reason);
+    } else {
+      console.log(`✅ No retraining needed - Days: ${((now - this.lastTrainingTime) / (24*60*60*1000)).toFixed(1)}, AvgConf: ${(avgRecentWinConfidence * 100).toFixed(1)}%`);
     }
     
     this.calculateFeatureCorrelation();
@@ -1408,9 +1415,17 @@ class SignalGenerationEngine {
     
     this.lastTrainingTime = Date.now();
     
-    console.log('✅ Model retrained. New weights:', Array.from(this.modelWeights.entries()));
+    console.log('✅✅✅ MODEL RETRAINED ✅✅✅');
+    console.log(`   Training Time: ${new Date(this.lastTrainingTime).toISOString()}`);
+    console.log(`   New weights:`, Array.from(this.modelWeights.entries()));
+    console.log(`   Training Data Size: ${trainingData.length} outcomes`);
+    console.log(`   Wins: ${trainingData.filter(o => o.result === 'WIN').length}, Losses: ${trainingData.filter(o => o.result === 'LOSS').length}`);
     
-    AsyncStorage.setItem(MODEL_WEIGHTS_KEY, JSON.stringify(Array.from(this.modelWeights.entries()))).catch(error => {
+    const persistData = {
+      weights: Array.from(this.modelWeights.entries()),
+      lastTrainingTime: this.lastTrainingTime,
+    };
+    AsyncStorage.setItem(MODEL_WEIGHTS_KEY, JSON.stringify(persistData)).catch(error => {
       console.error('Failed to persist model weights:', error);
     });
   }
@@ -1429,9 +1444,14 @@ class SignalGenerationEngine {
       }
       
       if (weightsData) {
-        const weights = JSON.parse(weightsData);
-        this.modelWeights = new Map(weights);
-        console.log('✓ Loaded model weights from storage');
+        const weightsObj = JSON.parse(weightsData);
+        this.modelWeights = new Map(weightsObj.weights || weightsObj);
+        if (weightsObj.lastTrainingTime) {
+          this.lastTrainingTime = weightsObj.lastTrainingTime;
+          console.log(`✓ Loaded model weights and training time from storage: ${new Date(this.lastTrainingTime).toISOString()}`);
+        } else {
+          console.log('✓ Loaded model weights from storage (no training time found)');
+        }
       }
       
       if (dailyOHLCData) {
