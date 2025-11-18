@@ -7,7 +7,7 @@ import { Stack } from "expo-router";
 import { TradingSignal } from "@/types/trading";
 
 export default function HistoryScreen() {
-  const { signalHistory, deleteSignalFromHistory, signalUpdateTrigger } = useTrading();
+  const { signalHistory, deleteSignalFromHistory, signalUpdateTrigger, isLoading } = useTrading();
 
   useEffect(() => {
     console.log(`📋 History UI update triggered (TP status changed) - Trigger: ${signalUpdateTrigger}`);
@@ -87,7 +87,15 @@ export default function HistoryScreen() {
               </View>
             </View>
 
-            {signalHistory.length === 0 ? (
+            {isLoading ? (
+              <View style={styles.emptyState}>
+                <History size={64} color="#444" strokeWidth={1.5} />
+                <Text style={styles.emptyTitle}>Loading History...</Text>
+                <Text style={styles.emptyText}>
+                  Retrieving your signal history from storage.
+                </Text>
+              </View>
+            ) : signalHistory.length === 0 ? (
               <View style={styles.emptyState}>
                 <History size={64} color="#444" strokeWidth={1.5} />
                 <Text style={styles.emptyTitle}>No Signal History</Text>
