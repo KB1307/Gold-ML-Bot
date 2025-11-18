@@ -122,6 +122,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   const loadPersistedData = async () => {
     try {
+      console.log('🔄 Loading persisted data from AsyncStorage...');
       const [savedSettings, savedHistory, loginStatus, savedMetrics, savedBalance] = await Promise.all([
         AsyncStorage.getItem("trading_settings"),
         AsyncStorage.getItem("signal_history"),
@@ -130,16 +131,23 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         AsyncStorage.getItem("account_balance"),
       ]);
 
+      console.log('📦 Raw saved history from storage:', savedHistory);
+
       if (savedSettings) {
         setSettings(JSON.parse(savedSettings));
+        console.log('✅ Settings loaded');
       }
 
       if (savedHistory) {
         const history = JSON.parse(savedHistory);
-        setSignalHistory(history.map((s: TradingSignal) => ({
+        const parsedHistory = history.map((s: TradingSignal) => ({
           ...s,
           timestamp: new Date(s.timestamp),
-        })));
+        }));
+        setSignalHistory(parsedHistory);
+        console.log(`✅ History loaded: ${parsedHistory.length} signals`);
+      } else {
+        console.log('⚠️ No saved history found in AsyncStorage');
       }
 
       if (loginStatus) {
@@ -154,9 +162,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         setAccountBalance(JSON.parse(savedBalance));
       }
     } catch (error) {
-      console.error("Failed to load persisted data:", error);
+      console.error("❌ Failed to load persisted data:", error);
     } finally {
       setIsLoading(false);
+      console.log('✅ Loading complete');
     }
   };
 
@@ -407,7 +416,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           console.log("=".repeat(60) + "\n");
           
           const updated = [signal, ...prev];
-          AsyncStorage.setItem("signal_history", JSON.stringify(updated));
+          AsyncStorage.setItem("signal_history", JSON.stringify(updated)).then(() => {
+            console.log(`💾 History saved: ${updated.length} signals persisted to AsyncStorage`);
+          }).catch(err => {
+            console.error('❌ Failed to save history to AsyncStorage:', err);
+          });
           return updated;
         });
 
@@ -555,7 +568,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       if (updated) {
         console.log(`✅ Signal status updated - triggering UI refresh (trigger: ${signalUpdateTrigger + 1})`);
-        AsyncStorage.setItem("signal_history", JSON.stringify(updatedHistory));
+        AsyncStorage.setItem("signal_history", JSON.stringify(updatedHistory)).then(() => {
+          console.log(`💾 Updated history saved: ${updatedHistory.length} signals`);
+        }).catch(err => {
+          console.error('❌ Failed to save updated history:', err);
+        });
         setSignalUpdateTrigger(prev => prev + 1);
       }
 
