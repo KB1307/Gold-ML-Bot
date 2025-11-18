@@ -1421,18 +1421,25 @@ class SignalGenerationEngine {
   private retrainModel(trainingData: TradeOutcome[]): void {
     const now = Date.now();
     const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
     
     const dataWithWeights = trainingData.map(outcome => {
       const age = now - new Date(outcome.timestamp).getTime();
       const daysSinceOutcome = age / (24 * 60 * 60 * 1000);
       
       let weight = 1.0;
-      if (daysSinceOutcome <= 7) {
-        weight = Math.exp(-daysSinceOutcome / 10);
-        weight = Math.max(0.5, weight);
-      } else {
-        weight = 0.1 * Math.exp(-(daysSinceOutcome - 7) / 15);
+      if (daysSinceOutcome <= 3) {
+        weight = Math.exp(-daysSinceOutcome / 20);
+        weight = Math.max(0.85, weight);
+      } else if (daysSinceOutcome <= 7) {
+        weight = 0.7 * Math.exp(-(daysSinceOutcome - 3) / 8);
+        weight = Math.max(0.3, weight);
+      } else if (daysSinceOutcome <= 15) {
+        weight = 0.15 * Math.exp(-(daysSinceOutcome - 7) / 10);
         weight = Math.max(0.05, weight);
+      } else {
+        weight = 0.03 * Math.exp(-(daysSinceOutcome - 15) / 20);
+        weight = Math.max(0.01, weight);
       }
       
       return { outcome, weight };
@@ -1444,12 +1451,17 @@ class SignalGenerationEngine {
       weight: d.weight / totalWeight
     }));
     
-    const recentDataInfluence = normalizedData
+    const last3DaysInfluence = normalizedData
+      .filter(d => (now - new Date(d.outcome.timestamp).getTime()) <= threeDaysMs)
+      .reduce((sum, d) => sum + d.weight, 0);
+    
+    const last7DaysInfluence = normalizedData
       .filter(d => (now - new Date(d.outcome.timestamp).getTime()) <= sevenDaysMs)
       .reduce((sum, d) => sum + d.weight, 0);
     
-    console.log(`\n📊 EXPONENTIAL DECAY WEIGHTING:`);    console.log(`   Last 7 Days Influence: ${(recentDataInfluence * 100).toFixed(1)}%`);
-    console.log(`   Older Data Influence: ${((1 - recentDataInfluence) * 100).toFixed(1)}%`);
+    console.log(`\n📊 EXPONENTIAL DECAY WEIGHTING:`);    console.log(`   Last 3 Days Influence: ${(last3DaysInfluence * 100).toFixed(1)}%`);
+    console.log(`   Last 7 Days Influence: ${(last7DaysInfluence * 100).toFixed(1)}%`);
+    console.log(`   Older Data Influence: ${((1 - last7DaysInfluence) * 100).toFixed(1)}%`);
     
     const winningData = normalizedData.filter(d => d.outcome.result === 'WIN');
     const losingData = normalizedData.filter(d => d.outcome.result === 'LOSS');
@@ -1485,7 +1497,9 @@ class SignalGenerationEngine {
     console.log(`   New weights:`, Array.from(this.modelWeights.entries()));
     console.log(`   Training Data Size: ${trainingData.length} outcomes`);
     console.log(`   Wins: ${winningData.length}, Losses: ${losingData.length}`);
-    console.log(`   Recent Data Weight: ${(recentDataInfluence * 100).toFixed(1)}% (Last 7 days)`);
+    console.log(`   Last 3 Days Weight: ${(last3DaysInfluence * 100).toFixed(1)}%`);
+    console.log(`   Last 7 Days Weight: ${(last7DaysInfluence * 100).toFixed(1)}%`);
+    console.log(`   Target: 80-90% influence from last 3-7 days`);
     console.log('='.repeat(80) + '\n');
     
     const persistData = {
