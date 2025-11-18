@@ -54,10 +54,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   useEffect(() => {
     const init = async () => {
-      const loadedDailyOHLC = await signalEngine.loadPersistedLearningData();
-      await loadPersistedData();
-      if (loadedDailyOHLC && loadedDailyOHLC.length > 0) {
-        setDailyOHLCHistory(loadedDailyOHLC);
+      console.log('🚀 Initializing Trading Context...');
+      try {
+        const loadedDailyOHLC = await signalEngine.loadPersistedLearningData();
+        await loadPersistedData();
+        if (loadedDailyOHLC && loadedDailyOHLC.length > 0) {
+          setDailyOHLCHistory(loadedDailyOHLC);
+        }
+        console.log('✅ Trading Context initialized successfully');
+      } catch (error) {
+        console.error('❌ Failed to initialize Trading Context:', error);
+        setIsLoading(false);
       }
     };
     init();
@@ -134,8 +141,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log('📦 Raw saved history from storage:', savedHistory);
 
       if (savedSettings) {
-        setSettings(JSON.parse(savedSettings));
-        console.log('✅ Settings loaded');
+        const parsedSettings = JSON.parse(savedSettings);
+        setSettings(parsedSettings);
+        console.log('✅ Settings loaded:', parsedSettings);
+      } else {
+        console.log('⚠️ No saved settings found - using defaults');
+        setSettings(DEFAULT_SETTINGS);
       }
 
       if (savedHistory) {
@@ -146,26 +157,56 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         }));
         setSignalHistory(parsedHistory);
         console.log(`✅ History loaded: ${parsedHistory.length} signals`);
+        console.log('📊 First 2 signals:', parsedHistory.slice(0, 2).map((s: TradingSignal) => ({
+          id: s.id.slice(-6),
+          type: s.type,
+          status: s.status,
+          entry: s.entryPrice
+        })));
       } else {
         console.log('⚠️ No saved history found in AsyncStorage');
+        setSignalHistory([]);
       }
 
       if (loginStatus) {
-        setIsLoggedIn(JSON.parse(loginStatus));
+        const parsedLoginStatus = JSON.parse(loginStatus);
+        setIsLoggedIn(parsedLoginStatus);
+        console.log('✅ Login status loaded:', parsedLoginStatus);
+      } else {
+        console.log('⚠️ No login status found - defaulting to logged in');
+        setIsLoggedIn(true);
       }
 
       if (savedMetrics) {
-        setPerformanceMetrics(JSON.parse(savedMetrics));
+        const parsedMetrics = JSON.parse(savedMetrics);
+        setPerformanceMetrics(parsedMetrics);
+        console.log('✅ Metrics loaded');
+      } else {
+        console.log('⚠️ No saved metrics found - using defaults');
+        setPerformanceMetrics(DEFAULT_METRICS);
       }
 
       if (savedBalance) {
-        setAccountBalance(JSON.parse(savedBalance));
+        const parsedBalance = JSON.parse(savedBalance);
+        setAccountBalance(parsedBalance);
+        console.log('✅ Balance loaded:', parsedBalance);
+      } else {
+        console.log('⚠️ No saved balance found - using default: 100');
+        setAccountBalance(100);
       }
+
+      console.log('✅ All persisted data loaded successfully');
     } catch (error) {
       console.error("❌ Failed to load persisted data:", error);
+      setSignalHistory([]);
+      setSettings(DEFAULT_SETTINGS);
+      setPerformanceMetrics(DEFAULT_METRICS);
+      setAccountBalance(100);
+      setIsLoggedIn(true);
     } finally {
+      await new Promise(resolve => setTimeout(resolve, 100));
       setIsLoading(false);
-      console.log('✅ Loading complete');
+      console.log('✅ Loading complete - UI will render now');
     }
   };
 
