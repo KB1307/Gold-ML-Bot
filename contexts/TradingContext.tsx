@@ -46,7 +46,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [performanceMetrics, setPerformanceMetrics] = useState<PerformanceMetrics>(DEFAULT_METRICS);
   const [positionSizing, setPositionSizing] = useState<PositionSizing | null>(null);
-  const [accountBalance, setAccountBalance] = useState<number>(10000);
+  const [accountBalance, setAccountBalance] = useState<number>(100);
   const [currentPrice, setCurrentPrice] = useState<number>(2650);
   const [priceHistory, setPriceHistory] = useState<PriceDataPoint[]>([]);
   const [dailyOHLCHistory, setDailyOHLCHistory] = useState<DailyOHLC[]>([]);
