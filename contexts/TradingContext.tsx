@@ -51,6 +51,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [priceHistory, setPriceHistory] = useState<PriceDataPoint[]>([]);
   const [dailyOHLCHistory, setDailyOHLCHistory] = useState<DailyOHLC[]>([]);
   const [signalUpdateTrigger, setSignalUpdateTrigger] = useState<number>(0);
+  const [appLaunchTime] = useState<number>(Date.now());
 
   useEffect(() => {
     const init = async () => {
@@ -207,6 +208,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       await new Promise(resolve => setTimeout(resolve, 100));
       setIsLoading(false);
       console.log('✅ Loading complete - UI will render now');
+      console.log(`🛡️ Launch cooldown active: Signal generation will wait 5 seconds to prevent race conditions`);
     }
   };
 
@@ -378,6 +380,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
 
   const checkAndGenerateSignal = useCallback(async () => {
+    const timeSinceLaunch = Date.now() - appLaunchTime;
+    const LAUNCH_COOLDOWN_MS = 5000;
+    
+    if (timeSinceLaunch < LAUNCH_COOLDOWN_MS) {
+      const remainingCooldown = ((LAUNCH_COOLDOWN_MS - timeSinceLaunch) / 1000).toFixed(1);
+      console.log(`🛡️ LAUNCH COOLDOWN: Preventing signal generation for ${remainingCooldown}s after app start`);
+      console.log(`   This prevents duplicate signals during initialization`);
+      return;
+    }
+    
     const outlook = await signalEngine.getMarketOutlook();
     const now = new Date();
     
@@ -640,14 +652,18 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
     console.log('✅ Signal generation system activated - checking every 30s');
     console.log(`   Data loaded: ${signalHistory.length} signals in history`);
+    console.log(`   Launch cooldown: 5 seconds (prevents duplicate signals at startup)`);
     
     const signalInterval = setInterval(() => {
       console.log('⏰ 30s interval - checking for signal generation...');
       checkAndGenerateSignal();
     }, 30000);
 
-    console.log('🚀 Initial signal generation check...');
-    checkAndGenerateSignal();
+    console.log('🚀 Scheduling initial signal generation check (after 5s cooldown)...');
+    setTimeout(() => {
+      console.log('✅ Launch cooldown complete - starting signal generation');
+      checkAndGenerateSignal();
+    }, 5000);
 
     return () => {
       console.log('🛑 Signal generation system deactivated');
