@@ -43,11 +43,22 @@ export default function DashboardScreen() {
     if (!currentSignal) return 0;
     
     const entry = currentSignal.entryPrice;
-    const target = currentSignal.type === "BUY" ? currentSignal.tp3 : currentSignal.tp3;
-    const range = Math.abs(target - entry);
-    const progress = Math.abs(currentPrice - entry);
+    const target = currentSignal.tp3;
+    const sl = currentSignal.sl;
     
-    return Math.min(100, (progress / range) * 100);
+    if (currentSignal.type === "BUY") {
+      if (currentPrice >= target) return 100;
+      if (currentPrice <= entry) return 0;
+      const range = target - entry;
+      const progress = currentPrice - entry;
+      return Math.min(100, Math.max(0, (progress / range) * 100));
+    } else {
+      if (currentPrice <= target) return 100;
+      if (currentPrice >= entry) return 0;
+      const range = entry - target;
+      const progress = entry - currentPrice;
+      return Math.min(100, Math.max(0, (progress / range) * 100));
+    }
   };
 
   const calculatePnL = () => {
