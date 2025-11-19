@@ -657,12 +657,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       if (updated) {
         console.log(`✅ Signal status updated - triggering UI refresh (trigger: ${signalUpdateTrigger + 1})`);
+        
+        setTimeout(() => {
+          setSignalUpdateTrigger(prev => prev + 1);
+        }, 0);
+        
         AsyncStorage.setItem("signal_history", JSON.stringify(updatedHistory)).then(() => {
           console.log(`💾 Updated history saved: ${updatedHistory.length} signals`);
         }).catch(err => {
           console.error('❌ Failed to save updated history:', err);
         });
-        setSignalUpdateTrigger(prev => prev + 1);
       }
 
       return updated ? updatedHistory : prevHistory;
