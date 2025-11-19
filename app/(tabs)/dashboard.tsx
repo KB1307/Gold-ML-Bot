@@ -46,18 +46,45 @@ export default function DashboardScreen() {
     const target = currentSignal.tp3;
     const sl = currentSignal.sl;
     
+    console.log(`📊 Progress Bar Debug:`);
+    console.log(`   Signal Type: ${currentSignal.type}`);
+    console.log(`   Current Price: ${currentPrice.toFixed(1)}`);
+    console.log(`   Entry: ${entry.toFixed(1)}`);
+    console.log(`   TP3: ${target.toFixed(1)}`);
+    console.log(`   SL: ${sl.toFixed(1)}`);
+    
     if (currentSignal.type === "BUY") {
+      console.log(`   BUY Logic: TP3 (${target.toFixed(1)}) should be ABOVE Entry (${entry.toFixed(1)})`);
+      console.log(`   BUY Logic: SL (${sl.toFixed(1)}) should be BELOW Entry (${entry.toFixed(1)})`);
+      
       if (currentPrice >= target) return 100;
       if (currentPrice <= entry) return 0;
+      
       const range = target - entry;
       const progress = currentPrice - entry;
-      return Math.min(100, Math.max(0, (progress / range) * 100));
+      const percentage = (progress / range) * 100;
+      
+      console.log(`   Range (TP3 - Entry): ${range.toFixed(1)} pips`);
+      console.log(`   Progress (Current - Entry): ${progress.toFixed(1)} pips`);
+      console.log(`   Percentage: ${percentage.toFixed(1)}%`);
+      
+      return Math.min(100, Math.max(0, percentage));
     } else {
+      console.log(`   SELL Logic: TP3 (${target.toFixed(1)}) should be BELOW Entry (${entry.toFixed(1)})`);
+      console.log(`   SELL Logic: SL (${sl.toFixed(1)}) should be ABOVE Entry (${entry.toFixed(1)})`);
+      
       if (currentPrice <= target) return 100;
       if (currentPrice >= entry) return 0;
+      
       const range = entry - target;
       const progress = entry - currentPrice;
-      return Math.min(100, Math.max(0, (progress / range) * 100));
+      const percentage = (progress / range) * 100;
+      
+      console.log(`   Range (Entry - TP3): ${range.toFixed(1)} pips`);
+      console.log(`   Progress (Entry - Current): ${progress.toFixed(1)} pips`);
+      console.log(`   Percentage: ${percentage.toFixed(1)}%`);
+      
+      return Math.min(100, Math.max(0, percentage));
     }
   };
 
