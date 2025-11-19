@@ -539,6 +539,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
     setSignalHistory((prevHistory) => {
       let updated = false;
+      let immediateUpdate = false;
       const updatedHistory = prevHistory.map(signal => {
         if (signal.status === "CLOSED" || signal.status === "SL_HIT" || signal.status === "ALL_TARGETS_HIT") {
           return signal;
@@ -573,16 +574,19 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             console.log(`🚨 STOP LOSS DETECTION: BUY signal @ Entry=${signal.entryPrice.toFixed(1)}, SL=${signal.sl.toFixed(1)}, Current=${price.toFixed(1)} | SL TRIGGERED (${price.toFixed(1)} <= ${signal.sl.toFixed(1)})`);
             newStatus = "SL_HIT";
             updated = true;
+            immediateUpdate = true;
             console.log(`⚠️ ⚠️ ⚠️ SL HIT: BUY Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (SL: ${signal.sl.toFixed(1)})`);
           } else if (price >= signal.tp3 && targetsHit < 3) {
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
             updated = true;
+            immediateUpdate = true;
             console.log(`🎯 🎯 🎯 ALL TARGETS HIT: Signal ${signal.id.slice(-6)} reached TP3 @ ${price.toFixed(1)}`);
           } else if (price >= signal.tp2 && targetsHit < 2) {
             newStatus = "TP2_HIT";
             targetsHit = 2;
             updated = true;
+            immediateUpdate = true;
             console.log(`🎯 🎯 TP2 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP2: ${signal.tp2.toFixed(1)}`);
           } else if (price >= signal.tp1 && targetsHit < 1) {
             newStatus = "TP1_HIT";
@@ -595,16 +599,19 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             console.log(`🚨 STOP LOSS DETECTION: SELL signal @ Entry=${signal.entryPrice.toFixed(1)}, SL=${signal.sl.toFixed(1)}, Current=${price.toFixed(1)} | SL TRIGGERED (${price.toFixed(1)} >= ${signal.sl.toFixed(1)})`);
             newStatus = "SL_HIT";
             updated = true;
+            immediateUpdate = true;
             console.log(`⚠️ ⚠️ ⚠️ SL HIT: SELL Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (SL: ${signal.sl.toFixed(1)})`);
           } else if (price <= signal.tp3 && targetsHit < 3) {
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
             updated = true;
+            immediateUpdate = true;
             console.log(`🎯 🎯 🎯 ALL TARGETS HIT: Signal ${signal.id.slice(-6)} reached TP3 @ ${price.toFixed(1)}`);
           } else if (price <= signal.tp2 && targetsHit < 2) {
             newStatus = "TP2_HIT";
             targetsHit = 2;
             updated = true;
+            immediateUpdate = true;
             console.log(`🎯 🎯 TP2 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP2: ${signal.tp2.toFixed(1)})`);
           } else if (price <= signal.tp1 && targetsHit < 1) {
             newStatus = "TP1_HIT";
@@ -657,13 +664,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       if (updated) {
         console.log(`✅ Signal status updated - triggering UI refresh (trigger: ${signalUpdateTrigger + 1})`);
+        console.log(`📱 Platform: ${Platform.OS} | Immediate: ${immediateUpdate}`);
         
-        setTimeout(() => {
-          setSignalUpdateTrigger(prev => prev + 1);
-        }, 0);
+        setSignalUpdateTrigger(prev => prev + 1);
         
         AsyncStorage.setItem("signal_history", JSON.stringify(updatedHistory)).then(() => {
           console.log(`💾 Updated history saved: ${updatedHistory.length} signals`);
+          
+          if (immediateUpdate && Platform.OS !== 'web') {
+            console.log('📲 Android/iOS: Forcing immediate state propagation for critical update');
+            setSignalUpdateTrigger(prev => prev + 1);
+          }
         }).catch(err => {
           console.error('❌ Failed to save updated history:', err);
         });
