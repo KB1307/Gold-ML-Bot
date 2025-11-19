@@ -3,6 +3,14 @@ import { useState, useEffect, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { TradingSignal, SignalStatus, Settings, MarketOutlook, PerformanceMetrics, PositionSizing, DailyOHLC } from "@/types/trading";
 import { signalEngine } from "@/services/signalEngine";
+import { Platform } from "react-native";
+import { 
+  registerBackgroundTask, 
+  setupNotificationChannel, 
+  requestNotificationPermissions,
+  sendSignalNotification,
+  getBackgroundTaskStatus 
+} from "@/services/backgroundTaskService";
 
 const DEFAULT_SETTINGS: Settings = {
   tp1Pips: 20,
@@ -52,6 +60,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [dailyOHLCHistory, setDailyOHLCHistory] = useState<DailyOHLC[]>([]);
   const [signalUpdateTrigger, setSignalUpdateTrigger] = useState<number>(0);
   const [appLaunchTime] = useState<number>(Date.now());
+  const [backgroundTaskActive, setBackgroundTaskActive] = useState<boolean>(false);
 
   useEffect(() => {
     const init = async () => {
@@ -62,6 +71,24 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         if (loadedDailyOHLC && loadedDailyOHLC.length > 0) {
           setDailyOHLCHistory(loadedDailyOHLC);
         }
+
+        if (Platform.OS !== 'web') {
+          console.log('📱 Setting up mobile features...');
+          await setupNotificationChannel();
+          await requestNotificationPermissions();
+          
+          if (settings.enableNotifications) {
+            const registered = await registerBackgroundTask();
+            setBackgroundTaskActive(registered);
+            
+            if (registered) {
+              console.log('✅ Background signal generation active');
+              console.log('   - App will generate signals even when closed');
+              console.log('   - Push notifications enabled');
+            }
+          }
+        }
+
         console.log('✅ Trading Context initialized successfully');
       } catch (error) {
         console.error('❌ Failed to initialize Trading Context:', error);
@@ -477,6 +504,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           return updated;
         });
 
+        if (Platform.OS !== 'web' && settings.enableNotifications) {
+          sendSignalNotification(signal).catch(err => {
+            console.error('❌ Failed to send notification:', err);
+          });
+        }
+
         const sizing = signalEngine.calculatePositionSizing(signal.confidence, settings, accountBalance);
         setPositionSizing(sizing);
         console.log("📊 Position sizing calculated:", sizing);
@@ -693,6 +726,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const updated = { ...settings, ...newSettings };
     setSettings(updated);
     await AsyncStorage.setItem("trading_settings", JSON.stringify(updated));
+
+    if (Platform.OS !== 'web' && 'enableNotifications' in newSettings) {
+      if (newSettings.enableNotifications) {
+        const registered = await registerBackgroundTask();
+        setBackgroundTaskActive(registered);
+        console.log('✅ Background task enabled');
+      } else {
+        setBackgroundTaskActive(false);
+        console.log('⚠️ Background task disabled');
+      }
+    }
   }, [settings]);
 
   const deleteSignalFromHistory = useCallback(async (signalId: string) => {
@@ -748,5 +792,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     manualCloseSignal,
     refreshData,
     triggerManualRetrain,
+    backgroundTaskActive,
   };
 });

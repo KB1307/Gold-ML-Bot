@@ -1,14 +1,16 @@
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Platform, Switch, Alert } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { Settings as SettingsIcon, Target, Shield, TrendingUp, LogOut, Save, Trash2, Activity, AlertTriangle, RefreshCw } from "lucide-react-native";
+import { Settings as SettingsIcon, Target, Shield, TrendingUp, LogOut, Save, Trash2, Activity, AlertTriangle, RefreshCw, Bell, Smartphone } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Stack, useRouter } from "expo-router";
+import { getBackgroundTaskStatus } from "@/services/backgroundTaskService";
 
 export default function SettingsScreen() {
-  const { settings, updateSettings, logout, clearHistory, performanceMetrics, triggerManualRetrain } = useTrading();
+  const { settings, updateSettings, logout, clearHistory, performanceMetrics, triggerManualRetrain, backgroundTaskActive } = useTrading();
   const router = useRouter();
   const [isRetraining, setIsRetraining] = useState<boolean>(false);
+  const [bgTaskStatus, setBgTaskStatus] = useState<{ isRegistered: boolean; isAvailable: boolean; } | null>(null);
   
   const [tp1Pips, setTp1Pips] = useState<string>(settings.tp1Pips.toString());
   const [tp2Pips, setTp2Pips] = useState<string>(settings.tp2Pips.toString());
@@ -16,6 +18,18 @@ export default function SettingsScreen() {
   const [slPips, setSlPips] = useState<string>(settings.slPips.toString());
   const [minConfidence, setMinConfidence] = useState<string>((settings.minConfidence * 100).toString());
   const [numberOfTPs, setNumberOfTPs] = useState<1 | 2 | 3>(settings.numberOfTPs);
+
+  useEffect(() => {
+    async function checkBackgroundTask() {
+      if (Platform.OS !== 'web') {
+        const status = await getBackgroundTaskStatus();
+        setBgTaskStatus(status);
+      }
+    }
+    checkBackgroundTask();
+    const interval = setInterval(checkBackgroundTask, 5000);
+    return () => clearInterval(interval);
+  }, []);
 
   const handleSave = async () => {
     await updateSettings({
@@ -251,7 +265,8 @@ export default function SettingsScreen() {
 
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>Notifications</Text>
+                <Bell size={20} color="#FFD700" />
+                <Text style={styles.sectionTitle}>Notifications & Background</Text>
               </View>
               
               <View style={styles.switchRow}>
@@ -267,6 +282,55 @@ export default function SettingsScreen() {
                   ios_backgroundColor="#333"
                 />
               </View>
+
+              {Platform.OS !== 'web' && (
+                <>
+                  <View style={styles.divider} />
+                  
+                  <View style={styles.statusRow}>
+                    <Smartphone size={16} color="#8b5cf6" />
+                    <Text style={styles.statusLabel}>Background Task</Text>
+                    <View style={[
+                      styles.statusBadge,
+                      backgroundTaskActive ? styles.statusBadgeActive : styles.statusBadgeInactive
+                    ]}>
+                      <Text style={styles.statusBadgeText}>
+                        {backgroundTaskActive ? 'ACTIVE' : 'INACTIVE'}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <Text style={styles.statusHelper}>
+                    {backgroundTaskActive 
+                      ? '✅ App will check for signals every 30s even when closed' 
+                      : '⚠️ Enable notifications to activate background signal generation'}
+                  </Text>
+
+                  {bgTaskStatus && (
+                    <View style={styles.techInfoContainer}>
+                      <Text style={styles.techInfoTitle}>Technical Status</Text>
+                      <View style={styles.techInfoRow}>
+                        <Text style={styles.techInfoLabel}>Task Registered:</Text>
+                        <Text style={[
+                          styles.techInfoValue,
+                          bgTaskStatus.isRegistered && styles.techInfoValueSuccess
+                        ]}>
+                          {bgTaskStatus.isRegistered ? 'YES' : 'NO'}
+                        </Text>
+                      </View>
+                      <View style={styles.techInfoRow}>
+                        <Text style={styles.techInfoLabel}>System Available:</Text>
+                        <Text style={[
+                          styles.techInfoValue,
+                          bgTaskStatus.isAvailable && styles.techInfoValueSuccess
+                        ]}>
+                          {bgTaskStatus.isAvailable ? 'YES' : 'NO'}
+                        </Text>
+                      </View>
+                    </View>
+                  )}
+                </>
+              )}
             </View>
 
             <View style={styles.section}>
@@ -789,5 +853,79 @@ const styles = StyleSheet.create({
   } as const,
   retrainTextDisabled: {
     color: "#666",
+  },
+  divider: {
+    height: 1,
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    marginVertical: 16,
+  },
+  statusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 12,
+    gap: 10,
+  },
+  statusLabel: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#fff",
+  } as const,
+  statusBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  statusBadgeActive: {
+    backgroundColor: "rgba(34, 197, 94, 0.15)",
+  },
+  statusBadgeInactive: {
+    backgroundColor: "rgba(239, 68, 68, 0.15)",
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#fff",
+    textTransform: "uppercase",
+  } as const,
+  statusHelper: {
+    fontSize: 12,
+    color: "#999",
+    lineHeight: 18,
+    marginBottom: 12,
+  },
+  techInfoContainer: {
+    marginTop: 12,
+    backgroundColor: "rgba(139, 92, 246, 0.05)",
+    padding: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(139, 92, 246, 0.2)",
+  },
+  techInfoTitle: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#8b5cf6",
+    marginBottom: 10,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  } as const,
+  techInfoRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  techInfoLabel: {
+    fontSize: 13,
+    color: "#999",
+  },
+  techInfoValue: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#ef4444",
+  } as const,
+  techInfoValueSuccess: {
+    color: "#22c55e",
   },
 });
