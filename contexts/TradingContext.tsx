@@ -548,6 +548,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         const signalCreationAge = signal.createdAt ? now - signal.createdAt : signalAge;
         
         if (signalCreationAge < GRACE_PERIOD_MS) {
+          console.log(`⏸️ Signal ${signal.id.slice(-6)} in grace period (${(signalCreationAge / 1000).toFixed(1)}s < 5s) - skipping SL/TP check`);
           return signal;
         }
         if (signalAge > twoHoursInMs) {
@@ -569,6 +570,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
         if (signal.type === "BUY") {
           if (price <= signal.sl) {
+            console.log(`🚨 STOP LOSS DETECTION: BUY signal @ Entry=${signal.entryPrice.toFixed(1)}, SL=${signal.sl.toFixed(1)}, Current=${price.toFixed(1)} | SL TRIGGERED (${price.toFixed(1)} <= ${signal.sl.toFixed(1)})`);
             newStatus = "SL_HIT";
             updated = true;
             console.log(`⚠️ ⚠️ ⚠️ SL HIT: BUY Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (SL: ${signal.sl.toFixed(1)})`);
@@ -581,15 +583,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             newStatus = "TP2_HIT";
             targetsHit = 2;
             updated = true;
-            console.log(`🎯 🎯 TP2 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP2: ${signal.tp2.toFixed(1)})`);
+            console.log(`🎯 🎯 TP2 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP2: ${signal.tp2.toFixed(1)}`);
           } else if (price >= signal.tp1 && targetsHit < 1) {
             newStatus = "TP1_HIT";
             targetsHit = 1;
             updated = true;
-            console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)})`);
+            console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)}`);
           }
         } else {
           if (price >= signal.sl) {
+            console.log(`🚨 STOP LOSS DETECTION: SELL signal @ Entry=${signal.entryPrice.toFixed(1)}, SL=${signal.sl.toFixed(1)}, Current=${price.toFixed(1)} | SL TRIGGERED (${price.toFixed(1)} >= ${signal.sl.toFixed(1)})`);
             newStatus = "SL_HIT";
             updated = true;
             console.log(`⚠️ ⚠️ ⚠️ SL HIT: SELL Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (SL: ${signal.sl.toFixed(1)})`);
