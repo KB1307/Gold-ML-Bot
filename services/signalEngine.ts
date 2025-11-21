@@ -1072,7 +1072,7 @@ class SignalGenerationEngine {
     
     const rsiValues = features.map(f => f.rsi);
     const volumeValues = features.map(f => f.volumeRatio);
-    const sentimentValues = features.map(f => f.sentiment.score);
+    const sentimentValues = features.map(f => f.sentiment?.score ?? 0);
     
     const rsiVolCorr = this.calculateCorrelation(rsiValues, volumeValues);
     const rsiSentCorr = this.calculateCorrelation(rsiValues, sentimentValues);
@@ -1209,7 +1209,7 @@ class SignalGenerationEngine {
           currentValue = features.volumeRatio;
           break;
         case 'sentiment_score':
-          currentValue = features.sentiment.score;
+          currentValue = features.sentiment?.score ?? 0;
           break;
         case 'orderFlow_volumeImbalance':
           currentValue = features.orderFlow.volumeImbalance;
@@ -1333,8 +1333,8 @@ class SignalGenerationEngine {
         recentAvg = recentWinFeatures.reduce((sum, o) => sum + o.features.volumeRatio, 0) / recentWinFeatures.length;
         olderAvg = olderWinFeatures.reduce((sum, o) => sum + o.features.volumeRatio, 0) / olderWinFeatures.length;
       } else if (featureName === 'sentiment') {
-        recentAvg = recentWinFeatures.reduce((sum, o) => sum + o.features.sentiment.score, 0) / recentWinFeatures.length;
-        olderAvg = olderWinFeatures.reduce((sum, o) => sum + o.features.sentiment.score, 0) / olderWinFeatures.length;
+        recentAvg = recentWinFeatures.reduce((sum, o) => sum + (o.features.sentiment?.score ?? 0), 0) / recentWinFeatures.length;
+        olderAvg = olderWinFeatures.reduce((sum, o) => sum + (o.features.sentiment?.score ?? 0), 0) / olderWinFeatures.length;
       } else if (featureName === 'dxyChange') {
         recentAvg = recentWinFeatures.reduce((sum, o) => sum + o.features.dxyChange, 0) / recentWinFeatures.length;
         olderAvg = olderWinFeatures.reduce((sum, o) => sum + o.features.dxyChange, 0) / olderWinFeatures.length;
@@ -2248,9 +2248,9 @@ class SignalGenerationEngine {
       losingData.reduce((sum, d) => sum + d.weight, 0);
     rawWeights['volume_weight'] = weightedAvgWinVolume - weightedAvgLossVolume;
     
-    const weightedAvgWinSentiment = winningData.reduce((sum, d) => sum + d.outcome.features.sentiment.score * d.weight, 0) / 
+    const weightedAvgWinSentiment = winningData.reduce((sum, d) => sum + (d.outcome.features.sentiment?.score ?? 0) * d.weight, 0) / 
       winningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossSentiment = losingData.reduce((sum, d) => sum + d.outcome.features.sentiment.score * d.weight, 0) / 
+    const weightedAvgLossSentiment = losingData.reduce((sum, d) => sum + (d.outcome.features.sentiment?.score ?? 0) * d.weight, 0) / 
       losingData.reduce((sum, d) => sum + d.weight, 0);
     rawWeights['sentiment_weight'] = (weightedAvgWinSentiment - weightedAvgLossSentiment) * 2;
     
