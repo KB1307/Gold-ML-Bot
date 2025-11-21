@@ -2464,6 +2464,7 @@ class SignalGenerationEngine {
     const largePriceMovement = this.detectLargePriceMovement();
     const cooldownElapsed = now - this.lastSignalTime;
     
+    let exceptionConditionActive = false;
     if (trendChangeDetected || largePriceMovement) {
       console.log(`\n🚨 EXCEPTION DETECTED - Override Conditions:`);
       if (trendChangeDetected) {
@@ -2472,7 +2473,9 @@ class SignalGenerationEngine {
       if (largePriceMovement) {
         console.log(`   ✅ LARGE PRICE MOVEMENT: Significant price action (${largePriceMovement.toFixed(1)} pips in 5 minutes)`);
       }
-      console.log(`   → Bypassing standard cooldown and proximity filters\n`);
+      console.log(`   → Bypassing standard cooldown and proximity filters`);
+      console.log(`   ⚠️  IMPORTANT: Structural validation STILL REQUIRED\n`);
+      exceptionConditionActive = true;
     } else {
       const marketRegimePreCheck = await this.detectMarketRegime();
       const preliminaryConfidence = 0.75;
@@ -2578,13 +2581,23 @@ class SignalGenerationEngine {
     const structuralValidation = this.validateStructuralConditions(analysis.signalType, features, settings);
     if (!structuralValidation.valid) {
       console.log(`❌ REJECTED: Structural Validation Failed`);
+      if (exceptionConditionActive) {
+        console.log(`   🛡️  EXCEPTION BLOCKED: Large movement/trend change detected BUT structural conditions not met`);
+        console.log(`   This prevents false signals during volatility spikes`);
+      }
       console.log(`   ${structuralValidation.reason}`);
       console.log(`   💡 TIP: ${structuralValidation.tip}`);
       console.log(`${'='.repeat(80)}\n`);
       return null;
     }
+    
+    if (exceptionConditionActive) {
+      console.log(`✅ EXCEPTION + STRUCTURAL VALIDATION: Both conditions met`);
+      console.log(`   Large movement/trend change confirmed by structural levels`);
+      console.log(`   This combination indicates high-probability setup\n`);
+    }
 
-    if (!trendChangeDetected && !largePriceMovement) {
+    if (!exceptionConditionActive) {
       const proximityCheck = this.checkPriceProximity(activeSignals, analysis.signalType, dynamicCooldown);
       if (proximityCheck.blocked) {
         console.log(`❌ REJECTED: Price Proximity Filter Block`);
@@ -2594,7 +2607,7 @@ class SignalGenerationEngine {
         return null;
       }
     } else {
-      console.log(`✅ PROXIMITY CHECK BYPASSED: Exception condition active`);
+      console.log(`✅ PROXIMITY CHECK BYPASSED: Exception condition active (already passed structural validation)`);
     }
     
     if (this.lastSignalType !== null && this.lastSignalType !== analysis.signalType) {
