@@ -94,6 +94,7 @@ interface MarketFeatures {
   resistanceStrength: number;
   intermarketData: IntermarketData;
   liquidityWindow: LiquidityWindow;
+  timeWindowFactor: number;
 }
 
 const CACHE_DURATION = 2000;
@@ -121,6 +122,20 @@ const MAX_RECENT_SIGNAL_TIME_MINUTES = 5;
 const POST_TP1_COOLDOWN_MS = 5 * 60 * 1000;
 const DRIFT_CHECK_INTERVAL = 24 * 60 * 60 * 1000;
 const FEATURE_DRIFT_STORAGE_KEY = 'feature_drift_history_v1';
+
+const TIME_WEIGHTS = {
+  LOW_LIQUIDITY: 0.5,
+  MODERATE_LIQUIDITY: 1.0,
+  EUROPE_OPEN: 1.5,
+  POWER_HOUR: 2.0,
+};
+
+const UTC_HOURS = {
+  EUROPE_OPEN_START: 7,
+  EUROPE_OPEN_END: 10,
+  NY_LONDON_START: 13,
+  NY_LONDON_END: 17,
+};
 
 async function fetchIntermarketData(): Promise<IntermarketData> {
   const now = Date.now();
@@ -585,6 +600,31 @@ class SignalGenerationEngine {
     };
   }
 
+  private getTimeWindowFactor(): number {
+    const now = new Date();
+    const currentUTCHour = now.getUTCHours();
+    
+    let factor = TIME_WEIGHTS.LOW_LIQUIDITY;
+    
+    if (currentUTCHour >= UTC_HOURS.NY_LONDON_START && currentUTCHour < UTC_HOURS.NY_LONDON_END) {
+      factor = TIME_WEIGHTS.POWER_HOUR;
+      console.log('⏰ Time Window: POWER HOUR (London/NY Overlap) - 2.0x weight');
+    } else if (currentUTCHour >= UTC_HOURS.EUROPE_OPEN_START && currentUTCHour < UTC_HOURS.EUROPE_OPEN_END) {
+      factor = TIME_WEIGHTS.EUROPE_OPEN;
+      console.log('⏰ Time Window: EUROPE OPEN (Tokyo/London Overlap) - 1.5x weight');
+    } else if (currentUTCHour >= UTC_HOURS.EUROPE_OPEN_END && currentUTCHour < UTC_HOURS.NY_LONDON_START) {
+      factor = TIME_WEIGHTS.MODERATE_LIQUIDITY;
+      console.log('⏰ Time Window: MID-LONDON SESSION - 1.0x weight');
+    } else if (currentUTCHour >= UTC_HOURS.NY_LONDON_END && currentUTCHour < 22) {
+      factor = TIME_WEIGHTS.MODERATE_LIQUIDITY;
+      console.log('⏰ Time Window: LATE NY SESSION - 1.0x weight');
+    } else {
+      console.log('⏰ Time Window: ASIAN/OFF HOURS - 0.5x weight (Low Liquidity)');
+    }
+    
+    return factor;
+  }
+  
   private calculateLiquidityWindow(): LiquidityWindow {
     const now = new Date();
     const hour = now.getUTCHours();
@@ -736,6 +776,7 @@ class SignalGenerationEngine {
     
     const intermarketData = await fetchIntermarketData();
     const liquidityWindow = this.calculateLiquidityWindow();
+    const timeWindowFactor = this.getTimeWindowFactor();
     
     this.volumeHistory.push(volumeRatio * 1000);
     if (this.volumeHistory.length > 50) {
@@ -779,6 +820,7 @@ class SignalGenerationEngine {
       resistanceStrength: srStrength.resistanceStrength,
       intermarketData,
       liquidityWindow,
+      timeWindowFactor,
     };
   }
   
@@ -1522,6 +1564,13 @@ class SignalGenerationEngine {
       baseConfidence += 0.03;
     }
     
+    const timeBoost = (features.timeWindowFactor - 1.0) * 0.08;
+    baseConfidence += timeBoost;
+    
+    if (timeBoost > 0) {
+      console.log(`⏰ Time Window Boost: +${(timeBoost * 100).toFixed(1)}% confidence (Factor: ${features.timeWindowFactor.toFixed(1)}x)`);
+    }
+    
     const learningAdjustment = (this.performanceMetrics.profitFactor - 1.5) * 0.05;
     baseConfidence += learningAdjustment;
     
@@ -1886,6 +1935,12 @@ class SignalGenerationEngine {
     const weightedAvgLossRSI = losingData.reduce((sum, d) => sum + d.outcome.features.rsi * d.weight, 0) / 
       losingData.reduce((sum, d) => sum + d.weight, 0);
     rawWeights['rsi_weight'] = (weightedAvgWinRSI - weightedAvgLossRSI) / 100;
+    
+    const weightedAvgWinTimeWindow = winningData.reduce((sum, d) => sum + d.outcome.features.timeWindowFactor * d.weight, 0) / 
+      winningData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgLossTimeWindow = losingData.reduce((sum, d) => sum + d.outcome.features.timeWindowFactor * d.weight, 0) / 
+      losingData.reduce((sum, d) => sum + d.weight, 0);
+    rawWeights['timeWindow_weight'] = (weightedAvgWinTimeWindow - weightedAvgLossTimeWindow) * 0.5;
     
     const weightedAvgWinVolume = winningData.reduce((sum, d) => sum + d.outcome.features.volumeRatio * d.weight, 0) / 
       winningData.reduce((sum, d) => sum + d.weight, 0);
