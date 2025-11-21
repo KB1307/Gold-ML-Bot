@@ -401,6 +401,8 @@ class SignalGenerationEngine {
   private currentDayOHLC: { open: number; high: number; low: number; close: number; date: string } | null = null;
   private lastNYCloseCheck: number = 0;
   private orderBlocks: OrderBlock[] = [];
+  private fiveMinCandles: { timestamp: number; open: number; high: number; low: number; close: number }[] = [];
+  private lastFiveMinCandleClose: number = 0;
   
   async updateCurrentPrice(): Promise<number> {
     try {
@@ -425,6 +427,8 @@ class SignalGenerationEngine {
         this.lowHistory.shift();
         this.closeHistory.shift();
       }
+      
+      this.update5MinCandles();
       
       console.log(`📊 Price Update: Close=${this.currentPrice.toFixed(1)}, H≈${estimatedHigh.toFixed(1)}, L≈${estimatedLow.toFixed(1)} ⚠️ ESTIMATED intra-period H/L (API limitation: real-time spot price only)`);
       console.log(`   💡 NOTE: Using estimated highs/lows for RSI/ATR until OHLC bar API is integrated`);
@@ -1960,6 +1964,67 @@ class SignalGenerationEngine {
     return ema;
   }
 
+  private requiresHigherTimeframeConfirmation(): { confirmed: boolean; reason: string; tip: string } {
+    if (this.fiveMinCandles.length < 2) {
+      return {
+        confirmed: false,
+        reason: 'Insufficient 5-minute candle data (need at least 2 candles)',
+        tip: 'System is building 5-minute candle history. Wait 5-10 minutes after app launch.'
+      };
+    }
+    
+    const now = Date.now();
+    const timeSinceLastCandle = now - this.lastFiveMinCandleClose;
+    const maxAgeMs = 10 * 60 * 1000;
+    
+    if (timeSinceLastCandle > maxAgeMs) {
+      return {
+        confirmed: false,
+        reason: `Last 5-minute candle close was ${(timeSinceLastCandle / 1000 / 60).toFixed(1)} minutes ago`,
+        tip: 'Waiting for fresh 5-minute candle close to confirm trend reversal. Max age: 10 minutes.'
+      };
+    }
+    
+    const lastClosedCandle = this.fiveMinCandles[this.fiveMinCandles.length - 2];
+    const previousCandle = this.fiveMinCandles[this.fiveMinCandles.length - 3];
+    
+    if (!lastClosedCandle || !previousCandle) {
+      return {
+        confirmed: false,
+        reason: 'Need at least 2 completed 5-minute candles for comparison',
+        tip: 'Building candle history. Counter-trend signals will be available shortly.'
+      };
+    }
+    
+    const breakoutDetected = (
+      (lastClosedCandle.close > previousCandle.high && lastClosedCandle.close > lastClosedCandle.open) ||
+      (lastClosedCandle.close < previousCandle.low && lastClosedCandle.close < lastClosedCandle.open)
+    );
+    
+    if (!breakoutDetected) {
+      return {
+        confirmed: false,
+        reason: `Last 5-min candle did not close outside previous candle range (Close: ${lastClosedCandle.close.toFixed(1)}, Prev H/L: ${previousCandle.high.toFixed(1)}/${previousCandle.low.toFixed(1)})`,
+        tip: 'Counter-trend signals require 5-minute candle to close ABOVE previous high (bullish) or BELOW previous low (bearish).'
+      };
+    }
+    
+    const candleAge = (now - lastClosedCandle.timestamp) / 1000 / 60;
+    const direction = lastClosedCandle.close > previousCandle.high ? 'BULLISH' : 'BEARISH';
+    
+    console.log(`\n🕯️ 5-MINUTE CANDLE CONFIRMATION:`);
+    console.log(`   Last Candle: O=${lastClosedCandle.open.toFixed(1)}, H=${lastClosedCandle.high.toFixed(1)}, L=${lastClosedCandle.low.toFixed(1)}, C=${lastClosedCandle.close.toFixed(1)}`);
+    console.log(`   Previous Candle: H=${previousCandle.high.toFixed(1)}, L=${previousCandle.low.toFixed(1)}`);
+    console.log(`   Breakout Direction: ${direction}`);
+    console.log(`   Candle Age: ${candleAge.toFixed(1)} minutes`);
+    
+    return {
+      confirmed: true,
+      reason: `${direction} breakout confirmed - 5-min candle closed ${direction === 'BULLISH' ? 'above' : 'below'} previous candle ${direction === 'BULLISH' ? 'high' : 'low'} (${candleAge.toFixed(1)}min ago)`,
+      tip: 'Higher timeframe confirmation increases signal reliability for counter-trend entries.'
+    };
+  }
+  
   private detectBullishDivergence(features: MarketFeatures): boolean {
     if (this.priceHistory.length < 10 || this.lowHistory.length < 10) return false;
     
@@ -2437,6 +2502,32 @@ class SignalGenerationEngine {
     const analysis = this.enhancedTransformerAnalysis(features);
     const dynamicCooldown = this.calculateDynamicCooldown(features.marketRegime, analysis.confidence);
     
+    const htfTrend = this.detectHTFTrend(features);
+    const isCounterTrendSignal = (
+      (analysis.signalType === 'BUY' && htfTrend === 'BEARISH') ||
+      (analysis.signalType === 'SELL' && htfTrend === 'BULLISH') ||
+      (analysis.signalType === 'BUY' && htfTrend === 'NEUTRAL' && features.rsi < 35) ||
+      (analysis.signalType === 'SELL' && htfTrend === 'NEUTRAL' && features.rsi > 65)
+    );
+    
+    if (isCounterTrendSignal && !trendChangeDetected && !largePriceMovement) {
+      const requires5MinConfirmation = this.requiresHigherTimeframeConfirmation();
+      
+      if (!requires5MinConfirmation.confirmed) {
+        console.log(`❌ REJECTED: Counter-trend signal requires 5-minute candle confirmation`);
+        console.log(`   ${requires5MinConfirmation.reason}`);
+        console.log(`   💡 TIP: ${requires5MinConfirmation.tip}`);
+        console.log(`   HTF Trend: ${htfTrend}`);
+        console.log(`   Signal Type: ${analysis.signalType}`);
+        console.log(`   Classification: COUNTER-TREND (requires higher timeframe confirmation)`);
+        console.log(`${'='.repeat(80)}\n`);
+        return null;
+      }
+      
+      console.log(`✅ COUNTER-TREND CONFIRMATION: 5-minute candle closed outside range`);
+      console.log(`   ${requires5MinConfirmation.reason}`);
+    }
+    
     console.log(`🎯 Preliminary Analysis:`);
     console.log(`   Signal Type: ${analysis.signalType}`);
     console.log(`   Confidence: ${(analysis.confidence * 100).toFixed(1)}% (Min Required: ${(settings.minConfidence * 100).toFixed(0)}%)`);
@@ -2655,6 +2746,51 @@ class SignalGenerationEngine {
       tp3Distance: parseFloat(tp3Distance.toFixed(1)),
       createdAt: Date.now(),
     };
+  }
+  
+  private update5MinCandles(): void {
+    const now = Date.now();
+    const fiveMinMs = 5 * 60 * 1000;
+    const currentCandleStartTime = Math.floor(now / fiveMinMs) * fiveMinMs;
+    
+    if (this.priceHistory.length === 0) return;
+    
+    const currentPrice = this.currentPrice;
+    
+    const existingCandleIndex = this.fiveMinCandles.findIndex(
+      candle => candle.timestamp === currentCandleStartTime
+    );
+    
+    if (existingCandleIndex >= 0) {
+      const existingCandle = this.fiveMinCandles[existingCandleIndex];
+      this.fiveMinCandles[existingCandleIndex] = {
+        ...existingCandle,
+        high: Math.max(existingCandle.high, currentPrice),
+        low: Math.min(existingCandle.low, currentPrice),
+        close: currentPrice,
+      };
+    } else {
+      const newCandle = {
+        timestamp: currentCandleStartTime,
+        open: currentPrice,
+        high: currentPrice,
+        low: currentPrice,
+        close: currentPrice,
+      };
+      this.fiveMinCandles.push(newCandle);
+      
+      if (this.fiveMinCandles.length > 1) {
+        const previousCandle = this.fiveMinCandles[this.fiveMinCandles.length - 2];
+        this.lastFiveMinCandleClose = previousCandle.timestamp;
+        console.log(`📊 NEW 5-MIN CANDLE CLOSED:`);
+        console.log(`   Time: ${new Date(previousCandle.timestamp).toLocaleTimeString()}`);
+        console.log(`   O: ${previousCandle.open.toFixed(1)} | H: ${previousCandle.high.toFixed(1)} | L: ${previousCandle.low.toFixed(1)} | C: ${previousCandle.close.toFixed(1)}`);
+      }
+      
+      if (this.fiveMinCandles.length > 50) {
+        this.fiveMinCandles.shift();
+      }
+    }
   }
   
   private detectTrendChange(): boolean {
