@@ -1209,87 +1209,183 @@ class SignalGenerationEngine {
     const isNYSession = hour >= 13 && hour < 21;
     
     const attentionScores = new Map<string, number>();
-    let signalStrength = 0;
+    let buySignalStrength = 0;
+    let sellSignalStrength = 0;
     
-    if (isLondonSession) {
-      signalStrength += 0.3;
-      attentionScores.set('london_session', 0.3);
-      
-      if (this.currentPrice < features.asianHigh - 10) {
-        signalStrength += 0.2;
-        attentionScores.set('asian_high_rejection', 0.2);
+    console.log('\n🔍 MULTI-TIMEFRAME ANALYSIS:');
+    console.log('='.repeat(60));
+    
+    const htfTrend = this.detectHTFTrend(features);
+    const ltfTrend = this.detectLTFTrend();
+    const rsiOverbought = features.rsi > 70;
+    const rsiOversold = features.rsi < 30;
+    const rsiNeutralBullish = features.rsi >= 50 && features.rsi <= 70;
+    const rsiNeutralBearish = features.rsi > 30 && features.rsi < 50;
+    
+    console.log(`📊 HTF Trend (Daily): ${htfTrend}`);
+    console.log(`📈 LTF Trend (5min): ${ltfTrend}`);
+    console.log(`📉 RSI: ${features.rsi.toFixed(1)} (Overbought: ${rsiOverbought}, Oversold: ${rsiOversold})`);
+    
+    if (htfTrend === 'BULLISH') {
+      if (ltfTrend === 'BULLISH' && !rsiOverbought) {
+        buySignalStrength += 0.4;
+        attentionScores.set('htf_ltf_bullish_alignment', 0.4);
+        console.log('✅ BUY: HTF + LTF Bullish Alignment');
       }
       
-      if (features.rsi < 55) {
-        signalStrength += 0.15;
-        attentionScores.set('rsi_oversold', 0.15);
+      if (rsiOversold || (rsiNeutralBearish && ltfTrend === 'BEARISH')) {
+        buySignalStrength += 0.35;
+        attentionScores.set('counter_trend_bounce_setup', 0.35);
+        console.log('✅ BUY: Counter-trend Bounce Setup (Oversold in Uptrend)');
       }
       
-      if (features.dxyChange < -0.1) {
-        signalStrength += 0.2;
-        attentionScores.set('dxy_inverse', 0.2);
+      if (rsiOverbought && ltfTrend === 'BEARISH') {
+        sellSignalStrength += 0.3;
+        attentionScores.set('intraday_correction_in_uptrend', 0.3);
+        console.log('🔴 SELL: Intraday Correction Setup (Overbought + LTF Bearish)');
+      }
+    } else if (htfTrend === 'BEARISH') {
+      if (ltfTrend === 'BEARISH' && !rsiOversold) {
+        sellSignalStrength += 0.4;
+        attentionScores.set('htf_ltf_bearish_alignment', 0.4);
+        console.log('🔴 SELL: HTF + LTF Bearish Alignment');
       }
       
-      if (features.volumeRatio > 1.0) {
-        signalStrength += 0.15;
-        attentionScores.set('high_volume', 0.15);
+      if (rsiOverbought || (rsiNeutralBullish && ltfTrend === 'BULLISH')) {
+        sellSignalStrength += 0.35;
+        attentionScores.set('counter_trend_rejection_setup', 0.35);
+        console.log('🔴 SELL: Counter-trend Rejection Setup (Overbought in Downtrend)');
       }
-    } else if (isNYSession) {
-      signalStrength += 0.1;
-      attentionScores.set('ny_session', 0.1);
+      
+      if (rsiOversold && ltfTrend === 'BULLISH') {
+        buySignalStrength += 0.3;
+        attentionScores.set('intraday_bounce_in_downtrend', 0.3);
+        console.log('✅ BUY: Intraday Bounce Setup (Oversold + LTF Bullish)');
+      }
+    } else {
+      if (rsiOverbought && ltfTrend === 'BEARISH') {
+        sellSignalStrength += 0.35;
+        attentionScores.set('neutral_htf_overbought_sell', 0.35);
+        console.log('🔴 SELL: Neutral HTF - Overbought Mean Reversion');
+      }
+      
+      if (rsiOversold && ltfTrend === 'BULLISH') {
+        buySignalStrength += 0.35;
+        attentionScores.set('neutral_htf_oversold_buy', 0.35);
+        console.log('✅ BUY: Neutral HTF - Oversold Mean Reversion');
+      }
+      
+      if (ltfTrend === 'BULLISH' && !rsiOverbought) {
+        buySignalStrength += 0.25;
+        attentionScores.set('ltf_momentum_buy', 0.25);
+        console.log('✅ BUY: LTF Momentum (Neutral HTF)');
+      }
+      
+      if (ltfTrend === 'BEARISH' && !rsiOversold) {
+        sellSignalStrength += 0.25;
+        attentionScores.set('ltf_momentum_sell', 0.25);
+        console.log('🔴 SELL: LTF Momentum (Neutral HTF)');
+      }
+    }
+    
+    if (isLondonSession || isNYSession) {
+      buySignalStrength += 0.15;
+      sellSignalStrength += 0.15;
+      attentionScores.set('high_liquidity_session', 0.15);
+      console.log(`✅ High Liquidity Session (${isLondonSession ? 'LONDON' : 'NY'})`);
     }
     
     if (features.orderFlow.largeOrdersDetected) {
-      signalStrength += 0.12 * Math.abs(features.orderFlow.volumeImbalance);
-      attentionScores.set('institutional_orders', 0.12);
+      const imbalance = features.orderFlow.volumeImbalance;
+      if (imbalance > 0) {
+        buySignalStrength += 0.12 * Math.abs(imbalance);
+        attentionScores.set('buy_order_imbalance', 0.12);
+        console.log(`✅ BUY: Order Flow Imbalance (${(imbalance * 100).toFixed(1)}% buyers)`);
+      } else {
+        sellSignalStrength += 0.12 * Math.abs(imbalance);
+        attentionScores.set('sell_order_imbalance', 0.12);
+        console.log(`🔴 SELL: Order Flow Imbalance (${(Math.abs(imbalance) * 100).toFixed(1)}% sellers)`);
+      }
     }
     
     if (features.orderFlow.institutionalFootprint > 1.2) {
-      signalStrength += 0.10;
-      attentionScores.set('institutional_footprint', 0.10);
+      if (ltfTrend === 'BULLISH') {
+        buySignalStrength += 0.10;
+        attentionScores.set('institutional_buy_footprint', 0.10);
+        console.log('✅ BUY: Institutional Footprint + LTF Bullish');
+      } else if (ltfTrend === 'BEARISH') {
+        sellSignalStrength += 0.10;
+        attentionScores.set('institutional_sell_footprint', 0.10);
+        console.log('🔴 SELL: Institutional Footprint + LTF Bearish');
+      }
     }
     
-    const nearVolumeNode = features.volumeProfile.highVolumeNodes.some(
+    const nearHighVolumeNode = features.volumeProfile.highVolumeNodes.some(
       node => Math.abs(this.currentPrice - node) < 3
     );
-    if (nearVolumeNode) {
-      signalStrength += 0.08;
-      attentionScores.set('volume_node', 0.08);
+    if (nearHighVolumeNode) {
+      buySignalStrength += 0.08;
+      sellSignalStrength += 0.08;
+      attentionScores.set('volume_node_support_resistance', 0.08);
+      console.log('✅ Price near High Volume Node (potential S/R)');
     }
     
     if (features.marketRegime.type === 'TRENDING' && features.marketRegime.strength > 0.75) {
-      signalStrength += 0.15;
-      attentionScores.set('strong_trend', 0.15);
+      if (htfTrend === 'BULLISH' && ltfTrend === 'BULLISH') {
+        buySignalStrength += 0.15;
+        attentionScores.set('strong_uptrend', 0.15);
+        console.log('✅ BUY: Strong Uptrend Confirmed');
+      } else if (htfTrend === 'BEARISH' && ltfTrend === 'BEARISH') {
+        sellSignalStrength += 0.15;
+        attentionScores.set('strong_downtrend', 0.15);
+        console.log('🔴 SELL: Strong Downtrend Confirmed');
+      }
     } else if (features.marketRegime.type === 'VOLATILE') {
-      signalStrength -= 0.05;
-      attentionScores.set('high_volatility_risk', -0.05);
+      buySignalStrength += 0.05;
+      sellSignalStrength += 0.05;
+      attentionScores.set('volatile_opportunities', 0.05);
+      console.log('⚡ Volatile regime - Both directions active');
     }
     
-    if (features.priceActionPattern === 'BULLISH_REVERSAL' || features.priceActionPattern === 'BEARISH_REVERSAL') {
-      signalStrength += 0.12;
-      attentionScores.set('reversal_pattern', 0.12);
-    } else if (features.priceActionPattern === 'STRONG_UPTREND' || features.priceActionPattern === 'STRONG_DOWNTREND') {
-      signalStrength += 0.10;
-      attentionScores.set('trend_pattern', 0.10);
+    if (features.priceActionPattern === 'BULLISH_REVERSAL') {
+      buySignalStrength += 0.12;
+      attentionScores.set('bullish_reversal', 0.12);
+      console.log('✅ BUY: Bullish Reversal Pattern');
+    } else if (features.priceActionPattern === 'BEARISH_REVERSAL') {
+      sellSignalStrength += 0.12;
+      attentionScores.set('bearish_reversal', 0.12);
+      console.log('🔴 SELL: Bearish Reversal Pattern');
+    } else if (features.priceActionPattern === 'STRONG_UPTREND') {
+      buySignalStrength += 0.10;
+      attentionScores.set('strong_uptrend_pattern', 0.10);
+      console.log('✅ BUY: Strong Uptrend Pattern');
+    } else if (features.priceActionPattern === 'STRONG_DOWNTREND') {
+      sellSignalStrength += 0.10;
+      attentionScores.set('strong_downtrend_pattern', 0.10);
+      console.log('🔴 SELL: Strong Downtrend Pattern');
     }
     
     if (features.supportStrength > 0.8) {
-      signalStrength += 0.10;
-      attentionScores.set('strong_support', 0.10);
+      buySignalStrength += 0.10;
+      attentionScores.set('strong_support_bounce', 0.10);
+      console.log('✅ BUY: Strong Support Zone');
     }
     
     if (features.resistanceStrength > 0.8) {
-      signalStrength += 0.10;
-      attentionScores.set('strong_resistance', 0.10);
+      sellSignalStrength += 0.10;
+      attentionScores.set('strong_resistance_rejection', 0.10);
+      console.log('🔴 SELL: Strong Resistance Zone');
     }
     
     const sentimentImpact = features.sentiment.score * features.sentiment.confidence;
     if (features.sentiment.score > 0.3) {
-      signalStrength += 0.15;
+      buySignalStrength += 0.15;
       attentionScores.set('positive_sentiment', 0.15);
+      console.log('✅ BUY: Positive Sentiment');
     } else if (features.sentiment.score < -0.3) {
-      signalStrength -= 0.10;
-      attentionScores.set('negative_sentiment', -0.10);
+      sellSignalStrength += 0.15;
+      attentionScores.set('negative_sentiment', 0.15);
+      console.log('🔴 SELL: Negative Sentiment');
     }
     
     const fibRetracementLevels = features.fibonacci
@@ -1302,33 +1398,71 @@ class SignalGenerationEngine {
     
     const fibonacciAlignment = nearFibLevel;
     if (fibonacciAlignment) {
-      signalStrength += 0.10;
-      attentionScores.set('fibonacci_alignment', 0.10);
+      buySignalStrength += 0.08;
+      sellSignalStrength += 0.08;
+      attentionScores.set('fibonacci_alignment', 0.08);
+      console.log('✅ Price near Fibonacci Level');
     }
     
     if (features.emaCrossover > 0.5) {
-      signalStrength += 0.08;
-      attentionScores.set('ema_crossover', 0.08);
+      buySignalStrength += 0.08;
+      attentionScores.set('bullish_ema_crossover', 0.08);
+      console.log('✅ BUY: Bullish EMA Crossover');
+    } else if (features.emaCrossover < -0.5) {
+      sellSignalStrength += 0.08;
+      attentionScores.set('bearish_ema_crossover', 0.08);
+      console.log('🔴 SELL: Bearish EMA Crossover');
     }
     
     if (features.macdHistogram > 0.3) {
-      signalStrength += 0.07;
-      attentionScores.set('macd_momentum', 0.07);
+      buySignalStrength += 0.07;
+      attentionScores.set('bullish_macd_momentum', 0.07);
+      console.log('✅ BUY: Bullish MACD Momentum');
+    } else if (features.macdHistogram < -0.3) {
+      sellSignalStrength += 0.07;
+      attentionScores.set('bearish_macd_momentum', 0.07);
+      console.log('🔴 SELL: Bearish MACD Momentum');
     }
     
     const isNearWeeklyPivot = Math.abs(this.currentPrice - features.weeklyPivot) < 15;
     if (isNearWeeklyPivot) {
-      signalStrength += 0.05;
+      buySignalStrength += 0.05;
+      sellSignalStrength += 0.05;
       attentionScores.set('weekly_pivot', 0.05);
+      console.log('✅ Price near Weekly Pivot');
+    }
+    
+    const bearishDivergence = this.detectBearishDivergence(features);
+    const bullishDivergence = this.detectBullishDivergence(features);
+    
+    if (bearishDivergence) {
+      sellSignalStrength += 0.20;
+      attentionScores.set('bearish_divergence', 0.20);
+      console.log('🔴 SELL: Bearish Divergence Detected');
+    }
+    
+    if (bullishDivergence) {
+      buySignalStrength += 0.20;
+      attentionScores.set('bullish_divergence', 0.20);
+      console.log('✅ BUY: Bullish Divergence Detected');
+    }
+    
+    console.log('\n📊 SIGNAL STRENGTH COMPARISON:');
+    console.log(`   BUY Strength: ${buySignalStrength.toFixed(3)}`);
+    console.log(`   SELL Strength: ${sellSignalStrength.toFixed(3)}`);
+    console.log('='.repeat(60) + '\n');
+    
+    const isBullish = buySignalStrength > sellSignalStrength;
+    const signalStrength = isBullish ? buySignalStrength : sellSignalStrength;
+    const strengthDifference = Math.abs(buySignalStrength - sellSignalStrength);
+    
+    if (strengthDifference < 0.1) {
+      console.log(`⚠️ WARNING: Weak directional conviction (difference: ${(strengthDifference * 100).toFixed(1)}%)`);
+      console.log('   Signal may be filtered by confidence threshold');
     }
     
     const modelWeight = this.performanceMetrics.recentWinRate / 0.65;
-    signalStrength *= modelWeight;
-    
-    const trendScore = (this.currentPrice - features.dailyPivot) / features.atr;
-    const isBullish = trendScore > -0.5;
-    
-    let baseConfidence = 0.65 + signalStrength * 0.3;
+    let baseConfidence = 0.55 + signalStrength * 0.35;
     
     baseConfidence += Math.abs(sentimentImpact) * 0.1;
     
@@ -1343,12 +1477,22 @@ class SignalGenerationEngine {
     const learningAdjustment = (this.performanceMetrics.profitFactor - 1.5) * 0.05;
     baseConfidence += learningAdjustment;
     
-    const randomVariance = (Math.random() - 0.5) * 0.08;
-    let rawConfidence = Math.max(0.60, Math.min(0.98, baseConfidence + randomVariance));
+    if (strengthDifference < 0.15) {
+      baseConfidence *= 0.85;
+      console.log(`⚠️ Weak directional conviction - Confidence reduced by 15%`);
+    }
+    
+    const randomVariance = (Math.random() - 0.5) * 0.06;
+    let rawConfidence = Math.max(0.55, Math.min(0.98, baseConfidence + randomVariance));
     
     const smoothedConfidence = this.smoothConfidence(rawConfidence);
     
     console.log('📊 Attention Scores:', Array.from(attentionScores.entries()).map(([k, v]) => `${k}: ${v.toFixed(2)}`).join(', '));
+    
+    console.log(`\n🎯 FINAL DECISION: ${isBullish ? 'BUY' : 'SELL'} Signal`);
+    console.log(`   Strength: ${signalStrength.toFixed(3)}`);
+    console.log(`   Confidence: ${(smoothedConfidence * 100).toFixed(1)}%`);
+    console.log(`   Direction Conviction: ${(strengthDifference * 100).toFixed(1)}%\n`);
     
     return {
       signalStrength: Math.max(0, Math.min(1, signalStrength)),
@@ -1358,6 +1502,83 @@ class SignalGenerationEngine {
       fibonacciAlignment,
       attentionScores,
     };
+  }
+  
+  private detectHTFTrend(features: MarketFeatures): 'BULLISH' | 'BEARISH' | 'NEUTRAL' {
+    const priceVsPivot = this.currentPrice - features.dailyPivot;
+    const weeklyBias = this.currentPrice - features.weeklyPivot;
+    
+    if (priceVsPivot > 15 && weeklyBias > 10) {
+      return 'BULLISH';
+    } else if (priceVsPivot < -15 && weeklyBias < -10) {
+      return 'BEARISH';
+    } else {
+      return 'NEUTRAL';
+    }
+  }
+  
+  private detectLTFTrend(): 'BULLISH' | 'BEARISH' | 'NEUTRAL' {
+    if (this.priceHistory.length < 5) return 'NEUTRAL';
+    
+    const recent5 = this.priceHistory.slice(-5);
+    const avg = recent5.reduce((a, b) => a + b, 0) / recent5.length;
+    const currentPrice = this.currentPrice;
+    
+    const momentum = currentPrice - avg;
+    
+    if (momentum > 5) {
+      return 'BULLISH';
+    } else if (momentum < -5) {
+      return 'BEARISH';
+    } else {
+      return 'NEUTRAL';
+    }
+  }
+  
+  private detectBearishDivergence(features: MarketFeatures): boolean {
+    if (this.priceHistory.length < 10 || this.highHistory.length < 10) return false;
+    
+    const recent10Prices = this.priceHistory.slice(-10);
+    const recent10Highs = this.highHistory.slice(-10);
+    
+    const priceHigh1 = recent10Highs[4];
+    const priceHigh2 = recent10Highs[9];
+    
+    const rsiSimulated1 = 45 + (priceHigh1 / this.currentPrice - 1) * 100;
+    const rsiSimulated2 = 45 + (priceHigh2 / this.currentPrice - 1) * 100;
+    
+    const priceHigherHigh = priceHigh2 > priceHigh1;
+    const rsiLowerHigh = rsiSimulated2 < rsiSimulated1;
+    
+    if (priceHigherHigh && rsiLowerHigh && features.rsi > 60) {
+      console.log(`🔍 Bearish Divergence: Price HH (${priceHigh2.toFixed(1)} > ${priceHigh1.toFixed(1)}), RSI LH (${rsiSimulated2.toFixed(1)} < ${rsiSimulated1.toFixed(1)})`);
+      return true;
+    }
+    
+    return false;
+  }
+  
+  private detectBullishDivergence(features: MarketFeatures): boolean {
+    if (this.priceHistory.length < 10 || this.lowHistory.length < 10) return false;
+    
+    const recent10Prices = this.priceHistory.slice(-10);
+    const recent10Lows = this.lowHistory.slice(-10);
+    
+    const priceLow1 = recent10Lows[4];
+    const priceLow2 = recent10Lows[9];
+    
+    const rsiSimulated1 = 55 + (priceLow1 / this.currentPrice - 1) * 100;
+    const rsiSimulated2 = 55 + (priceLow2 / this.currentPrice - 1) * 100;
+    
+    const priceLowerLow = priceLow2 < priceLow1;
+    const rsiHigherLow = rsiSimulated2 > rsiSimulated1;
+    
+    if (priceLowerLow && rsiHigherLow && features.rsi < 40) {
+      console.log(`🔍 Bullish Divergence: Price LL (${priceLow2.toFixed(1)} < ${priceLow1.toFixed(1)}), RSI HL (${rsiSimulated2.toFixed(1)} > ${rsiSimulated1.toFixed(1)})`);
+      return true;
+    }
+    
+    return false;
   }
   
   async recordTradeOutcome(signalId: string, entryPrice: number, exitPrice: number, result: 'WIN' | 'LOSS', features: MarketFeatures, misleadingFeatures?: FeatureConfidence[], signalDuration?: number): Promise<void> {
