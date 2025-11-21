@@ -122,6 +122,7 @@ const CONFIDENCE_SMOOTHING_WINDOW = 5;
 const LATENCY_WARNING_THRESHOLD_MS = 100;
 const FEATURE_CORRELATION_CHECK_INTERVAL = 30 * 24 * 60 * 60 * 1000;
 const INTERMARKET_CACHE_DURATION = 10000;
+const CORS_PROXY = 'https://corsproxy.io/?';
 const HYPOTHETICAL_TRADE_HISTORY_LIMIT = 100;
 const MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL = 15;
 const MIN_PIP_DIFFERENCE_FOR_PARTIALLY_MANAGED = 25;
@@ -196,7 +197,9 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
   }
 
   try {
-    const dxyResponse = await fetch('https://query2.finance.yahoo.com/v8/finance/chart/DX=F?interval=1m&range=1d', {
+    const dxyUrl = `${CORS_PROXY}${encodeURIComponent('https://query2.finance.yahoo.com/v8/finance/chart/DX=F?interval=1m&range=1d')}`;
+    console.log('🌐 Fetching DXY via CORS proxy (temporary testing solution):', dxyUrl);
+    const dxyResponse = await fetch(dxyUrl, {
       headers: {
         'Accept': 'application/json',
       },
@@ -219,7 +222,9 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
   }
 
   try {
-    const yieldResponse = await fetch('https://query2.finance.yahoo.com/v8/finance/chart/%5ETNX?interval=1m&range=1d', {
+    const yieldUrl = `${CORS_PROXY}${encodeURIComponent('https://query2.finance.yahoo.com/v8/finance/chart/%5ETNX?interval=1m&range=1d')}`;
+    console.log('🌐 Fetching US10Y via CORS proxy (temporary testing solution):', yieldUrl);
+    const yieldResponse = await fetch(yieldUrl, {
       headers: {
         'Accept': 'application/json',
       },
@@ -242,7 +247,9 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
   }
 
   try {
-    const vixResponse = await fetch('https://query2.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1m&range=1d', {
+    const vixUrl = `${CORS_PROXY}${encodeURIComponent('https://query2.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1m&range=1d')}`;
+    console.log('🌐 Fetching VIX via CORS proxy (temporary testing solution):', vixUrl);
+    const vixResponse = await fetch(vixUrl, {
       headers: {
         'Accept': 'application/json',
       },
