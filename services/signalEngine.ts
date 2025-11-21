@@ -48,6 +48,13 @@ interface IntermarketData {
   goldYieldCorrelation: number;
 }
 
+interface IntermarketHistory {
+  dxyPrices: number[];
+  us10yYields: number[];
+  vixPrices: number[];
+  lastUpdate: number;
+}
+
 interface LiquidityWindow {
   score: number;
   sessionName: string;
@@ -137,18 +144,52 @@ const UTC_HOURS = {
   NY_LONDON_END: 17,
 };
 
+let intermarketHistory: IntermarketHistory = {
+  dxyPrices: [],
+  us10yYields: [],
+  vixPrices: [],
+  lastUpdate: 0,
+};
+
+function calculateRealChange(history: number[]): number {
+  if (history.length < 2) return 0;
+  const current = history[history.length - 1];
+  const previous = history[history.length - 2];
+  return current - previous;
+}
+
+function calculateRealVelocity(history: number[]): number {
+  if (history.length < 3) return 0;
+  const current = history[history.length - 1];
+  const previous = history[history.length - 2];
+  const twoBefore = history[history.length - 3];
+  const recentChange = current - previous;
+  const olderChange = previous - twoBefore;
+  return recentChange - olderChange;
+}
+
 async function fetchIntermarketData(): Promise<IntermarketData> {
   const now = Date.now();
   
   if (cachedDXY !== null && cachedUS10Y !== null && cachedVIX !== null && now - lastIntermarketFetchTime < INTERMARKET_CACHE_DURATION) {
+    const dxyChange = calculateRealChange(intermarketHistory.dxyPrices);
+    const dxyVelocity = calculateRealVelocity(intermarketHistory.dxyPrices);
+    const us10yChange = calculateRealChange(intermarketHistory.us10yYields);
+    const vixChange = calculateRealChange(intermarketHistory.vixPrices);
+    
+    console.log(`✅ Using REAL intermarket changes from history:`);
+    console.log(`   DXY Change: ${dxyChange.toFixed(3)}, Velocity: ${dxyVelocity.toFixed(3)}`);
+    console.log(`   US10Y Change: ${us10yChange.toFixed(3)}`);
+    console.log(`   VIX Change: ${vixChange.toFixed(2)}`);
+    
     return {
       dxyPrice: cachedDXY,
-      dxyChange: (Math.random() - 0.5) * 0.5,
-      dxyVelocity: (Math.random() - 0.5) * 0.3,
+      dxyChange,
+      dxyVelocity,
       us10yYield: cachedUS10Y,
-      us10yChange: (Math.random() - 0.5) * 0.1,
+      us10yChange,
       vixPrice: cachedVIX,
-      vixChange: (Math.random() - 0.5) * 2,
+      vixChange,
       goldDxyCorrelation: -0.65 + (Math.random() - 0.5) * 0.2,
       goldYieldCorrelation: -0.55 + (Math.random() - 0.5) * 0.2,
     };
@@ -225,10 +266,30 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
 
   lastIntermarketFetchTime = now;
 
-  const dxyChange = (Math.random() - 0.5) * 0.5;
-  const dxyVelocity = dxyChange * (1 + (Math.random() - 0.5) * 0.4);
-  const us10yChange = (Math.random() - 0.5) * 0.1;
-  const vixChange = (Math.random() - 0.5) * 2;
+  intermarketHistory.dxyPrices.push(cachedDXY || 103.5);
+  intermarketHistory.us10yYields.push(cachedUS10Y || 4.2);
+  intermarketHistory.vixPrices.push(cachedVIX || 18);
+  intermarketHistory.lastUpdate = now;
+  
+  if (intermarketHistory.dxyPrices.length > 30) {
+    intermarketHistory.dxyPrices.shift();
+  }
+  if (intermarketHistory.us10yYields.length > 30) {
+    intermarketHistory.us10yYields.shift();
+  }
+  if (intermarketHistory.vixPrices.length > 30) {
+    intermarketHistory.vixPrices.shift();
+  }
+
+  const dxyChange = calculateRealChange(intermarketHistory.dxyPrices);
+  const dxyVelocity = calculateRealVelocity(intermarketHistory.dxyPrices);
+  const us10yChange = calculateRealChange(intermarketHistory.us10yYields);
+  const vixChange = calculateRealChange(intermarketHistory.vixPrices);
+
+  console.log(`✅ REAL Intermarket Data (from history):`);
+  console.log(`   DXY: ${(cachedDXY || 103.5).toFixed(2)}, Change: ${dxyChange.toFixed(3)}, Velocity: ${dxyVelocity.toFixed(3)}`);
+  console.log(`   US10Y: ${(cachedUS10Y || 4.2).toFixed(2)}, Change: ${us10yChange.toFixed(3)}`);
+  console.log(`   VIX: ${(cachedVIX || 18).toFixed(1)}, Change: ${vixChange.toFixed(2)}`);
 
   return {
     dxyPrice: cachedDXY || 103.5,
@@ -295,6 +356,7 @@ class SignalGenerationEngine {
   private priceHistory: number[] = [];
   private highHistory: number[] = [];
   private lowHistory: number[] = [];
+  private closeHistory: number[] = [];
   private volumeHistory: number[] = [];
   private tradeOutcomes: TradeOutcome[] = [];
   private modelWeights: Map<string, number> = new Map();
@@ -333,15 +395,20 @@ class SignalGenerationEngine {
         this.priceHistory.shift();
       }
       
-      const highNoise = Math.random() * 5;
-      const lowNoise = Math.random() * 5;
-      this.highHistory.push(this.currentPrice + highNoise);
-      this.lowHistory.push(this.currentPrice - lowNoise);
+      const simulatedHigh = this.currentPrice + (Math.random() * 2 + 1);
+      const simulatedLow = this.currentPrice - (Math.random() * 2 + 1);
+      
+      this.highHistory.push(simulatedHigh);
+      this.lowHistory.push(simulatedLow);
+      this.closeHistory.push(this.currentPrice);
       
       if (this.highHistory.length > 100) {
         this.highHistory.shift();
         this.lowHistory.shift();
+        this.closeHistory.shift();
       }
+      
+      console.log(`📊 Price Update: Close=${this.currentPrice.toFixed(1)}, H=${simulatedHigh.toFixed(1)}, L=${simulatedLow.toFixed(1)} (simulated intra-period H/L)`);
       
       return this.currentPrice;
     } catch (error) {
@@ -1883,24 +1950,13 @@ class SignalGenerationEngine {
     const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
     const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
     
+    const DECAY_LAMBDA = 0.75;
+    
     const dataWithWeights = trainingData.map(outcome => {
       const age = now - new Date(outcome.timestamp).getTime();
       const daysSinceOutcome = age / (24 * 60 * 60 * 1000);
       
-      let weight = 1.0;
-      if (daysSinceOutcome <= 3) {
-        weight = Math.exp(-daysSinceOutcome / 20);
-        weight = Math.max(0.85, weight);
-      } else if (daysSinceOutcome <= 7) {
-        weight = 0.7 * Math.exp(-(daysSinceOutcome - 3) / 8);
-        weight = Math.max(0.3, weight);
-      } else if (daysSinceOutcome <= 15) {
-        weight = 0.15 * Math.exp(-(daysSinceOutcome - 7) / 10);
-        weight = Math.max(0.05, weight);
-      } else {
-        weight = 0.03 * Math.exp(-(daysSinceOutcome - 15) / 20);
-        weight = Math.max(0.01, weight);
-      }
+      const weight = Math.pow(DECAY_LAMBDA, daysSinceOutcome);
       
       return { outcome, weight };
     });
@@ -2267,16 +2323,21 @@ class SignalGenerationEngine {
     }
     
     if (this.lastSignalType !== null && this.lastSignalType !== analysis.signalType) {
-      if (analysis.confidence < 0.80) {
-        console.log(`❌ REJECTED: Signal conflict - Opposite direction (${this.lastSignalType} -> ${analysis.signalType})`);
-        console.log(`   Confidence ${(analysis.confidence * 100).toFixed(1)}% insufficient for override (need 80%+)`);
-        console.log(`   💡 TIP: Wait for current signal to close or confidence to reach 80%+`);
-        console.log(`   NOTE: Override threshold lowered from 95% to 80% to improve sell signal generation`);
+      const MIN_OVERRIDE_CONFIDENCE = 0.55;
+      const opposingStrength = analysis.signalType === 'BUY' ? analysis.attentionScores.get('htf_ltf_bearish_alignment') || 0 : analysis.attentionScores.get('htf_ltf_bullish_alignment') || 0;
+      
+      if (analysis.confidence < MIN_OVERRIDE_CONFIDENCE || opposingStrength > 0.15) {
+        console.log(`❌ REJECTED: Signal conflict prevention`);
+        console.log(`   Last Signal: ${this.lastSignalType}, New Signal: ${analysis.signalType}`);
+        console.log(`   New Signal Confidence: ${(analysis.confidence * 100).toFixed(1)}% (Min: ${(MIN_OVERRIDE_CONFIDENCE * 100).toFixed(0)}%)`);
+        console.log(`   Opposing Signal Strength: ${(opposingStrength * 100).toFixed(1)}% (Max: 15%)`);
+        console.log(`   💡 CONFLICT RESOLUTION: New signal must be >55% confident AND opposing signal <15% strength`);
         console.log(`${'='.repeat(80)}\n`);
         return null;
       } else {
-        console.log(`🔄 SIGNAL OVERRIDE: High confidence ${(analysis.confidence * 100).toFixed(1)}% allows direction change (${this.lastSignalType} -> ${analysis.signalType})`);
-        console.log(`   NOTE: Override threshold is now 80% (previously 95%) to reduce bias toward one direction`);
+        console.log(`✅ SIGNAL OVERRIDE APPROVED: Conflict check passed`);
+        console.log(`   ${this.lastSignalType} -> ${analysis.signalType}`);
+        console.log(`   Confidence: ${(analysis.confidence * 100).toFixed(1)}%, Opposing Strength: ${(opposingStrength * 100).toFixed(1)}%`);
         this.resetSignalLock();
       }
     }
