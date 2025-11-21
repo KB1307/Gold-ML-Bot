@@ -396,6 +396,7 @@ class SignalGenerationEngine {
   private featureImportanceHistory: Map<string, number[]> = new Map();
   private conceptDriftScore: number = 0;
   private driftAlertLevel: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' = 'NONE';
+  private retrainScheduled: boolean = false;
   private dailyOHLCHistory: DailyOHLC[] = [];
   private currentDayOHLC: { open: number; high: number; low: number; close: number; date: string } | null = null;
   private lastNYCloseCheck: number = 0;
@@ -1255,24 +1256,25 @@ class SignalGenerationEngine {
       console.log(`🔶 Concept Drift: MEDIUM (${this.conceptDriftScore.toFixed(2)}) - Monitor closely`);
     } else {
       this.driftAlertLevel = 'HIGH';
-      console.log(`🚨 Concept Drift: HIGH (${this.conceptDriftScore.toFixed(2)}) - AUTOMATED ACTION TRIGGERED`);
+      console.log(`🚨 Concept Drift: HIGH (${this.conceptDriftScore.toFixed(2)}) - SCHEDULING RETRAIN`);
       
       console.log('\n' + '🔥'.repeat(30));
       console.log('⚡ CONCEPT DRIFT AUTO-RESPONSE SYSTEM ACTIVATED');
       console.log('🔥'.repeat(30));
       console.log(`   Drift Score: ${this.conceptDriftScore.toFixed(2)} (Threshold: 0.6)`);
       console.log(`   Alert Level: HIGH`);
-      console.log(`   Action 1: Triggering immediate model retrain`);
+      console.log(`   Action 1: Scheduling model retrain for low-liquidity window`);
       console.log(`   Action 2: Temporarily increasing confidence threshold 70% -> 80%`);
+      console.log(`   Target Window: Asian Session (22:00 - 07:00 UTC)`);
       console.log('🔥'.repeat(30) + '\n');
       
-      await this.manualRetrain('High Concept Drift Alert (Auto-Triggered)');
+      this.retrainScheduled = true;
       
-      console.log('\n✅ Concept Drift Response Complete');
-      console.log('   - Model retrained with latest data');
-      console.log('   - Feature weights normalized');
+      console.log('\n✅ Concept Drift Response: Retrain Scheduled');
+      console.log('   - Retrain flag set to TRUE');
+      console.log('   - Will execute during next Asian Session (22:00-07:00 UTC)');
       console.log('   - Confidence threshold temporarily elevated to 80%');
-      console.log('   - System will automatically revert threshold after 48 hours\n');
+      console.log('   - System will automatically revert threshold after retrain\n');
     }
     
     console.log('='.repeat(60) + '\n');
@@ -2034,6 +2036,9 @@ class SignalGenerationEngine {
     });
     
     const now = Date.now();
+    const currentUTCHour = new Date().getUTCHours();
+    const isLowLiquidityWindow = currentUTCHour >= 22 || currentUTCHour < 7;
+    
     const shouldRetrainScheduled = now - this.lastTrainingTime > 48 * 60 * 60 * 1000;
     
     const avgRecentWinConfidence = this.performanceMetrics.recentWinningConfidences.length > 0
@@ -2045,10 +2050,31 @@ class SignalGenerationEngine {
       const reason = shouldRetrainConfidenceDrop 
         ? `Confidence Degradation (avg: ${(avgRecentWinConfidence * 100).toFixed(1)}%)`
         : 'Scheduled 48-Hour Retrain';
-      console.log(`🔔 RETRAINING TRIGGERED: ${reason}`);
-      console.log(`   Scheduled: ${shouldRetrainScheduled}, ConfDrop: ${shouldRetrainConfidenceDrop}`);
-      console.log(`   Avg Win Conf: ${(avgRecentWinConfidence * 100).toFixed(1)}%, Threshold: ${(MIN_CONFIDENCE_FOR_RETRAINING * 100).toFixed(1)}%`);
-      await this.walkForwardOptimization(reason);
+      
+      if (isLowLiquidityWindow) {
+        console.log(`🔔 RETRAINING TRIGGERED: ${reason}`);
+        console.log(`   Scheduled: ${shouldRetrainScheduled}, ConfDrop: ${shouldRetrainConfidenceDrop}`);
+        console.log(`   Avg Win Conf: ${(avgRecentWinConfidence * 100).toFixed(1)}%, Threshold: ${(MIN_CONFIDENCE_FOR_RETRAINING * 100).toFixed(1)}%`);
+        console.log(`   ✅ EXECUTING NOW: Low-liquidity window active (${currentUTCHour}:00 UTC)`);
+        await this.walkForwardOptimization(reason);
+        this.retrainScheduled = false;
+      } else {
+        console.log(`🔔 RETRAINING NEEDED: ${reason}`);
+        console.log(`   ⏰ SCHEDULED: Waiting for low-liquidity window (Asian Session: 22:00-07:00 UTC)`);
+        console.log(`   Current Time: ${currentUTCHour}:00 UTC (High Liquidity)`);
+        console.log(`   Reason: Minimize execution risk and resource contention`);
+        this.retrainScheduled = true;
+      }
+    } else if (this.retrainScheduled && isLowLiquidityWindow) {
+      console.log(`🔔 EXECUTING SCHEDULED RETRAIN`);
+      console.log(`   ✅ Low-liquidity window active (${currentUTCHour}:00 UTC - Asian Session)`);
+      console.log(`   Previous trigger: High drift or confidence degradation`);
+      await this.walkForwardOptimization('Scheduled Retrain (Deferred from Peak Hours)');
+      this.retrainScheduled = false;
+    } else if (this.retrainScheduled) {
+      console.log(`⏰ RETRAIN SCHEDULED: Waiting for Asian Session (22:00-07:00 UTC)`);
+      console.log(`   Current Time: ${currentUTCHour}:00 UTC`);
+      console.log(`   Status: Deferred from peak trading hours`);
     } else {
       const hoursSinceRetrain = ((now - this.lastTrainingTime) / (60*60*1000)).toFixed(1);
       console.log(`✅ No retraining needed - Hours: ${hoursSinceRetrain}/48.0, AvgConf: ${(avgRecentWinConfidence * 100).toFixed(1)}%`);
@@ -2242,6 +2268,12 @@ class SignalGenerationEngine {
           this.lastTrainingTime = weightsObj.lastTrainingTime;
           const daysSince = (Date.now() - this.lastTrainingTime) / (24 * 60 * 60 * 1000);
           console.log(`✓ Loaded model weights and training time from storage: ${new Date(this.lastTrainingTime).toISOString()} (${daysSince.toFixed(1)} days ago)`);
+          
+          const shouldRetrain = daysSince > 2;
+          if (shouldRetrain) {
+            console.log(`⚠️ Model is ${daysSince.toFixed(1)} days old - retrain scheduled for next low-liquidity window`);
+            this.retrainScheduled = true;
+          }
         } else {
           console.log('⚠️ No previous training time found - initializing fresh model');
           this.lastTrainingTime = Date.now();
@@ -3023,6 +3055,7 @@ class SignalGenerationEngine {
       driftAlertLevel: this.driftAlertLevel,
       daysSinceRetrain: parseFloat(daysSinceRetrain.toFixed(1)),
       retrainingRecommended,
+      retrainScheduled: this.retrainScheduled,
     };
   }
 
