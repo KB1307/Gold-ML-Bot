@@ -57,15 +57,21 @@ export default function DashboardScreen() {
       console.log(`   BUY Logic: TP3 (${target.toFixed(1)}) should be ABOVE Entry (${entry.toFixed(1)})`);
       console.log(`   BUY Logic: SL (${sl.toFixed(1)}) should be BELOW Entry (${entry.toFixed(1)})`);
       
-      if (currentPrice >= target) return 100;
-      if (currentPrice <= entry) return 0;
+      if (currentPrice >= target) {
+        console.log(`   Result: 100% (Price reached or exceeded TP3)`);
+        return 100;
+      }
+      if (currentPrice <= sl) {
+        console.log(`   Result: 0% (Price at or below SL - trade lost)`);
+        return 0;
+      }
       
-      const range = target - entry;
-      const progress = currentPrice - entry;
-      const percentage = (progress / range) * 100;
+      const totalRange = target - sl;
+      const progressFromSL = currentPrice - sl;
+      const percentage = (progressFromSL / totalRange) * 100;
       
-      console.log(`   Range (TP3 - Entry): ${range.toFixed(1)} pips`);
-      console.log(`   Progress (Current - Entry): ${progress.toFixed(1)} pips`);
+      console.log(`   Total Range (TP3 - SL): ${totalRange.toFixed(1)} pips`);
+      console.log(`   Progress from SL (Current - SL): ${progressFromSL.toFixed(1)} pips`);
       console.log(`   Percentage: ${percentage.toFixed(1)}%`);
       
       return Math.min(100, Math.max(0, percentage));
@@ -73,15 +79,21 @@ export default function DashboardScreen() {
       console.log(`   SELL Logic: TP3 (${target.toFixed(1)}) should be BELOW Entry (${entry.toFixed(1)})`);
       console.log(`   SELL Logic: SL (${sl.toFixed(1)}) should be ABOVE Entry (${entry.toFixed(1)})`);
       
-      if (currentPrice <= target) return 100;
-      if (currentPrice >= entry) return 0;
+      if (currentPrice <= target) {
+        console.log(`   Result: 100% (Price reached or exceeded TP3)`);
+        return 100;
+      }
+      if (currentPrice >= sl) {
+        console.log(`   Result: 0% (Price at or above SL - trade lost)`);
+        return 0;
+      }
       
-      const range = entry - target;
-      const progress = entry - currentPrice;
-      const percentage = (progress / range) * 100;
+      const totalRange = sl - target;
+      const progressFromSL = sl - currentPrice;
+      const percentage = (progressFromSL / totalRange) * 100;
       
-      console.log(`   Range (Entry - TP3): ${range.toFixed(1)} pips`);
-      console.log(`   Progress (Entry - Current): ${progress.toFixed(1)} pips`);
+      console.log(`   Total Range (SL - TP3): ${totalRange.toFixed(1)} pips`);
+      console.log(`   Progress from SL (SL - Current): ${progressFromSL.toFixed(1)} pips`);
       console.log(`   Percentage: ${percentage.toFixed(1)}%`);
       
       return Math.min(100, Math.max(0, percentage));

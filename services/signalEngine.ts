@@ -434,6 +434,7 @@ class SignalGenerationEngine {
   }
 
   private calculateOrderFlow(): OrderFlowData {
+    console.log('⚠️ Order Flow: Using simulated data (no real-time order book access)');
     const bidVolume = 1000 + Math.random() * 500;
     const askVolume = 1000 + Math.random() * 500;
     const volumeImbalance = (askVolume - bidVolume) / (askVolume + bidVolume);
@@ -685,8 +686,8 @@ class SignalGenerationEngine {
     const r3 = yesterdayClose + (dailyRange / 4);
     const s3 = yesterdayClose - (dailyRange / 4);
     
-    const rsi = 45 + Math.random() * 20;
-    const atr = 8 + Math.random() * 4;
+    const rsi = this.calculateRealRSI(14);
+    const atr = this.calculateRealATR(14);
     const dxyChange = (Math.random() - 0.5) * 0.5;
     const volumeRatio = 0.8 + Math.random() * 0.4;
     
@@ -1582,6 +1583,68 @@ class SignalGenerationEngine {
     }
   }
   
+  private calculateRealRSI(period: number = 14): number {
+    if (this.priceHistory.length < period + 1) {
+      console.log('⚠️ RSI: Insufficient data, using default value 50');
+      return 50;
+    }
+
+    const prices = this.priceHistory.slice(-period - 1);
+    let gains = 0;
+    let losses = 0;
+
+    for (let i = 1; i < prices.length; i++) {
+      const change = prices[i] - prices[i - 1];
+      if (change > 0) {
+        gains += change;
+      } else {
+        losses += Math.abs(change);
+      }
+    }
+
+    const avgGain = gains / period;
+    const avgLoss = losses / period;
+
+    if (avgLoss === 0) {
+      return 100;
+    }
+
+    const rs = avgGain / avgLoss;
+    const rsi = 100 - (100 / (1 + rs));
+
+    console.log(`✅ RSI (${period}): ${rsi.toFixed(1)} (avgGain: ${avgGain.toFixed(2)}, avgLoss: ${avgLoss.toFixed(2)})`);
+    return parseFloat(rsi.toFixed(1));
+  }
+
+  private calculateRealATR(period: number = 14): number {
+    if (this.highHistory.length < period || this.lowHistory.length < period || this.priceHistory.length < period) {
+      console.log('⚠️ ATR: Insufficient data, using default value 10');
+      return 10;
+    }
+
+    const trueRanges: number[] = [];
+    const highs = this.highHistory.slice(-period);
+    const lows = this.lowHistory.slice(-period);
+    const closes = this.priceHistory.slice(-(period + 1));
+
+    for (let i = 0; i < period; i++) {
+      const high = highs[i];
+      const low = lows[i];
+      const prevClose = closes[i];
+
+      const tr = Math.max(
+        high - low,
+        Math.abs(high - prevClose),
+        Math.abs(low - prevClose)
+      );
+      trueRanges.push(tr);
+    }
+
+    const atr = trueRanges.reduce((sum, tr) => sum + tr, 0) / period;
+    console.log(`✅ ATR (${period}): ${atr.toFixed(1)} (True Range avg)`);
+    return parseFloat(atr.toFixed(1));
+  }
+
   private detectBearishDivergence(features: MarketFeatures): boolean {
     if (this.priceHistory.length < 10 || this.highHistory.length < 10) return false;
     
@@ -1591,18 +1654,49 @@ class SignalGenerationEngine {
     const priceHigh1 = recent10Highs[4];
     const priceHigh2 = recent10Highs[9];
     
-    const rsiSimulated1 = 45 + (priceHigh1 / this.currentPrice - 1) * 100;
-    const rsiSimulated2 = 45 + (priceHigh2 / this.currentPrice - 1) * 100;
+    const rsi1 = this.calculateRSIAtIndex(4);
+    const rsi2 = features.rsi;
     
     const priceHigherHigh = priceHigh2 > priceHigh1;
-    const rsiLowerHigh = rsiSimulated2 < rsiSimulated1;
+    const rsiLowerHigh = rsi2 < rsi1;
     
     if (priceHigherHigh && rsiLowerHigh && features.rsi > 60) {
-      console.log(`🔍 Bearish Divergence: Price HH (${priceHigh2.toFixed(1)} > ${priceHigh1.toFixed(1)}), RSI LH (${rsiSimulated2.toFixed(1)} < ${rsiSimulated1.toFixed(1)})`);
+      console.log(`🔍 Bearish Divergence: Price HH (${priceHigh2.toFixed(1)} > ${priceHigh1.toFixed(1)}), RSI LH (${rsi2.toFixed(1)} < ${rsi1.toFixed(1)})`);
       return true;
     }
     
     return false;
+  }
+
+  private calculateRSIAtIndex(indexFromEnd: number): number {
+    if (this.priceHistory.length < indexFromEnd + 15) {
+      return 50;
+    }
+    
+    const prices = this.priceHistory.slice(-(indexFromEnd + 15), -indexFromEnd);
+    const period = 14;
+    
+    let gains = 0;
+    let losses = 0;
+
+    for (let i = 1; i < prices.length && i <= period; i++) {
+      const change = prices[i] - prices[i - 1];
+      if (change > 0) {
+        gains += change;
+      } else {
+        losses += Math.abs(change);
+      }
+    }
+
+    const avgGain = gains / period;
+    const avgLoss = losses / period;
+
+    if (avgLoss === 0) return 100;
+
+    const rs = avgGain / avgLoss;
+    const rsi = 100 - (100 / (1 + rs));
+    
+    return parseFloat(rsi.toFixed(1));
   }
   
   private detectBullishDivergence(features: MarketFeatures): boolean {
@@ -1614,14 +1708,14 @@ class SignalGenerationEngine {
     const priceLow1 = recent10Lows[4];
     const priceLow2 = recent10Lows[9];
     
-    const rsiSimulated1 = 55 + (priceLow1 / this.currentPrice - 1) * 100;
-    const rsiSimulated2 = 55 + (priceLow2 / this.currentPrice - 1) * 100;
+    const rsi1 = this.calculateRSIAtIndex(4);
+    const rsi2 = features.rsi;
     
     const priceLowerLow = priceLow2 < priceLow1;
-    const rsiHigherLow = rsiSimulated2 > rsiSimulated1;
+    const rsiHigherLow = rsi2 > rsi1;
     
     if (priceLowerLow && rsiHigherLow && features.rsi < 40) {
-      console.log(`🔍 Bullish Divergence: Price LL (${priceLow2.toFixed(1)} < ${priceLow1.toFixed(1)}), RSI HL (${rsiSimulated2.toFixed(1)} > ${rsiSimulated1.toFixed(1)})`);
+      console.log(`🔍 Bullish Divergence: Price LL (${priceLow2.toFixed(1)} < ${priceLow1.toFixed(1)}), RSI HL (${rsi2.toFixed(1)} > ${rsi1.toFixed(1)})`);
       return true;
     }
     
