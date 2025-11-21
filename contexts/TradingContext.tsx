@@ -536,6 +536,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const now = Date.now();
     const twoHoursInMs = 2 * 60 * 60 * 1000;
     const GRACE_PERIOD_MS = 5000;
+    
+    console.log(`🔄 [${Platform.OS}] Checking signal status updates - Current Price: ${price.toFixed(1)}`);
 
     setSignalHistory((prevHistory) => {
       let updated = false;
@@ -671,9 +673,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         AsyncStorage.setItem("signal_history", JSON.stringify(updatedHistory)).then(() => {
           console.log(`💾 Updated history saved: ${updatedHistory.length} signals`);
           
-          if (immediateUpdate && Platform.OS !== 'web') {
-            console.log('📲 Android/iOS: Forcing immediate state propagation for critical update');
-            setSignalUpdateTrigger(prev => prev + 1);
+          if (immediateUpdate) {
+            console.log(`🚨 Critical update (SL/TP hit) - Force UI refresh on ${Platform.OS}`);
+            setTimeout(() => {
+              setSignalUpdateTrigger(prev => prev + 1);
+            }, 50);
           }
         }).catch(err => {
           console.error('❌ Failed to save updated history:', err);
