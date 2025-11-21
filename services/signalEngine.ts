@@ -70,6 +70,13 @@ interface HypotheticalTrade {
   timestamp: Date;
 }
 
+interface OrderBlock {
+  price: number;
+  type: 'BULLISH' | 'BEARISH';
+  strength: number;
+  timestamp: number;
+}
+
 interface MarketFeatures {
   asianHigh: number;
   asianLow: number;
@@ -102,6 +109,7 @@ interface MarketFeatures {
   intermarketData: IntermarketData;
   liquidityWindow: LiquidityWindow;
   timeWindowFactor: number;
+  orderBlocks: OrderBlock[];
 }
 
 const CACHE_DURATION = 2000;
@@ -391,6 +399,7 @@ class SignalGenerationEngine {
   private dailyOHLCHistory: DailyOHLC[] = [];
   private currentDayOHLC: { open: number; high: number; low: number; close: number; date: string } | null = null;
   private lastNYCloseCheck: number = 0;
+  private orderBlocks: OrderBlock[] = [];
   
   async updateCurrentPrice(): Promise<number> {
     try {
@@ -630,6 +639,70 @@ class SignalGenerationEngine {
     return 'NEUTRAL';
   }
   
+  private detectOrderBlocks(): OrderBlock[] {
+    if (this.priceHistory.length < 20 || this.highHistory.length < 20 || this.lowHistory.length < 20) {
+      console.log('⚠️ Insufficient data for Order Block detection');
+      return this.orderBlocks;
+    }
+
+    const newOrderBlocks: OrderBlock[] = [];
+    const lookback = Math.min(20, this.priceHistory.length);
+    const prices = this.priceHistory.slice(-lookback);
+    const highs = this.highHistory.slice(-lookback);
+    const lows = this.lowHistory.slice(-lookback);
+
+    for (let i = 2; i < lookback - 2; i++) {
+      const isBullishOB = (
+        lows[i] < lows[i - 1] &&
+        lows[i] < lows[i - 2] &&
+        prices[i + 1] > highs[i] &&
+        prices[i + 2] > highs[i]
+      );
+
+      if (isBullishOB) {
+        const strength = Math.min(1.0, (prices[i + 1] - lows[i]) / (this.currentPrice * 0.02));
+        newOrderBlocks.push({
+          price: parseFloat(lows[i].toFixed(1)),
+          type: 'BULLISH',
+          strength: parseFloat(strength.toFixed(2)),
+          timestamp: Date.now() - ((lookback - i) * 60000),
+        });
+        console.log(`✅ Bullish OB detected @ ${lows[i].toFixed(1)} (Strength: ${(strength * 100).toFixed(0)}%)`);
+      }
+
+      const isBearishOB = (
+        highs[i] > highs[i - 1] &&
+        highs[i] > highs[i - 2] &&
+        prices[i + 1] < lows[i] &&
+        prices[i + 2] < lows[i]
+      );
+
+      if (isBearishOB) {
+        const strength = Math.min(1.0, (highs[i] - prices[i + 1]) / (this.currentPrice * 0.02));
+        newOrderBlocks.push({
+          price: parseFloat(highs[i].toFixed(1)),
+          type: 'BEARISH',
+          strength: parseFloat(strength.toFixed(2)),
+          timestamp: Date.now() - ((lookback - i) * 60000),
+        });
+        console.log(`✅ Bearish OB detected @ ${highs[i].toFixed(1)} (Strength: ${(strength * 100).toFixed(0)}%)`);
+      }
+    }
+
+    const updatedOrderBlocks = [...this.orderBlocks, ...newOrderBlocks];
+    const fourHoursAgo = Date.now() - (4 * 60 * 60 * 1000);
+    this.orderBlocks = updatedOrderBlocks
+      .filter(ob => ob.timestamp > fourHoursAgo)
+      .sort((a, b) => b.strength - a.strength)
+      .slice(0, 10);
+
+    if (this.orderBlocks.length > 0) {
+      console.log(`📊 Active Order Blocks: ${this.orderBlocks.length} (last 4 hours, top 10 by strength)`);
+    }
+
+    return this.orderBlocks;
+  }
+
   private calculateSupportResistanceStrength(): { supportStrength: number; resistanceStrength: number } {
     const currentPrice = this.currentPrice;
     const recentHigh = this.highHistory.length > 0 ? Math.max(...this.highHistory.slice(-20)) : currentPrice + 50;
@@ -851,6 +924,7 @@ class SignalGenerationEngine {
     const intermarketData = await fetchIntermarketData();
     const liquidityWindow = this.calculateLiquidityWindow();
     const timeWindowFactor = this.getTimeWindowFactor();
+    const orderBlocks = this.detectOrderBlocks();
     
     this.volumeHistory.push(volumeRatio * 1000);
     if (this.volumeHistory.length > 50) {
@@ -895,6 +969,7 @@ class SignalGenerationEngine {
       intermarketData,
       liquidityWindow,
       timeWindowFactor,
+      orderBlocks,
     };
   }
   
@@ -2316,6 +2391,15 @@ class SignalGenerationEngine {
       return null;
     }
     
+    const structuralValidation = this.validateStructuralConditions(analysis.signalType, features, settings);
+    if (!structuralValidation.valid) {
+      console.log(`❌ REJECTED: Structural Validation Failed`);
+      console.log(`   ${structuralValidation.reason}`);
+      console.log(`   💡 TIP: ${structuralValidation.tip}`);
+      console.log(`${'='.repeat(80)}\n`);
+      return null;
+    }
+
     if (!trendChangeDetected && !largePriceMovement) {
       const proximityCheck = this.checkPriceProximity(activeSignals, analysis.signalType, dynamicCooldown);
       if (proximityCheck.blocked) {
@@ -2520,6 +2604,163 @@ class SignalGenerationEngine {
     }
     
     return false;
+  }
+
+  private validateStructuralConditions(
+    signalType: SignalType,
+    features: MarketFeatures,
+    settings: { tp1Pips: number; tp2Pips: number; tp3Pips: number; slPips: number }
+  ): { valid: boolean; reason?: string; tip?: string } {
+    const currentPrice = this.currentPrice;
+    const pipValue = 0.1;
+
+    console.log('\n🏗️ STRUCTURAL VALIDATION CHECK:');
+    console.log('='.repeat(60));
+
+    const htfTrend = this.detectHTFTrend(features);
+    const ltfTrend = this.detectLTFTrend();
+
+    console.log(`HTF Trend: ${htfTrend} | LTF Trend: ${ltfTrend}`);
+    console.log(`Signal Type: ${signalType}`);
+
+    const isPrimaryTrend = (
+      (signalType === 'BUY' && htfTrend === 'BULLISH' && ltfTrend === 'BULLISH') ||
+      (signalType === 'SELL' && htfTrend === 'BEARISH' && ltfTrend === 'BEARISH')
+    );
+
+    const isCounterTrend = (
+      (signalType === 'BUY' && htfTrend === 'BEARISH') ||
+      (signalType === 'SELL' && htfTrend === 'BULLISH') ||
+      (signalType === 'BUY' && htfTrend === 'NEUTRAL' && features.rsi < 35) ||
+      (signalType === 'SELL' && htfTrend === 'NEUTRAL' && features.rsi > 65)
+    );
+
+    console.log(`Classification: ${isPrimaryTrend ? 'PRIMARY TREND' : isCounterTrend ? 'COUNTER-TREND' : 'NEUTRAL'}`);
+
+    if (isPrimaryTrend) {
+      console.log('\n🎯 PRIMARY TREND FILTER: Checking Runway to Barriers');
+
+      const tp2Distance = settings.tp2Pips;
+      const requiredRunway = tp2Distance * 3.0;
+      const tp2Target = signalType === 'BUY' ? currentPrice + (tp2Distance * pipValue) : currentPrice - (tp2Distance * pipValue);
+
+      console.log(`   Fixed SL Risk: ${settings.slPips} pips`);
+      console.log(`   TP2 Target: ${tp2Target.toFixed(1)} (${tp2Distance} pips away)`);
+      console.log(`   Required Runway: ${requiredRunway.toFixed(0)} pips (3.0x R:R minimum)`);
+
+      let nearestBarrierDistance = Infinity;
+      let barrierType = 'None';
+
+      if (signalType === 'BUY') {
+        const bearishOBs = features.orderBlocks.filter(ob => ob.type === 'BEARISH' && ob.price > currentPrice);
+        const resistanceLevels = [features.r1, features.r2, features.r3].filter(r => r > currentPrice);
+
+        bearishOBs.forEach(ob => {
+          const distance = (ob.price - currentPrice) / pipValue;
+          if (distance < nearestBarrierDistance) {
+            nearestBarrierDistance = distance;
+            barrierType = `Bearish OB @ ${ob.price.toFixed(1)}`;
+          }
+        });
+
+        resistanceLevels.forEach(level => {
+          const distance = (level - currentPrice) / pipValue;
+          if (distance < nearestBarrierDistance) {
+            nearestBarrierDistance = distance;
+            barrierType = `Resistance @ ${level.toFixed(1)}`;
+          }
+        });
+      } else {
+        const bullishOBs = features.orderBlocks.filter(ob => ob.type === 'BULLISH' && ob.price < currentPrice);
+        const supportLevels = [features.s1, features.s2, features.s3].filter(s => s < currentPrice);
+
+        bullishOBs.forEach(ob => {
+          const distance = (currentPrice - ob.price) / pipValue;
+          if (distance < nearestBarrierDistance) {
+            nearestBarrierDistance = distance;
+            barrierType = `Bullish OB @ ${ob.price.toFixed(1)}`;
+          }
+        });
+
+        supportLevels.forEach(level => {
+          const distance = (currentPrice - level) / pipValue;
+          if (distance < nearestBarrierDistance) {
+            nearestBarrierDistance = distance;
+            barrierType = `Support @ ${level.toFixed(1)}`;
+          }
+        });
+      }
+
+      console.log(`   Nearest Barrier: ${barrierType} (${nearestBarrierDistance.toFixed(1)} pips away)`);
+
+      if (nearestBarrierDistance < requiredRunway) {
+        const reason = `PRIMARY TREND REJECTED: Insufficient runway (${nearestBarrierDistance.toFixed(0)} pips < ${requiredRunway.toFixed(0)} pips required)`;
+        const tip = `Price must have ${requiredRunway.toFixed(0)} pips clear space to ${barrierType} for 3:1 R:R. Market in consolidation.`;
+        console.log(`   ❌ ${reason}`);
+        console.log(`   💡 ${tip}`);
+        console.log('='.repeat(60) + '\n');
+        return { valid: false, reason, tip };
+      }
+
+      console.log(`   ✅ RUNWAY CLEAR: ${nearestBarrierDistance.toFixed(0)} pips to nearest barrier (>${requiredRunway.toFixed(0)} pips)`);
+      console.log('='.repeat(60) + '\n');
+      return { valid: true };
+    }
+
+    if (isCounterTrend) {
+      console.log('\n🔄 COUNTER-TREND FILTER: Checking Bounce off Major Level');
+
+      const bounceThreshold = 10;
+      let nearMajorLevel = false;
+      let levelDescription = 'None';
+
+      if (signalType === 'BUY') {
+        const bullishOBs = features.orderBlocks.filter(ob => ob.type === 'BULLISH' && Math.abs(ob.price - currentPrice) < bounceThreshold);
+        const supportLevels = [features.s2, features.s3].filter(s => Math.abs(s - currentPrice) < bounceThreshold);
+
+        if (bullishOBs.length > 0) {
+          nearMajorLevel = true;
+          levelDescription = `Bullish OB @ ${bullishOBs[0].price.toFixed(1)} (Strength: ${(bullishOBs[0].strength * 100).toFixed(0)}%)`;
+        } else if (supportLevels.length > 0) {
+          nearMajorLevel = true;
+          levelDescription = `Support Level @ ${supportLevels[0].toFixed(1)}`;
+        }
+      } else {
+        const bearishOBs = features.orderBlocks.filter(ob => ob.type === 'BEARISH' && Math.abs(ob.price - currentPrice) < bounceThreshold);
+        const resistanceLevels = [features.r2, features.r3].filter(r => Math.abs(r - currentPrice) < bounceThreshold);
+
+        if (bearishOBs.length > 0) {
+          nearMajorLevel = true;
+          levelDescription = `Bearish OB @ ${bearishOBs[0].price.toFixed(1)} (Strength: ${(bearishOBs[0].strength * 100).toFixed(0)}%)`;
+        } else if (resistanceLevels.length > 0) {
+          nearMajorLevel = true;
+          levelDescription = `Resistance Level @ ${resistanceLevels[0].toFixed(1)}`;
+        }
+      }
+
+      console.log(`   Bounce Threshold: ${bounceThreshold} pips`);
+      console.log(`   Near Major Level: ${nearMajorLevel ? 'YES' : 'NO'}`);
+      if (nearMajorLevel) {
+        console.log(`   Level: ${levelDescription}`);
+      }
+
+      if (!nearMajorLevel) {
+        const reason = `COUNTER-TREND REJECTED: Not bouncing off major structural level`;
+        const tip = `Counter-trend signals require price within ${bounceThreshold} pips of Bullish/Bearish OB or major S2/R2/S3/R3 pivot.`;
+        console.log(`   ❌ ${reason}`);
+        console.log(`   💡 ${tip}`);
+        console.log('='.repeat(60) + '\n');
+        return { valid: false, reason, tip };
+      }
+
+      console.log(`   ✅ BOUNCE CONFIRMED: Counter-trend from ${levelDescription}`);
+      console.log('='.repeat(60) + '\n');
+      return { valid: true };
+    }
+
+    console.log('   ⚠️ Signal classification unclear - allowing with caution');
+    console.log('='.repeat(60) + '\n');
+    return { valid: true };
   }
   
   private checkPriceProximity(
