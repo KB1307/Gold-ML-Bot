@@ -411,11 +411,12 @@ class SignalGenerationEngine {
         this.priceHistory.shift();
       }
       
-      const simulatedHigh = this.currentPrice + (Math.random() * 2 + 1);
-      const simulatedLow = this.currentPrice - (Math.random() * 2 + 1);
+      const estimatedIntraPeriodVolatility = 2.0;
+      const estimatedHigh = this.currentPrice + (Math.random() * estimatedIntraPeriodVolatility * 0.5);
+      const estimatedLow = this.currentPrice - (Math.random() * estimatedIntraPeriodVolatility * 0.5);
       
-      this.highHistory.push(simulatedHigh);
-      this.lowHistory.push(simulatedLow);
+      this.highHistory.push(estimatedHigh);
+      this.lowHistory.push(estimatedLow);
       this.closeHistory.push(this.currentPrice);
       
       if (this.highHistory.length > 100) {
@@ -424,7 +425,8 @@ class SignalGenerationEngine {
         this.closeHistory.shift();
       }
       
-      console.log(`📊 Price Update: Close=${this.currentPrice.toFixed(1)}, H=${simulatedHigh.toFixed(1)}, L=${simulatedLow.toFixed(1)} (simulated intra-period H/L)`);
+      console.log(`📊 Price Update: Close=${this.currentPrice.toFixed(1)}, H≈${estimatedHigh.toFixed(1)}, L≈${estimatedLow.toFixed(1)} ⚠️ ESTIMATED intra-period H/L (API limitation: real-time spot price only)`);
+      console.log(`   💡 NOTE: Using estimated highs/lows for RSI/ATR until OHLC bar API is integrated`);
       
       return this.currentPrice;
     } catch (error) {
@@ -532,7 +534,8 @@ class SignalGenerationEngine {
   }
 
   private calculateOrderFlow(): OrderFlowData {
-    console.log('⚠️ Order Flow: Using simulated data (no real-time order book access)');
+    console.log('⚠️ ⚠️ ⚠️ ORDER FLOW: SIMULATED DATA (No real-time order book access available)');
+    console.log('   This feature requires institutional-grade order book feed (not available in current APIs)');
     const bidVolume = 1000 + Math.random() * 500;
     const askVolume = 1000 + Math.random() * 500;
     const volumeImbalance = (askVolume - bidVolume) / (askVolume + bidVolume);
@@ -875,7 +878,6 @@ class SignalGenerationEngine {
     
     const rsi = this.calculateRealRSI(14);
     const atr = this.calculateRealATR(14);
-    const dxyChange = (Math.random() - 0.5) * 0.5;
     const volumeRatio = 0.8 + Math.random() * 0.4;
     
     const weeklyVolatilityRange = currentPrice * 0.025;
@@ -892,8 +894,8 @@ class SignalGenerationEngine {
     const fractalResistance = recentHigh + Math.random() * 10;
     const fractalSupport = recentLow - Math.random() * 10;
     
-    const macdHistogram = (Math.random() - 0.5) * 2;
-    const emaCrossover = (Math.random() - 0.5) * 1.5;
+    const macdHistogram = this.calculateRealMACD();
+    const emaCrossover = this.calculateRealEMACrossover();
     
     const now = new Date();
     const hour = now.getUTCHours();
@@ -949,7 +951,7 @@ class SignalGenerationEngine {
       s3: parseFloat(s3.toFixed(1)),
       rsi,
       atr,
-      dxyChange,
+      dxyChange: intermarketData.dxyChange,
       volumeRatio,
       weeklyPivot: parseFloat(weeklyPivot.toFixed(1)),
       fractalResistance,
@@ -1897,6 +1899,65 @@ class SignalGenerationEngine {
     return parseFloat(rsi.toFixed(1));
   }
   
+  private calculateRealMACD(): number {
+    if (this.priceHistory.length < 26) {
+      console.log('⚠️ MACD: Insufficient data for calculation, using simulated value');
+      return (Math.random() - 0.5) * 2;
+    }
+
+    const ema12 = this.calculateEMA(this.priceHistory, 12);
+    const ema26 = this.calculateEMA(this.priceHistory, 26);
+    const macdLine = ema12 - ema26;
+    
+    const macdHistory = [macdLine];
+    for (let i = this.priceHistory.length - 9; i < this.priceHistory.length; i++) {
+      const slicedPrices = this.priceHistory.slice(0, i + 1);
+      const e12 = this.calculateEMA(slicedPrices, 12);
+      const e26 = this.calculateEMA(slicedPrices, 26);
+      macdHistory.push(e12 - e26);
+    }
+    
+    const signalLine = this.calculateEMA(macdHistory, 9);
+    const histogram = macdLine - signalLine;
+    
+    console.log(`✅ MACD Histogram: ${histogram.toFixed(3)} (MACD: ${macdLine.toFixed(2)}, Signal: ${signalLine.toFixed(2)})`);
+    return parseFloat(histogram.toFixed(3));
+  }
+
+  private calculateRealEMACrossover(): number {
+    if (this.priceHistory.length < 50) {
+      console.log('⚠️ EMA Crossover: Insufficient data for calculation, using simulated value');
+      return (Math.random() - 0.5) * 1.5;
+    }
+
+    const ema9 = this.calculateEMA(this.priceHistory, 9);
+    const ema21 = this.calculateEMA(this.priceHistory, 21);
+    const ema50 = this.calculateEMA(this.priceHistory, 50);
+    
+    const shortTermCross = ema9 - ema21;
+    const longTermCross = ema21 - ema50;
+    
+    const crossoverStrength = (shortTermCross * 0.6 + longTermCross * 0.4) / this.currentPrice * 1000;
+    
+    console.log(`✅ EMA Crossover: ${crossoverStrength.toFixed(3)} (EMA9: ${ema9.toFixed(1)}, EMA21: ${ema21.toFixed(1)}, EMA50: ${ema50.toFixed(1)})`);
+    return parseFloat(crossoverStrength.toFixed(3));
+  }
+
+  private calculateEMA(data: number[], period: number): number {
+    if (data.length < period) {
+      return data[data.length - 1] || 0;
+    }
+
+    const k = 2 / (period + 1);
+    let ema = data.slice(0, period).reduce((a, b) => a + b, 0) / period;
+    
+    for (let i = period; i < data.length; i++) {
+      ema = data[i] * k + ema * (1 - k);
+    }
+    
+    return ema;
+  }
+
   private detectBullishDivergence(features: MarketFeatures): boolean {
     if (this.priceHistory.length < 10 || this.lowHistory.length < 10) return false;
     
