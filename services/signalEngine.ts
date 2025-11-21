@@ -1,5 +1,6 @@
 import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC } from "@/types/trading";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Platform } from "react-native";
 
 interface OrderFlowData {
   bidVolume: number;
@@ -130,7 +131,7 @@ const CONFIDENCE_SMOOTHING_WINDOW = 5;
 const LATENCY_WARNING_THRESHOLD_MS = 100;
 const FEATURE_CORRELATION_CHECK_INTERVAL = 30 * 24 * 60 * 60 * 1000;
 const INTERMARKET_CACHE_DURATION = 10000;
-const CORS_PROXY = 'https://corsproxy.io/?';
+
 const HYPOTHETICAL_TRADE_HISTORY_LIMIT = 100;
 const MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL = 15;
 const MIN_PIP_DIFFERENCE_FOR_PARTIALLY_MANAGED = 25;
@@ -205,11 +206,14 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
   }
 
   try {
-    const dxyUrl = `${CORS_PROXY}${encodeURIComponent('https://query2.finance.yahoo.com/v8/finance/chart/DX=F?interval=1m&range=1d')}`;
-    console.log('🌐 Fetching DXY via CORS proxy (temporary testing solution):', dxyUrl);
+    const dxyUrl = Platform.OS === 'web' 
+      ? `https://corsproxy.io/?${encodeURIComponent('https://query2.finance.yahoo.com/v8/finance/chart/DX=F?interval=1m&range=1d')}`
+      : 'https://query2.finance.yahoo.com/v8/finance/chart/DX=F?interval=1m&range=1d';
+    console.log(`🌐 Fetching DXY [${Platform.OS}]: ${Platform.OS === 'web' ? 'via CORS proxy' : 'direct API access'}`);
     const dxyResponse = await fetch(dxyUrl, {
       headers: {
         'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (compatible; TradingApp/1.0)',
       },
     });
     const dxyData = await dxyResponse.json();
@@ -230,11 +234,14 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
   }
 
   try {
-    const yieldUrl = `${CORS_PROXY}${encodeURIComponent('https://query2.finance.yahoo.com/v8/finance/chart/%5ETNX?interval=1m&range=1d')}`;
-    console.log('🌐 Fetching US10Y via CORS proxy (temporary testing solution):', yieldUrl);
+    const yieldUrl = Platform.OS === 'web'
+      ? `https://corsproxy.io/?${encodeURIComponent('https://query2.finance.yahoo.com/v8/finance/chart/%5ETNX?interval=1m&range=1d')}`
+      : 'https://query2.finance.yahoo.com/v8/finance/chart/%5ETNX?interval=1m&range=1d';
+    console.log(`🌐 Fetching US10Y [${Platform.OS}]: ${Platform.OS === 'web' ? 'via CORS proxy' : 'direct API access'}`);
     const yieldResponse = await fetch(yieldUrl, {
       headers: {
         'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (compatible; TradingApp/1.0)',
       },
     });
     const yieldData = await yieldResponse.json();
@@ -255,11 +262,14 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
   }
 
   try {
-    const vixUrl = `${CORS_PROXY}${encodeURIComponent('https://query2.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1m&range=1d')}`;
-    console.log('🌐 Fetching VIX via CORS proxy (temporary testing solution):', vixUrl);
+    const vixUrl = Platform.OS === 'web'
+      ? `https://corsproxy.io/?${encodeURIComponent('https://query2.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1m&range=1d')}`
+      : 'https://query2.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1m&range=1d';
+    console.log(`🌐 Fetching VIX [${Platform.OS}]: ${Platform.OS === 'web' ? 'via CORS proxy' : 'direct API access'}`);
     const vixResponse = await fetch(vixUrl, {
       headers: {
         'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (compatible; TradingApp/1.0)',
       },
     });
     const vixData = await vixResponse.json();
