@@ -1452,13 +1452,60 @@ class SignalGenerationEngine {
     console.log(`   SELL Strength: ${sellSignalStrength.toFixed(3)}`);
     console.log('='.repeat(60) + '\n');
     
-    const isBullish = buySignalStrength > sellSignalStrength;
-    const signalStrength = isBullish ? buySignalStrength : sellSignalStrength;
+    const MINIMUM_CONVICTION_THRESHOLD = 0.55;
+    const MINIMUM_STRENGTH_DIFFERENCE = 0.10;
+    
+    const winningStrength = Math.max(buySignalStrength, sellSignalStrength);
     const strengthDifference = Math.abs(buySignalStrength - sellSignalStrength);
     
-    if (strengthDifference < 0.1) {
-      console.log(`⚠️ WARNING: Weak directional conviction (difference: ${(strengthDifference * 100).toFixed(1)}%)`);
-      console.log('   Signal may be filtered by confidence threshold');
+    console.log('\n🔍 BIDIRECTIONAL CONFLICT PREVENTION:');
+    console.log(`   Winning Strength: ${winningStrength.toFixed(3)} (Min: ${MINIMUM_CONVICTION_THRESHOLD})`);
+    console.log(`   Strength Difference: ${strengthDifference.toFixed(3)} (Min: ${MINIMUM_STRENGTH_DIFFERENCE})`);
+    
+    if (winningStrength < MINIMUM_CONVICTION_THRESHOLD) {
+      console.log(`\n❌ REJECTED: Winning strength ${winningStrength.toFixed(3)} below conviction threshold ${MINIMUM_CONVICTION_THRESHOLD}`);
+      console.log('   Market shows no clear directional bias');
+      console.log('   Status: NEUTRAL / STAND DOWN');
+      console.log('='.repeat(60) + '\n');
+      return {
+        signalStrength: 0,
+        signalType: "BUY",
+        confidence: winningStrength,
+        sentimentImpact: 0,
+        fibonacciAlignment: false,
+        attentionScores,
+      };
+    }
+    
+    if (strengthDifference < MINIMUM_STRENGTH_DIFFERENCE) {
+      console.log(`\n❌ REJECTED: Strength difference ${strengthDifference.toFixed(3)} too small (< ${MINIMUM_STRENGTH_DIFFERENCE})`);
+      console.log(`   BUY: ${buySignalStrength.toFixed(3)} vs SELL: ${sellSignalStrength.toFixed(3)}`);
+      console.log('   Market indecision detected - prevents conflicting signals');
+      console.log('   Status: NEUTRAL / STAND DOWN');
+      console.log('='.repeat(60) + '\n');
+      return {
+        signalStrength: 0,
+        signalType: "BUY",
+        confidence: winningStrength,
+        sentimentImpact: 0,
+        fibonacciAlignment: false,
+        attentionScores,
+      };
+    }
+    
+    const isBullish = buySignalStrength > sellSignalStrength;
+    const signalStrength = isBullish ? buySignalStrength : sellSignalStrength;
+    
+    console.log(`\n✅ CONFLICT CHECK PASSED:`);
+    console.log(`   Direction: ${isBullish ? 'BUY' : 'SELL'}`);
+    console.log(`   Winning Strength: ${signalStrength.toFixed(3)}`);
+    console.log(`   Losing Strength: ${(isBullish ? sellSignalStrength : buySignalStrength).toFixed(3)}`);
+    console.log(`   Conviction: ${strengthDifference.toFixed(3)} (Clear directional bias)`);
+    console.log('='.repeat(60) + '\n');
+    
+    if (strengthDifference < 0.15) {
+      console.log(`⚠️ WARNING: Moderate conviction (difference: ${(strengthDifference * 100).toFixed(1)}%)`);
+      console.log('   Signal allowed but confidence may be reduced');
     }
     
     const modelWeight = this.performanceMetrics.recentWinRate / 0.65;
