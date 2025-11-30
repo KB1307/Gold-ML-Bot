@@ -1,5 +1,5 @@
 import { View, StyleSheet, Platform } from "react-native";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { WebView } from "react-native-webview";
 
 interface PriceDataPoint {
@@ -14,7 +14,6 @@ interface PriceChartProps {
 
 export default function PriceChart({ data, currentPrice }: PriceChartProps) {
   const [chartKey, setChartKey] = useState<number>(0);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
   useEffect(() => {
     setChartKey(prev => prev + 1);
@@ -25,7 +24,7 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
     <html>
       <head>
         <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
         <style>
           body, html {
             margin: 0;
@@ -43,10 +42,21 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
             height: calc(100% - 32px);
             width: 100%;
           }
+          .tradingview-widget-copyright {
+            font-size: 11px !important;
+            text-align: center;
+            padding: 8px 0;
+          }
+          .blue-text {
+            color: #2962FF !important;
+          }
+          .trademark {
+            color: #999 !important;
+          }
         </style>
       </head>
       <body>
-        <div class="tradingview-widget-container">
+        <div class="tradingview-widget-container" ref="container">
           <div class="tradingview-widget-container__widget"></div>
           <div class="tradingview-widget-copyright">
             <a href="https://www.tradingview.com/symbols/XAUUSD/?exchange=OANDA" rel="noopener nofollow" target="_blank">
@@ -54,33 +64,33 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
             </a>
             <span class="trademark"> by TradingView</span>
           </div>
-          <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
-          {
-            "allow_symbol_change": true,
-            "calendar": false,
-            "details": false,
-            "hide_side_toolbar": true,
-            "hide_top_toolbar": false,
-            "hide_legend": false,
-            "hide_volume": false,
-            "hotlist": false,
-            "interval": "1",
-            "locale": "en",
-            "save_image": true,
-            "style": "1",
-            "symbol": "OANDA:XAUUSD",
-            "theme": "dark",
-            "timezone": "Etc/UTC",
-            "backgroundColor": "#0F0F0F",
-            "gridColor": "rgba(242, 242, 242, 0.06)",
-            "watchlist": [],
-            "withdateranges": false,
-            "compareSymbols": [],
-            "studies": [],
-            "autosize": true
-          }
-          </script>
         </div>
+        <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
+        {
+          "allow_symbol_change": true,
+          "calendar": false,
+          "details": false,
+          "hide_side_toolbar": true,
+          "hide_top_toolbar": false,
+          "hide_legend": false,
+          "hide_volume": false,
+          "hotlist": false,
+          "interval": "1",
+          "locale": "en",
+          "save_image": true,
+          "style": "1",
+          "symbol": "OANDA:XAUUSD",
+          "theme": "dark",
+          "timezone": "Africa/Johannesburg",
+          "backgroundColor": "#0F0F0F",
+          "gridColor": "rgba(242, 242, 242, 0.06)",
+          "watchlist": [],
+          "withdateranges": false,
+          "compareSymbols": [],
+          "studies": [],
+          "autosize": true
+        }
+        </script>
       </body>
     </html>
   `;
@@ -90,7 +100,6 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
       <View style={styles.container}>
         <iframe
           key={chartKey}
-          ref={iframeRef as any}
           srcDoc={chartHTML}
           style={{
             width: '100%',
@@ -116,6 +125,10 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
         startInLoadingState={true}
         scalesPageToFit={true}
         scrollEnabled={false}
+        originWhitelist={['*']}
+        allowsInlineMediaPlayback={true}
+        mediaPlaybackRequiresUserAction={false}
+        javaScriptCanOpenWindowsAutomatically={true}
       />
     </View>
   );
