@@ -1,6 +1,6 @@
-import { View, StyleSheet, Text, Dimensions } from "react-native";
-import { useMemo } from "react";
-import Svg, { Polyline, Line, Text as SvgText, Rect } from "react-native-svg";
+import { View, StyleSheet, Platform } from "react-native";
+import { useState, useEffect, useRef } from "react";
+import { WebView } from "react-native-webview";
 
 interface PriceDataPoint {
   timestamp: number;
@@ -13,137 +13,110 @@ interface PriceChartProps {
 }
 
 export default function PriceChart({ data, currentPrice }: PriceChartProps) {
-  const { width } = Dimensions.get('window');
-  const chartWidth = width - 80;
-  const chartHeight = 300;
-  const padding = 40;
-  const availableWidth = chartWidth - padding * 2;
-  const availableHeight = chartHeight - padding * 2;
+  const [chartKey, setChartKey] = useState<number>(0);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
-  const { points, minPrice, maxPrice, priceRange } = useMemo(() => {
-    if (!data || data.length === 0) {
-      return { points: '', minPrice: currentPrice - 50, maxPrice: currentPrice + 50, priceRange: 100 };
-    }
+  useEffect(() => {
+    setChartKey(prev => prev + 1);
+  }, []);
 
-    const prices = data.map(d => d.price);
-    const min = Math.min(...prices, currentPrice);
-    const max = Math.max(...prices, currentPrice);
-    const range = max - min || 100;
+  const chartHTML = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <style>
+          body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #0F0F0F;
+          }
+          .tradingview-widget-container {
+            height: 100%;
+            width: 100%;
+          }
+          .tradingview-widget-container__widget {
+            height: calc(100% - 32px);
+            width: 100%;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="tradingview-widget-container">
+          <div class="tradingview-widget-container__widget"></div>
+          <div class="tradingview-widget-copyright">
+            <a href="https://www.tradingview.com/symbols/XAUUSD/?exchange=OANDA" rel="noopener nofollow" target="_blank">
+              <span class="blue-text">XAUUSD chart</span>
+            </a>
+            <span class="trademark"> by TradingView</span>
+          </div>
+          <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
+          {
+            "allow_symbol_change": true,
+            "calendar": false,
+            "details": false,
+            "hide_side_toolbar": true,
+            "hide_top_toolbar": false,
+            "hide_legend": false,
+            "hide_volume": false,
+            "hotlist": false,
+            "interval": "1",
+            "locale": "en",
+            "save_image": true,
+            "style": "1",
+            "symbol": "OANDA:XAUUSD",
+            "theme": "dark",
+            "timezone": "Etc/UTC",
+            "backgroundColor": "#0F0F0F",
+            "gridColor": "rgba(242, 242, 242, 0.06)",
+            "watchlist": [],
+            "withdateranges": false,
+            "compareSymbols": [],
+            "studies": [],
+            "autosize": true
+          }
+          </script>
+        </div>
+      </body>
+    </html>
+  `;
 
-    const pointsStr = data
-      .map((point, i) => {
-        const x = padding + (i / (data.length - 1 || 1)) * availableWidth;
-        const y = padding + availableHeight - ((point.price - min) / range) * availableHeight;
-        return `${x},${y}`;
-      })
-      .join(' ');
-
-    return { points: pointsStr, minPrice: min, maxPrice: max, priceRange: range };
-  }, [data, currentPrice, availableWidth, availableHeight, padding]);
-
-  const currentPriceY = padding + availableHeight - ((currentPrice - minPrice) / priceRange) * availableHeight;
-
-  const gridLines = 5;
-  const priceStep = priceRange / gridLines;
-
-  if (!data || data.length === 0) {
+  if (Platform.OS === 'web') {
     return (
       <View style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <Text style={styles.loadingText}>Loading price data...</Text>
-        </View>
+        <iframe
+          key={chartKey}
+          ref={iframeRef as any}
+          srcDoc={chartHTML}
+          style={{
+            width: '100%',
+            height: 400,
+            border: 'none',
+            borderRadius: 12,
+            overflow: 'hidden',
+          }}
+          title="TradingView Chart"
+        />
       </View>
     );
   }
 
   return (
     <View style={styles.container}>
-      <View style={styles.chartWrapper}>
-        <Svg width={chartWidth} height={chartHeight}>
-          <Rect x={0} y={0} width={chartWidth} height={chartHeight} fill="#0F0F0F" />
-          
-          {Array.from({ length: gridLines + 1 }).map((_, i) => {
-            const y = padding + (i * availableHeight) / gridLines;
-            return (
-              <Line
-                key={`grid-${i}`}
-                x1={padding}
-                y1={y}
-                x2={chartWidth - padding}
-                y2={y}
-                stroke="rgba(255, 255, 255, 0.05)"
-                strokeWidth="1"
-              />
-            );
-          })}
-
-          {Array.from({ length: gridLines + 1 }).map((_, i) => {
-            const y = padding + (i * availableHeight) / gridLines;
-            const price = maxPrice - (i * priceStep);
-            return (
-              <SvgText
-                key={`label-${i}`}
-                x={padding - 10}
-                y={y + 5}
-                fill="#999"
-                fontSize="10"
-                textAnchor="end"
-              >
-                {price.toFixed(0)}
-              </SvgText>
-            );
-          })}
-
-          <Polyline
-            points={points}
-            fill="none"
-            stroke="#FFD700"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-
-          <Line
-            x1={padding}
-            y1={currentPriceY}
-            x2={chartWidth - padding}
-            y2={currentPriceY}
-            stroke="#22c55e"
-            strokeWidth="1.5"
-            strokeDasharray="4,4"
-          />
-
-          <Rect
-            x={chartWidth - padding - 50}
-            y={currentPriceY - 12}
-            width="45"
-            height="20"
-            fill="#22c55e"
-            rx="4"
-          />
-          <SvgText
-            x={chartWidth - padding - 27.5}
-            y={currentPriceY + 3}
-            fill="#000"
-            fontSize="10"
-            fontWeight="bold"
-            textAnchor="middle"
-          >
-            {currentPrice.toFixed(1)}
-          </SvgText>
-        </Svg>
-        
-        <View style={styles.legend}>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: '#FFD700' }]} />
-            <Text style={styles.legendText}>Price History (Last Hour)</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: '#22c55e' }]} />
-            <Text style={styles.legendText}>Current Price: ${currentPrice.toFixed(2)}</Text>
-          </View>
-        </View>
-      </View>
+      <WebView
+        key={chartKey}
+        source={{ html: chartHTML }}
+        style={styles.webview}
+        javaScriptEnabled={true}
+        domStorageEnabled={true}
+        startInLoadingState={true}
+        scalesPageToFit={true}
+        scrollEnabled={false}
+      />
     </View>
   );
 }
@@ -151,43 +124,12 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
 const styles = StyleSheet.create({
   container: {
     width: '100%',
-    alignItems: 'center',
+    height: 400,
   },
-  chartWrapper: {
-    width: '100%',
-    alignItems: 'center',
-  },
-  loadingContainer: {
-    height: 300,
-    justifyContent: 'center',
-    alignItems: 'center',
+  webview: {
+    flex: 1,
     backgroundColor: '#0F0F0F',
     borderRadius: 12,
-    width: '100%',
-  },
-  loadingText: {
-    color: '#999',
-    fontSize: 14,
-  },
-  legend: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 20,
-    marginTop: 16,
-    flexWrap: 'wrap',
-  },
-  legendItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  legendDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  legendText: {
-    color: '#999',
-    fontSize: 11,
+    overflow: 'hidden',
   },
 });
