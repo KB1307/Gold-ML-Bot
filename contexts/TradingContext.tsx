@@ -155,6 +155,156 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     return () => clearInterval(interval);
   }, []);
 
+  const catchUpAndEvaluateSignals = async (history: TradingSignal[]) => {
+    console.log('\n' + '='.repeat(80));
+    console.log('🔄 SIGNAL CATCH-UP EVALUATION INITIATED');
+    console.log('='.repeat(80));
+    console.log('   Checking for stale ACTIVE signals that need evaluation...');
+    
+    const now = Date.now();
+    const currentPrice = signalEngine.getCurrentPrice();
+    const twoHoursInMs = 2 * 60 * 60 * 1000;
+    
+    let updatedHistory = [...history];
+    let hasChanges = false;
+    
+    for (let i = 0; i < updatedHistory.length; i++) {
+      const signal = updatedHistory[i];
+      
+      if (signal.status === "CLOSED" || signal.status === "SL_HIT" || signal.status === "ALL_TARGETS_HIT") {
+        continue;
+      }
+      
+      const signalAge = now - new Date(signal.timestamp).getTime();
+      console.log(`\n🔍 Evaluating Signal ${signal.id.slice(-6)}:`);
+      console.log(`   Type: ${signal.type}`);
+      console.log(`   Status: ${signal.status}`);
+      console.log(`   Entry: ${signal.entryPrice.toFixed(1)}`);
+      console.log(`   Age: ${(signalAge / 1000 / 60 / 60).toFixed(1)} hours`);
+      console.log(`   TP1: ${signal.tp1.toFixed(1)} | TP2: ${signal.tp2.toFixed(1)} | TP3: ${signal.tp3.toFixed(1)}`);
+      console.log(`   SL: ${signal.sl.toFixed(1)}`);
+      
+      if (signalAge > twoHoursInMs) {
+        console.log(`   ⏰ Signal expired (>2 hours) - marking as CLOSED`);
+        updatedHistory[i] = {
+          ...signal,
+          status: "CLOSED" as const,
+          exitTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+        };
+        hasChanges = true;
+        
+        await signalEngine.recordTradeOutcome(
+          signal.id,
+          signal.entryPrice,
+          currentPrice,
+          'LOSS',
+          {} as any,
+          undefined,
+          signalAge
+        ).catch(err => {
+          console.error(`Failed to record expired signal outcome:`, err);
+        });
+        continue;
+      }
+      
+      let newStatus: SignalStatus = signal.status as SignalStatus;
+      let targetsHit = signal.targetsHit;
+      let shouldRecord = false;
+      let outcomeResult: 'WIN' | 'LOSS' = 'LOSS';
+      let exitPrice = currentPrice;
+      
+      if (signal.type === "BUY") {
+        if (currentPrice <= signal.sl) {
+          console.log(`   🚨 CATCH-UP: Stop Loss hit @ ${currentPrice.toFixed(1)} (SL: ${signal.sl.toFixed(1)})`);
+          newStatus = "SL_HIT";
+          shouldRecord = true;
+          outcomeResult = 'LOSS';
+          exitPrice = signal.sl;
+        } else if (currentPrice >= signal.tp3) {
+          console.log(`   🎯 CATCH-UP: All targets hit @ ${currentPrice.toFixed(1)} (TP3: ${signal.tp3.toFixed(1)})`);
+          newStatus = "ALL_TARGETS_HIT";
+          targetsHit = 3;
+          shouldRecord = true;
+          outcomeResult = 'WIN';
+          exitPrice = signal.tp3;
+        } else if (currentPrice >= signal.tp2 && targetsHit < 2) {
+          console.log(`   🎯 CATCH-UP: TP2 hit @ ${currentPrice.toFixed(1)} (TP2: ${signal.tp2.toFixed(1)})`);
+          newStatus = "TP2_HIT";
+          targetsHit = 2;
+        } else if (currentPrice >= signal.tp1 && targetsHit < 1) {
+          console.log(`   🎯 CATCH-UP: TP1 hit @ ${currentPrice.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)})`);
+          newStatus = "TP1_HIT";
+          targetsHit = 1;
+        }
+      } else {
+        if (currentPrice >= signal.sl) {
+          console.log(`   🚨 CATCH-UP: Stop Loss hit @ ${currentPrice.toFixed(1)} (SL: ${signal.sl.toFixed(1)})`);
+          newStatus = "SL_HIT";
+          shouldRecord = true;
+          outcomeResult = 'LOSS';
+          exitPrice = signal.sl;
+        } else if (currentPrice <= signal.tp3) {
+          console.log(`   🎯 CATCH-UP: All targets hit @ ${currentPrice.toFixed(1)} (TP3: ${signal.tp3.toFixed(1)})`);
+          newStatus = "ALL_TARGETS_HIT";
+          targetsHit = 3;
+          shouldRecord = true;
+          outcomeResult = 'WIN';
+          exitPrice = signal.tp3;
+        } else if (currentPrice <= signal.tp2 && targetsHit < 2) {
+          console.log(`   🎯 CATCH-UP: TP2 hit @ ${currentPrice.toFixed(1)} (TP2: ${signal.tp2.toFixed(1)})`);
+          newStatus = "TP2_HIT";
+          targetsHit = 2;
+        } else if (currentPrice <= signal.tp1 && targetsHit < 1) {
+          console.log(`   🎯 CATCH-UP: TP1 hit @ ${currentPrice.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)})`);
+          newStatus = "TP1_HIT";
+          targetsHit = 1;
+        }
+      }
+      
+      if (newStatus !== signal.status || targetsHit !== signal.targetsHit) {
+        hasChanges = true;
+        const exitDate = new Date();
+        
+        updatedHistory[i] = {
+          ...signal,
+          status: newStatus,
+          targetsHit,
+          exitTime: (newStatus === "SL_HIT" || newStatus === "ALL_TARGETS_HIT") 
+            ? exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+            : signal.exitTime,
+        };
+        
+        if (shouldRecord) {
+          console.log(`   📊 Recording ${outcomeResult} outcome for learning engine...`);
+          await signalEngine.recordTradeOutcome(
+            signal.id,
+            signal.entryPrice,
+            exitPrice,
+            outcomeResult,
+            {} as any,
+            undefined,
+            signalAge
+          ).catch(err => {
+            console.error(`Failed to record catch-up outcome:`, err);
+          });
+        }
+      } else {
+        console.log(`   ✅ Signal still valid - no changes needed`);
+      }
+    }
+    
+    console.log('\n' + '='.repeat(80));
+    if (hasChanges) {
+      console.log('✅ CATCH-UP COMPLETE: Signal statuses updated');
+      console.log(`   Updated signals will be saved to AsyncStorage`);
+    } else {
+      console.log('✅ CATCH-UP COMPLETE: All signals were up-to-date');
+    }
+    console.log('='.repeat(80) + '\n');
+    
+    return updatedHistory;
+  };
+
   const loadPersistedData = async () => {
     try {
       console.log('🔄 Loading persisted data from AsyncStorage...');
@@ -183,9 +333,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           ...s,
           timestamp: new Date(s.timestamp),
         }));
-        setSignalHistory(parsedHistory);
-        console.log(`✅ History loaded: ${parsedHistory.length} signals`);
-        console.log('📊 First 2 signals:', parsedHistory.slice(0, 2).map((s: TradingSignal) => ({
+        
+        const evaluatedHistory = await catchUpAndEvaluateSignals(parsedHistory);
+        setSignalHistory(evaluatedHistory);
+        
+        if (JSON.stringify(evaluatedHistory) !== JSON.stringify(parsedHistory)) {
+          await AsyncStorage.setItem("signal_history", JSON.stringify(evaluatedHistory));
+          console.log('💾 Updated signal history saved after catch-up evaluation');
+        }
+        
+        console.log(`✅ History loaded: ${evaluatedHistory.length} signals`);
+        console.log('📊 First 2 signals:', evaluatedHistory.slice(0, 2).map((s: TradingSignal) => ({
           id: s.id.slice(-6),
           type: s.type,
           status: s.status,
