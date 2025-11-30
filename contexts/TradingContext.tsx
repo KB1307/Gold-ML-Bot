@@ -157,14 +157,15 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   const fetchPriceHistory = async (fromTime: number, toTime: number): Promise<Array<{timestamp: number, open: number, high: number, low: number, close: number}>> => {
     try {
-      console.log(`📊 Fetching historical OHLCV data...`);
+      console.log(`📊 Fetching historical 1-MINUTE OHLCV data (UPGRADED)...`);
       console.log(`   From: ${new Date(fromTime).toISOString()}`);
       console.log(`   To: ${new Date(toTime).toISOString()}`);
       console.log(`   Duration: ${((toTime - fromTime) / 1000 / 60).toFixed(1)} minutes`);
+      console.log(`   ⚠️ Resolution: 1-MINUTE BARS (60-second window, minimal ambiguity)`);
       
       const url = Platform.OS === 'web' 
-        ? `https://corsproxy.io/?${encodeURIComponent('https://query2.finance.yahoo.com/v8/finance/chart/GC=F?interval=5m&range=1d')}`
-        : 'https://query2.finance.yahoo.com/v8/finance/chart/GC=F?interval=5m&range=1d';
+        ? `https://corsproxy.io/?${encodeURIComponent('https://query2.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d')}`
+        : 'https://query2.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d';
       
       const response = await fetch(url, {
         headers: {
@@ -212,10 +213,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         }
       }
       
-      console.log(`✅ Fetched ${bars.length} historical 5-minute bars`);
+      console.log(`✅ Fetched ${bars.length} historical 1-MINUTE bars (Upgraded Resolution)`);
       if (bars.length > 0) {
         console.log(`   First bar: ${new Date(bars[0].timestamp).toISOString()} - Close: ${bars[0].close.toFixed(2)}`);
         console.log(`   Last bar: ${new Date(bars[bars.length - 1].timestamp).toISOString()} - Close: ${bars[bars.length - 1].close.toFixed(2)}`);
+        console.log(`   Bar Ambiguity Window: 60 seconds (vs. 300 seconds with 5min bars)`);
+        console.log(`   Accuracy Improvement: ~83% reduction in unobservable time`);
       }
       
       return bars;
@@ -229,48 +232,87 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     signal: TradingSignal,
     historicalBars: Array<{timestamp: number, open: number, high: number, low: number, close: number}>
   ): Promise<{newStatus: SignalStatus, targetsHit: number, exitPrice: number, outcomeResult: 'WIN' | 'LOSS' | null}> => {
-    console.log(`\n📊 Analyzing Signal ${signal.id.slice(-6)} with ${historicalBars.length} historical bars`);
+    console.log(`\n📊 UPGRADED SEQUENTIAL ANALYSIS (1-Min Bars)`);
+    console.log(`   Signal ID: ${signal.id.slice(-6)}`);
     console.log(`   Signal Type: ${signal.type}`);
-    console.log(`   Entry: ${signal.entryPrice.toFixed(1)}`);
+    console.log(`   Entry Range: ${signal.entryPrice.toFixed(1)} - ${signal.entryPriceWithSlippage.toFixed(1)}`);
     console.log(`   TP1: ${signal.tp1.toFixed(1)} | TP2: ${signal.tp2.toFixed(1)} | TP3: ${signal.tp3.toFixed(1)}`);
     console.log(`   SL: ${signal.sl.toFixed(1)}`);
     console.log(`   Current Targets Hit: ${signal.targetsHit}`);
+    console.log(`   Historical Bars: ${historicalBars.length} (1-minute resolution)`);
     
     let currentStatus = signal.status;
     let currentTargetsHit = signal.targetsHit;
     let exitPrice = signal.entryPrice;
     let outcomeResult: 'WIN' | 'LOSS' | null = null;
+    let entryConfirmed = false;
+    let currentSL = signal.sl;
+    let tp1HitTime: number | null = null;
+    
+    const entryMin = Math.min(signal.entryPrice, signal.entryPriceWithSlippage);
+    const entryMax = Math.max(signal.entryPrice, signal.entryPriceWithSlippage);
+    const ENTRY_TOLERANCE = 1.0;
+    
+    console.log(`\n🔍 STEP 1: Entry Validation (${signal.type})`);
+    console.log(`   Entry Zone: ${(entryMin - ENTRY_TOLERANCE).toFixed(1)} - ${(entryMax + ENTRY_TOLERANCE).toFixed(1)}`);
     
     for (let i = 0; i < historicalBars.length; i++) {
       const bar = historicalBars[i];
       
+      if (!entryConfirmed) {
+        const touchedEntryZone = signal.type === "BUY" 
+          ? bar.low <= (entryMax + ENTRY_TOLERANCE) && bar.high >= (entryMin - ENTRY_TOLERANCE)
+          : bar.high >= (entryMin - ENTRY_TOLERANCE) && bar.low <= (entryMax + ENTRY_TOLERANCE);
+        
+        if (touchedEntryZone) {
+          entryConfirmed = true;
+          console.log(`   ✅ ENTRY CONFIRMED on bar ${i + 1}/${historicalBars.length}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Bar H/L: ${bar.high.toFixed(1)}/${bar.low.toFixed(1)}`);
+        }
+        continue;
+      }
+      
+      console.log(`   [Bar ${i+1}] ${new Date(bar.timestamp).toLocaleTimeString()} - H:${bar.high.toFixed(1)} L:${bar.low.toFixed(1)} C:${bar.close.toFixed(1)}`);
+      
       if (signal.type === "BUY") {
-        if (bar.low <= signal.sl) {
+        if (bar.low <= currentSL) {
           console.log(`   🚨 SL HIT on bar ${i + 1}/${historicalBars.length}`);
           console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
-          console.log(`      Bar Low: ${bar.low.toFixed(1)} <= SL: ${signal.sl.toFixed(1)}`);
-          currentStatus = "SL_HIT";
-          exitPrice = signal.sl;
-          outcomeResult = 'LOSS';
+          console.log(`      Bar Low: ${bar.low.toFixed(1)} <= SL: ${currentSL.toFixed(1)}`);
+          
+          if (currentTargetsHit > 0) {
+            currentStatus = "PARTIAL_WIN_SL_HIT";
+            exitPrice = currentSL;
+            outcomeResult = 'WIN';
+            console.log(`      📊 Result: PARTIAL WIN (TP${currentTargetsHit} hit before SL)`);
+          } else {
+            currentStatus = "SL_HIT";
+            exitPrice = currentSL;
+            outcomeResult = 'LOSS';
+            console.log(`      📊 Result: LOSS (SL hit before any TP)`);
+          }
           break;
         }
         
         if (bar.high >= signal.tp3 && currentTargetsHit < 3) {
-          console.log(`   🎯 TP3 HIT on bar ${i + 1}/${historicalBars.length}`);
+          console.log(`   🎯🎯🎯 TP3 HIT on bar ${i + 1}/${historicalBars.length}`);
           console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
           console.log(`      Bar High: ${bar.high.toFixed(1)} >= TP3: ${signal.tp3.toFixed(1)}`);
           currentStatus = "ALL_TARGETS_HIT";
           currentTargetsHit = 3;
           exitPrice = signal.tp3;
           outcomeResult = 'WIN';
+          console.log(`      📊 Result: FULL WIN (All targets hit)`);
           break;
         } else if (bar.high >= signal.tp2 && currentTargetsHit < 2) {
-          console.log(`   🎯 TP2 HIT on bar ${i + 1}/${historicalBars.length}`);
+          console.log(`   🎯🎯 TP2 HIT on bar ${i + 1}/${historicalBars.length}`);
           console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
           console.log(`      Bar High: ${bar.high.toFixed(1)} >= TP2: ${signal.tp2.toFixed(1)}`);
           currentStatus = "TP2_HIT";
           currentTargetsHit = 2;
           exitPrice = signal.tp2;
+          console.log(`      🔓 Lock released - Can generate new signals`);
         } else if (bar.high >= signal.tp1 && currentTargetsHit < 1) {
           console.log(`   🎯 TP1 HIT on bar ${i + 1}/${historicalBars.length}`);
           console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
@@ -278,34 +320,49 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           currentStatus = "TP1_HIT";
           currentTargetsHit = 1;
           exitPrice = signal.tp1;
+          tp1HitTime = bar.timestamp;
+          
+          currentSL = signal.entryPrice;
+          console.log(`      📌 SL MOVED TO BREAKEVEN: ${currentSL.toFixed(1)} (from ${signal.sl.toFixed(1)})`);
         }
       } else {
-        if (bar.high >= signal.sl) {
+        if (bar.high >= currentSL) {
           console.log(`   🚨 SL HIT on bar ${i + 1}/${historicalBars.length}`);
           console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
-          console.log(`      Bar High: ${bar.high.toFixed(1)} >= SL: ${signal.sl.toFixed(1)}`);
-          currentStatus = "SL_HIT";
-          exitPrice = signal.sl;
-          outcomeResult = 'LOSS';
+          console.log(`      Bar High: ${bar.high.toFixed(1)} >= SL: ${currentSL.toFixed(1)}`);
+          
+          if (currentTargetsHit > 0) {
+            currentStatus = "PARTIAL_WIN_SL_HIT";
+            exitPrice = currentSL;
+            outcomeResult = 'WIN';
+            console.log(`      📊 Result: PARTIAL WIN (TP${currentTargetsHit} hit before SL)`);
+          } else {
+            currentStatus = "SL_HIT";
+            exitPrice = currentSL;
+            outcomeResult = 'LOSS';
+            console.log(`      📊 Result: LOSS (SL hit before any TP)`);
+          }
           break;
         }
         
         if (bar.low <= signal.tp3 && currentTargetsHit < 3) {
-          console.log(`   🎯 TP3 HIT on bar ${i + 1}/${historicalBars.length}`);
+          console.log(`   🎯🎯🎯 TP3 HIT on bar ${i + 1}/${historicalBars.length}`);
           console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
           console.log(`      Bar Low: ${bar.low.toFixed(1)} <= TP3: ${signal.tp3.toFixed(1)}`);
           currentStatus = "ALL_TARGETS_HIT";
           currentTargetsHit = 3;
           exitPrice = signal.tp3;
           outcomeResult = 'WIN';
+          console.log(`      📊 Result: FULL WIN (All targets hit)`);
           break;
         } else if (bar.low <= signal.tp2 && currentTargetsHit < 2) {
-          console.log(`   🎯 TP2 HIT on bar ${i + 1}/${historicalBars.length}`);
+          console.log(`   🎯🎯 TP2 HIT on bar ${i + 1}/${historicalBars.length}`);
           console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
           console.log(`      Bar Low: ${bar.low.toFixed(1)} <= TP2: ${signal.tp2.toFixed(1)}`);
           currentStatus = "TP2_HIT";
           currentTargetsHit = 2;
           exitPrice = signal.tp2;
+          console.log(`      🔓 Lock released - Can generate new signals`);
         } else if (bar.low <= signal.tp1 && currentTargetsHit < 1) {
           console.log(`   🎯 TP1 HIT on bar ${i + 1}/${historicalBars.length}`);
           console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
@@ -313,8 +370,28 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           currentStatus = "TP1_HIT";
           currentTargetsHit = 1;
           exitPrice = signal.tp1;
+          tp1HitTime = bar.timestamp;
+          
+          currentSL = signal.entryPrice;
+          console.log(`      📌 SL MOVED TO BREAKEVEN: ${currentSL.toFixed(1)} (from ${signal.sl.toFixed(1)})`);
         }
       }
+    }
+    
+    if (!entryConfirmed) {
+      console.log(`   ❌ ENTRY VALIDATION FAILED: Price never entered the entry zone`);
+      console.log(`      Signal marked as EXPIRED_MISSED_ENTRY`);
+      currentStatus = "EXPIRED_MISSED_ENTRY";
+      outcomeResult = null;
+    }
+    
+    console.log(`\n✅ Analysis Complete:`);
+    console.log(`   Final Status: ${currentStatus}`);
+    console.log(`   Targets Hit: ${currentTargetsHit}/3`);
+    console.log(`   Exit Price: ${exitPrice.toFixed(1)}`);
+    console.log(`   Outcome: ${outcomeResult || 'N/A'}`);
+    if (tp1HitTime) {
+      console.log(`   TP1 Hit Time: ${new Date(tp1HitTime).toLocaleTimeString()}`);
     }
     
     return {
