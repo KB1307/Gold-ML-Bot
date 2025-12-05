@@ -39,56 +39,32 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
             width: 100%;
           }
           .tradingview-widget-container__widget {
-            height: calc(100% - 32px);
+            height: 100%;
             width: 100%;
-          }
-          .tradingview-widget-copyright {
-            font-size: 11px !important;
-            text-align: center;
-            padding: 8px 0;
-          }
-          .blue-text {
-            color: #2962FF !important;
-          }
-          .trademark {
-            color: #999 !important;
           }
         </style>
       </head>
       <body>
-        <div class="tradingview-widget-container" ref="container">
+        <div class="tradingview-widget-container">
           <div class="tradingview-widget-container__widget"></div>
-          <div class="tradingview-widget-copyright">
-            <a href="https://www.tradingview.com/symbols/XAUUSD/?exchange=OANDA" rel="noopener nofollow" target="_blank">
-              <span class="blue-text">XAUUSD chart</span>
-            </a>
-            <span class="trademark"> by TradingView</span>
-          </div>
         </div>
         <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
         {
+          "autosize": true,
+          "symbol": "OANDA:XAUUSD",
+          "interval": "1",
+          "timezone": "Africa/Johannesburg",
+          "theme": "dark",
+          "style": "1",
+          "locale": "en",
           "allow_symbol_change": true,
           "calendar": false,
-          "details": false,
-          "hide_side_toolbar": true,
           "hide_top_toolbar": false,
-          "hide_legend": false,
-          "hide_volume": false,
-          "hotlist": false,
-          "interval": "1",
-          "locale": "en",
+          "hide_side_toolbar": true,
           "save_image": true,
-          "style": "1",
-          "symbol": "OANDA:XAUUSD",
-          "theme": "dark",
-          "timezone": "Africa/Johannesburg",
-          "backgroundColor": "#0F0F0F",
+          "backgroundColor": "rgba(15, 15, 15, 1)",
           "gridColor": "rgba(242, 242, 242, 0.06)",
-          "watchlist": [],
-          "withdateranges": false,
-          "compareSymbols": [],
-          "studies": [],
-          "autosize": true
+          "support_host": "https://www.tradingview.com"
         }
         </script>
       </body>
