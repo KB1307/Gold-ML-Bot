@@ -1,5 +1,5 @@
-import { View, StyleSheet, Platform } from "react-native";
-import { useState, useEffect } from "react";
+import { View, StyleSheet, Platform, ActivityIndicator } from "react-native";
+import { useState, useRef } from "react";
 import { WebView } from "react-native-webview";
 
 interface PriceDataPoint {
@@ -13,69 +13,99 @@ interface PriceChartProps {
 }
 
 export default function PriceChart({ data, currentPrice }: PriceChartProps) {
-  const [chartKey, setChartKey] = useState<number>(0);
-
-  useEffect(() => {
-    setChartKey(prev => prev + 1);
-  }, []);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const webViewRef = useRef<WebView>(null);
 
   const chartHTML = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-        <style>
-          body, html {
-            margin: 0;
-            padding: 0;
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            background: #0F0F0F;
-          }
-          .tradingview-widget-container {
-            height: 100%;
-            width: 100%;
-          }
-          .tradingview-widget-container__widget {
-            height: 100%;
-            width: 100%;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="tradingview-widget-container">
-          <div class="tradingview-widget-container__widget"></div>
-        </div>
-        <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
-        {
-          "autosize": true,
-          "symbol": "OANDA:XAUUSD",
-          "interval": "1",
-          "timezone": "Africa/Johannesburg",
-          "theme": "dark",
-          "style": "1",
-          "locale": "en",
-          "allow_symbol_change": true,
-          "calendar": false,
-          "hide_top_toolbar": false,
-          "hide_side_toolbar": true,
-          "save_image": true,
-          "backgroundColor": "rgba(15, 15, 15, 1)",
-          "gridColor": "rgba(242, 242, 242, 0.06)",
-          "support_host": "https://www.tradingview.com"
-        }
-        </script>
-      </body>
-    </html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>TradingView Chart</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body, html {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #0F0F0F;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    .tradingview-widget-container {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+    }
+    .tradingview-widget-container__widget {
+      flex: 1;
+      min-height: 0;
+    }
+    #loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #FFD700;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div id="loading">Loading chart...</div>
+  <div class="tradingview-widget-container">
+    <div class="tradingview-widget-container__widget"></div>
+  </div>
+  <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
+  {
+    "autosize": true,
+    "symbol": "OANDA:XAUUSD",
+    "interval": "1",
+    "timezone": "Africa/Johannesburg",
+    "theme": "dark",
+    "style": "1",
+    "locale": "en",
+    "allow_symbol_change": true,
+    "calendar": false,
+    "hide_top_toolbar": false,
+    "hide_side_toolbar": true,
+    "hide_legend": false,
+    "hide_volume": false,
+    "hotlist": false,
+    "save_image": true,
+    "details": false,
+    "withdateranges": false,
+    "backgroundColor": "rgba(15, 15, 15, 1)",
+    "gridColor": "rgba(242, 242, 242, 0.06)",
+    "support_host": "https://www.tradingview.com"
+  }
+  </script>
+  <script>
+    window.addEventListener('load', function() {
+      setTimeout(function() {
+        var loading = document.getElementById('loading');
+        if (loading) loading.style.display = 'none';
+      }, 2000);
+    });
+  </script>
+</body>
+</html>
   `;
 
   if (Platform.OS === 'web') {
     return (
       <View style={styles.container}>
+        {isLoading && (
+          <View style={styles.loadingOverlay}>
+            <ActivityIndicator size="large" color="#FFD700" />
+          </View>
+        )}
         <iframe
-          key={chartKey}
           srcDoc={chartHTML}
           style={{
             width: '100%',
@@ -85,6 +115,9 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
             overflow: 'hidden',
           }}
           title="TradingView Chart"
+          onLoad={() => {
+            setTimeout(() => setIsLoading(false), 2000);
+          }}
         />
       </View>
     );
@@ -92,19 +125,51 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
 
   return (
     <View style={styles.container}>
+      {isLoading && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#FFD700" />
+        </View>
+      )}
       <WebView
-        key={chartKey}
+        ref={webViewRef}
         source={{ html: chartHTML }}
         style={styles.webview}
         javaScriptEnabled={true}
         domStorageEnabled={true}
-        startInLoadingState={true}
+        startInLoadingState={false}
         scalesPageToFit={true}
         scrollEnabled={false}
         originWhitelist={['*']}
         allowsInlineMediaPlayback={true}
         mediaPlaybackRequiresUserAction={false}
         javaScriptCanOpenWindowsAutomatically={true}
+        mixedContentMode="always"
+        thirdPartyCookiesEnabled={true}
+        sharedCookiesEnabled={true}
+        cacheEnabled={false}
+        incognito={false}
+        onLoadStart={() => {
+          console.log('📊 Chart: Load started');
+          setIsLoading(true);
+        }}
+        onLoadEnd={() => {
+          console.log('📊 Chart: Load ended');
+          setTimeout(() => {
+            setIsLoading(false);
+          }, 2000);
+        }}
+        onError={(syntheticEvent) => {
+          const { nativeEvent } = syntheticEvent;
+          console.error('📊 Chart WebView error:', nativeEvent);
+          setIsLoading(false);
+        }}
+        onHttpError={(syntheticEvent) => {
+          const { nativeEvent } = syntheticEvent;
+          console.error('📊 Chart WebView HTTP error:', nativeEvent.statusCode);
+        }}
+        onMessage={(event) => {
+          console.log('📊 Chart message:', event.nativeEvent.data);
+        }}
       />
     </View>
   );
@@ -114,11 +179,24 @@ const styles = StyleSheet.create({
   container: {
     width: '100%',
     height: 400,
+    position: 'relative' as const,
   },
   webview: {
     flex: 1,
     backgroundColor: '#0F0F0F',
     borderRadius: 12,
     overflow: 'hidden',
+  },
+  loadingOverlay: {
+    position: 'absolute' as const,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#0F0F0F',
+    zIndex: 10,
+    borderRadius: 12,
   },
 });
