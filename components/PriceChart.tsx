@@ -1,5 +1,5 @@
 import { View, StyleSheet, Platform, ActivityIndicator } from "react-native";
-import { useState, useRef } from "react";
+import { useState, useRef, useMemo } from "react";
 import { WebView } from "react-native-webview";
 
 interface PriceDataPoint {
@@ -16,7 +16,7 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const webViewRef = useRef<WebView>(null);
 
-  const chartHTML = `
+  const chartHTML = useMemo(() => `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -61,41 +61,62 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
   <div class="tradingview-widget-container">
     <div class="tradingview-widget-container__widget"></div>
   </div>
-  <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
-  {
-    "autosize": true,
-    "symbol": "OANDA:XAUUSD",
-    "interval": "1",
-    "timezone": "Africa/Johannesburg",
-    "theme": "dark",
-    "style": "1",
-    "locale": "en",
-    "allow_symbol_change": true,
-    "calendar": false,
-    "hide_top_toolbar": false,
-    "hide_side_toolbar": true,
-    "hide_legend": false,
-    "hide_volume": false,
-    "hotlist": false,
-    "save_image": true,
-    "details": false,
-    "withdateranges": false,
-    "backgroundColor": "rgba(15, 15, 15, 1)",
-    "gridColor": "rgba(242, 242, 242, 0.06)",
-    "support_host": "https://www.tradingview.com"
-  }
-  </script>
-  <script>
-    window.addEventListener('load', function() {
-      setTimeout(function() {
-        var loading = document.getElementById('loading');
-        if (loading) loading.style.display = 'none';
-      }, 2000);
-    });
+  <script type="text/javascript">
+    (function() {
+      var scriptLoaded = false;
+      
+      function loadWidget() {
+        if (scriptLoaded) return;
+        scriptLoaded = true;
+        
+        var script = document.createElement('script');
+        script.type = 'text/javascript';
+        script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
+        script.async = true;
+        script.innerHTML = JSON.stringify({
+          "autosize": true,
+          "symbol": "OANDA:XAUUSD",
+          "interval": "1",
+          "timezone": "Africa/Johannesburg",
+          "theme": "dark",
+          "style": "1",
+          "locale": "en",
+          "allow_symbol_change": true,
+          "calendar": false,
+          "hide_top_toolbar": false,
+          "hide_side_toolbar": true,
+          "hide_legend": false,
+          "hide_volume": false,
+          "hotlist": false,
+          "save_image": true,
+          "details": false,
+          "withdateranges": false,
+          "backgroundColor": "rgba(15, 15, 15, 1)",
+          "gridColor": "rgba(242, 242, 242, 0.06)",
+          "support_host": "https://www.tradingview.com"
+        });
+        
+        var container = document.querySelector('.tradingview-widget-container__widget');
+        if (container) {
+          container.appendChild(script);
+        }
+        
+        setTimeout(function() {
+          var loading = document.getElementById('loading');
+          if (loading) loading.style.display = 'none';
+        }, 3000);
+      }
+      
+      if (document.readyState === 'complete') {
+        loadWidget();
+      } else {
+        window.addEventListener('load', loadWidget);
+      }
+    })();
   </script>
 </body>
 </html>
-  `;
+  `, []);
 
   if (Platform.OS === 'web') {
     return (
@@ -146,8 +167,10 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
         mixedContentMode="always"
         thirdPartyCookiesEnabled={true}
         sharedCookiesEnabled={true}
-        cacheEnabled={false}
+        cacheEnabled={true}
         incognito={false}
+        setSupportMultipleWindows={false}
+        allowsBackForwardNavigationGestures={false}
         onLoadStart={() => {
           console.log('📊 Chart: Load started');
           setIsLoading(true);
