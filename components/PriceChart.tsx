@@ -39,80 +39,40 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
     .tradingview-widget-container {
       width: 100%;
       height: 100%;
-      display: flex;
-      flex-direction: column;
     }
     .tradingview-widget-container__widget {
-      flex: 1;
-      min-height: 0;
-    }
-    #loading {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      color: #FFD700;
-      font-size: 14px;
+      width: 100%;
+      height: 100%;
     }
   </style>
 </head>
 <body>
-  <div id="loading">Loading chart...</div>
   <div class="tradingview-widget-container">
     <div class="tradingview-widget-container__widget"></div>
   </div>
-  <script type="text/javascript">
-    (function() {
-      var scriptLoaded = false;
-      
-      function loadWidget() {
-        if (scriptLoaded) return;
-        scriptLoaded = true;
-        
-        var script = document.createElement('script');
-        script.type = 'text/javascript';
-        script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
-        script.async = true;
-        script.innerHTML = JSON.stringify({
-          "autosize": true,
-          "symbol": "OANDA:XAUUSD",
-          "interval": "1",
-          "timezone": "Africa/Johannesburg",
-          "theme": "dark",
-          "style": "1",
-          "locale": "en",
-          "allow_symbol_change": true,
-          "calendar": false,
-          "hide_top_toolbar": false,
-          "hide_side_toolbar": true,
-          "hide_legend": false,
-          "hide_volume": false,
-          "hotlist": false,
-          "save_image": true,
-          "details": false,
-          "withdateranges": false,
-          "backgroundColor": "rgba(15, 15, 15, 1)",
-          "gridColor": "rgba(242, 242, 242, 0.06)",
-          "support_host": "https://www.tradingview.com"
-        });
-        
-        var container = document.querySelector('.tradingview-widget-container__widget');
-        if (container) {
-          container.appendChild(script);
-        }
-        
-        setTimeout(function() {
-          var loading = document.getElementById('loading');
-          if (loading) loading.style.display = 'none';
-        }, 3000);
-      }
-      
-      if (document.readyState === 'complete') {
-        loadWidget();
-      } else {
-        window.addEventListener('load', loadWidget);
-      }
-    })();
+  <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
+  {
+    "autosize": true,
+    "symbol": "OANDA:XAUUSD",
+    "interval": "1",
+    "timezone": "Africa/Johannesburg",
+    "theme": "dark",
+    "style": "1",
+    "locale": "en",
+    "allow_symbol_change": true,
+    "calendar": false,
+    "hide_top_toolbar": false,
+    "hide_side_toolbar": true,
+    "hide_legend": false,
+    "hide_volume": false,
+    "hotlist": false,
+    "save_image": true,
+    "details": false,
+    "withdateranges": false,
+    "backgroundColor": "rgba(15, 15, 15, 1)",
+    "gridColor": "rgba(242, 242, 242, 0.06)",
+    "support_host": "https://www.tradingview.com"
+  }
   </script>
 </body>
 </html>
