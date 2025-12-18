@@ -1,5 +1,5 @@
 import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
-import { useState } from "react";
+import { useState, memo, useMemo } from "react";
 import { WebView } from "react-native-webview";
 
 interface PriceDataPoint {
@@ -12,46 +12,38 @@ interface PriceChartProps {
   currentPrice: number;
 }
 
-export default function PriceChart({ data, currentPrice }: PriceChartProps) {
+function PriceChart({ data, currentPrice }: PriceChartProps) {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [hasError, setHasError] = useState<boolean>(false);
 
-  const htmlContent = `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: #0F0F0F; }
-    #tradingview_widget { width: 100%; height: 100%; }
-  </style>
-</head>
-<body>
-  <div id="tradingview_widget"></div>
-  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script type="text/javascript">
-    new TradingView.widget({
-      "autosize": true,
-      "symbol": "OANDA:XAUUSD",
-      "interval": "1",
-      "timezone": "Africa/Johannesburg",
-      "theme": "dark",
-      "style": "1",
-      "locale": "en",
-      "toolbar_bg": "#0F0F0F",
-      "enable_publishing": false,
-      "hide_side_toolbar": true,
-      "allow_symbol_change": true,
-      "container_id": "tradingview_widget",
-      "backgroundColor": "#0F0F0F",
-      "gridColor": "rgba(242, 242, 242, 0.06)"
-    });
-  </script>
-</body>
-</html>
-  `;
+  const widgetUrl = useMemo(() => {
+    return `https://www.tradingview-widget.com/embed-widget/advanced-chart/?locale=en#${JSON.stringify({
+      autosize: true,
+      symbol: 'OANDA:XAUUSD',
+      interval: '1',
+      timezone: 'Africa/Johannesburg',
+      theme: 'dark',
+      style: '1',
+      allow_symbol_change: true,
+      hide_top_toolbar: false,
+      hide_side_toolbar: true,
+      hide_legend: false,
+      hide_volume: false,
+      hotlist: false,
+      save_image: true,
+      details: false,
+      withdateranges: false,
+      backgroundColor: 'rgba(15, 15, 15, 1)',
+      gridColor: 'rgba(242, 242, 242, 0.06)',
+      support_host: 'https://www.tradingview.com',
+      width: '100%',
+      height: '100%',
+      utm_source: '',
+      utm_medium: 'widget',
+      utm_campaign: 'advanced-chart',
+      'page-uri': '__NHTTP__'
+    })}`;
+  }, []);
 
   if (Platform.OS === 'web') {
     return (
@@ -64,12 +56,13 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
         )}
         {hasError && (
           <View style={styles.errorOverlay}>
-            <Text style={styles.errorText}>Chart unavailable on web preview</Text>
-            <Text style={styles.errorSubtext}>Use mobile device for chart view</Text>
+            <Text style={styles.errorText}>Chart unavailable</Text>
+            <Text style={styles.errorSubtext}>Please refresh or try on mobile</Text>
           </View>
         )}
         <iframe
-          srcDoc={htmlContent}
+          key="tradingview-chart"
+          src={widgetUrl}
           style={{
             width: '100%',
             height: '400px',
@@ -80,7 +73,7 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
           }}
           onLoad={() => {
             console.log('📊 Chart iframe loaded');
-            setTimeout(() => setIsLoading(false), 2000);
+            setTimeout(() => setIsLoading(false), 3000);
           }}
           onError={() => {
             console.error('📊 Chart iframe error');
@@ -106,7 +99,7 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
         </View>
       )}
       <WebView
-        source={{ html: htmlContent }}
+        source={{ uri: widgetUrl }}
         style={[styles.webview, hasError && { display: 'none' }]}
         javaScriptEnabled={true}
         domStorageEnabled={true}
@@ -155,6 +148,8 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
     </View>
   );
 }
+
+export default memo(PriceChart);
 
 const styles = StyleSheet.create({
   container: {
