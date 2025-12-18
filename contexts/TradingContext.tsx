@@ -11,6 +11,9 @@ import {
   sendSignalNotification,
 } from "@/services/backgroundTaskService";
 import { useSignalSync } from "@/hooks/useSignalSync";
+import * as WebBrowser from "expo-web-browser";
+
+WebBrowser.maybeCompleteAuthSession();
 
 const DEFAULT_SETTINGS: Settings = {
   tp1Pips: 20,
@@ -46,8 +49,17 @@ interface PriceDataPoint {
   price: number;
 }
 
+interface UserProfile {
+  id: string;
+  email: string;
+  name: string;
+  picture?: string;
+  googleId: string;
+}
+
 export const [TradingProvider, useTrading] = createContextHook(() => {
-  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(true);
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(false);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [signalHistory, setSignalHistory] = useState<TradingSignal[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [marketOutlook, setMarketOutlook] = useState<MarketOutlook | null>(null);
@@ -650,12 +662,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const loadPersistedData = async () => {
     try {
       console.log('🔄 Loading persisted data from AsyncStorage...');
-      const [savedSettings, savedHistory, loginStatus, savedMetrics, savedBalance] = await Promise.all([
+      const [savedSettings, savedHistory, loginStatus, savedMetrics, savedBalance, savedUserProfile] = await Promise.all([
         AsyncStorage.getItem("trading_settings"),
         AsyncStorage.getItem("signal_history"),
         AsyncStorage.getItem("is_logged_in"),
         AsyncStorage.getItem("performance_metrics"),
         AsyncStorage.getItem("account_balance"),
+        AsyncStorage.getItem("user_profile"),
       ]);
 
       console.log('📦 Raw saved history from storage:', savedHistory);
@@ -701,8 +714,14 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         setIsLoggedIn(parsedLoginStatus);
         console.log('✅ Login status loaded:', parsedLoginStatus);
       } else {
-        console.log('⚠️ No login status found - defaulting to logged in');
-        setIsLoggedIn(true);
+        console.log('⚠️ No login status found - defaulting to logged out');
+        setIsLoggedIn(false);
+      }
+
+      if (savedUserProfile) {
+        const parsedProfile = JSON.parse(savedUserProfile);
+        setUserProfile(parsedProfile);
+        console.log('✅ User profile loaded:', parsedProfile.email);
       }
 
       if (savedMetrics) {
@@ -1234,7 +1253,43 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   const logout = useCallback(async () => {
     setIsLoggedIn(false);
-    await AsyncStorage.setItem("is_logged_in", JSON.stringify(false));
+    setUserProfile(null);
+    await AsyncStorage.multiRemove(["is_logged_in", "user_profile"]);
+    console.log('User logged out');
+  }, []);
+
+  const loginWithGoogle = useCallback(async (accessToken: string) => {
+    try {
+      console.log('🔐 Authenticating with Google...');
+      
+      const response = await fetch('https://www.googleapis.com/userinfo/v2/me', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      
+      const user = await response.json();
+      
+      const profile: UserProfile = {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        picture: user.picture,
+        googleId: user.id,
+      };
+      
+      setUserProfile(profile);
+      setIsLoggedIn(true);
+      
+      await AsyncStorage.multiSet([
+        ["user_profile", JSON.stringify(profile)],
+        ["is_logged_in", JSON.stringify(true)],
+      ]);
+      
+      console.log(`✅ User logged in: ${profile.email}`);
+      return profile;
+    } catch (error) {
+      console.error('❌ Google login failed:', error);
+      throw error;
+    }
   }, []);
 
   const clearHistory = useCallback(async () => {
@@ -1306,8 +1361,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     priceHistory,
     dailyOHLCHistory,
     signalUpdateTrigger,
+    userProfile,
     login,
     logout,
+    loginWithGoogle,
     clearHistory,
     updateSettings,
     deleteSignalFromHistory,

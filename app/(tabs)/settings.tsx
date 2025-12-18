@@ -1,16 +1,27 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Platform, Switch, Alert } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Platform, Switch, Alert, Image } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { Settings as SettingsIcon, Target, Shield, TrendingUp, LogOut, Save, Trash2, Activity, AlertTriangle, RefreshCw, Bell, Smartphone } from "lucide-react-native";
+import { Settings as SettingsIcon, Target, Shield, TrendingUp, LogOut, Save, Trash2, Activity, AlertTriangle, RefreshCw, Bell, Smartphone, User } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Stack, useRouter } from "expo-router";
 import { getBackgroundTaskStatus } from "@/services/backgroundTaskService";
+import * as Google from "expo-auth-session/providers/google";
+import * as WebBrowser from "expo-web-browser";
+
+WebBrowser.maybeCompleteAuthSession();
 
 export default function SettingsScreen() {
-  const { settings, updateSettings, logout, clearHistory, performanceMetrics, triggerManualRetrain, backgroundTaskActive } = useTrading();
+  const { settings, updateSettings, logout, clearHistory, performanceMetrics, triggerManualRetrain, backgroundTaskActive, userProfile, loginWithGoogle, isLoggedIn } = useTrading();
   const router = useRouter();
   const [isRetraining, setIsRetraining] = useState<boolean>(false);
   const [bgTaskStatus, setBgTaskStatus] = useState<{ isRegistered: boolean; isAvailable: boolean; } | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
+
+  const [request, response, promptAsync] = Google.useAuthRequest({
+    webClientId: '529616886657-24a0oqsqr39dv3t08t4r5phn00a4c2s7.apps.googleusercontent.com',
+    androidClientId: '529616886657-YOUR_ANDROID_CLIENT_ID.apps.googleusercontent.com',
+    iosClientId: '529616886657-YOUR_IOS_CLIENT_ID.apps.googleusercontent.com',
+  });
   
   const [tp1Pips, setTp1Pips] = useState<string>(settings.tp1Pips.toString());
   const [tp2Pips, setTp2Pips] = useState<string>(settings.tp2Pips.toString());
@@ -30,6 +41,36 @@ export default function SettingsScreen() {
     const interval = setInterval(checkBackgroundTask, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  const handleGoogleSignIn = useCallback(async (accessToken: string) => {
+    setIsLoggingIn(true);
+    try {
+      await loginWithGoogle(accessToken);
+      if (Platform.OS === 'web') {
+        alert('Successfully signed in with Google!');
+      } else {
+        Alert.alert('Success', 'Successfully signed in with Google!');
+      }
+    } catch (error) {
+      console.error('Google sign in error:', error);
+      if (Platform.OS === 'web') {
+        alert('Failed to sign in with Google. Please try again.');
+      } else {
+        Alert.alert('Error', 'Failed to sign in with Google. Please try again.');
+      }
+    } finally {
+      setIsLoggingIn(false);
+    }
+  }, [loginWithGoogle]);
+
+  useEffect(() => {
+    if (response?.type === 'success') {
+      const { authentication } = response;
+      if (authentication?.accessToken) {
+        handleGoogleSignIn(authentication.accessToken);
+      }
+    }
+  }, [response, handleGoogleSignIn]);
 
   const handleSave = async () => {
     await updateSettings({
@@ -139,6 +180,63 @@ export default function SettingsScreen() {
                 <Text style={styles.headerSubtitle}>Configure Signal Parameters</Text>
               </View>
             </View>
+
+            {!isLoggedIn ? (
+              <View style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <User size={20} color="#8b5cf6" />
+                  <Text style={styles.sectionTitle}>Account</Text>
+                </View>
+                
+                <View style={styles.signInPrompt}>
+                  <Text style={styles.signInPromptText}>
+                    Sign in with Google to sync your signals across devices and access premium features.
+                  </Text>
+                </View>
+
+                <TouchableOpacity 
+                  style={[styles.googleSignInButton, isLoggingIn && styles.googleSignInButtonDisabled]}
+                  onPress={() => promptAsync()}
+                  disabled={isLoggingIn || !request}
+                >
+                  <View style={styles.googleSignInContent}>
+                    <View style={styles.googleIconContainer}>
+                      <Text style={styles.googleIcon}>G</Text>
+                    </View>
+                    <Text style={styles.googleSignInText}>
+                      {isLoggingIn ? 'Signing in...' : 'Sign in with Google'}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <User size={20} color="#22c55e" />
+                  <Text style={styles.sectionTitle}>Account</Text>
+                </View>
+                
+                <View style={styles.profileCard}>
+                  {userProfile?.picture && (
+                    <Image 
+                      source={{ uri: userProfile.picture }} 
+                      style={styles.profilePicture}
+                    />
+                  )}
+                  <View style={styles.profileInfo}>
+                    <Text style={styles.profileName}>{userProfile?.name}</Text>
+                    <Text style={styles.profileEmail}>{userProfile?.email}</Text>
+                  </View>
+                  <View style={styles.statusBadge}>
+                    <Text style={styles.statusBadgeText}>CONNECTED</Text>
+                  </View>
+                </View>
+
+                <Text style={styles.profileHelper}>
+                  Your signals are automatically synced to the cloud.
+                </Text>
+              </View>
+            )}
 
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
@@ -689,6 +787,95 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: "#666",
     marginBottom: 4,
+  },
+  signInPrompt: {
+    backgroundColor: "rgba(139, 92, 246, 0.1)",
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: "rgba(139, 92, 246, 0.2)",
+  },
+  signInPromptText: {
+    fontSize: 13,
+    color: "#ccc",
+    lineHeight: 20,
+    textAlign: "center",
+  },
+  googleSignInButton: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    overflow: "hidden",
+    elevation: 2,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+  },
+  googleSignInButtonDisabled: {
+    opacity: 0.5,
+  },
+  googleSignInContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+  },
+  googleIconContainer: {
+    width: 24,
+    height: 24,
+    borderRadius: 4,
+    backgroundColor: "#fff",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+  },
+  googleIcon: {
+    fontSize: 18,
+    fontWeight: "700" as const,
+    color: "#4285F4",
+  },
+  googleSignInText: {
+    fontSize: 16,
+    fontWeight: "600" as const,
+    color: "#1f1f1f",
+    flex: 1,
+    textAlign: "center",
+  },
+  profileCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(34, 197, 94, 0.1)",
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(34, 197, 94, 0.2)",
+    marginBottom: 12,
+  },
+  profilePicture: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    marginRight: 12,
+    backgroundColor: "rgba(255, 255, 255, 0.1)",
+  },
+  profileInfo: {
+    flex: 1,
+  },
+  profileName: {
+    fontSize: 16,
+    fontWeight: "700" as const,
+    color: "#fff",
+    marginBottom: 4,
+  },
+  profileEmail: {
+    fontSize: 13,
+    color: "#999",
+  },
+  profileHelper: {
+    fontSize: 12,
+    color: "#22c55e",
+    textAlign: "center",
   },
   healthRow: {
     flexDirection: "row",
