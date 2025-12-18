@@ -64,57 +64,58 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   useEffect(() => {
     const init = async () => {
       console.log('🚀 Initializing Trading Context...');
-      const initTimeout = setTimeout(() => {
-        console.error('⏰ Initialization timeout - forcing app to load');
-        setIsLoading(false);
-      }, 15000);
       
       try {
+        console.log('📦 Step 1: Loading persisted data...');
+        await Promise.race([
+          loadPersistedData(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Load timeout')), 8000))
+        ]).catch(error => {
+          console.error('⚠️ loadPersistedData failed/timeout:', error);
+          setIsLoading(false);
+        });
+        
+        console.log('📊 Step 2: Loading daily OHLC (non-blocking)...');
         const loadedDailyOHLC = await Promise.race([
           signalEngine.loadPersistedLearningData(),
-          new Promise<any>((resolve) => setTimeout(() => {
-            console.warn('⚠️ Daily OHLC load timeout - continuing without it');
-            resolve([]);
-          }, 5000))
-        ]);
+          new Promise<any>((resolve) => setTimeout(() => resolve([]), 3000))
+        ]).catch(() => []);
         
-        await loadPersistedData();
-        
-        clearTimeout(initTimeout);
-        
-        if (loadedDailyOHLC && loadedDailyOHLC.length > 0) {
+        if (loadedDailyOHLC?.length > 0) {
           setDailyOHLCHistory(loadedDailyOHLC);
+          console.log(`✅ Loaded ${loadedDailyOHLC.length} daily OHLC records`);
         }
 
         if (Platform.OS !== 'web') {
-          console.log('📱 Setting up mobile features...');
-          try {
-            await setupNotificationChannel();
-            await requestNotificationPermissions();
-            
-            if (settings.enableNotifications) {
-              const registered = await registerBackgroundTask();
+          console.log('📱 Step 3: Setting up mobile features (non-blocking)...');
+          setupNotificationChannel().catch(() => {});
+          requestNotificationPermissions().catch(() => {});
+          
+          if (settings.enableNotifications) {
+            registerBackgroundTask().then(registered => {
               setBackgroundTaskActive(registered);
-              
               if (registered) {
-                console.log('✅ Background signal generation active');
-                console.log('   - App will generate signals even when closed');
-                console.log('   - Push notifications enabled');
+                console.log('✅ Background tasks enabled');
               }
-            }
-          } catch (mobileError) {
-            console.warn('⚠️ Mobile features setup failed (non-critical):', mobileError);
+            }).catch(() => {});
           }
         }
 
-        console.log('✅ Trading Context initialized successfully');
+        console.log('✅ Trading Context initialized');
       } catch (error) {
-        console.error('❌ Failed to initialize Trading Context:', error);
-        clearTimeout(initTimeout);
+        console.error('❌ Initialization error:', error);
         setIsLoading(false);
       }
     };
-    init();
+    
+    const safetyTimeout = setTimeout(() => {
+      console.error('⏰ SAFETY TIMEOUT - Force loading app');
+      setIsLoading(false);
+    }, 10000);
+    
+    init().finally(() => {
+      clearTimeout(safetyTimeout);
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
