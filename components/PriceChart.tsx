@@ -81,63 +81,71 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
 
   useEffect(() => {
     if (Platform.OS === 'web' && containerRef.current) {
-      console.log('📊 Injecting TradingView script for web');
+      console.log('📊 Initializing TradingView widget for web');
       
       const container = containerRef.current;
-      container.innerHTML = '';
+      const widgetId = 'tradingview_' + Math.random().toString(36).substr(2, 9);
       
-      const widgetDiv = document.createElement('div');
-      widgetDiv.className = 'tradingview-widget-container';
-      widgetDiv.style.height = '100%';
-      widgetDiv.style.width = '100%';
-      
-      const innerDiv = document.createElement('div');
-      innerDiv.className = 'tradingview-widget-container__widget';
-      innerDiv.style.height = '100%';
-      innerDiv.style.width = '100%';
-      
-      widgetDiv.appendChild(innerDiv);
+      container.innerHTML = `
+        <div class="tradingview-widget-container" style="height:100%;width:100%">
+          <div id="${widgetId}" class="tradingview-widget-container__widget" style="height:100%;width:100%"></div>
+        </div>
+      `;
       
       const script = document.createElement('script');
       script.type = 'text/javascript';
-      script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
-      script.async = true;
-      script.innerHTML = JSON.stringify({
-        autosize: true,
-        symbol: "OANDA:XAUUSD",
-        interval: "1",
-        timezone: "Africa/Johannesburg",
-        theme: "dark",
-        style: "1",
-        allow_symbol_change: true,
-        hide_top_toolbar: false,
-        hide_side_toolbar: true,
-        hide_legend: false,
-        hide_volume: false,
-        hotlist: false,
-        save_image: true,
-        details: false,
-        withdateranges: false,
-        backgroundColor: "#0F0F0F",
-        gridColor: "rgba(242, 242, 242, 0.06)",
-        support_host: "https://www.tradingview.com",
-        width: "100%",
-        height: "100%"
-      });
+      script.src = 'https://s3.tradingview.com/tv.js';
+      script.async = false;
       
       script.onload = () => {
-        console.log('📊 TradingView script loaded');
-        setTimeout(() => setIsLoading(false), 2000);
+        console.log('📊 TradingView library loaded');
+        
+        if (typeof (window as any).TradingView !== 'undefined') {
+          try {
+            new (window as any).TradingView.widget({
+              autosize: true,
+              symbol: "OANDA:XAUUSD",
+              interval: "1",
+              timezone: "Africa/Johannesburg",
+              theme: "dark",
+              style: "1",
+              locale: "en",
+              toolbar_bg: "#0F0F0F",
+              enable_publishing: false,
+              hide_top_toolbar: false,
+              hide_side_toolbar: true,
+              save_image: false,
+              container_id: widgetId
+            });
+            
+            console.log('📊 TradingView widget initialized');
+            setTimeout(() => setIsLoading(false), 2000);
+          } catch (error) {
+            console.error('📊 Failed to initialize widget:', error);
+            setHasError(true);
+            setIsLoading(false);
+          }
+        } else {
+          console.error('📊 TradingView library not available');
+          setHasError(true);
+          setIsLoading(false);
+        }
       };
       
-      script.onerror = () => {
-        console.error('📊 TradingView script failed to load');
+      script.onerror = (error) => {
+        console.error('📊 TradingView library failed to load:', error);
         setHasError(true);
         setIsLoading(false);
       };
       
-      widgetDiv.appendChild(script);
-      container.appendChild(widgetDiv);
+      document.head.appendChild(script);
+      
+      return () => {
+        if (script.parentNode) {
+          script.parentNode.removeChild(script);
+        }
+        container.innerHTML = '';
+      };
     }
   }, []);
 
