@@ -10,6 +10,7 @@ import {
   requestNotificationPermissions,
   sendSignalNotification,
 } from "@/services/backgroundTaskService";
+import { useSignalSync } from "@/hooks/useSignalSync";
 
 const DEFAULT_SETTINGS: Settings = {
   tp1Pips: 20,
@@ -60,6 +61,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [signalUpdateTrigger, setSignalUpdateTrigger] = useState<number>(0);
   const [appLaunchTime] = useState<number>(Date.now());
   const [backgroundTaskActive, setBackgroundTaskActive] = useState<boolean>(false);
+
+  useSignalSync(signalHistory, performanceMetrics, settings, accountBalance);
 
   useEffect(() => {
     const init = async () => {
