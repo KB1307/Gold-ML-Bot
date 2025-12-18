@@ -17,7 +17,7 @@ function PriceChart({ data, currentPrice }: PriceChartProps) {
   const [hasError, setHasError] = useState<boolean>(false);
 
   const widgetUrl = useMemo(() => {
-    return `https://www.tradingview-widget.com/embed-widget/advanced-chart/?locale=en#${JSON.stringify({
+    const config = {
       autosize: true,
       symbol: 'OANDA:XAUUSD',
       interval: '1',
@@ -42,7 +42,9 @@ function PriceChart({ data, currentPrice }: PriceChartProps) {
       utm_medium: 'widget',
       utm_campaign: 'advanced-chart',
       'page-uri': '__NHTTP__'
-    })}`;
+    };
+    const encodedConfig = encodeURIComponent(JSON.stringify(config));
+    return `https://www.tradingview-widget.com/embed-widget/advanced-chart/?locale=en#${encodedConfig}`;
   }, []);
 
   if (Platform.OS === 'web') {
@@ -60,25 +62,36 @@ function PriceChart({ data, currentPrice }: PriceChartProps) {
             <Text style={styles.errorSubtext}>Please refresh or try on mobile</Text>
           </View>
         )}
-        <iframe
-          key="tradingview-chart"
-          src={widgetUrl}
-          style={{
-            width: '100%',
-            height: '400px',
-            border: 'none',
-            borderRadius: '12px',
-            backgroundColor: '#0F0F0F',
-            display: hasError ? 'none' : 'block',
+        <WebView
+          source={{ uri: widgetUrl }}
+          style={[styles.webview, hasError && { display: 'none' as any }]}
+          javaScriptEnabled={true}
+          domStorageEnabled={true}
+          startInLoadingState={false}
+          scrollEnabled={false}
+          originWhitelist={['*']}
+          onLoadStart={() => {
+            console.log('📊 Chart: WebView load started');
+            setIsLoading(true);
+            setHasError(false);
           }}
-          onLoad={() => {
-            console.log('📊 Chart iframe loaded');
-            setTimeout(() => setIsLoading(false), 3000);
+          onLoadEnd={() => {
+            console.log('📊 Chart: WebView load ended');
+            setTimeout(() => setIsLoading(false), 2000);
           }}
-          onError={() => {
-            console.error('📊 Chart iframe error');
+          onError={(syntheticEvent) => {
+            const { nativeEvent } = syntheticEvent;
+            console.error('📊 Chart WebView error:', nativeEvent);
             setHasError(true);
             setIsLoading(false);
+          }}
+          onHttpError={(syntheticEvent) => {
+            const { nativeEvent } = syntheticEvent;
+            console.error('📊 Chart WebView HTTP error:', nativeEvent.statusCode);
+            if (nativeEvent.statusCode >= 400) {
+              setHasError(true);
+              setIsLoading(false);
+            }
           }}
         />
       </View>
