@@ -23,7 +23,7 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
     <html lang="en">
     <head>
       <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
       <title>TradingView Chart</title>
       <style>
         * {
@@ -40,6 +40,7 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
         .tradingview-widget-container {
           width: 100%;
           height: 100%;
+          position: relative;
         }
         .tradingview-widget-container__widget {
           width: 100%;
@@ -48,8 +49,8 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
       </style>
     </head>
     <body>
-      <div class="tradingview-widget-container" style="height:100%;width:100%">
-        <div class="tradingview-widget-container__widget" style="height:100%;width:100%"></div>
+      <div class="tradingview-widget-container">
+        <div class="tradingview-widget-container__widget"></div>
       </div>
       <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
       {
@@ -59,7 +60,9 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
         "timezone": "Africa/Johannesburg",
         "theme": "dark",
         "style": "1",
+        "locale": "en",
         "allow_symbol_change": true,
+        "calendar": false,
         "hide_top_toolbar": false,
         "hide_side_toolbar": true,
         "hide_legend": false,
@@ -68,11 +71,12 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
         "save_image": true,
         "details": false,
         "withdateranges": false,
-        "backgroundColor": "#0F0F0F",
+        "backgroundColor": "rgba(15, 15, 15, 1)",
         "gridColor": "rgba(242, 242, 242, 0.06)",
         "support_host": "https://www.tradingview.com",
-        "width": "100%",
-        "height": "100%"
+        "utm_source": "",
+        "utm_medium": "widget",
+        "utm_campaign": "chart"
       }
       </script>
     </body>
@@ -82,68 +86,64 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
   useEffect(() => {
     if (Platform.OS === 'web' && containerRef.current) {
       console.log('📊 Initializing TradingView widget for web');
+      setIsLoading(true);
       
       const container = containerRef.current;
-      const widgetId = 'tradingview_' + Math.random().toString(36).substr(2, 9);
       
-      container.innerHTML = `
-        <div class="tradingview-widget-container" style="height:100%;width:100%">
-          <div id="${widgetId}" class="tradingview-widget-container__widget" style="height:100%;width:100%"></div>
-        </div>
-      `;
+      container.innerHTML = '';
+      
+      const widgetContainer = document.createElement('div');
+      widgetContainer.className = 'tradingview-widget-container';
+      widgetContainer.style.cssText = 'height:100%;width:100%';
+      
+      const widgetDiv = document.createElement('div');
+      widgetDiv.className = 'tradingview-widget-container__widget';
+      widgetDiv.style.cssText = 'height:100%;width:100%';
+      
+      widgetContainer.appendChild(widgetDiv);
+      container.appendChild(widgetContainer);
       
       const script = document.createElement('script');
       script.type = 'text/javascript';
-      script.src = 'https://s3.tradingview.com/tv.js';
-      script.async = false;
+      script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
+      script.async = true;
+      script.innerHTML = JSON.stringify({
+        autosize: true,
+        symbol: "OANDA:XAUUSD",
+        interval: "1",
+        timezone: "Africa/Johannesburg",
+        theme: "dark",
+        style: "1",
+        locale: "en",
+        allow_symbol_change: true,
+        calendar: false,
+        hide_top_toolbar: false,
+        hide_side_toolbar: true,
+        hide_legend: false,
+        hide_volume: false,
+        hotlist: false,
+        save_image: true,
+        details: false,
+        withdateranges: false,
+        backgroundColor: "rgba(15, 15, 15, 1)",
+        gridColor: "rgba(242, 242, 242, 0.06)",
+        support_host: "https://www.tradingview.com"
+      });
       
       script.onload = () => {
-        console.log('📊 TradingView library loaded');
-        
-        if (typeof (window as any).TradingView !== 'undefined') {
-          try {
-            new (window as any).TradingView.widget({
-              autosize: true,
-              symbol: "OANDA:XAUUSD",
-              interval: "1",
-              timezone: "Africa/Johannesburg",
-              theme: "dark",
-              style: "1",
-              locale: "en",
-              toolbar_bg: "#0F0F0F",
-              enable_publishing: false,
-              hide_top_toolbar: false,
-              hide_side_toolbar: true,
-              save_image: false,
-              container_id: widgetId
-            });
-            
-            console.log('📊 TradingView widget initialized');
-            setTimeout(() => setIsLoading(false), 2000);
-          } catch (error) {
-            console.error('📊 Failed to initialize widget:', error);
-            setHasError(true);
-            setIsLoading(false);
-          }
-        } else {
-          console.error('📊 TradingView library not available');
-          setHasError(true);
-          setIsLoading(false);
-        }
+        console.log('📊 TradingView widget script loaded');
+        setTimeout(() => setIsLoading(false), 3000);
       };
       
       script.onerror = (error) => {
-        console.error('📊 TradingView library failed to load:', error);
+        console.error('📊 TradingView widget script failed:', error);
         setHasError(true);
         setIsLoading(false);
       };
       
-      document.head.appendChild(script);
+      widgetContainer.appendChild(script);
       
       return () => {
-        if (script.parentNode) {
-          script.parentNode.removeChild(script);
-        }
         container.innerHTML = '';
       };
     }
