@@ -407,6 +407,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     console.log('🔄 SIGNAL CATCH-UP EVALUATION INITIATED');
     console.log('='.repeat(80));
     console.log('   Checking for stale ACTIVE signals that need evaluation...');
+    console.log('   📊 Historical Reconciliation: Checking actual market outcomes during downtime');
     
     const now = Date.now();
     const currentPrice = signalEngine.getCurrentPrice();
@@ -423,42 +424,37 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       }
       
       const signalAge = now - new Date(signal.timestamp).getTime();
+      const isExpired = signalAge > twoHoursInMs;
+      
       console.log(`\n🔍 Evaluating Signal ${signal.id.slice(-6)}:`);
       console.log(`   Type: ${signal.type}`);
       console.log(`   Status: ${signal.status}`);
       console.log(`   Entry: ${signal.entryPrice.toFixed(1)}`);
-      console.log(`   Age: ${(signalAge / 1000 / 60 / 60).toFixed(1)} hours`);
+      console.log(`   Age: ${(signalAge / 1000 / 60 / 60).toFixed(1)} hours ${isExpired ? '(EXPIRED)' : ''}`);
       console.log(`   TP1: ${signal.tp1.toFixed(1)} | TP2: ${signal.tp2.toFixed(1)} | TP3: ${signal.tp3.toFixed(1)}`);
       console.log(`   SL: ${signal.sl.toFixed(1)}`);
       
-      if (signalAge > twoHoursInMs) {
-        console.log(`   ⏰ Signal expired (>2 hours) - marking as CLOSED`);
-        updatedHistory[i] = {
-          ...signal,
-          status: "CLOSED" as const,
-          exitTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
-        };
-        hasChanges = true;
-        
-        await signalEngine.recordTradeOutcome(
-          signal.id,
-          signal.entryPrice,
-          currentPrice,
-          'LOSS',
-          {} as any,
-          undefined,
-          signalAge
-        ).catch(err => {
-          console.error(`Failed to record expired signal outcome:`, err);
-        });
-        continue;
+      if (isExpired) {
+        console.log(`   ⏰ Signal expired (>2 hours) - Fetching historical data to determine actual outcome...`);
       }
       
       const signalTime = new Date(signal.timestamp).getTime();
-      const historicalBars = await fetchPriceHistory(signalTime, now);
+      const endTime = isExpired ? Math.min(signalTime + twoHoursInMs, now) : now;
+      const historicalBars = await fetchPriceHistory(signalTime, endTime);
       
       if (historicalBars.length === 0) {
-        console.log(`   ⚠️ No historical data available - using current price fallback`);
+        console.log(`   ⚠️ No historical data available - using ${isExpired ? 'expired status' : 'current price fallback'}`);
+        
+        if (isExpired) {
+          console.log(`   ⏰ EXPIRED WITHOUT DATA: Marking as CLOSED (unable to verify outcome)`);
+          updatedHistory[i] = {
+            ...signal,
+            status: "CLOSED" as const,
+            exitTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+          };
+          hasChanges = true;
+          continue;
+        }
         
         let newStatus: SignalStatus = signal.status as SignalStatus;
         let targetsHit = signal.targetsHit;
@@ -547,21 +543,32 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       } else {
         const analysis = await analyzeSignalWithHistoricalData(signal, historicalBars);
         
-        if (analysis.newStatus !== signal.status || analysis.targetsHit !== signal.targetsHit) {
+        if (isExpired && analysis.newStatus === signal.status && !analysis.outcomeResult) {
+          console.log(`   ⏰ EXPIRED: No TP/SL hit during signal lifetime - marking as EXPIRED_MISSED_ENTRY`);
+          updatedHistory[i] = {
+            ...signal,
+            status: "EXPIRED_MISSED_ENTRY" as const,
+            exitTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+          };
+          hasChanges = true;
+        } else if (analysis.newStatus !== signal.status || analysis.targetsHit !== signal.targetsHit) {
           hasChanges = true;
           const exitDate = new Date();
+          
+          const statusLabel = isExpired ? 'HISTORICAL RECONCILIATION' : 'LIVE UPDATE';
+          console.log(`   ✅ ${statusLabel}: ${signal.status} -> ${analysis.newStatus}`);
           
           updatedHistory[i] = {
             ...signal,
             status: analysis.newStatus,
             targetsHit: analysis.targetsHit,
-            exitTime: (analysis.newStatus === "SL_HIT" || analysis.newStatus === "ALL_TARGETS_HIT") 
+            exitTime: (analysis.newStatus === "SL_HIT" || analysis.newStatus === "ALL_TARGETS_HIT" || analysis.newStatus === "PARTIAL_WIN_SL_HIT" || analysis.newStatus === "EXPIRED_MISSED_ENTRY") 
               ? exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
               : signal.exitTime,
           };
           
           if (analysis.outcomeResult) {
-            console.log(`   📊 Recording ${analysis.outcomeResult} outcome for learning engine...`);
+            console.log(`   📊 Recording ${analysis.outcomeResult} outcome for learning engine (${statusLabel})...`);
             await signalEngine.recordTradeOutcome(
               signal.id,
               signal.entryPrice,
