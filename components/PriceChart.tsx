@@ -25,15 +25,14 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: #0F0F0F; }
-    .tradingview-widget-container { width: 100%; height: 100%; }
-    .tradingview-widget-container__widget { width: 100%; height: calc(100% - 32px); }
+    #tradingview_widget { width: 100%; height: 100%; }
   </style>
 </head>
 <body>
-  <div class="tradingview-widget-container">
-    <div class="tradingview-widget-container__widget"></div>
-    <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
-    {
+  <div id="tradingview_widget"></div>
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+  <script type="text/javascript">
+    new TradingView.widget({
       "autosize": true,
       "symbol": "OANDA:XAUUSD",
       "interval": "1",
@@ -41,24 +40,15 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
       "theme": "dark",
       "style": "1",
       "locale": "en",
-      "allow_symbol_change": true,
-      "calendar": false,
-      "hide_top_toolbar": false,
+      "toolbar_bg": "#0F0F0F",
+      "enable_publishing": false,
       "hide_side_toolbar": true,
-      "hide_legend": false,
-      "hide_volume": false,
-      "hotlist": false,
-      "save_image": true,
-      "details": false,
-      "withdateranges": false,
-      "backgroundColor": "rgba(15, 15, 15, 1)",
-      "gridColor": "rgba(242, 242, 242, 0.06)",
-      "support_host": "https://www.tradingview.com",
-      "width": "100%",
-      "height": "100%"
-    }
-    </script>
-  </div>
+      "allow_symbol_change": true,
+      "container_id": "tradingview_widget",
+      "backgroundColor": "#0F0F0F",
+      "gridColor": "rgba(242, 242, 242, 0.06)"
+    });
+  </script>
 </body>
 </html>
   `;
