@@ -9,7 +9,6 @@ import {
   setupNotificationChannel, 
   requestNotificationPermissions,
   sendSignalNotification,
-  getBackgroundTaskStatus 
 } from "@/services/backgroundTaskService";
 
 const DEFAULT_SETTINGS: Settings = {
@@ -65,37 +64,58 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   useEffect(() => {
     const init = async () => {
       console.log('🚀 Initializing Trading Context...');
+      const initTimeout = setTimeout(() => {
+        console.error('⏰ Initialization timeout - forcing app to load');
+        setIsLoading(false);
+      }, 15000);
+      
       try {
-        const loadedDailyOHLC = await signalEngine.loadPersistedLearningData();
+        const loadedDailyOHLC = await Promise.race([
+          signalEngine.loadPersistedLearningData(),
+          new Promise<any>((resolve) => setTimeout(() => {
+            console.warn('⚠️ Daily OHLC load timeout - continuing without it');
+            resolve([]);
+          }, 5000))
+        ]);
+        
         await loadPersistedData();
+        
+        clearTimeout(initTimeout);
+        
         if (loadedDailyOHLC && loadedDailyOHLC.length > 0) {
           setDailyOHLCHistory(loadedDailyOHLC);
         }
 
         if (Platform.OS !== 'web') {
           console.log('📱 Setting up mobile features...');
-          await setupNotificationChannel();
-          await requestNotificationPermissions();
-          
-          if (settings.enableNotifications) {
-            const registered = await registerBackgroundTask();
-            setBackgroundTaskActive(registered);
+          try {
+            await setupNotificationChannel();
+            await requestNotificationPermissions();
             
-            if (registered) {
-              console.log('✅ Background signal generation active');
-              console.log('   - App will generate signals even when closed');
-              console.log('   - Push notifications enabled');
+            if (settings.enableNotifications) {
+              const registered = await registerBackgroundTask();
+              setBackgroundTaskActive(registered);
+              
+              if (registered) {
+                console.log('✅ Background signal generation active');
+                console.log('   - App will generate signals even when closed');
+                console.log('   - Push notifications enabled');
+              }
             }
+          } catch (mobileError) {
+            console.warn('⚠️ Mobile features setup failed (non-critical):', mobileError);
           }
         }
 
         console.log('✅ Trading Context initialized successfully');
       } catch (error) {
         console.error('❌ Failed to initialize Trading Context:', error);
+        clearTimeout(initTimeout);
         setIsLoading(false);
       }
     };
     init();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -155,7 +175,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     return () => clearInterval(interval);
   }, []);
 
-  const fetchPriceHistory = async (fromTime: number, toTime: number): Promise<Array<{timestamp: number, open: number, high: number, low: number, close: number}>> => {
+  const fetchPriceHistory = async (fromTime: number, toTime: number): Promise<{timestamp: number, open: number, high: number, low: number, close: number}[]> => {
     try {
       console.log(`📊 Fetching historical 1-MINUTE OHLCV data (UPGRADED)...`);
       console.log(`   From: ${new Date(fromTime).toISOString()}`);
@@ -167,12 +187,18 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         ? `https://corsproxy.io/?${encodeURIComponent('https://query2.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d')}`
         : 'https://query2.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d';
       
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      
       const response = await fetch(url, {
         headers: {
           'Accept': 'application/json',
           'User-Agent': 'Mozilla/5.0 (compatible; TradingApp/1.0)',
         },
+        signal: controller.signal,
       });
+      
+      clearTimeout(timeoutId);
       
       if (!response.ok) {
         console.error(`❌ Failed to fetch price history: HTTP ${response.status}`);
@@ -190,7 +216,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       const timestamps = result.timestamp;
       const quotes = result.indicators.quote[0];
       
-      const bars: Array<{timestamp: number, open: number, high: number, low: number, close: number}> = [];
+      const bars: {timestamp: number, open: number, high: number, low: number, close: number}[] = [];
       
       for (let i = 0; i < timestamps.length; i++) {
         const barTime = timestamps[i] * 1000;
@@ -223,14 +249,18 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       
       return bars;
     } catch (error) {
-      console.error('❌ Error fetching price history:', error);
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.error('❌ Price history fetch timeout after 10s');
+      } else {
+        console.error('❌ Error fetching price history:', error);
+      }
       return [];
     }
   };
 
   const analyzeSignalWithHistoricalData = async (
     signal: TradingSignal,
-    historicalBars: Array<{timestamp: number, open: number, high: number, low: number, close: number}>
+    historicalBars: {timestamp: number, open: number, high: number, low: number, close: number}[]
   ): Promise<{newStatus: SignalStatus, targetsHit: number, exitPrice: number, outcomeResult: 'WIN' | 'LOSS' | null}> => {
     console.log(`\n📊 UPGRADED SEQUENTIAL ANALYSIS (1-Min Bars)`);
     console.log(`   Signal ID: ${signal.id.slice(-6)}`);
@@ -402,12 +432,15 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     };
   };
 
-  const catchUpAndEvaluateSignals = async (history: TradingSignal[]) => {
+  const catchUpAndEvaluateSignals = async (history: TradingSignal[], isInitialLoad = false) => {
     console.log('\n' + '='.repeat(80));
     console.log('🔄 SIGNAL CATCH-UP EVALUATION INITIATED');
     console.log('='.repeat(80));
     console.log('   Checking for stale ACTIVE signals that need evaluation...');
     console.log('   📊 Historical Reconciliation: Checking actual market outcomes during downtime');
+    if (isInitialLoad) {
+      console.log('   ⚡ FAST MODE: Skipping historical reconciliation during app launch');
+    }
     
     const now = Date.now();
     const currentPrice = signalEngine.getCurrentPrice();
@@ -435,7 +468,18 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log(`   SL: ${signal.sl.toFixed(1)}`);
       
       if (isExpired) {
-        console.log(`   ⏰ Signal expired (>2 hours) - Fetching historical data to determine actual outcome...`);
+        console.log(`   ⏰ Signal expired (>2 hours) - ${isInitialLoad ? 'Skipping historical fetch (initial load)' : 'Fetching historical data to determine actual outcome...'}`);
+      }
+      
+      if (isInitialLoad && isExpired) {
+        console.log(`   ⚡ Fast mode: Marking expired signal as CLOSED without verification`);
+        updatedHistory[i] = {
+          ...signal,
+          status: "CLOSED" as const,
+          exitTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+        };
+        hasChanges = true;
+        continue;
       }
       
       const signalTime = new Date(signal.timestamp).getTime();
@@ -628,7 +672,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           timestamp: new Date(s.timestamp),
         }));
         
-        const evaluatedHistory = await catchUpAndEvaluateSignals(parsedHistory);
+        const evaluatedHistory = await catchUpAndEvaluateSignals(parsedHistory, true);
         setSignalHistory(evaluatedHistory);
         
         if (JSON.stringify(evaluatedHistory) !== JSON.stringify(parsedHistory)) {
@@ -768,7 +812,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     let maxDrawdown = 0;
     
     closedTrades.forEach(signal => {
-      const currentPrice = signalEngine.getCurrentPrice();
       let pnl = 0;
       
       if (signal.type === "BUY") {
@@ -981,7 +1024,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.error("Error:", error);
       console.error("Stack:", error instanceof Error ? error.stack : 'No stack trace');
     }
-  }, [settings, accountBalance, signalHistory]);
+  }, [settings, accountBalance, signalHistory, appLaunchTime]);
 
   const updateAllSignalsStatus = useCallback(() => {
     const price = signalEngine.getCurrentPrice();
@@ -1138,7 +1181,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       return updated ? updatedHistory : prevHistory;
     });
-  }, [setSignalUpdateTrigger]);
+  }, [signalUpdateTrigger]);
 
 
 
@@ -1176,6 +1219,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log('🛑 Signal generation system deactivated');
       clearInterval(signalInterval);
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoggedIn, isLoading, checkAndGenerateSignal]);
 
   const login = useCallback(async (username: string) => {
