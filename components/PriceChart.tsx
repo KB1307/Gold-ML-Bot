@@ -39,10 +39,14 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
     .tradingview-widget-container {
       width: 100%;
       height: 100%;
+      position: relative;
     }
     .tradingview-widget-container__widget {
       width: 100%;
       height: 100%;
+    }
+    .tradingview-widget-copyright {
+      display: none !important;
     }
   </style>
 </head>
@@ -50,29 +54,39 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
   <div class="tradingview-widget-container">
     <div class="tradingview-widget-container__widget"></div>
   </div>
-  <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
-  {
-    "autosize": true,
-    "symbol": "OANDA:XAUUSD",
-    "interval": "1",
-    "timezone": "Africa/Johannesburg",
-    "theme": "dark",
-    "style": "1",
-    "locale": "en",
-    "allow_symbol_change": true,
-    "calendar": false,
-    "hide_top_toolbar": false,
-    "hide_side_toolbar": true,
-    "hide_legend": false,
-    "hide_volume": false,
-    "hotlist": false,
-    "save_image": true,
-    "details": false,
-    "withdateranges": false,
-    "backgroundColor": "rgba(15, 15, 15, 1)",
-    "gridColor": "rgba(242, 242, 242, 0.06)",
-    "support_host": "https://www.tradingview.com"
-  }
+  <script type="text/javascript">
+    (function() {
+      var script = document.createElement('script');
+      script.type = 'text/javascript';
+      script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
+      script.async = true;
+      script.innerHTML = JSON.stringify({
+        "autosize": true,
+        "symbol": "OANDA:XAUUSD",
+        "interval": "1",
+        "timezone": "Africa/Johannesburg",
+        "theme": "dark",
+        "style": "1",
+        "locale": "en",
+        "allow_symbol_change": true,
+        "calendar": false,
+        "hide_top_toolbar": false,
+        "hide_side_toolbar": true,
+        "hide_legend": false,
+        "hide_volume": false,
+        "hotlist": false,
+        "save_image": true,
+        "details": false,
+        "withdateranges": false,
+        "backgroundColor": "rgba(15, 15, 15, 1)",
+        "gridColor": "rgba(242, 242, 242, 0.06)",
+        "support_host": "https://www.tradingview.com",
+        "width": "100%",
+        "height": "100%"
+      });
+      document.querySelector('.tradingview-widget-container__widget').appendChild(script);
+      console.log('TradingView script injected');
+    })();
   </script>
 </body>
 </html>
