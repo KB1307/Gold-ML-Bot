@@ -72,7 +72,7 @@ export const settingsRouter = createTRPCRouter({
       
       const settings = await db.select(`user_settings:${input.userId}`);
       
-      return settings || null;
+      return Array.isArray(settings) && settings.length > 0 ? settings[0] : null;
     }),
 
   saveMetrics: publicProcedure
@@ -101,7 +101,7 @@ export const settingsRouter = createTRPCRouter({
       
       const metrics = await db.select(`user_metrics:${input.userId}`);
       
-      return metrics || null;
+      return Array.isArray(metrics) && metrics.length > 0 ? metrics[0] : null;
     }),
 
   saveAccountSnapshot: publicProcedure
