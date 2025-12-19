@@ -1,20 +1,6 @@
 import { z } from "zod";
 import { createTRPCRouter, publicProcedure } from "../create-context";
-import { default as Surreal } from "surrealdb";
-
-const db = new Surreal();
-
-const initDB = async () => {
-  try {
-    await db.connect(process.env.EXPO_PUBLIC_RORK_DB_ENDPOINT!, {
-      namespace: process.env.EXPO_PUBLIC_RORK_DB_NAMESPACE!,
-      database: "trading_signals",
-    });
-    await db.authenticate(process.env.EXPO_PUBLIC_RORK_DB_TOKEN!);
-  } catch (error) {
-    console.error("DB connection error:", error);
-  }
-};
+import { getDB } from "../../db";
 
 const SettingsSchema = z.object({
   tp1Pips: z.number(),
@@ -52,7 +38,7 @@ export const settingsRouter = createTRPCRouter({
       settings: SettingsSchema,
     }))
     .mutation(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       const result = await db.merge(`user_settings:${input.userId}`, {
         ...input.settings,
@@ -68,7 +54,7 @@ export const settingsRouter = createTRPCRouter({
       userId: z.string().optional().default("default_user"),
     }))
     .query(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       const settings = await db.select(`user_settings:${input.userId}`);
       
@@ -81,7 +67,7 @@ export const settingsRouter = createTRPCRouter({
       metrics: MetricsSchema,
     }))
     .mutation(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       const result = await db.merge(`user_metrics:${input.userId}`, {
         ...input.metrics,
@@ -97,7 +83,7 @@ export const settingsRouter = createTRPCRouter({
       userId: z.string().optional().default("default_user"),
     }))
     .query(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       const metrics = await db.select(`user_metrics:${input.userId}`);
       
@@ -112,7 +98,7 @@ export const settingsRouter = createTRPCRouter({
       openPositions: z.number().optional(),
     }))
     .mutation(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       await db.create("account_snapshots", {
         userId: input.userId,
@@ -131,7 +117,7 @@ export const settingsRouter = createTRPCRouter({
       days: z.number().optional().default(30),
     }))
     .query(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       const cutoffDate = new Date();
       cutoffDate.setDate(cutoffDate.getDate() - input.days);

@@ -1,20 +1,6 @@
 import { z } from "zod";
 import { createTRPCRouter, publicProcedure } from "../create-context";
-import { default as Surreal } from "surrealdb";
-
-const db = new Surreal();
-
-const initDB = async () => {
-  try {
-    await db.connect(process.env.EXPO_PUBLIC_RORK_DB_ENDPOINT!, {
-      namespace: process.env.EXPO_PUBLIC_RORK_DB_NAMESPACE!,
-      database: "trading_signals",
-    });
-    await db.authenticate(process.env.EXPO_PUBLIC_RORK_DB_TOKEN!);
-  } catch (error) {
-    console.error("DB connection error:", error);
-  }
-};
+import { getDB } from "../../db";
 
 export const authRouter = createTRPCRouter({
   signInWithGoogle: publicProcedure
@@ -25,7 +11,7 @@ export const authRouter = createTRPCRouter({
       photoUrl: z.string().optional(),
     }))
     .mutation(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       const existingUsers = await db.query<any[][]>(
         `SELECT * FROM users WHERE googleId = $googleId LIMIT 1`,
@@ -77,7 +63,7 @@ export const authRouter = createTRPCRouter({
       googleId: z.string().optional(),
     }))
     .query(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       let query = "";
       let params = {};
@@ -117,7 +103,7 @@ export const authRouter = createTRPCRouter({
       userId: z.string(),
     }))
     .query(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       const result = await db.query<any[][]>(
         `SELECT isPremium, tier, subscriptionStatus, expiryDate FROM users WHERE id = $userId LIMIT 1`,

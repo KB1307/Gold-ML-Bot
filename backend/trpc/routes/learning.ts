@@ -1,20 +1,6 @@
 import { z } from "zod";
 import { createTRPCRouter, publicProcedure } from "../create-context";
-import { default as Surreal } from "surrealdb";
-
-const db = new Surreal();
-
-const initDB = async () => {
-  try {
-    await db.connect(process.env.EXPO_PUBLIC_RORK_DB_ENDPOINT!, {
-      namespace: process.env.EXPO_PUBLIC_RORK_DB_NAMESPACE!,
-      database: "trading_signals",
-    });
-    await db.authenticate(process.env.EXPO_PUBLIC_RORK_DB_TOKEN!);
-  } catch (error) {
-    console.error("DB connection error:", error);
-  }
-};
+import { getDB } from "../../db";
 
 export const learningRouter = createTRPCRouter({
   saveDailyOHLC: publicProcedure
@@ -28,7 +14,7 @@ export const learningRouter = createTRPCRouter({
       patterns: z.array(z.string()).optional(),
     }))
     .mutation(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       await db.create("daily_ohlc", {
         ...input,
@@ -43,7 +29,7 @@ export const learningRouter = createTRPCRouter({
       days: z.number().optional().default(100),
     }))
     .query(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       const ohlc = await db.query<any[][]>(`
         SELECT * FROM daily_ohlc
@@ -66,7 +52,7 @@ export const learningRouter = createTRPCRouter({
       }),
     }))
     .mutation(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       await db.create("model_weights", {
         ...input,
@@ -79,7 +65,7 @@ export const learningRouter = createTRPCRouter({
 
   getLatestModelWeights: publicProcedure
     .query(async () => {
-      await initDB();
+      const db = await getDB();
       
       const weights = await db.query<any[][]>(`
         SELECT * FROM model_weights
@@ -100,7 +86,7 @@ export const learningRouter = createTRPCRouter({
       })),
     }))
     .mutation(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       await db.create("feature_importance", {
         features: input.features,
@@ -112,7 +98,7 @@ export const learningRouter = createTRPCRouter({
 
   getFeatureImportance: publicProcedure
     .query(async () => {
-      await initDB();
+      const db = await getDB();
       
       const importance = await db.query<any[][]>(`
         SELECT * FROM feature_importance
@@ -125,7 +111,7 @@ export const learningRouter = createTRPCRouter({
 
   calculateConfidenceAdjustments: publicProcedure
     .query(async () => {
-      await initDB();
+      const db = await getDB();
       
       const recentSignals = await db.query<any[][]>(`
         SELECT 

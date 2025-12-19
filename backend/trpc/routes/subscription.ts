@@ -1,20 +1,6 @@
 import { z } from "zod";
 import { createTRPCRouter, publicProcedure } from "../create-context";
-import { default as Surreal } from "surrealdb";
-
-const db = new Surreal();
-
-const initDB = async () => {
-  try {
-    await db.connect(process.env.EXPO_PUBLIC_RORK_DB_ENDPOINT!, {
-      namespace: process.env.EXPO_PUBLIC_RORK_DB_NAMESPACE!,
-      database: "trading_signals",
-    });
-    await db.authenticate(process.env.EXPO_PUBLIC_RORK_DB_TOKEN!);
-  } catch (error) {
-    console.error("DB connection error:", error);
-  }
-};
+import { getDB } from "../../db";
 
 export const subscriptionRouter = createTRPCRouter({
   updateSubscription: publicProcedure
@@ -28,7 +14,7 @@ export const subscriptionRouter = createTRPCRouter({
       status: z.enum(['active', 'cancelled', 'expired', 'grace_period', 'none']),
     }))
     .mutation(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       await db.merge(input.userId, {
         tier: input.tier,
@@ -62,7 +48,7 @@ export const subscriptionRouter = createTRPCRouter({
       productId: z.string().optional(),
     }))
     .mutation(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       console.log(`🔔 Webhook received: ${input.eventType} for user ${input.userId}`);
       
@@ -164,7 +150,7 @@ export const subscriptionRouter = createTRPCRouter({
       userId: z.string(),
     }))
     .query(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       const events = await db.query<any[][]>(
         `SELECT * FROM subscription_events WHERE userId = $userId ORDER BY timestamp DESC`,

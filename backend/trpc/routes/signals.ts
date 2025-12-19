@@ -1,20 +1,6 @@
 import { z } from "zod";
 import { createTRPCRouter, publicProcedure } from "../create-context";
-import { default as Surreal } from "surrealdb";
-
-const db = new Surreal();
-
-const initDB = async () => {
-  try {
-    await db.connect(process.env.EXPO_PUBLIC_RORK_DB_ENDPOINT!, {
-      namespace: process.env.EXPO_PUBLIC_RORK_DB_NAMESPACE!,
-      database: "trading_signals",
-    });
-    await db.authenticate(process.env.EXPO_PUBLIC_RORK_DB_TOKEN!);
-  } catch (error) {
-    console.error("DB connection error:", error);
-  }
-};
+import { getDB } from "../../db";
 
 const SignalDataSchema = z.object({
   id: z.string(),
@@ -56,7 +42,7 @@ export const signalsRouter = createTRPCRouter({
   saveSignal: publicProcedure
     .input(SignalDataSchema)
     .mutation(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       const result = await db.create("signals", {
         ...input,
@@ -77,7 +63,7 @@ export const signalsRouter = createTRPCRouter({
       actualOutcome: z.enum(["WIN", "LOSS", "PARTIAL"]),
     }))
     .mutation(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       await db.merge(`signals:${input.id}`, {
         status: input.status,
@@ -98,7 +84,7 @@ export const signalsRouter = createTRPCRouter({
       status: z.string().optional(),
     }))
     .query(async ({ input }) => {
-      await initDB();
+      const db = await getDB();
       
       let query = "SELECT * FROM signals";
       if (input.status) {
@@ -116,7 +102,7 @@ export const signalsRouter = createTRPCRouter({
 
   getMLTrainingData: publicProcedure
     .query(async () => {
-      await initDB();
+      const db = await getDB();
       
       const completedSignals = await db.query<any[][]>(`
         SELECT 
@@ -139,7 +125,7 @@ export const signalsRouter = createTRPCRouter({
 
   getPerformanceAnalytics: publicProcedure
     .query(async () => {
-      await initDB();
+      const db = await getDB();
       
       const analytics = await db.query<any[][]>(`
         SELECT 
@@ -159,7 +145,7 @@ export const signalsRouter = createTRPCRouter({
 
   getFeaturePerformance: publicProcedure
     .query(async () => {
-      await initDB();
+      const db = await getDB();
       
       const featureStats = await db.query<any[][]>(`
         SELECT 
