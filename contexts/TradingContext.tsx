@@ -10,7 +10,7 @@ import {
   requestNotificationPermissions,
   sendSignalNotification,
 } from "@/services/backgroundTaskService";
-import { useSignalSync } from "@/hooks/useSignalSync";
+// import { useSignalSync } from "@/hooks/useSignalSync";
 import * as WebBrowser from "expo-web-browser";
 
 WebBrowser.maybeCompleteAuthSession();
@@ -74,7 +74,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [appLaunchTime] = useState<number>(Date.now());
   const [backgroundTaskActive, setBackgroundTaskActive] = useState<boolean>(false);
 
-  useSignalSync(signalHistory, performanceMetrics, settings, accountBalance);
+  // useSignalSync(signalHistory, performanceMetrics, settings, accountBalance);
 
   useEffect(() => {
     const init = async () => {
