@@ -6,12 +6,11 @@ import { signalEngine } from "@/services/signalEngine";
 import { Platform } from "react-native";
 import { 
   registerBackgroundTask, 
+  setupNotificationChannel, 
+  requestNotificationPermissions,
   sendSignalNotification,
+  getBackgroundTaskStatus 
 } from "@/services/backgroundTaskService";
-// import { useSignalSync } from "@/hooks/useSignalSync";
-import * as WebBrowser from "expo-web-browser";
-
-WebBrowser.maybeCompleteAuthSession();
 
 const DEFAULT_SETTINGS: Settings = {
   tp1Pips: 20,
@@ -47,17 +46,8 @@ interface PriceDataPoint {
   price: number;
 }
 
-interface UserProfile {
-  id: string;
-  email: string;
-  name: string;
-  picture?: string;
-  googleId: string;
-}
-
 export const [TradingProvider, useTrading] = createContextHook(() => {
-  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(false);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(true);
   const [signalHistory, setSignalHistory] = useState<TradingSignal[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [marketOutlook, setMarketOutlook] = useState<MarketOutlook | null>(null);
@@ -72,36 +62,39 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [appLaunchTime] = useState<number>(Date.now());
   const [backgroundTaskActive, setBackgroundTaskActive] = useState<boolean>(false);
 
-  // useSignalSync(signalHistory, performanceMetrics, settings, accountBalance);
-
   useEffect(() => {
     const init = async () => {
       console.log('🚀 Initializing Trading Context...');
-      
-      const safetyTimeout = setTimeout(() => {
-        console.error('⏰ SAFETY TIMEOUT - Force loading app');
-        setIsLoading(false);
-      }, 3000);
-      
       try {
-        console.log('📦 Loading persisted data...');
-        await Promise.race([
-          loadPersistedData(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 2000))
-        ]).catch(error => {
-          console.error('⚠️ Load failed:', error);
-        });
-        
-        console.log('✅ Trading Context initialized');
+        const loadedDailyOHLC = await signalEngine.loadPersistedLearningData();
+        await loadPersistedData();
+        if (loadedDailyOHLC && loadedDailyOHLC.length > 0) {
+          setDailyOHLCHistory(loadedDailyOHLC);
+        }
+
+        if (Platform.OS !== 'web') {
+          console.log('📱 Setting up mobile features...');
+          await setupNotificationChannel();
+          await requestNotificationPermissions();
+          
+          if (settings.enableNotifications) {
+            const registered = await registerBackgroundTask();
+            setBackgroundTaskActive(registered);
+            
+            if (registered) {
+              console.log('✅ Background signal generation active');
+              console.log('   - App will generate signals even when closed');
+              console.log('   - Push notifications enabled');
+            }
+          }
+        }
+
+        console.log('✅ Trading Context initialized successfully');
       } catch (error) {
-        console.error('❌ Init error:', error);
-      } finally {
-        clearTimeout(safetyTimeout);
+        console.error('❌ Failed to initialize Trading Context:', error);
         setIsLoading(false);
-        console.log('✅ App ready');
       }
     };
-    
     init();
   }, []);
 
@@ -162,23 +155,462 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     return () => clearInterval(interval);
   }, []);
 
+  const fetchPriceHistory = async (fromTime: number, toTime: number): Promise<Array<{timestamp: number, open: number, high: number, low: number, close: number}>> => {
+    try {
+      console.log(`📊 Fetching historical 1-MINUTE OHLCV data (UPGRADED)...`);
+      console.log(`   From: ${new Date(fromTime).toISOString()}`);
+      console.log(`   To: ${new Date(toTime).toISOString()}`);
+      console.log(`   Duration: ${((toTime - fromTime) / 1000 / 60).toFixed(1)} minutes`);
+      console.log(`   ⚠️ Resolution: 1-MINUTE BARS (60-second window, minimal ambiguity)`);
+      
+      const url = Platform.OS === 'web' 
+        ? `https://corsproxy.io/?${encodeURIComponent('https://query2.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d')}`
+        : 'https://query2.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d';
+      
+      const response = await fetch(url, {
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (compatible; TradingApp/1.0)',
+        },
+      });
+      
+      if (!response.ok) {
+        console.error(`❌ Failed to fetch price history: HTTP ${response.status}`);
+        return [];
+      }
+      
+      const data = await response.json();
+      
+      if (!data?.chart?.result?.[0]?.timestamp) {
+        console.error('❌ Invalid response format from Yahoo Finance');
+        return [];
+      }
+      
+      const result = data.chart.result[0];
+      const timestamps = result.timestamp;
+      const quotes = result.indicators.quote[0];
+      
+      const bars: Array<{timestamp: number, open: number, high: number, low: number, close: number}> = [];
+      
+      for (let i = 0; i < timestamps.length; i++) {
+        const barTime = timestamps[i] * 1000;
+        
+        if (barTime >= fromTime && barTime <= toTime) {
+          const open = quotes.open[i];
+          const high = quotes.high[i];
+          const low = quotes.low[i];
+          const close = quotes.close[i];
+          
+          if (open !== null && high !== null && low !== null && close !== null) {
+            bars.push({
+              timestamp: barTime,
+              open,
+              high,
+              low,
+              close,
+            });
+          }
+        }
+      }
+      
+      console.log(`✅ Fetched ${bars.length} historical 1-MINUTE bars (Upgraded Resolution)`);
+      if (bars.length > 0) {
+        console.log(`   First bar: ${new Date(bars[0].timestamp).toISOString()} - Close: ${bars[0].close.toFixed(2)}`);
+        console.log(`   Last bar: ${new Date(bars[bars.length - 1].timestamp).toISOString()} - Close: ${bars[bars.length - 1].close.toFixed(2)}`);
+        console.log(`   Bar Ambiguity Window: 60 seconds (vs. 300 seconds with 5min bars)`);
+        console.log(`   Accuracy Improvement: ~83% reduction in unobservable time`);
+      }
+      
+      return bars;
+    } catch (error) {
+      console.error('❌ Error fetching price history:', error);
+      return [];
+    }
+  };
 
+  const analyzeSignalWithHistoricalData = async (
+    signal: TradingSignal,
+    historicalBars: Array<{timestamp: number, open: number, high: number, low: number, close: number}>
+  ): Promise<{newStatus: SignalStatus, targetsHit: number, exitPrice: number, outcomeResult: 'WIN' | 'LOSS' | null}> => {
+    console.log(`\n📊 UPGRADED SEQUENTIAL ANALYSIS (1-Min Bars)`);
+    console.log(`   Signal ID: ${signal.id.slice(-6)}`);
+    console.log(`   Signal Type: ${signal.type}`);
+    console.log(`   Entry Range: ${signal.entryPrice.toFixed(1)} - ${signal.entryPriceWithSlippage.toFixed(1)}`);
+    console.log(`   TP1: ${signal.tp1.toFixed(1)} | TP2: ${signal.tp2.toFixed(1)} | TP3: ${signal.tp3.toFixed(1)}`);
+    console.log(`   SL: ${signal.sl.toFixed(1)}`);
+    console.log(`   Current Targets Hit: ${signal.targetsHit}`);
+    console.log(`   Historical Bars: ${historicalBars.length} (1-minute resolution)`);
+    
+    let currentStatus = signal.status;
+    let currentTargetsHit = signal.targetsHit;
+    let exitPrice = signal.entryPrice;
+    let outcomeResult: 'WIN' | 'LOSS' | null = null;
+    let entryConfirmed = false;
+    let currentSL = signal.sl;
+    let tp1HitTime: number | null = null;
+    
+    const entryMin = Math.min(signal.entryPrice, signal.entryPriceWithSlippage);
+    const entryMax = Math.max(signal.entryPrice, signal.entryPriceWithSlippage);
+    const ENTRY_TOLERANCE = 1.0;
+    
+    console.log(`\n🔍 STEP 1: Entry Validation (${signal.type})`);
+    console.log(`   Entry Zone: ${(entryMin - ENTRY_TOLERANCE).toFixed(1)} - ${(entryMax + ENTRY_TOLERANCE).toFixed(1)}`);
+    
+    for (let i = 0; i < historicalBars.length; i++) {
+      const bar = historicalBars[i];
+      
+      if (!entryConfirmed) {
+        const touchedEntryZone = signal.type === "BUY" 
+          ? bar.low <= (entryMax + ENTRY_TOLERANCE) && bar.high >= (entryMin - ENTRY_TOLERANCE)
+          : bar.high >= (entryMin - ENTRY_TOLERANCE) && bar.low <= (entryMax + ENTRY_TOLERANCE);
+        
+        if (touchedEntryZone) {
+          entryConfirmed = true;
+          console.log(`   ✅ ENTRY CONFIRMED on bar ${i + 1}/${historicalBars.length}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Bar H/L: ${bar.high.toFixed(1)}/${bar.low.toFixed(1)}`);
+        }
+        continue;
+      }
+      
+      console.log(`   [Bar ${i+1}] ${new Date(bar.timestamp).toLocaleTimeString()} - H:${bar.high.toFixed(1)} L:${bar.low.toFixed(1)} C:${bar.close.toFixed(1)}`);
+      
+      if (signal.type === "BUY") {
+        if (bar.low <= currentSL) {
+          console.log(`   🚨 SL HIT on bar ${i + 1}/${historicalBars.length}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Bar Low: ${bar.low.toFixed(1)} <= SL: ${currentSL.toFixed(1)}`);
+          
+          if (currentTargetsHit > 0) {
+            currentStatus = "PARTIAL_WIN_SL_HIT";
+            exitPrice = currentSL;
+            outcomeResult = 'WIN';
+            console.log(`      📊 Result: PARTIAL WIN (TP${currentTargetsHit} hit before SL)`);
+          } else {
+            currentStatus = "SL_HIT";
+            exitPrice = currentSL;
+            outcomeResult = 'LOSS';
+            console.log(`      📊 Result: LOSS (SL hit before any TP)`);
+          }
+          break;
+        }
+        
+        if (bar.high >= signal.tp3 && currentTargetsHit < 3) {
+          console.log(`   🎯🎯🎯 TP3 HIT on bar ${i + 1}/${historicalBars.length}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Bar High: ${bar.high.toFixed(1)} >= TP3: ${signal.tp3.toFixed(1)}`);
+          currentStatus = "ALL_TARGETS_HIT";
+          currentTargetsHit = 3;
+          exitPrice = signal.tp3;
+          outcomeResult = 'WIN';
+          console.log(`      📊 Result: FULL WIN (All targets hit)`);
+          break;
+        } else if (bar.high >= signal.tp2 && currentTargetsHit < 2) {
+          console.log(`   🎯🎯 TP2 HIT on bar ${i + 1}/${historicalBars.length}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Bar High: ${bar.high.toFixed(1)} >= TP2: ${signal.tp2.toFixed(1)}`);
+          currentStatus = "TP2_HIT";
+          currentTargetsHit = 2;
+          exitPrice = signal.tp2;
+          console.log(`      🔓 Lock released - Can generate new signals`);
+        } else if (bar.high >= signal.tp1 && currentTargetsHit < 1) {
+          console.log(`   🎯 TP1 HIT on bar ${i + 1}/${historicalBars.length}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Bar High: ${bar.high.toFixed(1)} >= TP1: ${signal.tp1.toFixed(1)}`);
+          currentStatus = "TP1_HIT";
+          currentTargetsHit = 1;
+          exitPrice = signal.tp1;
+          tp1HitTime = bar.timestamp;
+          
+          currentSL = signal.entryPrice;
+          console.log(`      📌 SL MOVED TO BREAKEVEN: ${currentSL.toFixed(1)} (from ${signal.sl.toFixed(1)})`);
+        }
+      } else {
+        if (bar.high >= currentSL) {
+          console.log(`   🚨 SL HIT on bar ${i + 1}/${historicalBars.length}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Bar High: ${bar.high.toFixed(1)} >= SL: ${currentSL.toFixed(1)}`);
+          
+          if (currentTargetsHit > 0) {
+            currentStatus = "PARTIAL_WIN_SL_HIT";
+            exitPrice = currentSL;
+            outcomeResult = 'WIN';
+            console.log(`      📊 Result: PARTIAL WIN (TP${currentTargetsHit} hit before SL)`);
+          } else {
+            currentStatus = "SL_HIT";
+            exitPrice = currentSL;
+            outcomeResult = 'LOSS';
+            console.log(`      📊 Result: LOSS (SL hit before any TP)`);
+          }
+          break;
+        }
+        
+        if (bar.low <= signal.tp3 && currentTargetsHit < 3) {
+          console.log(`   🎯🎯🎯 TP3 HIT on bar ${i + 1}/${historicalBars.length}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Bar Low: ${bar.low.toFixed(1)} <= TP3: ${signal.tp3.toFixed(1)}`);
+          currentStatus = "ALL_TARGETS_HIT";
+          currentTargetsHit = 3;
+          exitPrice = signal.tp3;
+          outcomeResult = 'WIN';
+          console.log(`      📊 Result: FULL WIN (All targets hit)`);
+          break;
+        } else if (bar.low <= signal.tp2 && currentTargetsHit < 2) {
+          console.log(`   🎯🎯 TP2 HIT on bar ${i + 1}/${historicalBars.length}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Bar Low: ${bar.low.toFixed(1)} <= TP2: ${signal.tp2.toFixed(1)}`);
+          currentStatus = "TP2_HIT";
+          currentTargetsHit = 2;
+          exitPrice = signal.tp2;
+          console.log(`      🔓 Lock released - Can generate new signals`);
+        } else if (bar.low <= signal.tp1 && currentTargetsHit < 1) {
+          console.log(`   🎯 TP1 HIT on bar ${i + 1}/${historicalBars.length}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Bar Low: ${bar.low.toFixed(1)} <= TP1: ${signal.tp1.toFixed(1)}`);
+          currentStatus = "TP1_HIT";
+          currentTargetsHit = 1;
+          exitPrice = signal.tp1;
+          tp1HitTime = bar.timestamp;
+          
+          currentSL = signal.entryPrice;
+          console.log(`      📌 SL MOVED TO BREAKEVEN: ${currentSL.toFixed(1)} (from ${signal.sl.toFixed(1)})`);
+        }
+      }
+    }
+    
+    if (!entryConfirmed) {
+      console.log(`   ❌ ENTRY VALIDATION FAILED: Price never entered the entry zone`);
+      console.log(`      Signal marked as EXPIRED_MISSED_ENTRY`);
+      currentStatus = "EXPIRED_MISSED_ENTRY";
+      outcomeResult = null;
+    }
+    
+    console.log(`\n✅ Analysis Complete:`);
+    console.log(`   Final Status: ${currentStatus}`);
+    console.log(`   Targets Hit: ${currentTargetsHit}/3`);
+    console.log(`   Exit Price: ${exitPrice.toFixed(1)}`);
+    console.log(`   Outcome: ${outcomeResult || 'N/A'}`);
+    if (tp1HitTime) {
+      console.log(`   TP1 Hit Time: ${new Date(tp1HitTime).toLocaleTimeString()}`);
+    }
+    
+    return {
+      newStatus: currentStatus,
+      targetsHit: currentTargetsHit,
+      exitPrice,
+      outcomeResult,
+    };
+  };
+
+  const catchUpAndEvaluateSignals = async (history: TradingSignal[]) => {
+    console.log('\n' + '='.repeat(80));
+    console.log('🔄 SIGNAL CATCH-UP EVALUATION INITIATED');
+    console.log('='.repeat(80));
+    console.log('   Checking for stale ACTIVE signals that need evaluation...');
+    
+    const now = Date.now();
+    const currentPrice = signalEngine.getCurrentPrice();
+    const twoHoursInMs = 2 * 60 * 60 * 1000;
+    
+    let updatedHistory = [...history];
+    let hasChanges = false;
+    
+    for (let i = 0; i < updatedHistory.length; i++) {
+      const signal = updatedHistory[i];
+      
+      if (signal.status === "CLOSED" || signal.status === "SL_HIT" || signal.status === "ALL_TARGETS_HIT") {
+        continue;
+      }
+      
+      const signalAge = now - new Date(signal.timestamp).getTime();
+      console.log(`\n🔍 Evaluating Signal ${signal.id.slice(-6)}:`);
+      console.log(`   Type: ${signal.type}`);
+      console.log(`   Status: ${signal.status}`);
+      console.log(`   Entry: ${signal.entryPrice.toFixed(1)}`);
+      console.log(`   Age: ${(signalAge / 1000 / 60 / 60).toFixed(1)} hours`);
+      console.log(`   TP1: ${signal.tp1.toFixed(1)} | TP2: ${signal.tp2.toFixed(1)} | TP3: ${signal.tp3.toFixed(1)}`);
+      console.log(`   SL: ${signal.sl.toFixed(1)}`);
+      
+      if (signalAge > twoHoursInMs) {
+        console.log(`   ⏰ Signal expired (>2 hours) - marking as CLOSED`);
+        updatedHistory[i] = {
+          ...signal,
+          status: "CLOSED" as const,
+          exitTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+        };
+        hasChanges = true;
+        
+        await signalEngine.recordTradeOutcome(
+          signal.id,
+          signal.entryPrice,
+          currentPrice,
+          'LOSS',
+          {} as any,
+          undefined,
+          signalAge
+        ).catch(err => {
+          console.error(`Failed to record expired signal outcome:`, err);
+        });
+        continue;
+      }
+      
+      const signalTime = new Date(signal.timestamp).getTime();
+      const historicalBars = await fetchPriceHistory(signalTime, now);
+      
+      if (historicalBars.length === 0) {
+        console.log(`   ⚠️ No historical data available - using current price fallback`);
+        
+        let newStatus: SignalStatus = signal.status as SignalStatus;
+        let targetsHit = signal.targetsHit;
+        let shouldRecord = false;
+        let outcomeResult: 'WIN' | 'LOSS' = 'LOSS';
+        let exitPrice = currentPrice;
+        
+        if (signal.type === "BUY") {
+          if (currentPrice <= signal.sl) {
+            console.log(`   🚨 CATCH-UP (Fallback): Stop Loss hit @ ${currentPrice.toFixed(1)} (SL: ${signal.sl.toFixed(1)})`);
+            newStatus = "SL_HIT";
+            shouldRecord = true;
+            outcomeResult = 'LOSS';
+            exitPrice = signal.sl;
+          } else if (currentPrice >= signal.tp3) {
+            console.log(`   🎯 CATCH-UP (Fallback): All targets hit @ ${currentPrice.toFixed(1)} (TP3: ${signal.tp3.toFixed(1)})`);
+            newStatus = "ALL_TARGETS_HIT";
+            targetsHit = 3;
+            shouldRecord = true;
+            outcomeResult = 'WIN';
+            exitPrice = signal.tp3;
+          } else if (currentPrice >= signal.tp2 && targetsHit < 2) {
+            console.log(`   🎯 CATCH-UP (Fallback): TP2 hit @ ${currentPrice.toFixed(1)} (TP2: ${signal.tp2.toFixed(1)})`);
+            newStatus = "TP2_HIT";
+            targetsHit = 2;
+          } else if (currentPrice >= signal.tp1 && targetsHit < 1) {
+            console.log(`   🎯 CATCH-UP (Fallback): TP1 hit @ ${currentPrice.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)})`);
+            newStatus = "TP1_HIT";
+            targetsHit = 1;
+          }
+        } else {
+          if (currentPrice >= signal.sl) {
+            console.log(`   🚨 CATCH-UP (Fallback): Stop Loss hit @ ${currentPrice.toFixed(1)} (SL: ${signal.sl.toFixed(1)})`);
+            newStatus = "SL_HIT";
+            shouldRecord = true;
+            outcomeResult = 'LOSS';
+            exitPrice = signal.sl;
+          } else if (currentPrice <= signal.tp3) {
+            console.log(`   🎯 CATCH-UP (Fallback): All targets hit @ ${currentPrice.toFixed(1)} (TP3: ${signal.tp3.toFixed(1)})`);
+            newStatus = "ALL_TARGETS_HIT";
+            targetsHit = 3;
+            shouldRecord = true;
+            outcomeResult = 'WIN';
+            exitPrice = signal.tp3;
+          } else if (currentPrice <= signal.tp2 && targetsHit < 2) {
+            console.log(`   🎯 CATCH-UP (Fallback): TP2 hit @ ${currentPrice.toFixed(1)} (TP2: ${signal.tp2.toFixed(1)})`);
+            newStatus = "TP2_HIT";
+            targetsHit = 2;
+          } else if (currentPrice <= signal.tp1 && targetsHit < 1) {
+            console.log(`   🎯 CATCH-UP (Fallback): TP1 hit @ ${currentPrice.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)})`);
+            newStatus = "TP1_HIT";
+            targetsHit = 1;
+          }
+        }
+        
+        if (newStatus !== signal.status || targetsHit !== signal.targetsHit) {
+          hasChanges = true;
+          const exitDate = new Date();
+          
+          updatedHistory[i] = {
+            ...signal,
+            status: newStatus,
+            targetsHit,
+            exitTime: (newStatus === "SL_HIT" || newStatus === "ALL_TARGETS_HIT") 
+              ? exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+              : signal.exitTime,
+          };
+          
+          if (shouldRecord) {
+            console.log(`   📊 Recording ${outcomeResult} outcome for learning engine...`);
+            await signalEngine.recordTradeOutcome(
+              signal.id,
+              signal.entryPrice,
+              exitPrice,
+              outcomeResult,
+              {} as any,
+              undefined,
+              signalAge
+            ).catch(err => {
+              console.error(`Failed to record catch-up outcome:`, err);
+            });
+          }
+        } else {
+          console.log(`   ✅ Signal still valid - no changes needed`);
+        }
+      } else {
+        const analysis = await analyzeSignalWithHistoricalData(signal, historicalBars);
+        
+        if (analysis.newStatus !== signal.status || analysis.targetsHit !== signal.targetsHit) {
+          hasChanges = true;
+          const exitDate = new Date();
+          
+          updatedHistory[i] = {
+            ...signal,
+            status: analysis.newStatus,
+            targetsHit: analysis.targetsHit,
+            exitTime: (analysis.newStatus === "SL_HIT" || analysis.newStatus === "ALL_TARGETS_HIT") 
+              ? exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+              : signal.exitTime,
+          };
+          
+          if (analysis.outcomeResult) {
+            console.log(`   📊 Recording ${analysis.outcomeResult} outcome for learning engine...`);
+            await signalEngine.recordTradeOutcome(
+              signal.id,
+              signal.entryPrice,
+              analysis.exitPrice,
+              analysis.outcomeResult,
+              {} as any,
+              undefined,
+              signalAge
+            ).catch(err => {
+              console.error(`Failed to record catch-up outcome:`, err);
+            });
+          }
+        } else {
+          console.log(`   ✅ Signal still valid - no changes needed`);
+        }
+      }
+    }
+    
+    console.log('\n' + '='.repeat(80));
+    if (hasChanges) {
+      console.log('✅ CATCH-UP COMPLETE: Signal statuses updated');
+      console.log(`   Updated signals will be saved to AsyncStorage`);
+    } else {
+      console.log('✅ CATCH-UP COMPLETE: All signals were up-to-date');
+    }
+    console.log('='.repeat(80) + '\n');
+    
+    return updatedHistory;
+  };
 
   const loadPersistedData = async () => {
     try {
-      console.log('🔄 Loading from storage...');
-      const [savedSettings, savedHistory, loginStatus, savedMetrics, savedBalance, savedUserProfile] = await Promise.all([
+      console.log('🔄 Loading persisted data from AsyncStorage...');
+      const [savedSettings, savedHistory, loginStatus, savedMetrics, savedBalance] = await Promise.all([
         AsyncStorage.getItem("trading_settings"),
         AsyncStorage.getItem("signal_history"),
         AsyncStorage.getItem("is_logged_in"),
         AsyncStorage.getItem("performance_metrics"),
         AsyncStorage.getItem("account_balance"),
-        AsyncStorage.getItem("user_profile"),
       ]);
 
+      console.log('📦 Raw saved history from storage:', savedHistory);
+
       if (savedSettings) {
-        setSettings(JSON.parse(savedSettings));
+        const parsedSettings = JSON.parse(savedSettings);
+        setSettings(parsedSettings);
+        console.log('✅ Settings loaded:', parsedSettings);
       } else {
+        console.log('⚠️ No saved settings found - using defaults');
         setSettings(DEFAULT_SETTINGS);
       }
 
@@ -188,42 +620,67 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           ...s,
           timestamp: new Date(s.timestamp),
         }));
-        setSignalHistory(parsedHistory);
-        console.log(`✅ Loaded ${parsedHistory.length} signals`);
+        
+        const evaluatedHistory = await catchUpAndEvaluateSignals(parsedHistory);
+        setSignalHistory(evaluatedHistory);
+        
+        if (JSON.stringify(evaluatedHistory) !== JSON.stringify(parsedHistory)) {
+          await AsyncStorage.setItem("signal_history", JSON.stringify(evaluatedHistory));
+          console.log('💾 Updated signal history saved after catch-up evaluation');
+        }
+        
+        console.log(`✅ History loaded: ${evaluatedHistory.length} signals`);
+        console.log('📊 First 2 signals:', evaluatedHistory.slice(0, 2).map((s: TradingSignal) => ({
+          id: s.id.slice(-6),
+          type: s.type,
+          status: s.status,
+          entry: s.entryPrice
+        })));
       } else {
+        console.log('⚠️ No saved history found in AsyncStorage');
         setSignalHistory([]);
       }
 
       if (loginStatus) {
-        setIsLoggedIn(JSON.parse(loginStatus));
+        const parsedLoginStatus = JSON.parse(loginStatus);
+        setIsLoggedIn(parsedLoginStatus);
+        console.log('✅ Login status loaded:', parsedLoginStatus);
       } else {
+        console.log('⚠️ No login status found - defaulting to logged in');
         setIsLoggedIn(true);
       }
 
-      if (savedUserProfile) {
-        setUserProfile(JSON.parse(savedUserProfile));
-      }
-
       if (savedMetrics) {
-        setPerformanceMetrics(JSON.parse(savedMetrics));
+        const parsedMetrics = JSON.parse(savedMetrics);
+        setPerformanceMetrics(parsedMetrics);
+        console.log('✅ Metrics loaded');
       } else {
+        console.log('⚠️ No saved metrics found - using defaults');
         setPerformanceMetrics(DEFAULT_METRICS);
       }
 
       if (savedBalance) {
-        setAccountBalance(JSON.parse(savedBalance));
+        const parsedBalance = JSON.parse(savedBalance);
+        setAccountBalance(parsedBalance);
+        console.log('✅ Balance loaded:', parsedBalance);
       } else {
+        console.log('⚠️ No saved balance found - using default: 100');
         setAccountBalance(100);
       }
 
-      console.log('✅ Data loaded');
+      console.log('✅ All persisted data loaded successfully');
     } catch (error) {
-      console.error("❌ Load error:", error);
+      console.error("❌ Failed to load persisted data:", error);
       setSignalHistory([]);
       setSettings(DEFAULT_SETTINGS);
       setPerformanceMetrics(DEFAULT_METRICS);
       setAccountBalance(100);
       setIsLoggedIn(true);
+    } finally {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      setIsLoading(false);
+      console.log('✅ Loading complete - UI will render now');
+      console.log(`🛡️ Launch cooldown active: Signal generation will wait 5 seconds to prevent race conditions`);
     }
   };
 
@@ -304,6 +761,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     let maxDrawdown = 0;
     
     closedTrades.forEach(signal => {
+      const currentPrice = signalEngine.getCurrentPrice();
       let pnl = 0;
       
       if (signal.type === "BUY") {
@@ -516,7 +974,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.error("Error:", error);
       console.error("Stack:", error instanceof Error ? error.stack : 'No stack trace');
     }
-  }, [settings, accountBalance, signalHistory, appLaunchTime]);
+  }, [settings, accountBalance, signalHistory]);
 
   const updateAllSignalsStatus = useCallback(() => {
     const price = signalEngine.getCurrentPrice();
@@ -673,7 +1131,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       return updated ? updatedHistory : prevHistory;
     });
-  }, [signalUpdateTrigger]);
+  }, [setSignalUpdateTrigger]);
 
 
 
@@ -711,7 +1169,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log('🛑 Signal generation system deactivated');
       clearInterval(signalInterval);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoggedIn, isLoading, checkAndGenerateSignal]);
 
   const login = useCallback(async (username: string) => {
@@ -722,43 +1179,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   const logout = useCallback(async () => {
     setIsLoggedIn(false);
-    setUserProfile(null);
-    await AsyncStorage.multiRemove(["is_logged_in", "user_profile"]);
-    console.log('User logged out');
-  }, []);
-
-  const loginWithGoogle = useCallback(async (accessToken: string) => {
-    try {
-      console.log('🔐 Authenticating with Google...');
-      
-      const response = await fetch('https://www.googleapis.com/userinfo/v2/me', {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      
-      const user = await response.json();
-      
-      const profile: UserProfile = {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        picture: user.picture,
-        googleId: user.id,
-      };
-      
-      setUserProfile(profile);
-      setIsLoggedIn(true);
-      
-      await AsyncStorage.multiSet([
-        ["user_profile", JSON.stringify(profile)],
-        ["is_logged_in", JSON.stringify(true)],
-      ]);
-      
-      console.log(`✅ User logged in: ${profile.email}`);
-      return profile;
-    } catch (error) {
-      console.error('❌ Google login failed:', error);
-      throw error;
-    }
+    await AsyncStorage.setItem("is_logged_in", JSON.stringify(false));
   }, []);
 
   const clearHistory = useCallback(async () => {
@@ -830,10 +1251,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     priceHistory,
     dailyOHLCHistory,
     signalUpdateTrigger,
-    userProfile,
     login,
     logout,
-    loginWithGoogle,
     clearHistory,
     updateSettings,
     deleteSignalFromHistory,

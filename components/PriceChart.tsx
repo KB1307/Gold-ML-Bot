@@ -1,5 +1,5 @@
-import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
-import { useState, memo, useMemo } from "react";
+import { View, StyleSheet, Platform } from "react-native";
+import { useState, useEffect, useRef } from "react";
 import { WebView } from "react-native-webview";
 
 interface PriceDataPoint {
@@ -12,87 +12,94 @@ interface PriceChartProps {
   currentPrice: number;
 }
 
-function PriceChart({ data, currentPrice }: PriceChartProps) {
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [hasError, setHasError] = useState<boolean>(false);
+export default function PriceChart({ data, currentPrice }: PriceChartProps) {
+  const [chartKey, setChartKey] = useState<number>(0);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
-  const widgetUrl = useMemo(() => {
-    const config = {
-      autosize: true,
-      symbol: 'OANDA:XAUUSD',
-      interval: '1',
-      timezone: 'Africa/Johannesburg',
-      theme: 'dark',
-      style: '1',
-      allow_symbol_change: true,
-      hide_top_toolbar: false,
-      hide_side_toolbar: true,
-      hide_legend: false,
-      hide_volume: false,
-      hotlist: false,
-      save_image: true,
-      details: false,
-      withdateranges: false,
-      backgroundColor: 'rgba(15, 15, 15, 1)',
-      gridColor: 'rgba(242, 242, 242, 0.06)',
-      support_host: 'https://www.tradingview.com',
-      width: '100%',
-      height: '100%',
-      utm_source: '',
-      utm_medium: 'widget',
-      utm_campaign: 'advanced-chart',
-      'page-uri': '__NHTTP__'
-    };
-    const encodedConfig = encodeURIComponent(JSON.stringify(config));
-    return `https://www.tradingview-widget.com/embed-widget/advanced-chart/?locale=en#${encodedConfig}`;
+  useEffect(() => {
+    setChartKey(prev => prev + 1);
   }, []);
+
+  const chartHTML = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <style>
+          body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #0F0F0F;
+          }
+          .tradingview-widget-container {
+            height: 100%;
+            width: 100%;
+          }
+          .tradingview-widget-container__widget {
+            height: calc(100% - 32px);
+            width: 100%;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="tradingview-widget-container">
+          <div class="tradingview-widget-container__widget"></div>
+          <div class="tradingview-widget-copyright">
+            <a href="https://www.tradingview.com/symbols/XAUUSD/?exchange=OANDA" rel="noopener nofollow" target="_blank">
+              <span class="blue-text">XAUUSD chart</span>
+            </a>
+            <span class="trademark"> by TradingView</span>
+          </div>
+          <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
+          {
+            "allow_symbol_change": true,
+            "calendar": false,
+            "details": false,
+            "hide_side_toolbar": true,
+            "hide_top_toolbar": false,
+            "hide_legend": false,
+            "hide_volume": false,
+            "hotlist": false,
+            "interval": "1",
+            "locale": "en",
+            "save_image": true,
+            "style": "1",
+            "symbol": "OANDA:XAUUSD",
+            "theme": "dark",
+            "timezone": "Etc/UTC",
+            "backgroundColor": "#0F0F0F",
+            "gridColor": "rgba(242, 242, 242, 0.06)",
+            "watchlist": [],
+            "withdateranges": false,
+            "compareSymbols": [],
+            "studies": [],
+            "autosize": true
+          }
+          </script>
+        </div>
+      </body>
+    </html>
+  `;
 
   if (Platform.OS === 'web') {
     return (
       <View style={styles.container}>
-        {isLoading && (
-          <View style={styles.loadingOverlay}>
-            <ActivityIndicator size="large" color="#FFD700" />
-            <Text style={styles.loadingText}>Loading Chart...</Text>
-          </View>
-        )}
-        {hasError && (
-          <View style={styles.errorOverlay}>
-            <Text style={styles.errorText}>Chart unavailable</Text>
-            <Text style={styles.errorSubtext}>Please refresh or try on mobile</Text>
-          </View>
-        )}
-        <WebView
-          source={{ uri: widgetUrl }}
-          style={[styles.webview, hasError && { display: 'none' as any }]}
-          javaScriptEnabled={true}
-          domStorageEnabled={true}
-          startInLoadingState={false}
-          scrollEnabled={false}
-          originWhitelist={['*']}
-          onLoadStart={() => {
-            console.log('📊 Chart: WebView load started');
-            setIsLoading(true);
-            setHasError(false);
+        <iframe
+          key={chartKey}
+          ref={iframeRef as any}
+          srcDoc={chartHTML}
+          style={{
+            width: '100%',
+            height: 400,
+            border: 'none',
+            borderRadius: 12,
+            overflow: 'hidden',
           }}
-          onLoadEnd={() => {
-            console.log('📊 Chart: WebView load ended');
-            setTimeout(() => setIsLoading(false), 2000);
-          }}
-          onError={(syntheticEvent) => {
-            const { nativeEvent } = syntheticEvent;
-            console.error('📊 Chart WebView error:', nativeEvent);
-            setHasError(true);
-            setIsLoading(false);
-          }}
-          onHttpError={(syntheticEvent) => {
-            const { nativeEvent } = syntheticEvent;
-            console.error('📊 Chart WebView HTTP error:', nativeEvent.statusCode);
-            if (nativeEvent.statusCode >= 400) {
-              setHasError(true);
-              setIsLoading(false);
-            }
-          }}
+          title="TradingView Chart"
         />
       </View>
     );
@@ -100,120 +107,29 @@ function PriceChart({ data, currentPrice }: PriceChartProps) {
 
   return (
     <View style={styles.container}>
-      {isLoading && (
-        <View style={styles.loadingOverlay}>
-          <ActivityIndicator size="large" color="#FFD700" />
-          <Text style={styles.loadingText}>Loading Chart...</Text>
-        </View>
-      )}
-      {hasError && (
-        <View style={styles.errorOverlay}>
-          <Text style={styles.errorText}>Failed to load chart</Text>
-        </View>
-      )}
       <WebView
-        source={{ uri: widgetUrl }}
-        style={[styles.webview, hasError && { display: 'none' }]}
+        key={chartKey}
+        source={{ html: chartHTML }}
+        style={styles.webview}
         javaScriptEnabled={true}
         domStorageEnabled={true}
-        startInLoadingState={false}
+        startInLoadingState={true}
         scalesPageToFit={true}
         scrollEnabled={false}
-        originWhitelist={['*']}
-        allowsInlineMediaPlayback={true}
-        mediaPlaybackRequiresUserAction={false}
-        javaScriptCanOpenWindowsAutomatically={true}
-        mixedContentMode="always"
-        thirdPartyCookiesEnabled={true}
-        sharedCookiesEnabled={true}
-        cacheEnabled={true}
-        incognito={false}
-        setSupportMultipleWindows={false}
-        allowsBackForwardNavigationGestures={false}
-        onLoadStart={() => {
-          console.log('📊 Chart: WebView load started');
-          setIsLoading(true);
-          setHasError(false);
-        }}
-        onLoadEnd={() => {
-          console.log('📊 Chart: WebView load ended');
-          setTimeout(() => {
-            setIsLoading(false);
-          }, 3000);
-        }}
-        onError={(syntheticEvent) => {
-          const { nativeEvent } = syntheticEvent;
-          console.error('📊 Chart WebView error:', nativeEvent);
-          setHasError(true);
-          setIsLoading(false);
-        }}
-        onHttpError={(syntheticEvent) => {
-          const { nativeEvent } = syntheticEvent;
-          console.error('📊 Chart WebView HTTP error:', nativeEvent.statusCode);
-          if (nativeEvent.statusCode >= 400) {
-            setHasError(true);
-          }
-        }}
-        onMessage={(event) => {
-          console.log('📊 Chart message:', event.nativeEvent.data);
-        }}
       />
     </View>
   );
 }
 
-export default memo(PriceChart);
-
 const styles = StyleSheet.create({
   container: {
     width: '100%',
     height: 400,
-    position: 'relative' as const,
   },
   webview: {
     flex: 1,
     backgroundColor: '#0F0F0F',
     borderRadius: 12,
     overflow: 'hidden',
-  },
-  loadingOverlay: {
-    position: 'absolute' as const,
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#0F0F0F',
-    zIndex: 10,
-    borderRadius: 12,
-  },
-  loadingText: {
-    color: '#FFD700',
-    marginTop: 12,
-    fontSize: 14,
-  },
-  errorOverlay: {
-    position: 'absolute' as const,
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#0F0F0F',
-    zIndex: 10,
-    borderRadius: 12,
-  },
-  errorText: {
-    color: '#FF4444',
-    fontSize: 14,
-    textAlign: 'center',
-  },
-  errorSubtext: {
-    color: '#999',
-    fontSize: 12,
-    marginTop: 8,
-    textAlign: 'center',
   },
 });
