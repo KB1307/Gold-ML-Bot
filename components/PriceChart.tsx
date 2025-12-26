@@ -26,6 +26,7 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval'; script-src * 'unsafe-inline' 'unsafe-eval'; connect-src * 'unsafe-inline'; img-src * data: blob: 'unsafe-inline'; frame-src *; style-src * 'unsafe-inline';">
         <style>
           body, html {
             margin: 0;
@@ -43,44 +44,50 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
             height: calc(100% - 32px);
             width: 100%;
           }
+          #tradingview_chart {
+            width: 100%;
+            height: 100%;
+          }
         </style>
       </head>
       <body>
         <div class="tradingview-widget-container">
-          <div class="tradingview-widget-container__widget"></div>
+          <div id="tradingview_chart"></div>
           <div class="tradingview-widget-copyright">
             <a href="https://www.tradingview.com/symbols/XAUUSD/?exchange=OANDA" rel="noopener nofollow" target="_blank">
               <span class="blue-text">XAUUSD chart</span>
             </a>
             <span class="trademark"> by TradingView</span>
           </div>
-          <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
-          {
-            "allow_symbol_change": true,
-            "calendar": false,
-            "details": false,
-            "hide_side_toolbar": true,
-            "hide_top_toolbar": false,
-            "hide_legend": false,
-            "hide_volume": false,
-            "hotlist": false,
-            "interval": "1",
-            "locale": "en",
-            "save_image": true,
-            "style": "1",
-            "symbol": "OANDA:XAUUSD",
-            "theme": "dark",
-            "timezone": "Etc/UTC",
-            "backgroundColor": "#0F0F0F",
-            "gridColor": "rgba(242, 242, 242, 0.06)",
-            "watchlist": [],
-            "withdateranges": false,
-            "compareSymbols": [],
-            "studies": [],
-            "autosize": true
-          }
-          </script>
         </div>
+        <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+        <script type="text/javascript">
+          try {
+            new TradingView.widget({
+              "width": "100%",
+              "height": "100%",
+              "symbol": "OANDA:XAUUSD",
+              "interval": "1",
+              "timezone": "Etc/UTC",
+              "theme": "dark",
+              "style": "1",
+              "locale": "en",
+              "toolbar_bg": "#0F0F0F",
+              "enable_publishing": false,
+              "hide_side_toolbar": false,
+              "allow_symbol_change": true,
+              "save_image": false,
+              "container_id": "tradingview_chart",
+              "studies": [],
+              "show_popup_button": false,
+              "popup_width": "1000",
+              "popup_height": "650",
+              "support_host": "https://www.tradingview.com"
+            });
+          } catch (e) {
+            console.error('TradingView widget error:', e);
+          }
+        </script>
       </body>
     </html>
   `;
