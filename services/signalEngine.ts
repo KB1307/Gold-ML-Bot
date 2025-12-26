@@ -1587,15 +1587,18 @@ class SignalGenerationEngine {
       console.log('🔴 SELL: Strong Resistance Zone');
     }
     
-    const sentimentImpact = features.sentiment.score * features.sentiment.confidence;
-    if (features.sentiment.score > 0.3) {
-      buySignalStrength += 0.15;
-      attentionScores.set('positive_sentiment', 0.15);
-      console.log('✅ BUY: Positive Sentiment');
-    } else if (features.sentiment.score < -0.3) {
-      sellSignalStrength += 0.15;
-      attentionScores.set('negative_sentiment', 0.15);
-      console.log('🔴 SELL: Negative Sentiment');
+    let sentimentImpact = 0;
+    if (features.sentiment) {
+      sentimentImpact = features.sentiment.score * features.sentiment.confidence;
+      if (features.sentiment.score > 0.3) {
+        buySignalStrength += 0.15;
+        attentionScores.set('positive_sentiment', 0.15);
+        console.log('✅ BUY: Positive Sentiment');
+      } else if (features.sentiment.score < -0.3) {
+        sellSignalStrength += 0.15;
+        attentionScores.set('negative_sentiment', 0.15);
+        console.log('🔴 SELL: Negative Sentiment');
+      }
     }
     
     const fibRetracementLevels = features.fibonacci
