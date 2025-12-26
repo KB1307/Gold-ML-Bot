@@ -1,5 +1,5 @@
 import { View, StyleSheet, Platform } from "react-native";
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import { WebView } from "react-native-webview";
 
 interface PriceDataPoint {
@@ -13,75 +13,16 @@ interface PriceChartProps {
 }
 
 export default function PriceChart({ data, currentPrice }: PriceChartProps) {
-  const [chartKey, setChartKey] = useState<number>(0);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [chartKey] = useState<number>(Date.now());
 
-  useEffect(() => {
-    setChartKey(prev => prev + 1);
-  }, []);
-
-  const chartHTML = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <style>
-          body, html {
-            margin: 0;
-            padding: 0;
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            background: #131722;
-          }
-          .tradingview-widget-container {
-            height: 100%;
-            width: 100%;
-          }
-          #tradingview_widget {
-            height: 100%;
-            width: 100%;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="tradingview-widget-container">
-          <div id="tradingview_widget"></div>
-        </div>
-        <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-        <script type="text/javascript">
-          if (typeof TradingView !== 'undefined') {
-            new TradingView.widget({
-              "autosize": true,
-              "symbol": "OANDA:XAUUSD",
-              "interval": "1",
-              "timezone": "Etc/UTC",
-              "theme": "dark",
-              "style": "1",
-              "locale": "en",
-              "toolbar_bg": "#131722",
-              "enable_publishing": false,
-              "backgroundColor": "#131722",
-              "gridColor": "rgba(42, 46, 57, 0.06)",
-              "hide_top_toolbar": false,
-              "hide_legend": false,
-              "save_image": false,
-              "container_id": "tradingview_widget"
-            });
-          }
-        </script>
-      </body>
-    </html>
-  `;
+  const widgetUrl = `https://s.tradingview.com/widgetembed/?frameElementId=tradingview_${chartKey}&symbol=OANDA%3AXAUUSD&interval=1&hidesidetoolbar=0&symboledit=1&saveimage=0&toolbarbg=f1f3f6&studies=%5B%5D&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1&studies_overrides=%7B%7D&overrides=%7B%7D&enabled_features=%5B%5D&disabled_features=%5B%5D&locale=en&utm_source=&utm_medium=widget&utm_campaign=chart&utm_term=OANDA%3AXAUUSD`;
 
   if (Platform.OS === 'web') {
     return (
       <View style={styles.container}>
         <iframe
           key={chartKey}
-          ref={iframeRef as any}
-          srcDoc={chartHTML}
+          src={widgetUrl}
           style={{
             width: '100%',
             height: 400,
@@ -90,6 +31,7 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
             overflow: 'hidden',
           }}
           title="TradingView Chart"
+          allow="clipboard-write"
         />
       </View>
     );
@@ -99,13 +41,16 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
     <View style={styles.container}>
       <WebView
         key={chartKey}
-        source={{ html: chartHTML }}
+        source={{ uri: widgetUrl }}
         style={styles.webview}
         javaScriptEnabled={true}
         domStorageEnabled={true}
         startInLoadingState={true}
         scalesPageToFit={true}
         scrollEnabled={false}
+        thirdPartyCookiesEnabled={true}
+        sharedCookiesEnabled={true}
+        originWhitelist={['*']}
       />
     </View>
   );
