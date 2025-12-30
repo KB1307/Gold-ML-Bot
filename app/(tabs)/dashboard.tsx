@@ -44,41 +44,134 @@ function formatFeatureName(feature: string): string {
   return featureMap[feature] || feature.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 }
 
-function getIndicatorDescription(feature: string, signalType: string): string {
-  const descriptions: { [key: string]: string } = {
-    'rsi_oversold': 'RSI indicates oversold conditions, suggesting potential upward reversal',
-    'rsi_overbought': 'RSI indicates overbought conditions, suggesting potential downward reversal',
-    'strong_support_bounce': 'Price testing strong support zone with high probability of bounce',
-    'strong_resistance_rejection': 'Price testing strong resistance zone with high probability of rejection',
-    'bullish_reversal': 'Bullish reversal pattern detected on lower timeframes',
-    'bearish_reversal': 'Bearish reversal pattern detected on lower timeframes',
-    'strong_uptrend': 'Strong uptrend confirmed across multiple timeframes',
-    'strong_downtrend': 'Strong downtrend confirmed across multiple timeframes',
-    'high_liquidity_session': 'High liquidity session active - optimal trading conditions',
-    'buy_order_imbalance': 'Order flow showing significant buying pressure',
-    'sell_order_imbalance': 'Order flow showing significant selling pressure',
-    'institutional_buy_footprint': 'Institutional buying activity detected in order flow',
-    'institutional_sell_footprint': 'Institutional selling activity detected in order flow',
-    'volume_node_support_resistance': 'Price at high volume node - key support/resistance level',
-    'positive_sentiment': 'Market sentiment analysis shows positive outlook',
-    'negative_sentiment': 'Market sentiment analysis shows negative outlook',
-    'bullish_ema_crossover': 'EMA crossover signaling bullish momentum',
-    'bearish_ema_crossover': 'EMA crossover signaling bearish momentum',
-    'bullish_macd_momentum': 'MACD histogram showing bullish momentum building',
-    'bearish_macd_momentum': 'MACD histogram showing bearish momentum building',
-    'bullish_divergence': 'Bullish divergence between price and RSI detected',
-    'bearish_divergence': 'Bearish divergence between price and RSI detected',
-    'bullish_quasimodo': 'Bullish Quasimodo pattern - institutional trap zone reversal',
-    'bearish_quasimodo': 'Bearish Quasimodo pattern - institutional trap zone reversal',
-    'session_low_sweep': 'Session low swept (liquidity grab) with confirmed reversal',
-    'session_high_sweep': 'Session high swept (liquidity grab) with confirmed reversal',
-    'weekly_pivot': 'Price near weekly pivot - key decision point',
-    'fibonacci_alignment': 'Price aligned with key Fibonacci retracement level',
-    'volatile_opportunities': 'Elevated volatility creating trading opportunities',
-    'dxy_correlation': 'DXY movement supporting this directional bias',
+function getIndicatorInfo(feature: string, signalType: string): { description: string, contribution: string } {
+  const indicators: { [key: string]: { description: string, contribution: string } } = {
+    'rsi_oversold': {
+      description: 'RSI below 30 indicates oversold conditions',
+      contribution: 'Generated BUY directional bias through mean-reversion probability'
+    },
+    'rsi_overbought': {
+      description: 'RSI above 70 indicates overbought conditions',
+      contribution: 'Generated SELL directional bias through mean-reversion probability'
+    },
+    'strong_support_bounce': {
+      description: 'Price testing strong support zone from historical turning points',
+      contribution: 'Increased signal confidence by confirming price reaction at key level'
+    },
+    'strong_resistance_rejection': {
+      description: 'Price testing resistance zone with multiple historical rejections',
+      contribution: 'Increased signal confidence by confirming price reaction at key level'
+    },
+    'bullish_reversal': {
+      description: 'Bullish reversal pattern (hammer/engulfing) on lower timeframes',
+      contribution: 'Triggered BUY signal through pattern recognition confirmation'
+    },
+    'bearish_reversal': {
+      description: 'Bearish reversal pattern (shooting star/engulfing) on lower timeframes',
+      contribution: 'Triggered SELL signal through pattern recognition confirmation'
+    },
+    'strong_uptrend': {
+      description: 'Price above EMAs on multiple timeframes',
+      contribution: 'Validated BUY direction through trend alignment confirmation'
+    },
+    'strong_downtrend': {
+      description: 'Price below EMAs on multiple timeframes',
+      contribution: 'Validated SELL direction through trend alignment confirmation'
+    },
+    'high_liquidity_session': {
+      description: 'London/NY overlap - optimal execution conditions',
+      contribution: 'Boosted confidence with tight spreads and better fill probability'
+    },
+    'buy_order_imbalance': {
+      description: 'Order flow showing 60%+ buy-side volume imbalance',
+      contribution: 'Confirmed BUY bias through institutional buying pressure'
+    },
+    'sell_order_imbalance': {
+      description: 'Order flow showing 60%+ sell-side volume imbalance',
+      contribution: 'Confirmed SELL bias through institutional selling pressure'
+    },
+    'institutional_buy_footprint': {
+      description: 'Large block orders detected on bid side',
+      contribution: 'Strengthened BUY confidence with smart money accumulation'
+    },
+    'institutional_sell_footprint': {
+      description: 'Large block orders detected on ask side',
+      contribution: 'Strengthened SELL confidence with smart money distribution'
+    },
+    'volume_node_support_resistance': {
+      description: 'Price at high volume node (point of control)',
+      contribution: 'Added confidence through volume profile level validation'
+    },
+    'positive_sentiment': {
+      description: 'Net positive market sentiment from data analysis',
+      contribution: 'Supported BUY signal with bullish sentiment confirmation'
+    },
+    'negative_sentiment': {
+      description: 'Net negative market sentiment from data analysis',
+      contribution: 'Supported SELL signal with bearish sentiment confirmation'
+    },
+    'bullish_ema_crossover': {
+      description: 'Fast EMA crossed above slow EMA signaling momentum shift',
+      contribution: 'Triggered BUY signal with trend-following confirmation'
+    },
+    'bearish_ema_crossover': {
+      description: 'Fast EMA crossed below slow EMA signaling momentum shift',
+      contribution: 'Triggered SELL signal with trend-following confirmation'
+    },
+    'bullish_macd_momentum': {
+      description: 'MACD histogram positive and expanding',
+      contribution: 'Increased BUY confidence through momentum acceleration'
+    },
+    'bearish_macd_momentum': {
+      description: 'MACD histogram negative and expanding',
+      contribution: 'Increased SELL confidence through momentum acceleration'
+    },
+    'bullish_divergence': {
+      description: 'Price lower lows vs RSI higher lows (hidden strength)',
+      contribution: 'Identified BUY opportunity via divergence reversal'
+    },
+    'bearish_divergence': {
+      description: 'Price higher highs vs RSI lower highs (hidden weakness)',
+      contribution: 'Identified SELL opportunity via divergence reversal'
+    },
+    'bullish_quasimodo': {
+      description: 'Failed lower low + break of structure (liquidity trap)',
+      contribution: 'Generated BUY from institutional trap reversal pattern'
+    },
+    'bearish_quasimodo': {
+      description: 'Failed higher high + break of structure (liquidity trap)',
+      contribution: 'Generated SELL from institutional trap reversal pattern'
+    },
+    'session_low_sweep': {
+      description: 'Asian session low swept then reversed (liquidity grab)',
+      contribution: 'Confirmed BUY through session sweep reversal'
+    },
+    'session_high_sweep': {
+      description: 'Asian session high swept then reversed (liquidity grab)',
+      contribution: 'Confirmed SELL through session sweep reversal'
+    },
+    'weekly_pivot': {
+      description: 'Price near weekly pivot - historically significant level',
+      contribution: 'Enhanced precision by identifying pivot reaction zone'
+    },
+    'fibonacci_alignment': {
+      description: 'Price at major Fib level (38.2%, 50%, 61.8%)',
+      contribution: 'Validated entry timing via Fibonacci confluence'
+    },
+    'volatile_opportunities': {
+      description: 'ATR elevated above 20-day average',
+      contribution: 'Improved profit potential with increased volatility range'
+    },
+    'dxy_correlation': {
+      description: 'US Dollar Index inverse correlation confirmed',
+      contribution: 'Reinforced direction via intermarket analysis'
+    },
   };
   
-  return descriptions[feature] || `${formatFeatureName(feature)} supporting ${signalType.toLowerCase()} bias`;
+  return indicators[feature] || {
+    description: `${formatFeatureName(feature)} supporting ${signalType.toLowerCase()} bias`,
+    contribution: `Contributed to ${signalType} signal confidence calculation`
+  };
 }
 
 export default function DashboardScreen() {
@@ -382,9 +475,10 @@ export default function DashboardScreen() {
                 
                 {currentSignal.topFeatures && currentSignal.topFeatures.length > 0 && (
                   <View style={styles.featuresContainer}>
-                    <Text style={styles.featuresTitle}>Contributing Indicators ({currentSignal.topFeatures.length} aligned):</Text>
+                    <Text style={styles.featuresTitle}>Key Indicators That Generated This Signal:</Text>
+                    <Text style={styles.featuresSubtitle}>{currentSignal.topFeatures.length} indicators aligned to create {currentSignal.type} signal with {(currentSignal.confidence * 100).toFixed(0)}% confidence</Text>
                     {currentSignal.topFeatures.slice(0, 6).map((feature, index) => {
-                      const description = getIndicatorDescription(feature.feature, currentSignal.type);
+                      const indicatorInfo = getIndicatorInfo(feature.feature, currentSignal.type);
                       const impact = feature.score >= 0.15 ? 'HIGH' : feature.score >= 0.10 ? 'MEDIUM' : 'LOW';
                       const impactColor = impact === 'HIGH' ? '#22c55e' : impact === 'MEDIUM' ? '#FFD700' : '#999';
                       
@@ -398,15 +492,21 @@ export default function DashboardScreen() {
                               </Text>
                             </View>
                             <View style={styles.featureImpactBadge}>
-                              <Text style={[styles.featureImpactText, { color: impactColor }]}>{impact}</Text>
+                              <Text style={[styles.featureImpactText, { color: impactColor }]}>{impact} IMPACT</Text>
                             </View>
                           </View>
-                          <Text style={styles.featureDescription}>{description}</Text>
+                          <Text style={styles.featureDescription}>📊 {indicatorInfo.description}</Text>
+                          <View style={styles.contributionBanner}>
+                            <Text style={styles.contributionText}>💡 {indicatorInfo.contribution}</Text>
+                          </View>
                           <View style={styles.featureScoreRow}>
-                            <View style={styles.featureScoreContainer}>
-                              <View style={[styles.featureBar, { width: `${feature.score * 100}%`, backgroundColor: impactColor }]} />
+                            <Text style={styles.featureScoreLabel}>Confidence Contribution:</Text>
+                            <View style={styles.featureScoreBarWrapper}>
+                              <View style={styles.featureScoreContainer}>
+                                <View style={[styles.featureBar, { width: `${feature.score * 100}%`, backgroundColor: impactColor }]} />
+                              </View>
+                              <Text style={[styles.featureScore, { color: impactColor }]}>{(feature.score * 100).toFixed(0)}%</Text>
                             </View>
-                            <Text style={[styles.featureScore, { color: impactColor }]}>{(feature.score * 100).toFixed(0)}%</Text>
                           </View>
                         </View>
                       );
@@ -1266,13 +1366,18 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   featuresTitle: {
-    fontSize: 12,
-    fontWeight: "600",
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#FFD700",
+    marginBottom: 6,
+  } as const,
+  featuresSubtitle: {
+    fontSize: 11,
+    fontWeight: "500",
     color: "#999",
-    marginBottom: 10,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
+    marginBottom: 12,
+    lineHeight: 16,
+  } as const,
   featureRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1382,10 +1487,34 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   featureScoreRow: {
+    marginTop: 8,
+  },
+  featureScoreLabel: {
+    fontSize: 9,
+    color: "#999",
+    marginBottom: 6,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  featureScoreBarWrapper: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
   },
+  contributionBanner: {
+    backgroundColor: "rgba(156, 39, 176, 0.12)",
+    padding: 10,
+    borderRadius: 8,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: "rgba(156, 39, 176, 0.25)",
+  },
+  contributionText: {
+    fontSize: 10,
+    color: "#BB86FC",
+    lineHeight: 15,
+    fontWeight: "500",
+  } as const,
   reasoningSection: {
     marginBottom: 14,
   },

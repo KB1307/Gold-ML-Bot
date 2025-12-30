@@ -122,87 +122,83 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
       <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+        <meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval'; script-src * 'unsafe-inline' 'unsafe-eval'; connect-src * 'unsafe-inline'; img-src * data: blob: 'unsafe-inline'; frame-src *; style-src * 'unsafe-inline';">
         <style>
           * { margin: 0; padding: 0; box-sizing: border-box; }
           html, body { height: 100%; width: 100%; overflow: hidden; background-color: #0F0F0F; }
-          .tradingview-widget-container { height: 100%; width: 100%; }
-          .tradingview-widget-container__widget { height: calc(100% - 32px); width: 100%; }
+          #tv_chart_container { height: 100%; width: 100%; }
         </style>
-        <script>
+      </head>
+      <body>
+        <div id="tv_chart_container"></div>
+        <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+        <script type="text/javascript">
           (function() {
             const originalError = console.error;
             console.error = function() {
               const args = Array.from(arguments);
               const errorStr = args.join(' ');
-              if (errorStr.includes('contentWindow') || errorStr.includes('iframe')) {
+              if (errorStr.includes('contentWindow') || 
+                  errorStr.includes('iframe') || 
+                  errorStr.includes('tolt.js') || 
+                  errorStr.includes('fbevents.js') ||
+                  errorStr.includes('CORS')) {
                 return;
               }
               originalError.apply(console, args);
             };
 
             window.addEventListener('error', function(e) {
-              if (e.message && (e.message.includes('contentWindow') || e.message.includes('iframe'))) {
+              if (e.message && (e.message.includes('contentWindow') || 
+                                e.message.includes('iframe') ||
+                                e.message.includes('tolt.js') ||
+                                e.message.includes('fbevents.js'))) {
                 e.preventDefault();
-                e.stopPropagation();
                 return false;
               }
             }, true);
-            
-            window.addEventListener('unhandledrejection', function(e) {
-              if (e.reason && e.reason.message && (e.reason.message.includes('contentWindow') || e.reason.message.includes('iframe'))) {
-                e.preventDefault();
-                e.stopPropagation();
-                return false;
-              }
-            });
 
-            Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
-              get: function() {
+            function initWidget() {
+              if (window.TradingView && document.getElementById('tv_chart_container')) {
                 try {
-                  return this._contentWindow || null;
-                } catch(e) {
-                  return null;
+                  new window.TradingView.widget({
+                    container_id: 'tv_chart_container',
+                    autosize: true,
+                    symbol: 'OANDA:XAUUSD',
+                    interval: '1',
+                    timezone: 'Etc/UTC',
+                    theme: 'dark',
+                    style: '1',
+                    locale: 'en',
+                    toolbar_bg: '#0F0F0F',
+                    enable_publishing: false,
+                    hide_side_toolbar: true,
+                    allow_symbol_change: true,
+                    save_image: true,
+                    hide_top_toolbar: false,
+                    hide_legend: false,
+                    hide_volume: false,
+                    backgroundColor: '#0F0F0F',
+                    gridColor: 'rgba(242, 242, 242, 0.06)',
+                    studies: [],
+                    disabled_features: ['use_localstorage_for_settings'],
+                    enabled_features: ['study_templates']
+                  });
+                } catch(error) {
+                  console.log('TradingView widget initialization deferred');
+                  setTimeout(initWidget, 500);
                 }
+              } else {
+                setTimeout(initWidget, 100);
               }
-            });
+            }
+
+            if (document.readyState === 'complete') {
+              initWidget();
+            } else {
+              window.addEventListener('load', initWidget);
+            }
           })();
-        </script>
-      </head>
-      <body>
-        <div class="tradingview-widget-container">
-          <div class="tradingview-widget-container__widget"></div>
-          <div class="tradingview-widget-copyright">
-            <a href="https://www.tradingview.com/symbols/XAUUSD/?exchange=OANDA" rel="noopener nofollow" target="_blank">
-              <span class="blue-text">XAUUSD chart</span>
-            </a>
-            <span class="trademark"> by TradingView</span>
-          </div>
-        </div>
-        <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
-        {
-          "allow_symbol_change": true,
-          "calendar": false,
-          "details": false,
-          "hide_side_toolbar": true,
-          "hide_top_toolbar": false,
-          "hide_legend": false,
-          "hide_volume": false,
-          "hotlist": false,
-          "interval": "1",
-          "locale": "en",
-          "save_image": true,
-          "style": "1",
-          "symbol": "OANDA:XAUUSD",
-          "theme": "dark",
-          "timezone": "Etc/UTC",
-          "backgroundColor": "#0F0F0F",
-          "gridColor": "rgba(242, 242, 242, 0.06)",
-          "watchlist": [],
-          "withdateranges": false,
-          "compareSymbols": [],
-          "studies": [],
-          "autosize": true
-        }
         </script>
       </body>
     </html>
