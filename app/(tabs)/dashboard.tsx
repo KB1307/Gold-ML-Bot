@@ -28,8 +28,57 @@ function formatFeatureName(feature: string): string {
     'ema_crossover': 'EMA Crossover',
     'fibonacci': 'Fibonacci Level',
     'dxy_correlation': 'DXY Correlation',
+    'bullish_ema_crossover': 'Bullish EMA Crossover',
+    'bearish_ema_crossover': 'Bearish EMA Crossover',
+    'bullish_macd_momentum': 'Bullish MACD',
+    'bearish_macd_momentum': 'Bearish MACD',
+    'bullish_divergence': 'Bullish Divergence',
+    'bearish_divergence': 'Bearish Divergence',
+    'bullish_quasimodo': 'Bullish Quasimodo',
+    'bearish_quasimodo': 'Bearish Quasimodo',
+    'session_low_sweep': 'Session Low Sweep',
+    'session_high_sweep': 'Session High Sweep',
+    'weekly_pivot': 'Weekly Pivot',
+    'fibonacci_alignment': 'Fibonacci Alignment',
   };
   return featureMap[feature] || feature.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+
+function getIndicatorDescription(feature: string, signalType: string): string {
+  const descriptions: { [key: string]: string } = {
+    'rsi_oversold': 'RSI indicates oversold conditions, suggesting potential upward reversal',
+    'rsi_overbought': 'RSI indicates overbought conditions, suggesting potential downward reversal',
+    'strong_support_bounce': 'Price testing strong support zone with high probability of bounce',
+    'strong_resistance_rejection': 'Price testing strong resistance zone with high probability of rejection',
+    'bullish_reversal': 'Bullish reversal pattern detected on lower timeframes',
+    'bearish_reversal': 'Bearish reversal pattern detected on lower timeframes',
+    'strong_uptrend': 'Strong uptrend confirmed across multiple timeframes',
+    'strong_downtrend': 'Strong downtrend confirmed across multiple timeframes',
+    'high_liquidity_session': 'High liquidity session active - optimal trading conditions',
+    'buy_order_imbalance': 'Order flow showing significant buying pressure',
+    'sell_order_imbalance': 'Order flow showing significant selling pressure',
+    'institutional_buy_footprint': 'Institutional buying activity detected in order flow',
+    'institutional_sell_footprint': 'Institutional selling activity detected in order flow',
+    'volume_node_support_resistance': 'Price at high volume node - key support/resistance level',
+    'positive_sentiment': 'Market sentiment analysis shows positive outlook',
+    'negative_sentiment': 'Market sentiment analysis shows negative outlook',
+    'bullish_ema_crossover': 'EMA crossover signaling bullish momentum',
+    'bearish_ema_crossover': 'EMA crossover signaling bearish momentum',
+    'bullish_macd_momentum': 'MACD histogram showing bullish momentum building',
+    'bearish_macd_momentum': 'MACD histogram showing bearish momentum building',
+    'bullish_divergence': 'Bullish divergence between price and RSI detected',
+    'bearish_divergence': 'Bearish divergence between price and RSI detected',
+    'bullish_quasimodo': 'Bullish Quasimodo pattern - institutional trap zone reversal',
+    'bearish_quasimodo': 'Bearish Quasimodo pattern - institutional trap zone reversal',
+    'session_low_sweep': 'Session low swept (liquidity grab) with confirmed reversal',
+    'session_high_sweep': 'Session high swept (liquidity grab) with confirmed reversal',
+    'weekly_pivot': 'Price near weekly pivot - key decision point',
+    'fibonacci_alignment': 'Price aligned with key Fibonacci retracement level',
+    'volatile_opportunities': 'Elevated volatility creating trading opportunities',
+    'dxy_correlation': 'DXY movement supporting this directional bias',
+  };
+  
+  return descriptions[feature] || `${formatFeatureName(feature)} supporting ${signalType.toLowerCase()} bias`;
 }
 
 export default function DashboardScreen() {
@@ -326,33 +375,58 @@ export default function DashboardScreen() {
                 <View style={styles.confidenceHeader}>
                   <Lightbulb size={18} color="#FFD700" fill="#FFD700" />
                   <Text style={styles.confidenceTitle}>Signal Analysis</Text>
+                  <View style={styles.confidenceBadge}>
+                    <Text style={styles.confidenceBadgeText}>{(currentSignal.confidence * 100).toFixed(0)}%</Text>
+                  </View>
                 </View>
-                <Text style={styles.confidenceDescription}>
-                  {currentSignal.riskJustification}
-                </Text>
                 
                 {currentSignal.topFeatures && currentSignal.topFeatures.length > 0 && (
                   <View style={styles.featuresContainer}>
-                    <Text style={styles.featuresTitle}>Key Indicators:</Text>
-                    {currentSignal.topFeatures.slice(0, 5).map((feature, index) => (
-                      <View key={index} style={styles.featureRow}>
-                        <View style={styles.featureDot} />
-                        <Text style={styles.featureName}>
-                          {formatFeatureName(feature.feature)}
-                        </Text>
-                        <View style={styles.featureScoreContainer}>
-                          <View style={[styles.featureBar, { width: `${feature.score * 100}%` }]} />
-                          <Text style={styles.featureScore}>{(feature.score * 100).toFixed(0)}%</Text>
+                    <Text style={styles.featuresTitle}>Contributing Indicators ({currentSignal.topFeatures.length} aligned):</Text>
+                    {currentSignal.topFeatures.slice(0, 6).map((feature, index) => {
+                      const description = getIndicatorDescription(feature.feature, currentSignal.type);
+                      const impact = feature.score >= 0.15 ? 'HIGH' : feature.score >= 0.10 ? 'MEDIUM' : 'LOW';
+                      const impactColor = impact === 'HIGH' ? '#22c55e' : impact === 'MEDIUM' ? '#FFD700' : '#999';
+                      
+                      return (
+                        <View key={index} style={styles.featureCard}>
+                          <View style={styles.featureHeader}>
+                            <View style={styles.featureHeaderLeft}>
+                              <View style={[styles.featureDot, { backgroundColor: impactColor }]} />
+                              <Text style={styles.featureName}>
+                                {formatFeatureName(feature.feature)}
+                              </Text>
+                            </View>
+                            <View style={styles.featureImpactBadge}>
+                              <Text style={[styles.featureImpactText, { color: impactColor }]}>{impact}</Text>
+                            </View>
+                          </View>
+                          <Text style={styles.featureDescription}>{description}</Text>
+                          <View style={styles.featureScoreRow}>
+                            <View style={styles.featureScoreContainer}>
+                              <View style={[styles.featureBar, { width: `${feature.score * 100}%`, backgroundColor: impactColor }]} />
+                            </View>
+                            <Text style={[styles.featureScore, { color: impactColor }]}>{(feature.score * 100).toFixed(0)}%</Text>
+                          </View>
                         </View>
-                      </View>
-                    ))}
+                      );
+                    })}
                   </View>
                 )}
+                
+                <View style={styles.divider} />
+                
+                <View style={styles.reasoningSection}>
+                  <Text style={styles.reasoningTitle}>Why This Signal Has High Probability:</Text>
+                  <Text style={styles.confidenceDescription}>
+                    {currentSignal.riskJustification}
+                  </Text>
+                </View>
                 
                 <View style={styles.probabilityBanner}>
                   <TrendingUpDown size={14} color="#22c55e" />
                   <Text style={styles.probabilityText}>
-                    High probability setup with {(currentSignal.confidence * 100).toFixed(0)}% confidence based on {currentSignal.topFeatures.length} aligned indicators
+                    {currentSignal.confidence >= 0.75 ? 'Strong' : currentSignal.confidence >= 0.65 ? 'Moderate' : 'Cautious'} {currentSignal.type.toLowerCase()} setup with multiple confirming indicators across different timeframes and analysis methods.
                   </Text>
                 </View>
               </View>
@@ -1257,5 +1331,68 @@ const styles = StyleSheet.create({
     color: "#22c55e",
     lineHeight: 16,
     fontWeight: "600",
+  } as const,
+  confidenceBadge: {
+    backgroundColor: "rgba(255, 215, 0, 0.2)",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginLeft: "auto",
+  },
+  confidenceBadgeText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#FFD700",
+  } as const,
+  featureCard: {
+    backgroundColor: "rgba(0, 0, 0, 0.25)",
+    padding: 12,
+    borderRadius: 10,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255, 215, 0, 0.15)",
+  },
+  featureHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  featureHeaderLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+    gap: 8,
+  },
+  featureImpactBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+  },
+  featureImpactText: {
+    fontSize: 9,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+  } as const,
+  featureDescription: {
+    fontSize: 11,
+    color: "#aaa",
+    lineHeight: 16,
+    marginBottom: 8,
+  },
+  featureScoreRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  reasoningSection: {
+    marginBottom: 14,
+  },
+  reasoningTitle: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#FFD700",
+    marginBottom: 8,
   } as const,
 });
