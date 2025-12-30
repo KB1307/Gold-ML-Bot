@@ -17,6 +17,25 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
 
   useEffect(() => {
     if (Platform.OS === 'web' && containerRef.current) {
+      const originalConsoleError = console.error;
+      const originalConsoleWarn = console.warn;
+      
+      console.error = (...args) => {
+        const message = args.join(' ');
+        if (message.includes('contentWindow') || message.includes('iframe')) {
+          return;
+        }
+        originalConsoleError.apply(console, args);
+      };
+      
+      console.warn = (...args) => {
+        const message = args.join(' ');
+        if (message.includes('contentWindow') || message.includes('iframe')) {
+          return;
+        }
+        originalConsoleWarn.apply(console, args);
+      };
+
       const widgetContainer = document.createElement('div');
       widgetContainer.className = 'tradingview-widget-container__widget';
       widgetContainer.style.height = 'calc(100% - 32px)';
@@ -60,6 +79,11 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
       });
       
       containerRef.current.appendChild(script);
+      
+      return () => {
+        console.error = originalConsoleError;
+        console.warn = originalConsoleWarn;
+      };
     }
   }, []);
 
@@ -69,7 +93,7 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
         <div 
           ref={containerRef as any}
           className="tradingview-widget-container" 
-          style={{ height: '100%', width: '100%' }}
+          style={{ height: '100%', width: '100%', pointerEvents: 'auto' }}
         />
       </View>
     );
