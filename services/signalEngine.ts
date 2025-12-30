@@ -78,6 +78,23 @@ interface OrderBlock {
   timestamp: number;
 }
 
+interface QuasimodolLevel {
+  price: number;
+  type: 'BULLISH_QM' | 'BEARISH_QM';
+  strength: number;
+  timestamp: number;
+  description: string;
+}
+
+interface SessionSweep {
+  type: 'HIGH_SWEEP' | 'LOW_SWEEP';
+  sessionType: 'ASIAN' | 'LONDON' | 'NY';
+  sweepPrice: number;
+  reversalConfirmed: boolean;
+  timestamp: number;
+  strength: number;
+}
+
 interface MarketFeatures {
   asianHigh: number;
   asianLow: number;
@@ -111,6 +128,8 @@ interface MarketFeatures {
   liquidityWindow: LiquidityWindow;
   timeWindowFactor: number;
   orderBlocks: OrderBlock[];
+  quasimodolLevels: QuasimodolLevel[];
+  sessionSweeps: SessionSweep[];
 }
 
 const CACHE_DURATION = 2000;
@@ -413,6 +432,15 @@ class SignalGenerationEngine {
   private orderBlocks: OrderBlock[] = [];
   private fiveMinCandles: { timestamp: number; open: number; high: number; low: number; close: number }[] = [];
   private lastFiveMinCandleClose: number = 0;
+  private quasimodolLevels: QuasimodolLevel[] = [];
+  private sessionSweeps: SessionSweep[] = [];
+  private asianSessionHigh: number = 0;
+  private asianSessionLow: number = Infinity;
+  private londonSessionHigh: number = 0;
+  private londonSessionLow: number = Infinity;
+  private nySessionHigh: number = 0;
+  private nySessionLow: number = Infinity;
+  private lastSessionUpdate: number = 0;
   
   async updateCurrentPrice(): Promise<number> {
     try {
@@ -721,6 +749,270 @@ class SignalGenerationEngine {
     return this.orderBlocks;
   }
 
+  private detectQuasimodolLevels(): QuasimodolLevel[] {
+    if (this.priceHistory.length < 30 || this.highHistory.length < 30 || this.lowHistory.length < 30) {
+      console.log('⚠️ Insufficient data for Quasimodo detection');
+      return this.quasimodolLevels;
+    }
+
+    const newQMLevels: QuasimodolLevel[] = [];
+    const lookback = Math.min(30, this.priceHistory.length);
+    const prices = this.priceHistory.slice(-lookback);
+    const highs = this.highHistory.slice(-lookback);
+    const lows = this.lowHistory.slice(-lookback);
+
+    console.log('\n🔍 QUASIMODO PATTERN DETECTION:');
+    console.log('='.repeat(60));
+
+    for (let i = 5; i < lookback - 5; i++) {
+      const isBullishQM = (
+        lows[i] < lows[i - 1] &&
+        lows[i] < lows[i - 2] &&
+        lows[i] < lows[i + 1] &&
+        lows[i] < lows[i + 2] &&
+        prices[i + 3] < lows[i - 2] &&
+        prices[i + 4] > prices[i + 3] &&
+        prices[i + 5] > lows[i - 2]
+      );
+
+      if (isBullishQM) {
+        const failedLowLevel = lows[i];
+        const breakOfStructure = lows[i - 2];
+        const strength = Math.min(1.0, (prices[i + 5] - failedLowLevel) / (this.currentPrice * 0.01));
+        
+        newQMLevels.push({
+          price: parseFloat(failedLowLevel.toFixed(1)),
+          type: 'BULLISH_QM',
+          strength: parseFloat(strength.toFixed(2)),
+          timestamp: Date.now() - ((lookback - i) * 60000),
+          description: `Failed Lower Low @ ${failedLowLevel.toFixed(1)}, BoS @ ${breakOfStructure.toFixed(1)}`,
+        });
+        
+        console.log(`✅ BULLISH QUASIMODO detected @ ${failedLowLevel.toFixed(1)}`);
+        console.log(`   Failed Lower Low: ${failedLowLevel.toFixed(1)}`);
+        console.log(`   Break of Structure: ${breakOfStructure.toFixed(1)}`);
+        console.log(`   Strength: ${(strength * 100).toFixed(0)}%`);
+        console.log(`   Institutional Trap Zone identified`);
+      }
+
+      const isBearishQM = (
+        highs[i] > highs[i - 1] &&
+        highs[i] > highs[i - 2] &&
+        highs[i] > highs[i + 1] &&
+        highs[i] > highs[i + 2] &&
+        prices[i + 3] > highs[i - 2] &&
+        prices[i + 4] < prices[i + 3] &&
+        prices[i + 5] < highs[i - 2]
+      );
+
+      if (isBearishQM) {
+        const failedHighLevel = highs[i];
+        const breakOfStructure = highs[i - 2];
+        const strength = Math.min(1.0, (failedHighLevel - prices[i + 5]) / (this.currentPrice * 0.01));
+        
+        newQMLevels.push({
+          price: parseFloat(failedHighLevel.toFixed(1)),
+          type: 'BEARISH_QM',
+          strength: parseFloat(strength.toFixed(2)),
+          timestamp: Date.now() - ((lookback - i) * 60000),
+          description: `Failed Higher High @ ${failedHighLevel.toFixed(1)}, BoS @ ${breakOfStructure.toFixed(1)}`,
+        });
+        
+        console.log(`🔴 BEARISH QUASIMODO detected @ ${failedHighLevel.toFixed(1)}`);
+        console.log(`   Failed Higher High: ${failedHighLevel.toFixed(1)}`);
+        console.log(`   Break of Structure: ${breakOfStructure.toFixed(1)}`);
+        console.log(`   Strength: ${(strength * 100).toFixed(0)}%`);
+        console.log(`   Institutional Trap Zone identified`);
+      }
+    }
+
+    const updatedQMLevels = [...this.quasimodolLevels, ...newQMLevels];
+    const fourHoursAgo = Date.now() - (4 * 60 * 60 * 1000);
+    this.quasimodolLevels = updatedQMLevels
+      .filter(qm => qm.timestamp > fourHoursAgo)
+      .sort((a, b) => b.strength - a.strength)
+      .slice(0, 5);
+
+    if (this.quasimodolLevels.length > 0) {
+      console.log(`📊 Active Quasimodo Levels: ${this.quasimodolLevels.length} (last 4 hours, top 5 by strength)`);
+    }
+    console.log('='.repeat(60) + '\n');
+
+    return this.quasimodolLevels;
+  }
+
+  private detectSessionSweeps(): SessionSweep[] {
+    const now = Date.now();
+    const currentPrice = this.currentPrice;
+    const hour = new Date().getUTCHours();
+
+    if (now - this.lastSessionUpdate < 60000) {
+      return this.sessionSweeps;
+    }
+    this.lastSessionUpdate = now;
+
+    const isAsianSession = (hour >= 0 && hour < 6) || (hour >= 22 && hour < 24);
+    const isLondonSession = hour >= 6 && hour < 13;
+    const isNYSession = hour >= 13 && hour < 21;
+
+    console.log('\n🎯 SESSION SWEEP DETECTION:');
+    console.log('='.repeat(60));
+    console.log(`Current Session: ${isAsianSession ? 'ASIAN' : isLondonSession ? 'LONDON' : isNYSession ? 'NY' : 'OFF_HOURS'}`);
+    console.log(`Current Price: ${currentPrice.toFixed(1)}`);
+
+    if (isAsianSession) {
+      this.asianSessionHigh = Math.max(this.asianSessionHigh, currentPrice);
+      this.asianSessionLow = Math.min(this.asianSessionLow, currentPrice);
+      console.log(`Asian Session - High: ${this.asianSessionHigh.toFixed(1)}, Low: ${this.asianSessionLow.toFixed(1)}`);
+    } else if (isLondonSession) {
+      this.londonSessionHigh = Math.max(this.londonSessionHigh, currentPrice);
+      this.londonSessionLow = Math.min(this.londonSessionLow, currentPrice);
+
+      if (this.asianSessionHigh > 0 && currentPrice > this.asianSessionHigh + 2) {
+        const sweepExists = this.sessionSweeps.some(
+          s => s.type === 'HIGH_SWEEP' && s.sessionType === 'ASIAN' && Math.abs(s.sweepPrice - this.asianSessionHigh) < 5
+        );
+
+        if (!sweepExists) {
+          const reversalConfirmed = this.priceHistory.length > 5 && 
+            this.priceHistory[this.priceHistory.length - 1] < this.priceHistory[this.priceHistory.length - 3];
+          
+          const strength = reversalConfirmed ? 0.85 : 0.65;
+          
+          this.sessionSweeps.push({
+            type: 'HIGH_SWEEP',
+            sessionType: 'ASIAN',
+            sweepPrice: this.asianSessionHigh,
+            reversalConfirmed,
+            timestamp: now,
+            strength,
+          });
+
+          console.log(`🚨 ASIAN HIGH SWEEP DETECTED!`);
+          console.log(`   Sweep Price: ${this.asianSessionHigh.toFixed(1)}`);
+          console.log(`   Current Price: ${currentPrice.toFixed(1)} (+${(currentPrice - this.asianSessionHigh).toFixed(1)} pips)`);
+          console.log(`   Reversal Confirmed: ${reversalConfirmed ? 'YES' : 'PENDING'}`);
+          console.log(`   Strength: ${(strength * 100).toFixed(0)}%`);
+          console.log(`   → Liquidity grab detected - potential SHORT setup`);
+        }
+      }
+
+      if (this.asianSessionLow < Infinity && currentPrice < this.asianSessionLow - 2) {
+        const sweepExists = this.sessionSweeps.some(
+          s => s.type === 'LOW_SWEEP' && s.sessionType === 'ASIAN' && Math.abs(s.sweepPrice - this.asianSessionLow) < 5
+        );
+
+        if (!sweepExists) {
+          const reversalConfirmed = this.priceHistory.length > 5 && 
+            this.priceHistory[this.priceHistory.length - 1] > this.priceHistory[this.priceHistory.length - 3];
+          
+          const strength = reversalConfirmed ? 0.85 : 0.65;
+          
+          this.sessionSweeps.push({
+            type: 'LOW_SWEEP',
+            sessionType: 'ASIAN',
+            sweepPrice: this.asianSessionLow,
+            reversalConfirmed,
+            timestamp: now,
+            strength,
+          });
+
+          console.log(`🚨 ASIAN LOW SWEEP DETECTED!`);
+          console.log(`   Sweep Price: ${this.asianSessionLow.toFixed(1)}`);
+          console.log(`   Current Price: ${currentPrice.toFixed(1)} (${(currentPrice - this.asianSessionLow).toFixed(1)} pips)`);
+          console.log(`   Reversal Confirmed: ${reversalConfirmed ? 'YES' : 'PENDING'}`);
+          console.log(`   Strength: ${(strength * 100).toFixed(0)}%`);
+          console.log(`   → Liquidity grab detected - potential LONG setup`);
+        }
+      }
+
+      console.log(`London Session - High: ${this.londonSessionHigh.toFixed(1)}, Low: ${this.londonSessionLow.toFixed(1)}`);
+    } else if (isNYSession) {
+      this.nySessionHigh = Math.max(this.nySessionHigh, currentPrice);
+      this.nySessionLow = Math.min(this.nySessionLow, currentPrice);
+
+      if (this.londonSessionHigh > 0 && currentPrice > this.londonSessionHigh + 2) {
+        const sweepExists = this.sessionSweeps.some(
+          s => s.type === 'HIGH_SWEEP' && s.sessionType === 'LONDON' && Math.abs(s.sweepPrice - this.londonSessionHigh) < 5
+        );
+
+        if (!sweepExists) {
+          const reversalConfirmed = this.priceHistory.length > 5 && 
+            this.priceHistory[this.priceHistory.length - 1] < this.priceHistory[this.priceHistory.length - 3];
+          
+          const strength = reversalConfirmed ? 0.90 : 0.70;
+          
+          this.sessionSweeps.push({
+            type: 'HIGH_SWEEP',
+            sessionType: 'LONDON',
+            sweepPrice: this.londonSessionHigh,
+            reversalConfirmed,
+            timestamp: now,
+            strength,
+          });
+
+          console.log(`🚨 LONDON HIGH SWEEP DETECTED!`);
+          console.log(`   Sweep Price: ${this.londonSessionHigh.toFixed(1)}`);
+          console.log(`   Current Price: ${currentPrice.toFixed(1)} (+${(currentPrice - this.londonSessionHigh).toFixed(1)} pips)`);
+          console.log(`   Reversal Confirmed: ${reversalConfirmed ? 'YES' : 'PENDING'}`);
+          console.log(`   Strength: ${(strength * 100).toFixed(0)}%`);
+          console.log(`   → High liquidity grab - potential SHORT setup`);
+        }
+      }
+
+      if (this.londonSessionLow < Infinity && currentPrice < this.londonSessionLow - 2) {
+        const sweepExists = this.sessionSweeps.some(
+          s => s.type === 'LOW_SWEEP' && s.sessionType === 'LONDON' && Math.abs(s.sweepPrice - this.londonSessionLow) < 5
+        );
+
+        if (!sweepExists) {
+          const reversalConfirmed = this.priceHistory.length > 5 && 
+            this.priceHistory[this.priceHistory.length - 1] > this.priceHistory[this.priceHistory.length - 3];
+          
+          const strength = reversalConfirmed ? 0.90 : 0.70;
+          
+          this.sessionSweeps.push({
+            type: 'LOW_SWEEP',
+            sessionType: 'LONDON',
+            sweepPrice: this.londonSessionLow,
+            reversalConfirmed,
+            timestamp: now,
+            strength,
+          });
+
+          console.log(`🚨 LONDON LOW SWEEP DETECTED!`);
+          console.log(`   Sweep Price: ${this.londonSessionLow.toFixed(1)}`);
+          console.log(`   Current Price: ${currentPrice.toFixed(1)} (${(currentPrice - this.londonSessionLow).toFixed(1)} pips)`);
+          console.log(`   Reversal Confirmed: ${reversalConfirmed ? 'YES' : 'PENDING'}`);
+          console.log(`   Strength: ${(strength * 100).toFixed(0)}%`);
+          console.log(`   → High liquidity grab - potential LONG setup`);
+        }
+      }
+
+      console.log(`NY Session - High: ${this.nySessionHigh.toFixed(1)}, Low: ${this.nySessionLow.toFixed(1)}`);
+    } else {
+      this.asianSessionHigh = 0;
+      this.asianSessionLow = Infinity;
+      this.londonSessionHigh = 0;
+      this.londonSessionLow = Infinity;
+      this.nySessionHigh = 0;
+      this.nySessionLow = Infinity;
+    }
+
+    const oneHourAgo = now - (60 * 60 * 1000);
+    this.sessionSweeps = this.sessionSweeps
+      .filter(sweep => sweep.timestamp > oneHourAgo)
+      .sort((a, b) => b.strength - a.strength)
+      .slice(0, 10);
+
+    if (this.sessionSweeps.length > 0) {
+      console.log(`📊 Active Session Sweeps: ${this.sessionSweeps.length} (last hour, top 10)`);
+    }
+    console.log('='.repeat(60) + '\n');
+
+    return this.sessionSweeps;
+  }
+
   private calculateSupportResistanceStrength(): { supportStrength: number; resistanceStrength: number } {
     const currentPrice = this.currentPrice;
     const recentHigh = this.highHistory.length > 0 ? Math.max(...this.highHistory.slice(-20)) : currentPrice + 50;
@@ -942,6 +1234,8 @@ class SignalGenerationEngine {
     const liquidityWindow = this.calculateLiquidityWindow();
     const timeWindowFactor = this.getTimeWindowFactor();
     const orderBlocks = this.detectOrderBlocks();
+    const quasimodolLevels = this.detectQuasimodolLevels();
+    const sessionSweeps = this.detectSessionSweeps();
     
     this.volumeHistory.push(volumeRatio * 1000);
     if (this.volumeHistory.length > 50) {
@@ -987,6 +1281,8 @@ class SignalGenerationEngine {
       liquidityWindow,
       timeWindowFactor,
       orderBlocks,
+      quasimodolLevels,
+      sessionSweeps,
     };
   }
   
@@ -1658,6 +1954,44 @@ class SignalGenerationEngine {
       buySignalStrength += 0.20;
       attentionScores.set('bullish_divergence', 0.20);
       console.log('✅ BUY: Bullish Divergence Detected');
+    }
+    
+    const nearBullishQM = features.quasimodolLevels.some(
+      qm => qm.type === 'BULLISH_QM' && Math.abs(this.currentPrice - qm.price) < 8
+    );
+    if (nearBullishQM) {
+      buySignalStrength += 0.18;
+      attentionScores.set('bullish_quasimodo', 0.18);
+      console.log('✅ BUY: Near Bullish Quasimodo Level (Institutional Trap Zone)');
+    }
+    
+    const nearBearishQM = features.quasimodolLevels.some(
+      qm => qm.type === 'BEARISH_QM' && Math.abs(this.currentPrice - qm.price) < 8
+    );
+    if (nearBearishQM) {
+      sellSignalStrength += 0.18;
+      attentionScores.set('bearish_quasimodo', 0.18);
+      console.log('🔴 SELL: Near Bearish Quasimodo Level (Institutional Trap Zone)');
+    }
+    
+    const confirmedLowSweep = features.sessionSweeps.find(
+      sweep => sweep.type === 'LOW_SWEEP' && sweep.reversalConfirmed
+    );
+    if (confirmedLowSweep) {
+      buySignalStrength += 0.22 * confirmedLowSweep.strength;
+      attentionScores.set('session_low_sweep', 0.22);
+      console.log(`✅ BUY: ${confirmedLowSweep.sessionType} Session Low Sweep Confirmed (Liquidity Grab)`);
+      console.log(`   Sweep @ ${confirmedLowSweep.sweepPrice.toFixed(1)} - Reversal confirmed`);
+    }
+    
+    const confirmedHighSweep = features.sessionSweeps.find(
+      sweep => sweep.type === 'HIGH_SWEEP' && sweep.reversalConfirmed
+    );
+    if (confirmedHighSweep) {
+      sellSignalStrength += 0.22 * confirmedHighSweep.strength;
+      attentionScores.set('session_high_sweep', 0.22);
+      console.log(`🔴 SELL: ${confirmedHighSweep.sessionType} Session High Sweep Confirmed (Liquidity Grab)`);
+      console.log(`   Sweep @ ${confirmedHighSweep.sweepPrice.toFixed(1)} - Reversal confirmed`);
     }
     
     console.log('\n📊 SIGNAL STRENGTH COMPARISON:');
