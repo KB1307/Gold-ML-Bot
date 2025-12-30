@@ -179,8 +179,8 @@ export default function DashboardScreen() {
             </View>
 
             {priceHistory && priceHistory.length > 1 && (
-              <View style={styles.chartCard}>
-                <View style={styles.chartContainer}>
+              <View style={styles.chartCard} testID="dashboard-chart-card">
+                <View style={styles.chartContainer} testID="dashboard-chart-container">
                   <PriceChart data={priceHistory} currentPrice={currentPrice} />
                 </View>
               </View>
@@ -1161,7 +1161,6 @@ const styles = StyleSheet.create({
   } as const,
   chartContainer: {
     width: "100%",
-    alignItems: "center",
   },
   confidenceCard: {
     backgroundColor: "rgba(255, 215, 0, 0.08)",

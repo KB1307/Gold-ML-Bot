@@ -1,6 +1,6 @@
-import { View, StyleSheet, Platform } from "react-native";
-import { useEffect, useRef } from "react";
-import { WebView } from "react-native-webview";
+import React, { memo, useMemo, useState } from "react";
+import { View, StyleSheet, useWindowDimensions } from "react-native";
+import Svg, { Defs, LinearGradient, Stop, Path, Rect, Line, Text as SvgText } from "react-native-svg";
 
 interface PriceDataPoint {
   timestamp: number;
@@ -10,246 +10,184 @@ interface PriceDataPoint {
 interface PriceChartProps {
   data: PriceDataPoint[];
   currentPrice: number;
+  height?: number;
 }
 
-export default function PriceChart({ data, currentPrice }: PriceChartProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
+function formatPrice(p: number): string {
+  return p.toFixed(1);
+}
 
-  useEffect(() => {
-    if (Platform.OS === 'web' && containerRef.current) {
-      const originalConsoleError = console.error;
-      const originalConsoleWarn = console.warn;
-      
-      console.error = (...args) => {
-        const message = args.join(' ');
-        if (message.includes('contentWindow') || message.includes('iframe')) {
-          return;
-        }
-        originalConsoleError.apply(console, args);
-      };
-      
-      console.warn = (...args) => {
-        const message = args.join(' ');
-        if (message.includes('contentWindow') || message.includes('iframe')) {
-          return;
-        }
-        originalConsoleWarn.apply(console, args);
-      };
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
 
-      const widgetContainer = document.createElement('div');
-      widgetContainer.className = 'tradingview-widget-container__widget';
-      widgetContainer.style.height = 'calc(100% - 32px)';
-      widgetContainer.style.width = '100%';
-      
-      const copyrightContainer = document.createElement('div');
-      copyrightContainer.className = 'tradingview-widget-copyright';
-      copyrightContainer.innerHTML = '<a href="https://www.tradingview.com/symbols/XAUUSD/?exchange=OANDA" rel="noopener nofollow" target="_blank"><span class="blue-text">XAUUSD chart</span></a><span class="trademark"> by TradingView</span>';
-      
-      containerRef.current.innerHTML = '';
-      containerRef.current.appendChild(widgetContainer);
-      containerRef.current.appendChild(copyrightContainer);
-      
-      const script = document.createElement('script');
-      script.type = 'text/javascript';
-      script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
-      script.async = true;
-      script.innerHTML = JSON.stringify({
-        allow_symbol_change: true,
-        calendar: false,
-        details: false,
-        hide_side_toolbar: true,
-        hide_top_toolbar: false,
-        hide_legend: false,
-        hide_volume: false,
-        hotlist: false,
-        interval: "1",
-        locale: "en",
-        save_image: true,
-        style: "1",
-        symbol: "OANDA:XAUUSD",
-        theme: "dark",
-        timezone: "Etc/UTC",
-        backgroundColor: "#0F0F0F",
-        gridColor: "rgba(242, 242, 242, 0.06)",
-        watchlist: [],
-        withdateranges: false,
-        compareSymbols: [],
-        studies: [],
-        autosize: true
-      });
-      
-      containerRef.current.appendChild(script);
-      
-      return () => {
-        console.error = originalConsoleError;
-        console.warn = originalConsoleWarn;
-      };
+function PriceChartImpl({ data, currentPrice, height }: PriceChartProps) {
+  const { width: windowWidth } = useWindowDimensions();
+  const [measuredWidth, setMeasuredWidth] = useState<number>(0);
+
+  const chartWidth = measuredWidth > 0 ? measuredWidth : windowWidth;
+  const computedHeight = useMemo(() => {
+    if (typeof height === "number") return height;
+    const h = chartWidth * 0.58;
+    return Math.round(clamp(h, 220, 480));
+  }, [chartWidth, height]);
+
+  const normalizedData = useMemo(() => {
+    const valid = data.filter((p) => Number.isFinite(p.price));
+    if (valid.length < 2) return { points: [] as PriceDataPoint[], min: 0, max: 0 };
+
+    const prices = valid.map((p) => p.price);
+    const min = Math.min(...prices);
+    const max = Math.max(...prices);
+
+    return { points: valid, min, max };
+  }, [data]);
+
+  const path = useMemo(() => {
+    const pts = normalizedData.points;
+    if (pts.length < 2 || chartWidth <= 0 || computedHeight <= 0) return "";
+
+    const paddingX = 14;
+    const paddingY = 16;
+    const innerW = Math.max(1, chartWidth - paddingX * 2);
+    const innerH = Math.max(1, computedHeight - paddingY * 2);
+
+    const min = normalizedData.min;
+    const max = normalizedData.max;
+    const range = Math.max(0.0001, max - min);
+
+    const toX = (i: number) => paddingX + (i / (pts.length - 1)) * innerW;
+    const toY = (price: number) => {
+      const t = (price - min) / range;
+      return paddingY + (1 - t) * innerH;
+    };
+
+    let d = "";
+    for (let i = 0; i < pts.length; i += 1) {
+      const x = toX(i);
+      const y = toY(pts[i]!.price);
+      d += i === 0 ? `M ${x} ${y}` : ` L ${x} ${y}`;
     }
-  }, []);
+    return d;
+  }, [chartWidth, computedHeight, normalizedData.min, normalizedData.max, normalizedData.points]);
 
-  if (Platform.OS === 'web') {
-    return (
-      <View style={styles.container}>
-        <div 
-          ref={containerRef as any}
-          className="tradingview-widget-container" 
-          style={{ height: '100%', width: '100%', pointerEvents: 'auto' }}
-        />
-      </View>
-    );
-  }
+  const currentLineY = useMemo(() => {
+    if (normalizedData.points.length < 2) return null;
+    const paddingY = 16;
+    const innerH = Math.max(1, computedHeight - paddingY * 2);
+    const min = normalizedData.min;
+    const max = normalizedData.max;
+    const range = Math.max(0.0001, max - min);
+    const t = (currentPrice - min) / range;
+    const y = paddingY + (1 - t) * innerH;
+    return clamp(y, paddingY, computedHeight - paddingY);
+  }, [computedHeight, currentPrice, normalizedData.max, normalizedData.min, normalizedData.points.length]);
 
-  const htmlContent = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-        <style>
-          * { margin: 0; padding: 0; box-sizing: border-box; }
-          html, body { height: 100%; width: 100%; overflow: hidden; background-color: #0F0F0F; }
-          .tradingview-widget-container { height: 100%; width: 100%; }
-          .tradingview-widget-container__widget { height: calc(100% - 32px); width: 100%; }
-        </style>
-        <script>
-          (function() {
-            const originalError = console.error;
-            console.error = function() {
-              const args = Array.from(arguments);
-              const errorStr = args.join(' ');
-              if (errorStr.includes('contentWindow') || errorStr.includes('iframe')) {
-                return;
-              }
-              originalError.apply(console, args);
-            };
-
-            window.addEventListener('error', function(e) {
-              if (e.message && (e.message.includes('contentWindow') || e.message.includes('iframe'))) {
-                e.preventDefault();
-                e.stopPropagation();
-                return false;
-              }
-            }, true);
-            
-            window.addEventListener('unhandledrejection', function(e) {
-              if (e.reason && e.reason.message && (e.reason.message.includes('contentWindow') || e.reason.message.includes('iframe'))) {
-                e.preventDefault();
-                e.stopPropagation();
-                return false;
-              }
-            });
-
-            Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
-              get: function() {
-                try {
-                  return this._contentWindow || null;
-                } catch(e) {
-                  return null;
-                }
-              }
-            });
-          })();
-        </script>
-      </head>
-      <body>
-        <div class="tradingview-widget-container">
-          <div class="tradingview-widget-container__widget"></div>
-          <div class="tradingview-widget-copyright">
-            <a href="https://www.tradingview.com/symbols/XAUUSD/?exchange=OANDA" rel="noopener nofollow" target="_blank">
-              <span class="blue-text">XAUUSD chart</span>
-            </a>
-            <span class="trademark"> by TradingView</span>
-          </div>
-        </div>
-        <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
-        {
-          "allow_symbol_change": true,
-          "calendar": false,
-          "details": false,
-          "hide_side_toolbar": true,
-          "hide_top_toolbar": false,
-          "hide_legend": false,
-          "hide_volume": false,
-          "hotlist": false,
-          "interval": "1",
-          "locale": "en",
-          "save_image": true,
-          "style": "1",
-          "symbol": "OANDA:XAUUSD",
-          "theme": "dark",
-          "timezone": "Etc/UTC",
-          "backgroundColor": "#0F0F0F",
-          "gridColor": "rgba(242, 242, 242, 0.06)",
-          "watchlist": [],
-          "withdateranges": false,
-          "compareSymbols": [],
-          "studies": [],
-          "autosize": true
-        }
-        </script>
-      </body>
-    </html>
-  `;
+  const yAxisLabels = useMemo(() => {
+    if (normalizedData.points.length < 2) return null;
+    const min = normalizedData.min;
+    const max = normalizedData.max;
+    const mid = (min + max) / 2;
+    return {
+      top: max,
+      mid,
+      bottom: min,
+    };
+  }, [normalizedData.max, normalizedData.min, normalizedData.points.length]);
 
   return (
-    <View style={styles.container}>
-      <WebView
-        source={{ html: htmlContent }}
-        style={styles.webview}
-        javaScriptEnabled={true}
-        domStorageEnabled={true}
-        startInLoadingState={true}
-        scalesPageToFit={true}
-        scrollEnabled={false}
-        originWhitelist={['*']}
-        allowsInlineMediaPlayback={true}
-        mediaPlaybackRequiresUserAction={false}
-        onError={(syntheticEvent) => {
-          const { nativeEvent } = syntheticEvent;
-          if (!nativeEvent.description?.includes('contentWindow') && !nativeEvent.description?.includes('iframe')) {
-            console.warn('WebView error:', nativeEvent);
-          }
-        }}
-        onHttpError={(syntheticEvent) => {
-          const { nativeEvent } = syntheticEvent;
-          console.warn('WebView HTTP error:', nativeEvent);
-        }}
-        onMessage={(event) => {
-          const message = event.nativeEvent.data;
-          if (!message.includes('contentWindow') && !message.includes('iframe')) {
-            console.log('WebView message:', message);
-          }
-        }}
-        injectedJavaScript={`
-          (function() {
-            const originalError = console.error;
-            console.error = function() {
-              const args = Array.from(arguments);
-              const errorStr = args.join(' ');
-              if (errorStr.includes('contentWindow') || errorStr.includes('iframe')) {
-                return;
-              }
-              originalError.apply(console, args);
-            };
-          })();
-          true;
-        `}
-        mixedContentMode="always"
-        thirdPartyCookiesEnabled={true}
-      />
+    <View
+      testID="price-chart"
+      style={styles.container}
+      onLayout={(e) => {
+        const w = e.nativeEvent.layout.width;
+        if (Number.isFinite(w) && w > 0) setMeasuredWidth(w);
+      }}
+    >
+      <View style={[styles.card, { height: computedHeight }]} testID="price-chart-card">
+        {normalizedData.points.length < 2 ? (
+          <View style={styles.emptyState} testID="price-chart-empty">
+            <View style={styles.emptyDot} />
+          </View>
+        ) : (
+          <Svg width={chartWidth} height={computedHeight} testID="price-chart-svg">
+            <Defs>
+              <LinearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+                <Stop offset="0" stopColor="#0b1220" stopOpacity={1} />
+                <Stop offset="1" stopColor="#06070a" stopOpacity={1} />
+              </LinearGradient>
+              <LinearGradient id="stroke" x1="0" y1="0" x2="1" y2="0">
+                <Stop offset="0" stopColor="#FFD700" stopOpacity={0.9} />
+                <Stop offset="1" stopColor="#22c55e" stopOpacity={0.9} />
+              </LinearGradient>
+            </Defs>
+
+            <Rect x={0} y={0} width={chartWidth} height={computedHeight} fill="url(#bg)" rx={14} ry={14} />
+
+            <Line x1={0} y1={computedHeight * 0.33} x2={chartWidth} y2={computedHeight * 0.33} stroke="rgba(255,255,255,0.06)" strokeWidth={1} />
+            <Line x1={0} y1={computedHeight * 0.66} x2={chartWidth} y2={computedHeight * 0.66} stroke="rgba(255,255,255,0.06)" strokeWidth={1} />
+
+            {currentLineY !== null && (
+              <Line x1={0} y1={currentLineY} x2={chartWidth} y2={currentLineY} stroke="rgba(255,215,0,0.25)" strokeWidth={1} strokeDasharray="4 4" />
+            )}
+
+            <Path d={path} fill="none" stroke="url(#stroke)" strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+
+            {yAxisLabels && (
+              <>
+                <SvgText x={10} y={22} fill="rgba(255,255,255,0.65)" fontSize={10} fontWeight={"600"}>
+                  {formatPrice(yAxisLabels.top)}
+                </SvgText>
+                <SvgText x={10} y={computedHeight / 2} fill="rgba(255,255,255,0.45)" fontSize={10} fontWeight={"600"}>
+                  {formatPrice(yAxisLabels.mid)}
+                </SvgText>
+                <SvgText x={10} y={computedHeight - 10} fill="rgba(255,255,255,0.65)" fontSize={10} fontWeight={"600"}>
+                  {formatPrice(yAxisLabels.bottom)}
+                </SvgText>
+              </>
+            )}
+
+            <SvgText
+              x={chartWidth - 10}
+              y={22}
+              fill="#FFD700"
+              fontSize={11}
+              fontWeight={"700"}
+              textAnchor="end"
+            >
+              {`${formatPrice(currentPrice)}`}
+            </SvgText>
+          </Svg>
+        )}
+      </View>
     </View>
   );
 }
 
+export default memo(PriceChartImpl);
+
 const styles = StyleSheet.create({
   container: {
-    width: '100%',
-    height: 400,
+    width: "100%",
   },
-  webview: {
+  card: {
+    width: "100%",
+    borderRadius: 16,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: "#06070a",
+  },
+  emptyState: {
     flex: 1,
-    backgroundColor: '#0F0F0F',
-    borderRadius: 12,
-    overflow: 'hidden',
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#06070a",
+  },
+  emptyDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "rgba(255, 215, 0, 0.35)",
   },
 });
