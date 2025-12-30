@@ -1,10 +1,36 @@
 import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Platform, RefreshControl } from "react-native";
 import { useState, useEffect, useCallback } from "react";
 import { LinearGradient } from "expo-linear-gradient";
-import { TrendingUp, TrendingDown, Target, Shield, Clock, Zap, BarChart3, Percent, AlertTriangle, Activity } from "lucide-react-native";
+import { TrendingUp, TrendingDown, Target, Shield, Clock, Zap, BarChart3, Percent, AlertTriangle, Activity, Lightbulb, TrendingUpDown } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
 import { Stack } from "expo-router";
 import PriceChart from "@/components/PriceChart";
+
+function formatFeatureName(feature: string): string {
+  const featureMap: { [key: string]: string } = {
+    'strong_support_bounce': 'Strong Support Zone',
+    'strong_resistance_rejection': 'Strong Resistance Zone',
+    'bullish_reversal': 'Bullish Reversal Pattern',
+    'bearish_reversal': 'Bearish Reversal Pattern',
+    'strong_uptrend': 'Strong Uptrend Confirmed',
+    'strong_downtrend': 'Strong Downtrend Confirmed',
+    'high_liquidity_session': 'High Liquidity Session',
+    'buy_order_imbalance': 'Buy Order Flow Imbalance',
+    'sell_order_imbalance': 'Sell Order Flow Imbalance',
+    'institutional_buy_footprint': 'Institutional Buy Activity',
+    'institutional_sell_footprint': 'Institutional Sell Activity',
+    'volume_node_support_resistance': 'High Volume Node S/R',
+    'volatile_opportunities': 'Volatile Market Conditions',
+    'positive_sentiment': 'Positive Market Sentiment',
+    'negative_sentiment': 'Negative Market Sentiment',
+    'rsi': 'RSI Indicator',
+    'macd': 'MACD Signal',
+    'ema_crossover': 'EMA Crossover',
+    'fibonacci': 'Fibonacci Level',
+    'dxy_correlation': 'DXY Correlation',
+  };
+  return featureMap[feature] || feature.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
 
 export default function DashboardScreen() {
   const { signalHistory, marketOutlook, performanceMetrics, positionSizing, currentPrice, priceHistory, refreshData, signalUpdateTrigger } = useTrading();
@@ -293,7 +319,46 @@ export default function DashboardScreen() {
                   </View>
                 </LinearGradient>
               </View>
-            ) : (
+            ) : null}
+
+            {currentSignal && (
+              <View style={styles.confidenceCard}>
+                <View style={styles.confidenceHeader}>
+                  <Lightbulb size={18} color="#FFD700" fill="#FFD700" />
+                  <Text style={styles.confidenceTitle}>Signal Analysis</Text>
+                </View>
+                <Text style={styles.confidenceDescription}>
+                  {currentSignal.riskJustification}
+                </Text>
+                
+                {currentSignal.topFeatures && currentSignal.topFeatures.length > 0 && (
+                  <View style={styles.featuresContainer}>
+                    <Text style={styles.featuresTitle}>Key Indicators:</Text>
+                    {currentSignal.topFeatures.slice(0, 5).map((feature, index) => (
+                      <View key={index} style={styles.featureRow}>
+                        <View style={styles.featureDot} />
+                        <Text style={styles.featureName}>
+                          {formatFeatureName(feature.feature)}
+                        </Text>
+                        <View style={styles.featureScoreContainer}>
+                          <View style={[styles.featureBar, { width: `${feature.score * 100}%` }]} />
+                          <Text style={styles.featureScore}>{(feature.score * 100).toFixed(0)}%</Text>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                )}
+                
+                <View style={styles.probabilityBanner}>
+                  <TrendingUpDown size={14} color="#22c55e" />
+                  <Text style={styles.probabilityText}>
+                    High probability setup with {(currentSignal.confidence * 100).toFixed(0)}% confidence based on {currentSignal.topFeatures.length} aligned indicators
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {!currentSignal && (
               <View style={styles.noSignalCard}>
                 <TrendingUp size={48} color="#444" strokeWidth={1.5} />
                 <Text style={styles.noSignalTitle}>No Active Signal</Text>
@@ -1098,4 +1163,99 @@ const styles = StyleSheet.create({
     width: "100%",
     alignItems: "center",
   },
+  confidenceCard: {
+    backgroundColor: "rgba(255, 215, 0, 0.08)",
+    padding: 18,
+    borderRadius: 16,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: "rgba(255, 215, 0, 0.25)",
+  },
+  confidenceHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 14,
+  },
+  confidenceTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFD700",
+  } as const,
+  confidenceDescription: {
+    fontSize: 13,
+    color: "#ddd",
+    lineHeight: 20,
+    marginBottom: 16,
+  },
+  featuresContainer: {
+    marginBottom: 14,
+  },
+  featuresTitle: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#999",
+    marginBottom: 10,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  featureRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 10,
+    gap: 10,
+  },
+  featureDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#FFD700",
+  },
+  featureName: {
+    fontSize: 12,
+    color: "#ccc",
+    flex: 1,
+  },
+  featureScoreContainer: {
+    position: "relative",
+    width: 60,
+    height: 20,
+    backgroundColor: "rgba(255, 255, 255, 0.1)",
+    borderRadius: 4,
+    overflow: "hidden",
+    justifyContent: "center",
+    alignItems: "flex-end",
+    paddingRight: 6,
+  },
+  featureBar: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    height: "100%",
+    backgroundColor: "rgba(255, 215, 0, 0.4)",
+    borderRadius: 4,
+  },
+  featureScore: {
+    fontSize: 9,
+    fontWeight: "600",
+    color: "#FFD700",
+    zIndex: 1,
+  } as const,
+  probabilityBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(34, 197, 94, 0.15)",
+    padding: 12,
+    borderRadius: 8,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: "rgba(34, 197, 94, 0.3)",
+  },
+  probabilityText: {
+    flex: 1,
+    fontSize: 11,
+    color: "#22c55e",
+    lineHeight: 16,
+    fontWeight: "600",
+  } as const,
 });
