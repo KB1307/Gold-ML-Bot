@@ -41,7 +41,7 @@ export default function LoginScreen() {
             </View>
             <View style={styles.featureRow}>
               <View style={styles.featureDot} />
-              <Text style={styles.featureText}>HighAccuracy</Text>
+              <Text style={styles.featureText}>High Accuracy</Text>
             </View>
           </View>
 

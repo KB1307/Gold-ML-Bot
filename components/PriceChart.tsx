@@ -88,21 +88,43 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
           .tradingview-widget-container__widget { height: calc(100% - 32px); width: 100%; }
         </style>
         <script>
-          window.addEventListener('error', function(e) {
-            if (e.message && e.message.includes('contentWindow')) {
-              e.preventDefault();
-              e.stopPropagation();
-              return false;
-            }
-          }, true);
-          
-          window.addEventListener('unhandledrejection', function(e) {
-            if (e.reason && e.reason.message && e.reason.message.includes('contentWindow')) {
-              e.preventDefault();
-              e.stopPropagation();
-              return false;
-            }
-          });
+          (function() {
+            const originalError = console.error;
+            console.error = function() {
+              const args = Array.from(arguments);
+              const errorStr = args.join(' ');
+              if (errorStr.includes('contentWindow') || errorStr.includes('iframe')) {
+                return;
+              }
+              originalError.apply(console, args);
+            };
+
+            window.addEventListener('error', function(e) {
+              if (e.message && (e.message.includes('contentWindow') || e.message.includes('iframe'))) {
+                e.preventDefault();
+                e.stopPropagation();
+                return false;
+              }
+            }, true);
+            
+            window.addEventListener('unhandledrejection', function(e) {
+              if (e.reason && e.reason.message && (e.reason.message.includes('contentWindow') || e.reason.message.includes('iframe'))) {
+                e.preventDefault();
+                e.stopPropagation();
+                return false;
+              }
+            });
+
+            Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+              get: function() {
+                try {
+                  return this._contentWindow || null;
+                } catch(e) {
+                  return null;
+                }
+              }
+            });
+          })();
         </script>
       </head>
       <body>
@@ -160,12 +182,34 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
         mediaPlaybackRequiresUserAction={false}
         onError={(syntheticEvent) => {
           const { nativeEvent } = syntheticEvent;
-          console.warn('WebView error:', nativeEvent);
+          if (!nativeEvent.description?.includes('contentWindow') && !nativeEvent.description?.includes('iframe')) {
+            console.warn('WebView error:', nativeEvent);
+          }
         }}
         onHttpError={(syntheticEvent) => {
           const { nativeEvent } = syntheticEvent;
           console.warn('WebView HTTP error:', nativeEvent);
         }}
+        onMessage={(event) => {
+          const message = event.nativeEvent.data;
+          if (!message.includes('contentWindow') && !message.includes('iframe')) {
+            console.log('WebView message:', message);
+          }
+        }}
+        injectedJavaScript={`
+          (function() {
+            const originalError = console.error;
+            console.error = function() {
+              const args = Array.from(arguments);
+              const errorStr = args.join(' ');
+              if (errorStr.includes('contentWindow') || errorStr.includes('iframe')) {
+                return;
+              }
+              originalError.apply(console, args);
+            };
+          })();
+          true;
+        `}
         mixedContentMode="always"
         thirdPartyCookiesEnabled={true}
       />
