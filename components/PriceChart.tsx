@@ -87,6 +87,23 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
           .tradingview-widget-container { height: 100%; width: 100%; }
           .tradingview-widget-container__widget { height: calc(100% - 32px); width: 100%; }
         </style>
+        <script>
+          window.addEventListener('error', function(e) {
+            if (e.message && e.message.includes('contentWindow')) {
+              e.preventDefault();
+              e.stopPropagation();
+              return false;
+            }
+          }, true);
+          
+          window.addEventListener('unhandledrejection', function(e) {
+            if (e.reason && e.reason.message && e.reason.message.includes('contentWindow')) {
+              e.preventDefault();
+              e.stopPropagation();
+              return false;
+            }
+          });
+        </script>
       </head>
       <body>
         <div class="tradingview-widget-container">
@@ -141,6 +158,16 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
         originWhitelist={['*']}
         allowsInlineMediaPlayback={true}
         mediaPlaybackRequiresUserAction={false}
+        onError={(syntheticEvent) => {
+          const { nativeEvent } = syntheticEvent;
+          console.warn('WebView error:', nativeEvent);
+        }}
+        onHttpError={(syntheticEvent) => {
+          const { nativeEvent } = syntheticEvent;
+          console.warn('WebView HTTP error:', nativeEvent);
+        }}
+        mixedContentMode="always"
+        thirdPartyCookiesEnabled={true}
       />
     </View>
   );
