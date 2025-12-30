@@ -4,11 +4,18 @@ import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { TradingProvider, useTrading } from "@/contexts/TradingContext";
-import { View, ActivityIndicator, Text, StyleSheet } from "react-native";
+import { View, ActivityIndicator, Text, StyleSheet, LogBox, Platform } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { trpc, trpcClient } from "@/lib/trpc";
 
 SplashScreen.preventAutoHideAsync();
+
+if (Platform.OS === 'web') {
+  LogBox.ignoreLogs([
+    'Cannot listen to the event from the provided iframe',
+    'props.pointerEvents is deprecated',
+  ]);
+}
 
 const queryClient = new QueryClient();
 
