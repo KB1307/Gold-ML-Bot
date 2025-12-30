@@ -1,6 +1,7 @@
 import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC } from "@/types/trading";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
+import { trpcClient } from "@/lib/trpc";
 
 interface OrderFlowData {
   bidVolume: number;
@@ -142,7 +143,7 @@ let lastIntermarketFetchTime: number = 0;
 const LEARNING_STORAGE_KEY = 'trade_outcomes_learning';
 const MODEL_WEIGHTS_KEY = 'model_weights_v1';
 const DAILY_OHLC_STORAGE_KEY = 'daily_ohlc_history_v1';
-const WALK_FORWARD_WINDOW = 12 * 7 * 24 * 60 * 60 * 1000;
+
 const TRAINING_WINDOW_DAYS = 30;
 const MIN_CONFIDENCE_FOR_RETRAINING = 0.75;
 const BASE_SLIPPAGE_BUFFER_PIPS = 0.5;
@@ -243,7 +244,7 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
       cachedDXY = 103.5 + (Math.random() - 0.5) * 2;
       console.log('⚠️ DXY: Using simulated price:', cachedDXY.toFixed(2));
     }
-  } catch (error) {
+  } catch {
     if (!cachedDXY) {
       cachedDXY = 103.5 + (Math.random() - 0.5) * 2;
       console.log('⚠️ DXY fetch failed, using simulated price:', cachedDXY.toFixed(2));
@@ -271,7 +272,7 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
       cachedUS10Y = 4.2 + (Math.random() - 0.5) * 0.5;
       console.log('⚠️ US10Y: Using simulated yield:', cachedUS10Y.toFixed(2));
     }
-  } catch (error) {
+  } catch {
     if (!cachedUS10Y) {
       cachedUS10Y = 4.2 + (Math.random() - 0.5) * 0.5;
       console.log('⚠️ US10Y fetch failed, using simulated yield:', cachedUS10Y.toFixed(2));
@@ -299,7 +300,7 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
       cachedVIX = 18 + (Math.random() - 0.5) * 5;
       console.log('⚠️ VIX: Using simulated price:', cachedVIX.toFixed(2));
     }
-  } catch (error) {
+  } catch {
     if (!cachedVIX) {
       cachedVIX = 18 + (Math.random() - 0.5) * 5;
       console.log('⚠️ VIX fetch failed, using simulated price:', cachedVIX.toFixed(2));
@@ -356,42 +357,24 @@ async function fetchLiveGoldPrice(): Promise<number> {
   }
 
   try {
-    const response = await fetch('https://data-asg.goldprice.org/dbXRates/USD');
-    const data = await response.json();
+    console.log('🔄 Fetching gold price via backend (no CORS issues)...');
+    const result = await trpcClient.goldPrice.getSpotPrice.query();
     
-    if (data.items && data.items[0] && data.items[0].xauPrice) {
-      const price = parseFloat(data.items[0].xauPrice);
-      cachedGoldPrice = price;
-      lastFetchTime = now;
-      console.log('✓ Fetched live gold price from GoldPrice.org:', price);
-      return price;
-    }
+    cachedGoldPrice = result.price;
+    lastFetchTime = now;
+    console.log(`✅ Fetched gold price via backend: ${result.price} (source: ${result.source})`);
+    return result.price;
   } catch (error) {
-    console.warn('Primary gold price API failed, trying fallback...', error);
-  }
-
-  try {
-    const response = await fetch('https://api.metals.live/v1/spot/gold');
-    const data = await response.json();
-    
-    if (data && data[0] && data[0].price) {
-      const price = parseFloat(data[0].price);
-      cachedGoldPrice = price;
-      lastFetchTime = now;
-      console.log('✓ Fetched live gold price from Metals.live:', price);
-      return price;
-    }
-  } catch (error) {
-    console.warn('Fallback gold price API failed:', error);
+    console.error('❌ Backend gold price fetch failed:', error);
   }
 
   if (cachedGoldPrice !== null) {
-    console.log('Using last cached price:', cachedGoldPrice);
+    console.log('⚠️ Using last cached price:', cachedGoldPrice);
     return cachedGoldPrice;
   }
 
   const defaultPrice = 2650;
-  console.warn('All APIs failed, using default price:', defaultPrice);
+  console.warn('⚠️ All methods failed, using default price:', defaultPrice);
   return defaultPrice;
 }
 
@@ -631,7 +614,7 @@ class SignalGenerationEngine {
       try {
         const intermarket = await fetchIntermarketData();
         vix = intermarket.vixPrice;
-      } catch (error) {
+      } catch {
         console.warn('Failed to fetch VIX for regime detection');
       }
     }
@@ -2055,7 +2038,6 @@ class SignalGenerationEngine {
       console.log('   Signal allowed but confidence may be reduced');
     }
     
-    const modelWeight = this.performanceMetrics.recentWinRate / 0.65;
     let baseConfidence = 0.55 + signalStrength * 0.35;
     
     baseConfidence += Math.abs(sentimentImpact) * 0.1;
@@ -2201,7 +2183,6 @@ class SignalGenerationEngine {
   private detectBearishDivergence(features: MarketFeatures): boolean {
     if (this.priceHistory.length < 10 || this.highHistory.length < 10) return false;
     
-    const recent10Prices = this.priceHistory.slice(-10);
     const recent10Highs = this.highHistory.slice(-10);
     
     const priceHigh1 = recent10Highs[4];
@@ -2375,7 +2356,6 @@ class SignalGenerationEngine {
   private detectBullishDivergence(features: MarketFeatures): boolean {
     if (this.priceHistory.length < 10 || this.lowHistory.length < 10) return false;
     
-    const recent10Prices = this.priceHistory.slice(-10);
     const recent10Lows = this.lowHistory.slice(-10);
     
     const priceLow1 = recent10Lows[4];
@@ -2420,7 +2400,6 @@ class SignalGenerationEngine {
     const recentOutcomes = this.tradeOutcomes.slice(-20);
     const wins = recentOutcomes.filter(o => o.result === 'WIN').length;
     const losses = recentOutcomes.filter(o => o.result === 'LOSS').length;
-    const totalPnl = recentOutcomes.reduce((sum, o) => sum + o.pnl, 0);
     const winPnl = recentOutcomes.filter(o => o.result === 'WIN').reduce((sum, o) => sum + o.pnl, 0);
     const lossPnl = Math.abs(recentOutcomes.filter(o => o.result === 'LOSS').reduce((sum, o) => sum + o.pnl, 0));
     
