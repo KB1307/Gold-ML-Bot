@@ -1013,16 +1013,21 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         let newStatus: SignalStatus = signal.status as SignalStatus;
         let targetsHit = signal.targetsHit;
         let updatedSignal = signal;
+        
+        const effectiveSL = targetsHit >= 1 ? signal.entryPrice : signal.sl;
 
-        console.log(`🔍 Monitoring Signal ${signal.id.slice(-6)}: Type=${signal.type}, Status=${signal.status}, Targets=${targetsHit}/3, Price=${price.toFixed(1)}, TP1=${signal.tp1.toFixed(1)}, TP2=${signal.tp2.toFixed(1)}, TP3=${signal.tp3.toFixed(1)}, SL=${signal.sl.toFixed(1)}`);
+        console.log(`🔍 Monitoring Signal ${signal.id.slice(-6)}: Type=${signal.type}, Status=${signal.status}, Targets=${targetsHit}/3, Price=${price.toFixed(1)}, TP1=${signal.tp1.toFixed(1)}, TP2=${signal.tp2.toFixed(1)}, TP3=${signal.tp3.toFixed(1)}, OriginalSL=${signal.sl.toFixed(1)}, EffectiveSL=${effectiveSL.toFixed(1)}`);
 
         if (signal.type === "BUY") {
-          if (price <= signal.sl) {
-            console.log(`🚨 STOP LOSS DETECTION: BUY signal @ Entry=${signal.entryPrice.toFixed(1)}, SL=${signal.sl.toFixed(1)}, Current=${price.toFixed(1)} | SL TRIGGERED (${price.toFixed(1)} <= ${signal.sl.toFixed(1)})`);
+          if (price <= effectiveSL) {
+            console.log(`🚨 STOP LOSS DETECTION: BUY signal @ Entry=${signal.entryPrice.toFixed(1)}, EffectiveSL=${effectiveSL.toFixed(1)}, Current=${price.toFixed(1)} | SL TRIGGERED (${price.toFixed(1)} <= ${effectiveSL.toFixed(1)})`);
+            if (targetsHit >= 1) {
+              console.log(`   ✅ TP${targetsHit} was already hit - SL was at breakeven (${signal.entryPrice.toFixed(1)})`);
+            }
             newStatus = "SL_HIT";
             updated = true;
             immediateUpdate = true;
-            console.log(`⚠️ ⚠️ ⚠️ SL HIT: BUY Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (SL: ${signal.sl.toFixed(1)})`);
+            console.log(`⚠️ ⚠️ ⚠️ SL HIT: BUY Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (Effective SL: ${effectiveSL.toFixed(1)})`);
           } else if (price >= signal.tp3 && targetsHit < 3) {
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
@@ -1040,14 +1045,18 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             targetsHit = 1;
             updated = true;
             console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)}`);
+            console.log(`📌 SL MOVED TO BREAKEVEN: ${signal.entryPrice.toFixed(1)} (from ${signal.sl.toFixed(1)})`);
           }
         } else {
-          if (price >= signal.sl) {
-            console.log(`🚨 STOP LOSS DETECTION: SELL signal @ Entry=${signal.entryPrice.toFixed(1)}, SL=${signal.sl.toFixed(1)}, Current=${price.toFixed(1)} | SL TRIGGERED (${price.toFixed(1)} >= ${signal.sl.toFixed(1)})`);
+          if (price >= effectiveSL) {
+            console.log(`🚨 STOP LOSS DETECTION: SELL signal @ Entry=${signal.entryPrice.toFixed(1)}, EffectiveSL=${effectiveSL.toFixed(1)}, Current=${price.toFixed(1)} | SL TRIGGERED (${price.toFixed(1)} >= ${effectiveSL.toFixed(1)})`);
+            if (targetsHit >= 1) {
+              console.log(`   ✅ TP${targetsHit} was already hit - SL was at breakeven (${signal.entryPrice.toFixed(1)})`);
+            }
             newStatus = "SL_HIT";
             updated = true;
             immediateUpdate = true;
-            console.log(`⚠️ ⚠️ ⚠️ SL HIT: SELL Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (SL: ${signal.sl.toFixed(1)})`);
+            console.log(`⚠️ ⚠️ ⚠️ SL HIT: SELL Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (Effective SL: ${effectiveSL.toFixed(1)})`);
           } else if (price <= signal.tp3 && targetsHit < 3) {
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
@@ -1064,7 +1073,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             newStatus = "TP1_HIT";
             targetsHit = 1;
             updated = true;
-            console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)})`);
+            console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)}`);
+            console.log(`📌 SL MOVED TO BREAKEVEN: ${signal.entryPrice.toFixed(1)} (from ${signal.sl.toFixed(1)})`);
           }
         }
 
