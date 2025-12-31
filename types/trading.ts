@@ -39,6 +39,8 @@ export interface TradingSignal {
   tp2Distance?: number;
   tp3Distance?: number;
   createdAt?: number;
+  breakevenReached?: boolean;
+  breakevenTime?: string;
 }
 
 export interface MarketSession {

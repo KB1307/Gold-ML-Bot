@@ -8,8 +8,7 @@ import {
   registerBackgroundTask, 
   setupNotificationChannel, 
   requestNotificationPermissions,
-  sendSignalNotification,
-  getBackgroundTaskStatus 
+  sendSignalNotification
 } from "@/services/backgroundTaskService";
 
 const DEFAULT_SETTINGS: Settings = {
@@ -96,6 +95,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       }
     };
     init();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -155,7 +155,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     return () => clearInterval(interval);
   }, []);
 
-  const fetchPriceHistory = async (fromTime: number, toTime: number): Promise<Array<{timestamp: number, open: number, high: number, low: number, close: number}>> => {
+  const fetchPriceHistory = async (fromTime: number, toTime: number): Promise<{timestamp: number, open: number, high: number, low: number, close: number}[]> => {
     try {
       console.log(`📊 Fetching historical 1-MINUTE OHLCV data (UPGRADED)...`);
       console.log(`   From: ${new Date(fromTime).toISOString()}`);
@@ -190,7 +190,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       const timestamps = result.timestamp;
       const quotes = result.indicators.quote[0];
       
-      const bars: Array<{timestamp: number, open: number, high: number, low: number, close: number}> = [];
+      const bars: {timestamp: number, open: number, high: number, low: number, close: number}[] = [];
       
       for (let i = 0; i < timestamps.length; i++) {
         const barTime = timestamps[i] * 1000;
@@ -230,8 +230,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   const analyzeSignalWithHistoricalData = async (
     signal: TradingSignal,
-    historicalBars: Array<{timestamp: number, open: number, high: number, low: number, close: number}>
-  ): Promise<{newStatus: SignalStatus, targetsHit: number, exitPrice: number, outcomeResult: 'WIN' | 'LOSS' | null}> => {
+    historicalBars: {timestamp: number, open: number, high: number, low: number, close: number}[]
+  ): Promise<{newStatus: SignalStatus, targetsHit: number, exitPrice: number, outcomeResult: 'WIN' | 'LOSS' | null, breakevenReached?: boolean, breakevenTime?: string}> => {
     console.log(`\n📊 UPGRADED SEQUENTIAL ANALYSIS (1-Min Bars)`);
     console.log(`   Signal ID: ${signal.id.slice(-6)}`);
     console.log(`   Signal Type: ${signal.type}`);
@@ -246,8 +246,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     let exitPrice = signal.entryPrice;
     let outcomeResult: 'WIN' | 'LOSS' | null = null;
     let entryConfirmed = false;
-    let currentSL = signal.sl;
     let tp1HitTime: number | null = null;
+    let breakevenReached = signal.breakevenReached || false;
+    let breakevenTime = signal.breakevenTime;
     
     const entryMin = Math.min(signal.entryPrice, signal.entryPriceWithSlippage);
     const entryMax = Math.max(signal.entryPrice, signal.entryPriceWithSlippage);
@@ -276,19 +277,19 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log(`   [Bar ${i+1}] ${new Date(bar.timestamp).toLocaleTimeString()} - H:${bar.high.toFixed(1)} L:${bar.low.toFixed(1)} C:${bar.close.toFixed(1)}`);
       
       if (signal.type === "BUY") {
-        if (bar.low <= currentSL) {
+        if (bar.low <= signal.sl) {
           console.log(`   🚨 SL HIT on bar ${i + 1}/${historicalBars.length}`);
           console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
-          console.log(`      Bar Low: ${bar.low.toFixed(1)} <= SL: ${currentSL.toFixed(1)}`);
+          console.log(`      Bar Low: ${bar.low.toFixed(1)} <= SL: ${signal.sl.toFixed(1)}`);
           
           if (currentTargetsHit > 0) {
             currentStatus = "PARTIAL_WIN_SL_HIT";
-            exitPrice = currentSL;
+            exitPrice = signal.sl;
             outcomeResult = 'WIN';
             console.log(`      📊 Result: PARTIAL WIN (TP${currentTargetsHit} hit before SL)`);
           } else {
             currentStatus = "SL_HIT";
-            exitPrice = currentSL;
+            exitPrice = signal.sl;
             outcomeResult = 'LOSS';
             console.log(`      📊 Result: LOSS (SL hit before any TP)`);
           }
@@ -321,24 +322,25 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           currentTargetsHit = 1;
           exitPrice = signal.tp1;
           tp1HitTime = bar.timestamp;
+          breakevenReached = true;
+          breakevenTime = new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
           
-          currentSL = signal.entryPrice;
-          console.log(`      📌 SL MOVED TO BREAKEVEN: ${currentSL.toFixed(1)} (from ${signal.sl.toFixed(1)})`);
+          console.log(`      ⚖️ BREAKEVEN MARKER ADDED - Original SL remains at ${signal.sl.toFixed(1)}`);
         }
       } else {
-        if (bar.high >= currentSL) {
+        if (bar.high >= signal.sl) {
           console.log(`   🚨 SL HIT on bar ${i + 1}/${historicalBars.length}`);
           console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
-          console.log(`      Bar High: ${bar.high.toFixed(1)} >= SL: ${currentSL.toFixed(1)}`);
+          console.log(`      Bar High: ${bar.high.toFixed(1)} >= SL: ${signal.sl.toFixed(1)}`);
           
           if (currentTargetsHit > 0) {
             currentStatus = "PARTIAL_WIN_SL_HIT";
-            exitPrice = currentSL;
+            exitPrice = signal.sl;
             outcomeResult = 'WIN';
             console.log(`      📊 Result: PARTIAL WIN (TP${currentTargetsHit} hit before SL)`);
           } else {
             currentStatus = "SL_HIT";
-            exitPrice = currentSL;
+            exitPrice = signal.sl;
             outcomeResult = 'LOSS';
             console.log(`      📊 Result: LOSS (SL hit before any TP)`);
           }
@@ -371,9 +373,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           currentTargetsHit = 1;
           exitPrice = signal.tp1;
           tp1HitTime = bar.timestamp;
+          breakevenReached = true;
+          breakevenTime = new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
           
-          currentSL = signal.entryPrice;
-          console.log(`      📌 SL MOVED TO BREAKEVEN: ${currentSL.toFixed(1)} (from ${signal.sl.toFixed(1)})`);
+          console.log(`      ⚖️ BREAKEVEN MARKER ADDED - Original SL remains at ${signal.sl.toFixed(1)}`);
         }
       }
     }
@@ -399,6 +402,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       targetsHit: currentTargetsHit,
       exitPrice,
       outcomeResult,
+      breakevenReached,
+      breakevenTime,
     };
   };
 
@@ -547,7 +552,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       } else {
         const analysis = await analyzeSignalWithHistoricalData(signal, historicalBars);
         
-        if (analysis.newStatus !== signal.status || analysis.targetsHit !== signal.targetsHit) {
+        if (analysis.newStatus !== signal.status || analysis.targetsHit !== signal.targetsHit || analysis.breakevenReached !== signal.breakevenReached) {
           hasChanges = true;
           const exitDate = new Date();
           
@@ -555,6 +560,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             ...signal,
             status: analysis.newStatus,
             targetsHit: analysis.targetsHit,
+            breakevenReached: analysis.breakevenReached,
+            breakevenTime: analysis.breakevenTime,
             exitTime: (analysis.newStatus === "SL_HIT" || analysis.newStatus === "ALL_TARGETS_HIT") 
               ? exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
               : signal.exitTime,
@@ -761,7 +768,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     let maxDrawdown = 0;
     
     closedTrades.forEach(signal => {
-      const currentPrice = signalEngine.getCurrentPrice();
       let pnl = 0;
       
       if (signal.type === "BUY") {
@@ -974,7 +980,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.error("Error:", error);
       console.error("Stack:", error instanceof Error ? error.stack : 'No stack trace');
     }
-  }, [settings, accountBalance, signalHistory]);
+  }, [settings, accountBalance, signalHistory, appLaunchTime]);
 
   const updateAllSignalsStatus = useCallback(() => {
     const price = signalEngine.getCurrentPrice();
@@ -1013,21 +1019,21 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         let newStatus: SignalStatus = signal.status as SignalStatus;
         let targetsHit = signal.targetsHit;
         let updatedSignal = signal;
-        
-        const effectiveSL = targetsHit >= 1 ? signal.entryPrice : signal.sl;
+        let breakevenReached = signal.breakevenReached || false;
+        let breakevenTime = signal.breakevenTime;
 
-        console.log(`🔍 Monitoring Signal ${signal.id.slice(-6)}: Type=${signal.type}, Status=${signal.status}, Targets=${targetsHit}/3, Price=${price.toFixed(1)}, TP1=${signal.tp1.toFixed(1)}, TP2=${signal.tp2.toFixed(1)}, TP3=${signal.tp3.toFixed(1)}, OriginalSL=${signal.sl.toFixed(1)}, EffectiveSL=${effectiveSL.toFixed(1)}`);
+        console.log(`🔍 Monitoring Signal ${signal.id.slice(-6)}: Type=${signal.type}, Status=${signal.status}, Targets=${targetsHit}/3, Price=${price.toFixed(1)}, TP1=${signal.tp1.toFixed(1)}, TP2=${signal.tp2.toFixed(1)}, TP3=${signal.tp3.toFixed(1)}, SL=${signal.sl.toFixed(1)}, Breakeven=${breakevenReached}`);
 
         if (signal.type === "BUY") {
-          if (price <= effectiveSL) {
-            console.log(`🚨 STOP LOSS DETECTION: BUY signal @ Entry=${signal.entryPrice.toFixed(1)}, EffectiveSL=${effectiveSL.toFixed(1)}, Current=${price.toFixed(1)} | SL TRIGGERED (${price.toFixed(1)} <= ${effectiveSL.toFixed(1)})`);
-            if (targetsHit >= 1) {
-              console.log(`   ✅ TP${targetsHit} was already hit - SL was at breakeven (${signal.entryPrice.toFixed(1)})`);
+          if (price <= signal.sl) {
+            console.log(`🚨 STOP LOSS DETECTION: BUY signal @ Entry=${signal.entryPrice.toFixed(1)}, SL=${signal.sl.toFixed(1)}, Current=${price.toFixed(1)} | SL TRIGGERED (${price.toFixed(1)} <= ${signal.sl.toFixed(1)})`);
+            if (targetsHit > 0) {
+              console.log(`   ✅ TP${targetsHit} was already hit - marking as PARTIAL WIN`);
             }
             newStatus = "SL_HIT";
             updated = true;
             immediateUpdate = true;
-            console.log(`⚠️ ⚠️ ⚠️ SL HIT: BUY Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (Effective SL: ${effectiveSL.toFixed(1)})`);
+            console.log(`⚠️ ⚠️ ⚠️ SL HIT: BUY Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (Original SL: ${signal.sl.toFixed(1)})`);
           } else if (price >= signal.tp3 && targetsHit < 3) {
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
@@ -1043,20 +1049,22 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           } else if (price >= signal.tp1 && targetsHit < 1) {
             newStatus = "TP1_HIT";
             targetsHit = 1;
+            breakevenReached = true;
+            breakevenTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
             updated = true;
             console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)}`);
-            console.log(`📌 SL MOVED TO BREAKEVEN: ${signal.entryPrice.toFixed(1)} (from ${signal.sl.toFixed(1)})`);
+            console.log(`⚖️ BREAKEVEN MARKER ADDED at ${breakevenTime} - Original SL remains at ${signal.sl.toFixed(1)}`);
           }
         } else {
-          if (price >= effectiveSL) {
-            console.log(`🚨 STOP LOSS DETECTION: SELL signal @ Entry=${signal.entryPrice.toFixed(1)}, EffectiveSL=${effectiveSL.toFixed(1)}, Current=${price.toFixed(1)} | SL TRIGGERED (${price.toFixed(1)} >= ${effectiveSL.toFixed(1)})`);
-            if (targetsHit >= 1) {
-              console.log(`   ✅ TP${targetsHit} was already hit - SL was at breakeven (${signal.entryPrice.toFixed(1)})`);
+          if (price >= signal.sl) {
+            console.log(`🚨 STOP LOSS DETECTION: SELL signal @ Entry=${signal.entryPrice.toFixed(1)}, SL=${signal.sl.toFixed(1)}, Current=${price.toFixed(1)} | SL TRIGGERED (${price.toFixed(1)} >= ${signal.sl.toFixed(1)})`);
+            if (targetsHit > 0) {
+              console.log(`   ✅ TP${targetsHit} was already hit - marking as PARTIAL WIN`);
             }
             newStatus = "SL_HIT";
             updated = true;
             immediateUpdate = true;
-            console.log(`⚠️ ⚠️ ⚠️ SL HIT: SELL Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (Effective SL: ${effectiveSL.toFixed(1)})`);
+            console.log(`⚠️ ⚠️ ⚠️ SL HIT: SELL Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (Original SL: ${signal.sl.toFixed(1)})`);
           } else if (price <= signal.tp3 && targetsHit < 3) {
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
@@ -1072,9 +1080,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           } else if (price <= signal.tp1 && targetsHit < 1) {
             newStatus = "TP1_HIT";
             targetsHit = 1;
+            breakevenReached = true;
+            breakevenTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
             updated = true;
             console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)}`);
-            console.log(`📌 SL MOVED TO BREAKEVEN: ${signal.entryPrice.toFixed(1)} (from ${signal.sl.toFixed(1)})`);
+            console.log(`⚖️ BREAKEVEN MARKER ADDED at ${breakevenTime} - Original SL remains at ${signal.sl.toFixed(1)}`);
           }
         }
 
@@ -1104,6 +1114,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
               ...updatedSignal,
               status: newStatus,
               targetsHit,
+              breakevenReached,
+              breakevenTime,
               exitTime: exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
             };
           }
@@ -1113,7 +1125,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             console.log(`   This signal continues to be monitored for TP3 or SL`);
           }
           
-          return { ...updatedSignal, status: newStatus, targetsHit };
+          return { ...updatedSignal, status: newStatus, targetsHit, breakevenReached, breakevenTime };
         }
 
         return signal;
@@ -1141,7 +1153,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       return updated ? updatedHistory : prevHistory;
     });
-  }, [setSignalUpdateTrigger]);
+  }, [signalUpdateTrigger, setSignalUpdateTrigger]);
 
 
 
@@ -1179,7 +1191,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log('🛑 Signal generation system deactivated');
       clearInterval(signalInterval);
     };
-  }, [isLoggedIn, isLoading, checkAndGenerateSignal]);
+  }, [isLoggedIn, isLoading, checkAndGenerateSignal, signalHistory.length]);
 
   const login = useCallback(async (username: string) => {
     setIsLoggedIn(true);

@@ -457,12 +457,22 @@ export default function DashboardScreen() {
                       <Shield size={16} color="#ef4444" />
                       <Text style={[styles.targetLabel, { color: "#ef4444" }]}>SL</Text>
                       <Text style={[styles.targetValue, { color: "#ef4444" }]}>${currentSignal.sl.toFixed(1)}</Text>
-                      {currentSignal.targetsHit >= 1 && (
-                        <View style={styles.breakevenBadge}>
-                          <Text style={styles.breakevenText}>BREAKEVEN</Text>
-                        </View>
-                      )}
                     </View>
+                  </View>
+
+                  {currentSignal.breakevenReached && (
+                    <View style={styles.breakevenInfoCard}>
+                      <View style={styles.breakevenIcon}>
+                        <Text style={styles.breakevenIconText}>⚖️</Text>
+                      </View>
+                      <View style={styles.breakevenTextContainer}>
+                        <Text style={styles.breakevenTitle}>Breakeven Protection Active</Text>
+                        <Text style={styles.breakevenSubtext}>TP1 hit at {currentSignal.breakevenTime || 'N/A'} - Original SL maintained at ${currentSignal.sl.toFixed(1)}</Text>
+                      </View>
+                    </View>
+                  )}
+
+                  <View style={{ height: 0 }}>
                   </View>
                 </LinearGradient>
               </View>
@@ -1544,4 +1554,40 @@ const styles = StyleSheet.create({
     color: "#FFD700",
     marginBottom: 8,
   } as const,
+  breakevenInfoCard: {
+    marginTop: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255, 215, 0, 0.12)",
+    padding: 14,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: "rgba(255, 215, 0, 0.35)",
+  },
+  breakevenIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "rgba(255, 215, 0, 0.2)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+  },
+  breakevenIconText: {
+    fontSize: 18,
+  },
+  breakevenTextContainer: {
+    flex: 1,
+  },
+  breakevenTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#FFD700",
+    marginBottom: 4,
+  } as const,
+  breakevenSubtext: {
+    fontSize: 10,
+    color: "#bbb",
+    lineHeight: 15,
+  },
 });
