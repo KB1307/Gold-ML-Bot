@@ -457,6 +457,11 @@ export default function DashboardScreen() {
                       <Shield size={16} color="#ef4444" />
                       <Text style={[styles.targetLabel, { color: "#ef4444" }]}>SL</Text>
                       <Text style={[styles.targetValue, { color: "#ef4444" }]}>${currentSignal.sl.toFixed(1)}</Text>
+                      {currentSignal.targetsHit >= 1 && (
+                        <View style={styles.breakevenBadge}>
+                          <Text style={styles.breakevenText}>BREAKEVEN</Text>
+                        </View>
+                      )}
                     </View>
                   </View>
                 </LinearGradient>
@@ -993,6 +998,21 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: "700",
     color: "#22c55e",
+    letterSpacing: 0.5,
+  } as const,
+  breakevenBadge: {
+    backgroundColor: "rgba(255, 215, 0, 0.2)",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    marginLeft: 8,
+    borderWidth: 1,
+    borderColor: "rgba(255, 215, 0, 0.4)",
+  },
+  breakevenText: {
+    fontSize: 9,
+    fontWeight: "700",
+    color: "#FFD700",
     letterSpacing: 0.5,
   } as const,
   noSignalCard: {
