@@ -122,7 +122,7 @@ export default function PriceChart({ data, currentPrice }: PriceChartProps) {
       <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-        <meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval'; script-src * 'unsafe-inline' 'unsafe-eval'; connect-src * 'unsafe-inline'; img-src * data: blob: 'unsafe-inline'; frame-src *; style-src * 'unsafe-inline';">
+        <meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; script-src * 'unsafe-inline' 'unsafe-eval' blob: 'sha256-OnIRlyPDoHGNireBiH3l4iJuU6eW7LFwBvVSh6rAIZw='; connect-src * 'unsafe-inline'; img-src * data: blob:; style-src * 'unsafe-inline';">
         <style>
           * { margin: 0; padding: 0; box-sizing: border-box; }
           html, body { height: 100%; width: 100%; overflow: hidden; background-color: #0F0F0F; }
