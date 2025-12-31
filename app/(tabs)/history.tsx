@@ -195,6 +195,18 @@ export default function HistoryScreen() {
                         ]}>${signal.sl.toFixed(1)}</Text>
                       </View>
 
+                      {signal.breakevenReached && signal.breakevenTime && (
+                        <View style={styles.breakevenMarker}>
+                          <View style={styles.breakevenIcon}>
+                            <Text style={styles.breakevenIconText}>⚖️</Text>
+                          </View>
+                          <View style={styles.breakevenContent}>
+                            <Text style={styles.breakevenTitle}>Breakeven Reached</Text>
+                            <Text style={styles.breakevenTime}>at {signal.breakevenTime}</Text>
+                          </View>
+                        </View>
+                      )}
+
                       {signal.exitTime && (
                         <View style={styles.exitInfo}>
                           <Text style={styles.exitText}>Exit: {signal.exitTime}</Text>
@@ -395,6 +407,42 @@ const styles = StyleSheet.create({
   exitText: {
     fontSize: 11,
     color: "#999",
+  },
+  breakevenMarker: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255, 215, 0, 0.12)",
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: "rgba(255, 215, 0, 0.3)",
+    gap: 10,
+  },
+  breakevenIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "rgba(255, 215, 0, 0.2)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  breakevenIconText: {
+    fontSize: 16,
+  },
+  breakevenContent: {
+    flex: 1,
+  },
+  breakevenTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#FFD700",
+    marginBottom: 2,
+  } as const,
+  breakevenTime: {
+    fontSize: 11,
+    color: "#FFA500",
   },
   infoCard: {
     backgroundColor: "rgba(255, 255, 255, 0.03)",
