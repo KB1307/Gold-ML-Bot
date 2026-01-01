@@ -349,6 +349,10 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
   };
 }
 
+let backendFailureCount = 0;
+let lastBackendAttempt = 0;
+const BACKEND_RETRY_DELAY = 30000;
+
 async function fetchLiveGoldPrice(): Promise<number> {
   const now = Date.now();
   
@@ -356,25 +360,38 @@ async function fetchLiveGoldPrice(): Promise<number> {
     return cachedGoldPrice;
   }
 
+  if (backendFailureCount > 0 && now - lastBackendAttempt < BACKEND_RETRY_DELAY) {
+    if (cachedGoldPrice !== null) {
+      return cachedGoldPrice;
+    }
+    const defaultPrice = 2650;
+    return defaultPrice;
+  }
+
   try {
-    console.log('🔄 Fetching gold price via backend (no CORS issues)...');
+    lastBackendAttempt = now;
     const result = await trpcClient.goldPrice.getSpotPrice.query();
     
     cachedGoldPrice = result.price;
     lastFetchTime = now;
+    backendFailureCount = 0;
     console.log(`✅ Fetched gold price via backend: ${result.price} (source: ${result.source})`);
     return result.price;
   } catch (error) {
-    console.error('❌ Backend gold price fetch failed:', error);
+    backendFailureCount++;
+    if (backendFailureCount === 1) {
+      console.error('❌ Backend gold price fetch failed, will retry in 30s:', error);
+    }
   }
 
   if (cachedGoldPrice !== null) {
-    console.log('⚠️ Using last cached price:', cachedGoldPrice);
     return cachedGoldPrice;
   }
 
   const defaultPrice = 2650;
-  console.warn('⚠️ All methods failed, using default price:', defaultPrice);
+  if (backendFailureCount === 1) {
+    console.warn('⚠️ Using default price:', defaultPrice);
+  }
   return defaultPrice;
 }
 
