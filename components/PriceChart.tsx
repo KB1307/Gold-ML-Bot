@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useRef } from "react";
 import { View, StyleSheet, Platform } from "react-native";
 import { WebView } from "react-native-webview";
 
@@ -10,49 +10,100 @@ interface PriceDataPoint {
 interface PriceChartProps {
   data: PriceDataPoint[];
   currentPrice: number;
+  onPriceUpdate?: (price: number) => void;
 }
 
-const PriceChart = React.memo(({ data, currentPrice }: PriceChartProps) => {
-  const chartUrl = useMemo(() => {
-    const params = {
+const tradingViewHTML = `
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <style>
+      body { margin: 0; padding: 0; overflow: hidden; background: #0F0F0F; }
+      .tradingview-widget-container { height: 100vh; width: 100vw; }
+      .tradingview-widget-container__widget { height: calc(100% - 32px); width: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="tradingview-widget-container">
+      <div id="tradingview_chart" class="tradingview-widget-container__widget"></div>
+      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+      <script type="text/javascript">
+        new TradingView.widget({
+          "autosize": true,
+          "symbol": "OANDA:XAUUSD",
+          "interval": "5",
+          "timezone": "Etc/UTC",
+          "theme": "dark",
+          "style": "1",
+          "locale": "en",
+          "toolbar_bg": "#0F0F0F",
+          "enable_publishing": false,
+          "allow_symbol_change": true,
+          "container_id": "tradingview_chart",
+          "hide_side_toolbar": false,
+          "studies": [],
+          "show_popup_button": true,
+          "popup_width": "1000",
+          "popup_height": "800"
+        });
+        
+        setInterval(function() {
+          try {
+            const iframe = document.querySelector('iframe');
+            if (iframe && iframe.contentWindow) {
+              const priceElement = iframe.contentDocument?.querySelector('.price-axis-last-price');
+              if (priceElement) {
+                const price = parseFloat(priceElement.textContent);
+                if (!isNaN(price) && price > 0) {
+                  window.ReactNativeWebView?.postMessage(JSON.stringify({ 
+                    type: 'price', 
+                    value: price 
+                  }));
+                }
+              }
+            }
+          } catch (e) {
+            console.log('Cannot access chart price:', e);
+          }
+        }, 2000);
+      </script>
+    </div>
+  </body>
+</html>
+`;
+
+const PriceChart = React.memo(({ data, currentPrice, onPriceUpdate }: PriceChartProps) => {
+  const webViewRef = useRef<WebView>(null);
+  
+  const iframeUrl = useMemo(() => {
+    const params = new URLSearchParams({
+      frameElementId: "tradingview_chart",
       symbol: "OANDA:XAUUSD",
-      interval: "1",
+      interval: "5",
+      timezone: "Etc/UTC",
       theme: "dark",
       style: "1",
-      timezone: "Etc/UTC",
-      studies: "[]",
-      backgroundColor: "#0F0F0F",
-      gridColor: "rgba(242, 242, 242, 0.06)",
-      hide_side_toolbar: "0",
-      allow_symbol_change: "1",
-      save_image: "0",
       locale: "en",
       toolbar_bg: "#0F0F0F",
-      hide_top_toolbar: "0",
-      hide_legend: "0",
-      hide_volume: "0"
-    };
-    
-    const queryString = Object.entries(params)
-      .map(([key, val]) => `${key}=${encodeURIComponent(val)}`)
-      .join('&');
-      
-    return `https://s.tradingview.com/widgetembed/?${queryString}`;
+      enable_publishing: "false",
+      allow_symbol_change: "true",
+      hide_side_toolbar: "false",
+    });
+    return `https://s.tradingview.com/widgetembed/?${params.toString()}`;
   }, []);
 
   if (Platform.OS === 'web') {
     return (
       <View style={styles.container}>
         <iframe
-          src={chartUrl}
+          src={iframeUrl}
           style={{
             width: '100%',
             height: '100%',
             border: 'none',
-            borderRadius: 12,
           } as any}
-          title="Gold Price Chart"
-          sandbox="allow-scripts allow-same-origin allow-forms"
+          title="TradingView Chart"
         />
       </View>
     );
@@ -61,19 +112,23 @@ const PriceChart = React.memo(({ data, currentPrice }: PriceChartProps) => {
   return (
     <View style={styles.container}>
       <WebView
-        originWhitelist={['*']}
-        source={{ uri: chartUrl }}
+        ref={webViewRef}
+        source={{ html: tradingViewHTML }}
         style={styles.webview}
         javaScriptEnabled={true}
         domStorageEnabled={true}
-        scrollEnabled={false}
-        incognito={true}
         startInLoadingState={true}
         scalesPageToFit={true}
-        allowsInlineMediaPlayback={true}
-        mediaPlaybackRequiresUserAction={false}
-        mixedContentMode="always"
-        thirdPartyCookiesEnabled={true}
+        onMessage={(event) => {
+          try {
+            const data = JSON.parse(event.nativeEvent.data);
+            if (data.type === 'price' && data.value && onPriceUpdate) {
+              onPriceUpdate(data.value);
+            }
+          } catch (e) {
+            console.log('Error parsing WebView message:', e);
+          }
+        }}
       />
     </View>
   );
@@ -86,12 +141,11 @@ export default PriceChart;
 const styles = StyleSheet.create({
   container: {
     width: '100%',
-    height: 400,
+    height: 345,
+    backgroundColor: '#0F0F0F',
   },
   webview: {
     flex: 1,
     backgroundColor: '#0F0F0F',
-    borderRadius: 12,
-    overflow: 'hidden',
   },
 });
