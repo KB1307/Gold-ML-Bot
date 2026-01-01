@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useRef } from "react";
 import { View, StyleSheet, Platform } from "react-native";
 import { WebView } from "react-native-webview";
 
@@ -14,16 +14,57 @@ interface PriceChartProps {
 }
 
 const PriceChart = React.memo(({ data, currentPrice, onPriceUpdate }: PriceChartProps) => {
+  const webViewRef = useRef<WebView>(null);
+
+  const tradingViewHTML = useMemo(() => `
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <style>
+      body { margin: 0; padding: 0; overflow: hidden; background: #0F0F0F; }
+      .tradingview-widget-container { height: 100vh; width: 100vw; }
+      .tradingview-widget-container__widget { height: calc(100% - 32px); width: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="tradingview-widget-container">
+      <div id="tradingview_chart" class="tradingview-widget-container__widget"></div>
+      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+      <script type="text/javascript">
+        new TradingView.widget({
+          "autosize": true,
+          "symbol": "OANDA:XAUUSD",
+          "interval": "5",
+          "timezone": "Etc/UTC",
+          "theme": "dark",
+          "style": "1",
+          "locale": "en",
+          "toolbar_bg": "#0F0F0F",
+          "enable_publishing": false,
+          "allow_symbol_change": true,
+          "container_id": "tradingview_chart",
+          "hide_side_toolbar": false,
+          "studies": [],
+          "show_popup_button": true,
+          "popup_width": "1000",
+          "popup_height": "800"
+        });
+      </script>
+    </div>
+  </body>
+</html>
+  `, []);
+
   const chartUrl = useMemo(() => {
     const params = {
+      frameElementId: "tradingview_chart",
       symbol: "OANDA:XAUUSD",
       interval: "5",
       theme: "dark",
       style: "1",
       timezone: "Etc/UTC",
       studies: "[]",
-      backgroundColor: "#0F0F0F",
-      gridColor: "rgba(242, 242, 242, 0.06)",
       hide_side_toolbar: "0",
       allow_symbol_change: "1",
       save_image: "0",
@@ -50,7 +91,6 @@ const PriceChart = React.memo(({ data, currentPrice, onPriceUpdate }: PriceChart
             border: 'none',
           } as any}
           title="TradingView Chart"
-          sandbox="allow-scripts allow-same-origin allow-forms"
         />
       </View>
     );
@@ -59,13 +99,24 @@ const PriceChart = React.memo(({ data, currentPrice, onPriceUpdate }: PriceChart
   return (
     <View style={styles.container}>
       <WebView
-        originWhitelist={['*']}
-        source={{ uri: chartUrl }}
+        ref={webViewRef}
+        source={{ html: tradingViewHTML }}
         style={styles.webview}
         javaScriptEnabled={true}
         domStorageEnabled={true}
-        scrollEnabled={false}
-        incognito={true}
+        startInLoadingState={true}
+        scalesPageToFit={true}
+        onMessage={(event) => {
+          try {
+            const data = JSON.parse(event.nativeEvent.data);
+            if (data.type === 'price' && data.value && onPriceUpdate) {
+              onPriceUpdate(data.value);
+            }
+          } catch (e) {
+            console.log('Error parsing WebView message:', e);
+          }
+        }}
+        testID="tradingview-chart"
       />
     </View>
   );

@@ -18,17 +18,22 @@ export const goldPriceRouter = createTRPCRouter({
         throw new Error(`Metals.live HTTP ${response.status}`);
       }
       
-      const data = await response.json();
+      const text = await response.text();
+      const data = JSON.parse(text);
       
       if (data && data[0] && typeof data[0].price === 'number') {
         const price = parseFloat(data[0].price.toString());
         console.log('✅ Backend: Fetched gold price from Metals.live:', price);
-        return { price: price, source: 'metals.live' as const };
+        return { 
+          price: Number(price.toFixed(2)), 
+          source: 'metals.live',
+          timestamp: Date.now()
+        };
       }
       
       throw new Error('Invalid response format from Metals.live');
-    } catch (primaryError) {
-      console.warn('⚠️ Backend: Primary gold API failed, trying fallback...', primaryError);
+    } catch {
+      console.warn('⚠️ Backend: Primary gold API failed, trying fallback...');
       
       try {
         const response = await fetch('https://data-asg.goldprice.org/dbXRates/USD', {
@@ -44,23 +49,30 @@ export const goldPriceRouter = createTRPCRouter({
           throw new Error(`GoldPrice.org HTTP ${response.status}`);
         }
         
-        const data = await response.json();
+        const text = await response.text();
+        const data = JSON.parse(text);
         
         if (data.items && data.items[0] && data.items[0].xauPrice) {
           const price = parseFloat(data.items[0].xauPrice);
           console.log('✅ Backend: Fetched gold price from GoldPrice.org:', price);
-          return { price: price, source: 'goldprice.org' as const };
+          return { 
+            price: Number(price.toFixed(2)), 
+            source: 'goldprice.org',
+            timestamp: Date.now()
+          };
         }
         
         throw new Error('Invalid response format from GoldPrice.org');
-      } catch (fallbackError) {
+      } catch {
         console.error('❌ Backend: Both gold price APIs failed');
-        console.error('Primary:', primaryError);
-        console.error('Fallback:', fallbackError);
         
         const defaultPrice = 2650;
         console.warn(`⚠️ Backend: Using default price: ${defaultPrice}`);
-        return { price: defaultPrice, source: 'default' as const };
+        return { 
+          price: defaultPrice, 
+          source: 'default',
+          timestamp: Date.now()
+        };
       }
     }
   }),
