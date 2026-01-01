@@ -325,7 +325,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           breakevenReached = true;
           breakevenTime = new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
           
-          console.log(`      ⚖️ BREAKEVEN MARKER ADDED - Original SL remains at ${signal.sl.toFixed(1)}`);
+          console.log(`      ⚖️ BREAKEVEN ACTIVATED: SL moved from ${signal.sl.toFixed(1)} to entry ${signal.entryPrice.toFixed(1)}`);
+          console.log(`      🛡️ Position now risk-free - worst case is breakeven`);
         }
       } else {
         if (bar.high >= signal.sl) {
@@ -376,7 +377,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           breakevenReached = true;
           breakevenTime = new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
           
-          console.log(`      ⚖️ BREAKEVEN MARKER ADDED - Original SL remains at ${signal.sl.toFixed(1)}`);
+          console.log(`      ⚖️ BREAKEVEN ACTIVATED: SL moved from ${signal.sl.toFixed(1)} to entry ${signal.entryPrice.toFixed(1)}`);
+          console.log(`      🛡️ Position now risk-free - worst case is breakeven`);
         }
       }
     }
@@ -1053,7 +1055,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             breakevenTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
             updated = true;
             console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)}`);
-            console.log(`⚖️ BREAKEVEN MARKER ADDED at ${breakevenTime} - Original SL remains at ${signal.sl.toFixed(1)}`);
+            console.log(`⚖️ BREAKEVEN ACTIVATED at ${breakevenTime} - SL moved to entry ${signal.entryPrice.toFixed(1)}`);
           }
         } else {
           if (price >= signal.sl) {
@@ -1084,7 +1086,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             breakevenTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
             updated = true;
             console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)}`);
-            console.log(`⚖️ BREAKEVEN MARKER ADDED at ${breakevenTime} - Original SL remains at ${signal.sl.toFixed(1)}`);
+            console.log(`⚖️ BREAKEVEN ACTIVATED at ${breakevenTime} - SL moved to entry ${signal.entryPrice.toFixed(1)}`);
           }
         }
 

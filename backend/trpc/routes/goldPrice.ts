@@ -18,22 +18,21 @@ export const goldPriceRouter = createTRPCRouter({
         throw new Error(`Metals.live HTTP ${response.status}`);
       }
       
-      const text = await response.text();
-      const data = JSON.parse(text);
+      const data = await response.json();
       
       if (data && data[0] && typeof data[0].price === 'number') {
         const price = parseFloat(data[0].price.toString());
         console.log('✅ Backend: Fetched gold price from Metals.live:', price);
         return { 
           price: Number(price.toFixed(2)), 
-          source: 'metals.live',
+          source: 'metals.live' as const,
           timestamp: Date.now()
         };
       }
       
       throw new Error('Invalid response format from Metals.live');
-    } catch {
-      console.warn('⚠️ Backend: Primary gold API failed, trying fallback...');
+    } catch (error) {
+      console.warn('⚠️ Backend: Primary gold API failed, trying fallback...', error);
       
       try {
         const response = await fetch('https://data-asg.goldprice.org/dbXRates/USD', {
@@ -49,28 +48,27 @@ export const goldPriceRouter = createTRPCRouter({
           throw new Error(`GoldPrice.org HTTP ${response.status}`);
         }
         
-        const text = await response.text();
-        const data = JSON.parse(text);
+        const data = await response.json();
         
         if (data.items && data.items[0] && data.items[0].xauPrice) {
           const price = parseFloat(data.items[0].xauPrice);
           console.log('✅ Backend: Fetched gold price from GoldPrice.org:', price);
           return { 
             price: Number(price.toFixed(2)), 
-            source: 'goldprice.org',
+            source: 'goldprice.org' as const,
             timestamp: Date.now()
           };
         }
         
         throw new Error('Invalid response format from GoldPrice.org');
-      } catch {
-        console.error('❌ Backend: Both gold price APIs failed');
+      } catch (fallbackError) {
+        console.error('❌ Backend: Both gold price APIs failed', fallbackError);
         
         const defaultPrice = 2650;
         console.warn(`⚠️ Backend: Using default price: ${defaultPrice}`);
         return { 
           price: defaultPrice, 
-          source: 'default',
+          source: 'default' as const,
           timestamp: Date.now()
         };
       }
