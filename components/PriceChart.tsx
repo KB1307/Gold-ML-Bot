@@ -37,6 +37,16 @@ const PriceChart = React.memo(({ data, currentPrice, onPriceUpdate }: PriceChart
         let chartWidget = null;
         let isChartReady = false;
         
+        // SAFE GATE: Initialize tracking only after chart is ready
+        function initializeTracking() {
+            if (typeof fbq === 'function') {
+                console.log("Chart stable. Initializing Meta Pixel...");
+                fbq('track', 'PageView');
+            } else {
+                console.log("Meta Pixel (fbq) not found, skipping tracking.");
+            }
+        }
+        
         try {
           chartWidget = new TradingView.widget({
             autosize: true,
@@ -66,6 +76,9 @@ const PriceChart = React.memo(({ data, currentPrice, onPriceUpdate }: PriceChart
                   timestamp: Date.now() 
                 }));
               }
+              
+              // SAFE GATE: Add buffer before initializing tracking
+              setTimeout(initializeTracking, 500);
             }
           });
           
