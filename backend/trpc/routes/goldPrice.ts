@@ -12,11 +12,17 @@ export const goldPriceRouter = createTRPCRouter({
         },
       });
       
+      console.log('📥 GoldPrice.org status:', response.status);
+      console.log('📥 GoldPrice.org content-type:', response.headers.get('content-type'));
+      
       if (!response.ok) {
         throw new Error(`GoldPrice.org HTTP ${response.status}`);
       }
       
-      const data = await response.json();
+      const text = await response.text();
+      console.log('📥 GoldPrice.org raw response (first 200 chars):', text.substring(0, 200));
+      
+      const data = JSON.parse(text);
       
       if (data.items && data.items[0] && data.items[0].xauPrice) {
         const price = parseFloat(data.items[0].xauPrice);
@@ -36,11 +42,17 @@ export const goldPriceRouter = createTRPCRouter({
           },
         });
         
+        console.log('📥 Metals.live status:', response.status);
+        console.log('📥 Metals.live content-type:', response.headers.get('content-type'));
+        
         if (!response.ok) {
           throw new Error(`Metals.live HTTP ${response.status}`);
         }
         
-        const data = await response.json();
+        const text = await response.text();
+        console.log('📥 Metals.live raw response (first 200 chars):', text.substring(0, 200));
+        
+        const data = JSON.parse(text);
         
         if (data && data[0] && data[0].price) {
           const price = parseFloat(data[0].price);
