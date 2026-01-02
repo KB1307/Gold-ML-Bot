@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useEffect } from "react";
 import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
@@ -8,7 +8,7 @@ interface PriceChartProps {
   onPriceUpdate?: (price: number) => void;
 }
 
-const CHART_URL = `https://s.tradingview.com/widgetembed/?frameElementId=tradingview_chart&symbol=OANDA%3AXAUUSD&interval=5&theme=dark&style=1&timezone=Etc%2FUTC&studies=%5B%5D&hide_side_toolbar=0&allow_symbol_change=1&save_image=0&locale=en&toolbar_bg=%230F0F0F&enable_publishing=false`;
+const CHART_URL = "https://s.tradingview.com/widgetembed/?frameElementId=tradingview_chart&symbol=OANDA%3AXAUUSD&interval=5&theme=dark&style=1&timezone=Etc%2FUTC&studies=%5B%5D&hide_side_toolbar=0&allow_symbol_change=1&save_image=0&locale=en&toolbar_bg=%230F0F0F&enable_publishing=false&utm_source=app&utm_medium=widget&utm_campaign=chart";
 
 const tradingViewHTML = `
 <!DOCTYPE html>
@@ -103,28 +103,53 @@ const tradingViewHTML = `
 </html>
 `;
 
-const WebChart = React.memo(() => {
-  const [webChartLoaded, setWebChartLoaded] = useState(false);
-  const loadedRef = useRef(false);
+let webChartMounted = false;
 
-  const handleLoad = () => {
-    if (!loadedRef.current) {
-      loadedRef.current = true;
+const WebChart = React.memo(() => {
+  const [isLoading, setIsLoading] = useState(!webChartMounted);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const mountedRef = useRef(false);
+  const loadingRef = useRef(!webChartMounted);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    
+    if (webChartMounted) {
+      setIsLoading(false);
+      loadingRef.current = false;
+    }
+    
+    const timeout = setTimeout(() => {
+      if (mountedRef.current && loadingRef.current) {
+        console.log('[PriceChart] Force hiding loader after timeout');
+        setIsLoading(false);
+        loadingRef.current = false;
+        webChartMounted = true;
+      }
+    }, 5000);
+    
+    return () => {
+      clearTimeout(timeout);
+    };
+  }, []);
+
+  const handleIframeLoad = () => {
+    if (mountedRef.current) {
       console.log('[PriceChart] Web iframe loaded');
-      setWebChartLoaded(true);
+      webChartMounted = true;
+      loadingRef.current = false;
+      setIsLoading(false);
     }
   };
 
   return (
     <View style={styles.container}>
-      {!webChartLoaded && (
-        <View style={styles.loadingOverlay}>
-          <ActivityIndicator size="large" color="#FFD700" />
-          <Text style={styles.loadingText}>Loading Chart...</Text>
-        </View>
-      )}
+      <View style={[styles.loadingOverlay, !isLoading && styles.loadingHidden]}>
+        <ActivityIndicator size="large" color="#FFD700" />
+        <Text style={styles.loadingText}>Loading Chart...</Text>
+      </View>
       <iframe
-        key="tradingview-chart-stable"
+        ref={iframeRef}
         src={CHART_URL}
         style={{
           width: '100%',
@@ -133,17 +158,17 @@ const WebChart = React.memo(() => {
           borderRadius: 8,
           display: 'block',
           backgroundColor: '#0F0F0F',
-          opacity: webChartLoaded ? 1 : 0,
+          opacity: isLoading ? 0 : 1,
+          transition: 'opacity 0.3s ease-in-out',
         }}
         title="TradingView Chart"
-        referrerPolicy="no-referrer-when-downgrade"
-        sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
-        loading="lazy"
-        onLoad={handleLoad}
+        referrerPolicy="no-referrer"
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+        onLoad={handleIframeLoad}
       />
     </View>
   );
-});
+}, () => true);
 
 WebChart.displayName = 'WebChart';
 
@@ -261,6 +286,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 10,
+  },
+  loadingHidden: {
+    opacity: 0,
+    pointerEvents: 'none',
   },
   loadingText: {
     color: '#999',
