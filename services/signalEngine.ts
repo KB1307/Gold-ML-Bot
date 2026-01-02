@@ -377,10 +377,19 @@ async function fetchLiveGoldPrice(): Promise<number> {
     backendFailureCount = 0;
     console.log(`✅ Fetched gold price via backend: ${result.price} (source: ${result.source})`);
     return result.price;
-  } catch (error) {
+  } catch (error: any) {
     backendFailureCount++;
+    
     if (backendFailureCount === 1) {
-      console.error('❌ Backend gold price fetch failed, will retry in 30s:', error);
+      const errorMsg = error?.message || String(error);
+      if (errorMsg.includes('404') || errorMsg.includes('Not Found')) {
+        console.error('❌ Backend endpoint not available (404). Using fallback price.');
+      } else if (errorMsg.includes('JSON.parse')) {
+        console.error('❌ Backend returned invalid JSON (likely HTML error page). Using fallback price.');
+      } else {
+        console.error('❌ Backend gold price fetch failed:', errorMsg);
+      }
+      console.log('⏳ Will retry backend in 30 seconds...');
     }
   }
 
