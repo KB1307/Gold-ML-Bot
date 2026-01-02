@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useMemo, useRef, useState, useEffect } from "react";
 import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
@@ -19,6 +19,9 @@ const PriceChart = React.memo(({ data, currentPrice, onPriceUpdate }: PriceChart
   const webViewRef = useRef<WebView>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
+  const chartMountedRef = useRef(false);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
 
   const tradingViewHTML = useMemo(() => `
 <!DOCTYPE html>
@@ -149,23 +152,45 @@ const PriceChart = React.memo(({ data, currentPrice, onPriceUpdate }: PriceChart
     return `https://s.tradingview.com/widgetembed/?${queryString}`;
   }, []);
 
+  useEffect(() => {
+    if (Platform.OS === 'web' && containerRef.current && !iframeRef.current) {
+      const iframe = document.createElement('iframe');
+      iframe.src = chartUrl;
+      iframe.style.width = '100%';
+      iframe.style.height = '100%';
+      iframe.style.border = 'none';
+      iframe.style.borderRadius = '8px';
+      iframe.style.display = 'block';
+      iframe.title = 'TradingView Chart';
+      iframe.setAttribute('referrerpolicy', 'no-referrer-when-downgrade');
+      iframe.setAttribute('loading', 'lazy');
+      
+      containerRef.current.appendChild(iframe);
+      iframeRef.current = iframe;
+      chartMountedRef.current = true;
+      
+      console.log('[PriceChart] Web iframe mounted once');
+    }
+    
+    return () => {
+      // Don't remove on cleanup to prevent flickering
+    };
+  }, [chartUrl]);
+
   if (Platform.OS === 'web') {
     return (
       <View style={styles.container}>
-        <View style={styles.iframeContainer}>
-          <iframe
-            src={chartUrl}
-            style={{
-              width: '100%',
-              height: '100%',
-              border: 'none',
-              borderRadius: 8,
-              display: 'block',
-            } as React.CSSProperties}
-            title="TradingView Chart"
-            referrerPolicy="no-referrer-when-downgrade"
-          />
-        </View>
+        <div 
+          ref={containerRef as any}
+          style={{
+            width: '100%',
+            height: CHART_HEIGHT,
+            minHeight: CHART_HEIGHT,
+            backgroundColor: '#0F0F0F',
+            borderRadius: 8,
+            overflow: 'hidden',
+          }}
+        />
       </View>
     );
   }
