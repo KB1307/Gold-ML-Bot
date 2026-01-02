@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState, useEffect } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
@@ -15,13 +15,13 @@ interface PriceChartProps {
   onPriceUpdate?: (price: number) => void;
 }
 
-const PriceChart = React.memo(({ data, currentPrice, onPriceUpdate }: PriceChartProps) => {
+const CHART_URL = `https://s.tradingview.com/widgetembed/?frameElementId=tradingview_chart&symbol=OANDA%3AXAUUSD&interval=5&theme=dark&style=1&timezone=Etc%2FUTC&studies=%5B%5D&hide_side_toolbar=0&allow_symbol_change=1&save_image=0&locale=en&toolbar_bg=%230F0F0F&enable_publishing=false`;
+
+const PriceChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
   const webViewRef = useRef<WebView>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
-  const chartMountedRef = useRef(false);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [webChartLoaded, setWebChartLoaded] = useState(false);
 
   const tradingViewHTML = useMemo(() => `
 <!DOCTYPE html>
@@ -128,67 +128,31 @@ const PriceChart = React.memo(({ data, currentPrice, onPriceUpdate }: PriceChart
 </html>
   `, []);
 
-  const chartUrl = useMemo(() => {
-    const params = {
-      frameElementId: "tradingview_chart",
-      symbol: "OANDA:XAUUSD",
-      interval: "5",
-      theme: "dark",
-      style: "1",
-      timezone: "Etc/UTC",
-      studies: "[]",
-      hide_side_toolbar: "0",
-      allow_symbol_change: "1",
-      save_image: "0",
-      locale: "en",
-      toolbar_bg: "#0F0F0F",
-      enable_publishing: "false",
-    };
-    
-    const queryString = Object.entries(params)
-      .map(([key, val]) => `${key}=${encodeURIComponent(val)}`)
-      .join('&');
-      
-    return `https://s.tradingview.com/widgetembed/?${queryString}`;
-  }, []);
-
-  useEffect(() => {
-    if (Platform.OS === 'web' && containerRef.current && !iframeRef.current) {
-      const iframe = document.createElement('iframe');
-      iframe.src = chartUrl;
-      iframe.style.width = '100%';
-      iframe.style.height = '100%';
-      iframe.style.border = 'none';
-      iframe.style.borderRadius = '8px';
-      iframe.style.display = 'block';
-      iframe.title = 'TradingView Chart';
-      iframe.setAttribute('referrerpolicy', 'no-referrer-when-downgrade');
-      iframe.setAttribute('loading', 'lazy');
-      
-      containerRef.current.appendChild(iframe);
-      iframeRef.current = iframe;
-      chartMountedRef.current = true;
-      
-      console.log('[PriceChart] Web iframe mounted once');
-    }
-    
-    return () => {
-      // Don't remove on cleanup to prevent flickering
-    };
-  }, [chartUrl]);
-
   if (Platform.OS === 'web') {
     return (
       <View style={styles.container}>
-        <div 
-          ref={containerRef as any}
+        {!webChartLoaded && (
+          <View style={styles.loadingOverlay}>
+            <ActivityIndicator size="large" color="#FFD700" />
+            <Text style={styles.loadingText}>Loading Chart...</Text>
+          </View>
+        )}
+        <iframe
+          src={CHART_URL}
           style={{
             width: '100%',
             height: CHART_HEIGHT,
-            minHeight: CHART_HEIGHT,
-            backgroundColor: '#0F0F0F',
+            border: 'none',
             borderRadius: 8,
-            overflow: 'hidden',
+            display: 'block',
+            backgroundColor: '#0F0F0F',
+            opacity: webChartLoaded ? 1 : 0,
+          }}
+          title="TradingView Chart"
+          referrerPolicy="no-referrer-when-downgrade"
+          onLoad={() => {
+            console.log('[PriceChart] Web iframe loaded');
+            setWebChartLoaded(true);
           }}
         />
       </View>
