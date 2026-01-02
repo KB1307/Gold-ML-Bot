@@ -199,13 +199,7 @@ export default function DashboardScreen() {
     console.log(`📊 Dashboard UI update triggered (TP status changed) - Trigger: ${signalUpdateTrigger}`);
   }, [signalUpdateTrigger, signalHistory]);
 
-  if (!marketOutlook) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#FFD700" />
-      </View>
-    );
-  }
+  const isDataLoading = !marketOutlook;
 
   const getProgressPercentage = () => {
     if (!currentSignal) return 0;
@@ -311,10 +305,10 @@ export default function DashboardScreen() {
               </View>
               <View style={styles.priceContainer}>
                 <Text style={styles.currentPrice}>${currentPrice.toFixed(1)}</Text>
-                <View style={[styles.sessionBadge, marketOutlook.isMarketOpen && styles.sessionBadgeActive]}>
-                  <View style={[styles.sessionDot, marketOutlook.isMarketOpen && styles.sessionDotActive]} />
+                <View style={[styles.sessionBadge, marketOutlook?.isMarketOpen && styles.sessionBadgeActive]}>
+                  <View style={[styles.sessionDot, marketOutlook?.isMarketOpen && styles.sessionDotActive]} />
                   <Text style={styles.sessionText}>
-                    {marketOutlook.isMarketOpen ? marketOutlook.currentSession : "CLOSED"}
+                    {marketOutlook?.isMarketOpen ? marketOutlook.currentSession : "CLOSED"}
                   </Text>
                 </View>
               </View>
@@ -326,7 +320,14 @@ export default function DashboardScreen() {
               </View>
             </View>
 
-            {!marketOutlook.isMarketOpen && (
+            {isDataLoading && (
+              <View style={styles.dataLoadingBanner}>
+                <ActivityIndicator size="small" color="#FFD700" />
+                <Text style={styles.dataLoadingText}>Loading market data...</Text>
+              </View>
+            )}
+
+            {marketOutlook && !marketOutlook.isMarketOpen && (
               <View style={styles.closedBanner}>
                 <Clock size={16} color="#FFA500" />
                 <Text style={styles.closedText}>Market is currently closed. No signals will be generated.</Text>
@@ -545,12 +546,12 @@ export default function DashboardScreen() {
               </View>
             )}
 
-            {!currentSignal && (
+            {!currentSignal && !isDataLoading && (
               <View style={styles.noSignalCard}>
                 <TrendingUp size={48} color="#444" strokeWidth={1.5} />
                 <Text style={styles.noSignalTitle}>No Active Signal</Text>
                 <Text style={styles.noSignalText}>
-                  {marketOutlook.isMarketOpen 
+                  {marketOutlook?.isMarketOpen 
                     ? "Analyzing market conditions. New signal will appear when high-confidence setup is detected."
                     : "Market is closed. Signals will resume when market opens."
                   }
@@ -558,7 +559,7 @@ export default function DashboardScreen() {
               </View>
             )}
 
-            {performanceMetrics.totalTrades > 0 && (
+            {performanceMetrics.totalTrades > 0 && marketOutlook && (
               <View style={styles.metricsCard}>
                 <View style={styles.metricsHeader}>
                   <BarChart3 size={20} color="#FFD700" />
@@ -645,7 +646,7 @@ export default function DashboardScreen() {
               </View>
             )}
 
-            {positionSizing && currentSignal && (
+            {positionSizing && currentSignal && marketOutlook && (
               <View style={styles.positionCard}>
                 <View style={styles.positionHeader}>
                   <Percent size={16} color="#FFD700" />
@@ -675,6 +676,7 @@ export default function DashboardScreen() {
               </View>
             )}
 
+            {marketOutlook && (
             <View style={styles.marketInfoCard}>
               <Text style={styles.sectionTitle}>Market Status</Text>
               <View style={styles.sessionGrid}>
@@ -772,6 +774,7 @@ export default function DashboardScreen() {
                 <Text style={styles.pivotValue}>${marketOutlook.dailyPivot.toFixed(1)}</Text>
               </View>
             </View>
+            )}
           </ScrollView>
         </LinearGradient>
       </View>
@@ -789,6 +792,22 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: "#0a0a0a",
+  },
+  dataLoadingBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255, 215, 0, 0.1)",
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: "rgba(255, 215, 0, 0.3)",
+    gap: 10,
+  },
+  dataLoadingText: {
+    fontSize: 13,
+    color: "#FFD700",
   },
   gradient: {
     flex: 1,

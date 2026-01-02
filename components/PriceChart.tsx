@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useEffect } from "react";
 import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
@@ -103,108 +103,140 @@ const tradingViewHTML = `
 </html>
 `;
 
-const webChartState = {
-  loaded: false,
-  mounted: false,
-};
+let globalIframeContainer: HTMLDivElement | null = null;
+let globalIframeElement: HTMLIFrameElement | null = null;
+let isChartInitialized = false;
 
-const IFRAME_STYLE: React.CSSProperties = {
-  width: '100%',
-  height: CHART_HEIGHT,
-  border: 'none',
-  borderRadius: 8,
-  display: 'block',
-  backgroundColor: '#0F0F0F',
-};
-
-class WebChartClass extends React.PureComponent {
-  private iframeRef = React.createRef<HTMLIFrameElement>();
-  private loadingRef = React.createRef<HTMLDivElement>();
-  private timeoutId: ReturnType<typeof setTimeout> | null = null;
-
-  componentDidMount() {
-    console.log('[PriceChart] WebChartClass mounted');
-    webChartState.mounted = true;
-    
-    if (webChartState.loaded && this.loadingRef.current) {
-      this.loadingRef.current.style.display = 'none';
-    } else {
-      this.timeoutId = setTimeout(() => {
-        this.hideLoader();
-      }, 5000);
-    }
-  }
-
-  componentWillUnmount() {
-    console.log('[PriceChart] WebChartClass unmounting - THIS SHOULD NOT HAPPEN');
-    if (this.timeoutId) {
-      clearTimeout(this.timeoutId);
-    }
-  }
-
-  shouldComponentUpdate() {
-    return false;
-  }
-
-  hideLoader = () => {
-    if (this.loadingRef.current) {
-      this.loadingRef.current.style.display = 'none';
-    }
-    webChartState.loaded = true;
+function initializeGlobalChart() {
+  if (typeof document === 'undefined' || isChartInitialized) return;
+  
+  isChartInitialized = true;
+  console.log('[PriceChart] Initializing global chart container');
+  
+  globalIframeContainer = document.createElement('div');
+  globalIframeContainer.id = 'tradingview-global-container';
+  globalIframeContainer.style.cssText = `
+    position: fixed;
+    top: -9999px;
+    left: -9999px;
+    width: 100%;
+    max-width: 800px;
+    height: ${CHART_HEIGHT}px;
+    pointer-events: none;
+    opacity: 0;
+    z-index: -1;
+  `;
+  
+  globalIframeElement = document.createElement('iframe');
+  globalIframeElement.src = CHART_URL;
+  globalIframeElement.style.cssText = `
+    width: 100%;
+    height: 100%;
+    border: none;
+    border-radius: 8px;
+    display: block;
+    background-color: #0F0F0F;
+  `;
+  globalIframeElement.title = 'TradingView Chart';
+  globalIframeElement.referrerPolicy = 'no-referrer';
+  globalIframeElement.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms');
+  globalIframeElement.setAttribute('loading', 'eager');
+  
+  globalIframeElement.onload = () => {
+    console.log('[PriceChart] Global iframe loaded successfully');
   };
-
-  handleIframeLoad = () => {
-    console.log('[PriceChart] iframe loaded');
-    if (this.timeoutId) {
-      clearTimeout(this.timeoutId);
-    }
-    this.hideLoader();
-  };
-
-  render() {
-    return (
-      <View style={styles.container}>
-        <div
-          ref={this.loadingRef as any}
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: '#0F0F0F',
-            display: webChartState.loaded ? 'none' : 'flex',
-            justifyContent: 'center',
-            alignItems: 'center',
-            zIndex: 10,
-            flexDirection: 'column',
-          }}
-        >
-          <ActivityIndicator size="large" color="#FFD700" />
-          <Text style={styles.loadingText}>Loading Chart...</Text>
-        </div>
-        <iframe
-          ref={this.iframeRef}
-          src={CHART_URL}
-          style={IFRAME_STYLE}
-          title="TradingView Chart"
-          referrerPolicy="no-referrer"
-          sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
-          loading="eager"
-          onLoad={this.handleIframeLoad}
-        />
-      </View>
-    );
-  }
+  
+  globalIframeContainer.appendChild(globalIframeElement);
+  document.body.appendChild(globalIframeContainer);
 }
 
-let webChartInstance: React.ReactElement | null = null;
-
 const WebChart = React.memo(() => {
-  if (!webChartInstance) {
-    webChartInstance = <WebChartClass key="permanent-chart" />;
-  }
-  return webChartInstance;
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const mountedRef = useRef(true);
+  
+  useEffect(() => {
+    mountedRef.current = true;
+    
+    initializeGlobalChart();
+    
+    const moveChartToContainer = () => {
+      if (!containerRef.current || !globalIframeContainer || !globalIframeElement) {
+        return;
+      }
+      
+      console.log('[PriceChart] Moving chart to visible container');
+      
+      globalIframeContainer.style.cssText = `
+        width: 100%;
+        height: ${CHART_HEIGHT}px;
+        position: relative;
+        pointer-events: auto;
+        opacity: 1;
+        z-index: 1;
+      `;
+      
+      if (globalIframeContainer.parentNode !== containerRef.current) {
+        containerRef.current.appendChild(globalIframeContainer);
+      }
+      
+      if (mountedRef.current) {
+        setIsLoading(false);
+      }
+    };
+    
+    const timeoutId = setTimeout(moveChartToContainer, 100);
+    const loadingTimeout = setTimeout(() => {
+      if (mountedRef.current) {
+        setIsLoading(false);
+      }
+    }, 3000);
+    
+    return () => {
+      mountedRef.current = false;
+      clearTimeout(timeoutId);
+      clearTimeout(loadingTimeout);
+      
+      if (globalIframeContainer && document.body) {
+        console.log('[PriceChart] Parking chart off-screen');
+        globalIframeContainer.style.cssText = `
+          position: fixed;
+          top: -9999px;
+          left: -9999px;
+          width: 100%;
+          max-width: 800px;
+          height: ${CHART_HEIGHT}px;
+          pointer-events: none;
+          opacity: 0;
+          z-index: -1;
+        `;
+        if (!document.body.contains(globalIframeContainer)) {
+          document.body.appendChild(globalIframeContainer);
+        }
+      }
+    };
+  }, []);
+  
+  return (
+    <View style={styles.container}>
+      {isLoading && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#FFD700" />
+          <Text style={styles.loadingText}>Loading Chart...</Text>
+        </View>
+      )}
+      <div
+        ref={containerRef as any}
+        style={{
+          width: '100%',
+          height: CHART_HEIGHT,
+          borderRadius: 8,
+          overflow: 'hidden',
+          backgroundColor: '#0F0F0F',
+        }}
+      />
+    </View>
+  );
 }, () => true);
 
 WebChart.displayName = 'WebChart';
