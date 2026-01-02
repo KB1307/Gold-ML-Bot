@@ -353,6 +353,44 @@ let backendFailureCount = 0;
 let lastBackendAttempt = 0;
 const BACKEND_RETRY_DELAY = 30000;
 
+async function fetchDirectGoldPrice(): Promise<{ price: number; source: string } | null> {
+  try {
+    const response = await fetch('https://api.metals.live/v1/spot/gold', {
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data[0] && typeof data[0].price === 'number') {
+        return { price: Number(data[0].price.toFixed(2)), source: 'metals.live' };
+      }
+    }
+  } catch {
+    console.log('⚠️ Metals.live direct fetch failed');
+  }
+
+  try {
+    const response = await fetch('https://data-asg.goldprice.org/dbXRates/USD', {
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (data.items && data.items[0] && data.items[0].xauPrice) {
+        return { price: Number(parseFloat(data.items[0].xauPrice).toFixed(2)), source: 'goldprice.org' };
+      }
+    }
+  } catch {
+    console.log('⚠️ GoldPrice.org direct fetch failed');
+  }
+
+  return null;
+}
+
 async function fetchLiveGoldPrice(): Promise<number> {
   const now = Date.now();
   
@@ -361,11 +399,17 @@ async function fetchLiveGoldPrice(): Promise<number> {
   }
 
   if (backendFailureCount > 0 && now - lastBackendAttempt < BACKEND_RETRY_DELAY) {
+    const directResult = await fetchDirectGoldPrice();
+    if (directResult) {
+      cachedGoldPrice = directResult.price;
+      lastFetchTime = now;
+      console.log(`✅ Fetched gold price directly: ${directResult.price} (source: ${directResult.source})`);
+      return directResult.price;
+    }
     if (cachedGoldPrice !== null) {
       return cachedGoldPrice;
     }
-    const defaultPrice = 2650;
-    return defaultPrice;
+    return 2650;
   }
 
   try {
@@ -377,20 +421,20 @@ async function fetchLiveGoldPrice(): Promise<number> {
     backendFailureCount = 0;
     console.log(`✅ Fetched gold price via backend: ${result.price} (source: ${result.source})`);
     return result.price;
-  } catch (error: any) {
+  } catch {
     backendFailureCount++;
     
     if (backendFailureCount === 1) {
-      const errorMsg = error?.message || String(error);
-      if (errorMsg.includes('404') || errorMsg.includes('Not Found')) {
-        console.error('❌ Backend endpoint not available (404). Using fallback price.');
-      } else if (errorMsg.includes('JSON.parse')) {
-        console.error('❌ Backend returned invalid JSON (likely HTML error page). Using fallback price.');
-      } else {
-        console.error('❌ Backend gold price fetch failed:', errorMsg);
-      }
-      console.log('⏳ Will retry backend in 30 seconds...');
+      console.log('⚠️ Backend unavailable, switching to direct API fallback...');
     }
+  }
+
+  const directResult = await fetchDirectGoldPrice();
+  if (directResult) {
+    cachedGoldPrice = directResult.price;
+    lastFetchTime = now;
+    console.log(`✅ Fetched gold price directly: ${directResult.price} (source: ${directResult.source})`);
+    return directResult.price;
   }
 
   if (cachedGoldPrice !== null) {
@@ -399,7 +443,7 @@ async function fetchLiveGoldPrice(): Promise<number> {
 
   const defaultPrice = 2650;
   if (backendFailureCount === 1) {
-    console.warn('⚠️ Using default price:', defaultPrice);
+    console.warn('⚠️ All APIs unavailable, using default price:', defaultPrice);
   }
   return defaultPrice;
 }
