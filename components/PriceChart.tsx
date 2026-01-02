@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect, useMemo } from "react";
+import React, { useRef, useState } from "react";
 import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
@@ -103,79 +103,108 @@ const tradingViewHTML = `
 </html>
 `;
 
-let webChartLoaded = false;
-
-const WebChartInner = () => {
-  const [isLoading, setIsLoading] = useState(!webChartLoaded);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const hasLoadedRef = useRef(webChartLoaded);
-
-  useEffect(() => {
-    if (webChartLoaded) {
-      setIsLoading(false);
-      return;
-    }
-    
-    const timeout = setTimeout(() => {
-      if (!hasLoadedRef.current) {
-        console.log('[PriceChart] Force hiding loader after timeout');
-        setIsLoading(false);
-        hasLoadedRef.current = true;
-        webChartLoaded = true;
-      }
-    }, 4000);
-    
-    return () => {
-      clearTimeout(timeout);
-    };
-  }, []);
-
-  const handleIframeLoad = () => {
-    console.log('[PriceChart] Web iframe loaded successfully');
-    webChartLoaded = true;
-    hasLoadedRef.current = true;
-    setIsLoading(false);
-  };
-
-  const iframeStyle = useMemo(() => ({
-    width: '100%',
-    height: CHART_HEIGHT,
-    border: 'none',
-    borderRadius: 8,
-    display: 'block' as const,
-    backgroundColor: '#0F0F0F',
-  }), []);
-
-  return (
-    <View style={styles.container}>
-      {isLoading && (
-        <View style={styles.loadingOverlay}>
-          <ActivityIndicator size="large" color="#FFD700" />
-          <Text style={styles.loadingText}>Loading Chart...</Text>
-        </View>
-      )}
-      <iframe
-        ref={iframeRef}
-        src={CHART_URL}
-        style={iframeStyle}
-        title="TradingView Chart"
-        referrerPolicy="no-referrer"
-        sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
-        loading="eager"
-        onLoad={handleIframeLoad}
-      />
-    </View>
-  );
+const webChartState = {
+  loaded: false,
+  mounted: false,
 };
 
-const WebChart = React.memo(() => {
-  const chartRef = useRef<React.ReactNode>(null);
-  
-  if (!chartRef.current) {
-    chartRef.current = <WebChartInner key="stable-chart" />;
+const IFRAME_STYLE: React.CSSProperties = {
+  width: '100%',
+  height: CHART_HEIGHT,
+  border: 'none',
+  borderRadius: 8,
+  display: 'block',
+  backgroundColor: '#0F0F0F',
+};
+
+class WebChartClass extends React.PureComponent {
+  private iframeRef = React.createRef<HTMLIFrameElement>();
+  private loadingRef = React.createRef<HTMLDivElement>();
+  private timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  componentDidMount() {
+    console.log('[PriceChart] WebChartClass mounted');
+    webChartState.mounted = true;
+    
+    if (webChartState.loaded && this.loadingRef.current) {
+      this.loadingRef.current.style.display = 'none';
+    } else {
+      this.timeoutId = setTimeout(() => {
+        this.hideLoader();
+      }, 5000);
+    }
   }
-  
-  return <>{chartRef.current}</>;
+
+  componentWillUnmount() {
+    console.log('[PriceChart] WebChartClass unmounting - THIS SHOULD NOT HAPPEN');
+    if (this.timeoutId) {
+      clearTimeout(this.timeoutId);
+    }
+  }
+
+  shouldComponentUpdate() {
+    return false;
+  }
+
+  hideLoader = () => {
+    if (this.loadingRef.current) {
+      this.loadingRef.current.style.display = 'none';
+    }
+    webChartState.loaded = true;
+  };
+
+  handleIframeLoad = () => {
+    console.log('[PriceChart] iframe loaded');
+    if (this.timeoutId) {
+      clearTimeout(this.timeoutId);
+    }
+    this.hideLoader();
+  };
+
+  render() {
+    return (
+      <View style={styles.container}>
+        <div
+          ref={this.loadingRef as any}
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: '#0F0F0F',
+            display: webChartState.loaded ? 'none' : 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 10,
+            flexDirection: 'column',
+          }}
+        >
+          <ActivityIndicator size="large" color="#FFD700" />
+          <Text style={styles.loadingText}>Loading Chart...</Text>
+        </div>
+        <iframe
+          ref={this.iframeRef}
+          src={CHART_URL}
+          style={IFRAME_STYLE}
+          title="TradingView Chart"
+          referrerPolicy="no-referrer"
+          sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+          loading="eager"
+          onLoad={this.handleIframeLoad}
+        />
+      </View>
+    );
+  }
+}
+
+let webChartInstance: React.ReactElement | null = null;
+
+const WebChart = React.memo(() => {
+  if (!webChartInstance) {
+    webChartInstance = <WebChartClass key="permanent-chart" />;
+  }
+  return webChartInstance;
 }, () => true);
 
 WebChart.displayName = 'WebChart';
