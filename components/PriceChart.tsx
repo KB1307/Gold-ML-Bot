@@ -157,13 +157,13 @@ const PriceChart = React.memo(({ data, currentPrice, onPriceUpdate }: PriceChart
             src={chartUrl}
             style={{
               width: '100%',
-              height: CHART_HEIGHT,
+              height: '100%',
               border: 'none',
               borderRadius: 8,
+              display: 'block',
             } as React.CSSProperties}
             title="TradingView Chart"
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-            loading="lazy"
+            referrerPolicy="no-referrer-when-downgrade"
           />
         </View>
       </View>
@@ -253,9 +253,9 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   iframeContainer: {
-    flex: 1,
     width: '100%',
     height: CHART_HEIGHT,
+    minHeight: CHART_HEIGHT,
   },
   webview: {
     flex: 1,
