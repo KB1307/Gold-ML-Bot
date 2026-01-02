@@ -28,6 +28,7 @@ const PriceChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
 <html>
   <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline' 'unsafe-eval' https://s3.tradingview.com https://www.tradingview-widget.com; frame-src https://s.tradingview.com;">
     <style>
       body { margin: 0; padding: 0; overflow: hidden; background: #0F0F0F; }
       .tradingview-widget-container { height: 100vh; width: 100vw; }
@@ -43,16 +44,6 @@ const PriceChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
       (function() {
         let chartWidget = null;
         let isChartReady = false;
-        
-        // SAFE GATE: Initialize tracking only after chart is ready
-        function initializeTracking() {
-            if (typeof fbq === 'function') {
-                console.log("Chart stable. Initializing Meta Pixel...");
-                fbq('track', 'PageView');
-            } else {
-                console.log("Meta Pixel (fbq) not found, skipping tracking.");
-            }
-        }
         
         try {
           chartWidget = new TradingView.widget({
@@ -72,9 +63,10 @@ const PriceChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
             show_popup_button: true,
             popup_width: "1000",
             popup_height: "800",
+            disable_resolution_rebuild: true,
             
             onChartReady: function() {
-              console.log("✅ TradingView chart ready and WebSocket stable");
+              console.log("✅ TradingView chart ready");
               isChartReady = true;
               
               if (window.ReactNativeWebView) {
@@ -83,9 +75,6 @@ const PriceChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
                   timestamp: Date.now() 
                 }));
               }
-              
-              // SAFE GATE: Add buffer before initializing tracking
-              setTimeout(initializeTracking, 500);
             }
           });
           
@@ -109,7 +98,7 @@ const PriceChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
                 }
               }
             } catch (e) {
-              console.log('Cannot access chart price:', e);
+              // Silent fail - cross-origin restriction expected
             }
           }, 2000);
           
