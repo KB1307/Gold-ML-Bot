@@ -1,29 +1,16 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useRef, useState } from "react";
 import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
 const CHART_HEIGHT = 350;
 
-interface PriceDataPoint {
-  timestamp: number;
-  price: number;
-}
-
 interface PriceChartProps {
-  data: PriceDataPoint[];
-  currentPrice: number;
   onPriceUpdate?: (price: number) => void;
 }
 
 const CHART_URL = `https://s.tradingview.com/widgetembed/?frameElementId=tradingview_chart&symbol=OANDA%3AXAUUSD&interval=5&theme=dark&style=1&timezone=Etc%2FUTC&studies=%5B%5D&hide_side_toolbar=0&allow_symbol_change=1&save_image=0&locale=en&toolbar_bg=%230F0F0F&enable_publishing=false`;
 
-const PriceChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
-  const webViewRef = useRef<WebView>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [hasError, setHasError] = useState(false);
-  const [webChartLoaded, setWebChartLoaded] = useState(false);
-
-  const tradingViewHTML = useMemo(() => `
+const tradingViewHTML = `
 <!DOCTYPE html>
 <html>
   <head>
@@ -66,7 +53,7 @@ const PriceChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
             disable_resolution_rebuild: true,
             
             onChartReady: function() {
-              console.log("✅ TradingView chart ready");
+              console.log("TradingView chart ready");
               isChartReady = true;
               
               if (window.ReactNativeWebView) {
@@ -98,12 +85,11 @@ const PriceChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
                 }
               }
             } catch (e) {
-              // Silent fail - cross-origin restriction expected
             }
           }, 2000);
           
         } catch (error) {
-          console.error("❌ TradingView widget initialization failed:", error);
+          console.error("TradingView widget initialization failed:", error);
           if (window.ReactNativeWebView) {
             window.ReactNativeWebView.postMessage(JSON.stringify({ 
               type: 'chartError', 
@@ -115,38 +101,56 @@ const PriceChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
     </script>
   </body>
 </html>
-  `, []);
+`;
 
-  if (Platform.OS === 'web') {
-    return (
-      <View style={styles.container}>
-        {!webChartLoaded && (
-          <View style={styles.loadingOverlay}>
-            <ActivityIndicator size="large" color="#FFD700" />
-            <Text style={styles.loadingText}>Loading Chart...</Text>
-          </View>
-        )}
-        <iframe
-          src={CHART_URL}
-          style={{
-            width: '100%',
-            height: CHART_HEIGHT,
-            border: 'none',
-            borderRadius: 8,
-            display: 'block',
-            backgroundColor: '#0F0F0F',
-            opacity: webChartLoaded ? 1 : 0,
-          }}
-          title="TradingView Chart"
-          referrerPolicy="no-referrer-when-downgrade"
-          onLoad={() => {
-            console.log('[PriceChart] Web iframe loaded');
-            setWebChartLoaded(true);
-          }}
-        />
-      </View>
-    );
-  }
+const WebChart = React.memo(() => {
+  const [webChartLoaded, setWebChartLoaded] = useState(false);
+  const loadedRef = useRef(false);
+
+  const handleLoad = () => {
+    if (!loadedRef.current) {
+      loadedRef.current = true;
+      console.log('[PriceChart] Web iframe loaded');
+      setWebChartLoaded(true);
+    }
+  };
+
+  return (
+    <View style={styles.container}>
+      {!webChartLoaded && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#FFD700" />
+          <Text style={styles.loadingText}>Loading Chart...</Text>
+        </View>
+      )}
+      <iframe
+        key="tradingview-chart-stable"
+        src={CHART_URL}
+        style={{
+          width: '100%',
+          height: CHART_HEIGHT,
+          border: 'none',
+          borderRadius: 8,
+          display: 'block',
+          backgroundColor: '#0F0F0F',
+          opacity: webChartLoaded ? 1 : 0,
+        }}
+        title="TradingView Chart"
+        referrerPolicy="no-referrer-when-downgrade"
+        sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+        loading="lazy"
+        onLoad={handleLoad}
+      />
+    </View>
+  );
+});
+
+WebChart.displayName = 'WebChart';
+
+const NativeChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
+  const webViewRef = useRef<WebView>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [hasError, setHasError] = useState(false);
 
   return (
     <View style={styles.container}>
@@ -218,6 +222,15 @@ const PriceChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
   );
 });
 
+NativeChart.displayName = 'NativeChart';
+
+const PriceChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
+  if (Platform.OS === 'web') {
+    return <WebChart />;
+  }
+  return <NativeChart onPriceUpdate={onPriceUpdate} />;
+});
+
 PriceChart.displayName = 'PriceChart';
 
 export default PriceChart;
@@ -229,11 +242,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#0F0F0F',
     borderRadius: 8,
     overflow: 'hidden',
-  },
-  iframeContainer: {
-    width: '100%',
-    height: CHART_HEIGHT,
-    minHeight: CHART_HEIGHT,
   },
   webview: {
     flex: 1,

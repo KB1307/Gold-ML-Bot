@@ -175,7 +175,7 @@ function getIndicatorInfo(feature: string, signalType: string): { description: s
 }
 
 export default function DashboardScreen() {
-  const { signalHistory, marketOutlook, performanceMetrics, positionSizing, currentPrice, priceHistory, refreshData, signalUpdateTrigger } = useTrading();
+  const { signalHistory, marketOutlook, performanceMetrics, positionSizing, currentPrice, refreshData, signalUpdateTrigger } = useTrading();
   
   const currentSignal = signalHistory.find(s => s.status === "ACTIVE" || s.status === "PARTIALLY_MANAGED" || s.status === "TP1_HIT" || s.status === "TP2_HIT") || null;
   const [refreshing, setRefreshing] = useState(false);
@@ -322,7 +322,7 @@ export default function DashboardScreen() {
 
             <View style={styles.chartCard}>
               <View style={styles.chartContainer}>
-                <PriceChart data={priceHistory} currentPrice={currentPrice} />
+                <PriceChart />
               </View>
             </View>
 
