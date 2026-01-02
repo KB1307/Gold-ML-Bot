@@ -1,6 +1,8 @@
-import React, { useMemo, useRef } from "react";
-import { View, StyleSheet, Platform } from "react-native";
+import React, { useMemo, useRef, useState } from "react";
+import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
+
+const CHART_HEIGHT = 350;
 
 interface PriceDataPoint {
   timestamp: number;
@@ -15,6 +17,8 @@ interface PriceChartProps {
 
 const PriceChart = React.memo(({ data, currentPrice, onPriceUpdate }: PriceChartProps) => {
   const webViewRef = useRef<WebView>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [hasError, setHasError] = useState(false);
 
   const tradingViewHTML = useMemo(() => `
 <!DOCTYPE html>
@@ -148,37 +152,86 @@ const PriceChart = React.memo(({ data, currentPrice, onPriceUpdate }: PriceChart
   if (Platform.OS === 'web') {
     return (
       <View style={styles.container}>
-        <iframe
-          src={chartUrl}
-          style={{
-            width: '100%',
-            height: '100%',
-            border: 'none',
-          } as any}
-          title="TradingView Chart"
-        />
+        <View style={styles.iframeContainer}>
+          <iframe
+            src={chartUrl}
+            style={{
+              width: '100%',
+              height: CHART_HEIGHT,
+              border: 'none',
+              borderRadius: 8,
+            } as React.CSSProperties}
+            title="TradingView Chart"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            loading="lazy"
+          />
+        </View>
       </View>
     );
   }
 
   return (
     <View style={styles.container}>
+      {isLoading && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#FFD700" />
+          <Text style={styles.loadingText}>Loading Chart...</Text>
+        </View>
+      )}
+      {hasError && (
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>Failed to load chart</Text>
+          <Text style={styles.errorSubtext}>Please check your connection</Text>
+        </View>
+      )}
       <WebView
         ref={webViewRef}
         source={{ html: tradingViewHTML }}
-        style={styles.webview}
+        style={[styles.webview, isLoading && styles.hidden]}
         javaScriptEnabled={true}
         domStorageEnabled={true}
-        startInLoadingState={true}
+        startInLoadingState={false}
         scalesPageToFit={true}
+        allowsInlineMediaPlayback={true}
+        mediaPlaybackRequiresUserAction={false}
+        mixedContentMode="always"
+        originWhitelist={['*']}
+        onLoadStart={() => {
+          console.log('[PriceChart] WebView loading started');
+          setIsLoading(true);
+          setHasError(false);
+        }}
+        onLoadEnd={() => {
+          console.log('[PriceChart] WebView loading ended');
+          setIsLoading(false);
+        }}
+        onError={(syntheticEvent) => {
+          const { nativeEvent } = syntheticEvent;
+          console.error('[PriceChart] WebView error:', nativeEvent);
+          setHasError(true);
+          setIsLoading(false);
+        }}
+        onHttpError={(syntheticEvent) => {
+          const { nativeEvent } = syntheticEvent;
+          console.error('[PriceChart] HTTP error:', nativeEvent.statusCode);
+        }}
         onMessage={(event) => {
           try {
             const data = JSON.parse(event.nativeEvent.data);
+            console.log('[PriceChart] Message received:', data.type);
+            if (data.type === 'chartReady') {
+              console.log('[PriceChart] Chart is ready');
+              setIsLoading(false);
+            }
+            if (data.type === 'chartError') {
+              console.error('[PriceChart] Chart error:', data.error);
+              setHasError(true);
+            }
             if (data.type === 'price' && data.value && onPriceUpdate) {
               onPriceUpdate(data.value);
             }
           } catch (e) {
-            console.log('Error parsing WebView message:', e);
+            console.log('[PriceChart] Error parsing WebView message:', e);
           }
         }}
         testID="tradingview-chart"
@@ -194,11 +247,59 @@ export default PriceChart;
 const styles = StyleSheet.create({
   container: {
     width: '100%',
-    height: 345,
+    height: CHART_HEIGHT,
     backgroundColor: '#0F0F0F',
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  iframeContainer: {
+    flex: 1,
+    width: '100%',
+    height: CHART_HEIGHT,
   },
   webview: {
     flex: 1,
     backgroundColor: '#0F0F0F',
+    opacity: 1,
+  },
+  hidden: {
+    opacity: 0,
+  },
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#0F0F0F',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  loadingText: {
+    color: '#999',
+    fontSize: 12,
+    marginTop: 12,
+  },
+  errorContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#0F0F0F',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  errorText: {
+    color: '#ef4444',
+    fontSize: 14,
+    fontWeight: '600' as const,
+  },
+  errorSubtext: {
+    color: '#666',
+    fontSize: 12,
+    marginTop: 4,
   },
 });

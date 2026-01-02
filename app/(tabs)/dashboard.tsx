@@ -320,13 +320,11 @@ export default function DashboardScreen() {
               </View>
             </View>
 
-            {priceHistory && priceHistory.length > 1 && (
-              <View style={styles.chartCard}>
-                <View style={styles.chartContainer}>
-                  <PriceChart data={priceHistory} currentPrice={currentPrice} />
-                </View>
+            <View style={styles.chartCard}>
+              <View style={styles.chartContainer}>
+                <PriceChart data={priceHistory} currentPrice={currentPrice} />
               </View>
-            )}
+            </View>
 
             {!marketOutlook.isMarketOpen && (
               <View style={styles.closedBanner}>
@@ -1365,7 +1363,9 @@ const styles = StyleSheet.create({
   } as const,
   chartContainer: {
     width: "100%",
-    alignItems: "center",
+    height: 350,
+    borderRadius: 8,
+    overflow: "hidden",
   },
   confidenceCard: {
     backgroundColor: "rgba(255, 215, 0, 0.08)",
