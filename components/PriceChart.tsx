@@ -1,10 +1,8 @@
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState, useEffect, useMemo, useCallback } from "react";
 import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
 const CHART_HEIGHT = 350;
-
-let chartInstanceId = 0;
 
 interface PriceChartProps {
   onPriceUpdate?: (price: number) => void;
@@ -113,7 +111,10 @@ function initializeGlobalChart() {
   if (typeof document === 'undefined') return;
   
   if (isChartInitialized && globalIframeElement && globalIframeContainer) {
-    console.log('[PriceChart] Chart already initialized, reusing existing instance');
+    // Ensure it's in the body (in case it was removed somehow, though we try to keep it)
+    if (!document.body.contains(globalIframeContainer)) {
+       document.body.appendChild(globalIframeContainer);
+    }
     return;
   }
   
@@ -126,6 +127,8 @@ function initializeGlobalChart() {
   
   globalIframeContainer = document.createElement('div');
   globalIframeContainer.id = 'tradingview-global-container';
+  // Position fixed to ensure it stays in place relative to viewport
+  // We will update its coordinates to match the placeholder
   globalIframeContainer.style.cssText = `
     position: fixed;
     top: -9999px;
@@ -135,7 +138,8 @@ function initializeGlobalChart() {
     height: ${CHART_HEIGHT}px;
     pointer-events: none;
     opacity: 0;
-    z-index: -1;
+    z-index: 9999;
+    transition: opacity 0.2s ease-in-out;
   `;
   
   globalIframeElement = document.createElement('iframe');
@@ -162,70 +166,64 @@ function initializeGlobalChart() {
 }
 
 const WebChart = React.memo(() => {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const placeholderRef = useRef<HTMLDivElement>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const mountedRef = useRef(true);
-  const instanceIdRef = useRef(++chartInstanceId);
-  const hasInitializedRef = useRef(false);
   
   useEffect(() => {
-    const instanceId = instanceIdRef.current;
-    
-    if (hasInitializedRef.current) {
-      console.log(`[PriceChart ${instanceId}] Already initialized, skipping`);
-      return;
-    }
-    
-    hasInitializedRef.current = true;
-    mountedRef.current = true;
-    console.log(`[PriceChart ${instanceId}] Mounting chart component`);
-    
     initializeGlobalChart();
     
-    const moveChartToContainer = () => {
-      if (!mountedRef.current) {
-        console.log(`[PriceChart ${instanceId}] Component unmounted, aborting move`);
-        return;
-      }
-      
-      if (!containerRef.current || !globalIframeContainer || !globalIframeElement) {
-        console.log(`[PriceChart ${instanceId}] Container or iframe not ready, retrying...`);
-        setTimeout(moveChartToContainer, 200);
-        return;
-      }
-      
-      console.log(`[PriceChart ${instanceId}] Moving chart to visible container`);
-      
-      globalIframeContainer.style.cssText = `
-        width: 100%;
-        height: ${CHART_HEIGHT}px;
-        position: relative;
-        pointer-events: auto;
-        opacity: 1;
-        z-index: 1;
-      `;
-      
-      if (globalIframeContainer.parentNode !== containerRef.current) {
-        containerRef.current.appendChild(globalIframeContainer);
-      }
-      
-      if (mountedRef.current) {
-        setIsLoading(false);
+    // We use an Overlay Strategy:
+    // The iframe is strictly kept in document.body with position: fixed.
+    // We constantly update its position to match the placeholderRef.
+    // This PREVENTS reload because the iframe is never moved in the DOM tree.
+    
+    const updatePosition = () => {
+      if (placeholderRef.current && globalIframeContainer) {
+        const rect = placeholderRef.current.getBoundingClientRect();
+        
+        // Simple visibility check
+        const isVisible = rect.width > 0 && rect.height > 0 && 
+                          rect.bottom > 0 && rect.top < window.innerHeight &&
+                          rect.right > 0 && rect.left < window.innerWidth;
+
+        if (!isVisible) {
+           globalIframeContainer.style.opacity = '0';
+           globalIframeContainer.style.pointerEvents = 'none';
+        } else {
+           globalIframeContainer.style.left = `${rect.left}px`;
+           globalIframeContainer.style.top = `${rect.top}px`;
+           globalIframeContainer.style.width = `${rect.width}px`;
+           globalIframeContainer.style.height = `${rect.height}px`;
+           globalIframeContainer.style.opacity = '1';
+           globalIframeContainer.style.pointerEvents = 'auto';
+        }
       }
     };
+
+    // Initial check
+    updatePosition();
+    setTimeout(updatePosition, 100);
+    setIsLoading(false);
+
+    // Continuous update loop (using requestAnimationFrame for smoothness, or setInterval for lower CPU)
+    // Using setInterval at 30fps to reduce overhead, as precise pixel perf isn't critical for a chart
+    const intervalId = setInterval(updatePosition, 33);
     
-    const timeoutId = setTimeout(moveChartToContainer, 100);
-    const loadingTimeout = setTimeout(() => {
-      if (mountedRef.current) {
-        setIsLoading(false);
-      }
-    }, 3000);
+    // Also listen to events
+    window.addEventListener('scroll', updatePosition, true);
+    window.addEventListener('resize', updatePosition);
     
     return () => {
-      console.log(`[PriceChart ${instanceId}] Cleanup called`);
-      mountedRef.current = false;
-      clearTimeout(timeoutId);
-      clearTimeout(loadingTimeout);
+      clearInterval(intervalId);
+      window.removeEventListener('scroll', updatePosition, true);
+      window.removeEventListener('resize', updatePosition);
+      
+      // Hide on unmount
+      if (globalIframeContainer) {
+         globalIframeContainer.style.opacity = '0';
+         globalIframeContainer.style.pointerEvents = 'none';
+         globalIframeContainer.style.top = '-9999px';
+      }
     };
   }, []);
   
@@ -238,13 +236,13 @@ const WebChart = React.memo(() => {
         </View>
       )}
       <div
-        ref={containerRef as any}
+        ref={placeholderRef as any}
         style={{
           width: '100%',
           height: CHART_HEIGHT,
           borderRadius: 8,
-          overflow: 'hidden',
-          backgroundColor: '#0F0F0F',
+          // Background to show while loading or if iframe lags
+          backgroundColor: '#0F0F0F', 
         }}
       />
     </View>
@@ -257,6 +255,50 @@ const NativeChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
   const webViewRef = useRef<WebView>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
+
+  // Memoize source to prevent reloading on re-renders
+  const source = useMemo(() => ({ html: tradingViewHTML }), []);
+
+  const handleLoadStart = useCallback(() => {
+    console.log('[PriceChart] WebView loading started');
+    setIsLoading(true);
+    setHasError(false);
+  }, []);
+
+  const handleLoadEnd = useCallback(() => {
+    console.log('[PriceChart] WebView loading ended');
+    setIsLoading(false);
+  }, []);
+
+  const handleError = useCallback((syntheticEvent: any) => {
+    const { nativeEvent } = syntheticEvent;
+    console.error('[PriceChart] WebView error:', nativeEvent);
+    setHasError(true);
+    setIsLoading(false);
+  }, []);
+
+  const handleMessage = useCallback((event: any) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+      if (data.type !== 'price') {
+        console.log('[PriceChart] Message received:', data.type);
+      }
+      
+      if (data.type === 'chartReady') {
+        console.log('[PriceChart] Chart is ready');
+        setIsLoading(false);
+      }
+      if (data.type === 'chartError') {
+        console.error('[PriceChart] Chart error:', data.error);
+        setHasError(true);
+      }
+      if (data.type === 'price' && data.value && onPriceUpdate) {
+        onPriceUpdate(data.value);
+      }
+    } catch (e) {
+      console.log('[PriceChart] Error parsing WebView message:', e);
+    }
+  }, [onPriceUpdate]);
 
   return (
     <View style={styles.container}>
@@ -274,7 +316,7 @@ const NativeChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
       )}
       <WebView
         ref={webViewRef}
-        source={{ html: tradingViewHTML }}
+        source={source}
         style={[styles.webview, isLoading && styles.hidden]}
         javaScriptEnabled={true}
         domStorageEnabled={true}
@@ -284,44 +326,14 @@ const NativeChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
         mediaPlaybackRequiresUserAction={false}
         mixedContentMode="always"
         originWhitelist={['*']}
-        onLoadStart={() => {
-          console.log('[PriceChart] WebView loading started');
-          setIsLoading(true);
-          setHasError(false);
-        }}
-        onLoadEnd={() => {
-          console.log('[PriceChart] WebView loading ended');
-          setIsLoading(false);
-        }}
-        onError={(syntheticEvent) => {
-          const { nativeEvent } = syntheticEvent;
-          console.error('[PriceChart] WebView error:', nativeEvent);
-          setHasError(true);
-          setIsLoading(false);
-        }}
+        onLoadStart={handleLoadStart}
+        onLoadEnd={handleLoadEnd}
+        onError={handleError}
         onHttpError={(syntheticEvent) => {
           const { nativeEvent } = syntheticEvent;
           console.error('[PriceChart] HTTP error:', nativeEvent.statusCode);
         }}
-        onMessage={(event) => {
-          try {
-            const data = JSON.parse(event.nativeEvent.data);
-            console.log('[PriceChart] Message received:', data.type);
-            if (data.type === 'chartReady') {
-              console.log('[PriceChart] Chart is ready');
-              setIsLoading(false);
-            }
-            if (data.type === 'chartError') {
-              console.error('[PriceChart] Chart error:', data.error);
-              setHasError(true);
-            }
-            if (data.type === 'price' && data.value && onPriceUpdate) {
-              onPriceUpdate(data.value);
-            }
-          } catch (e) {
-            console.log('[PriceChart] Error parsing WebView message:', e);
-          }
-        }}
+        onMessage={handleMessage}
         testID="tradingview-chart"
       />
     </View>

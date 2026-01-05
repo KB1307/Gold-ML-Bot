@@ -46,13 +46,7 @@ function LoadingScreen() {
   );
 }
 
-function RootLayoutNav() {
-  const { isLoading } = useTrading();
-
-  if (isLoading) {
-    return <LoadingScreen />;
-  }
-
+const AppNavigator = React.memo(() => {
   return (
     <Stack screenOptions={{ headerBackTitle: "Back" }}>
       <Stack.Screen name="index" options={{ headerShown: false }} />
@@ -60,6 +54,18 @@ function RootLayoutNav() {
       <Stack.Screen name="+not-found" />
     </Stack>
   );
+});
+
+AppNavigator.displayName = "AppNavigator";
+
+function RootLayoutNav() {
+  const { isLoading } = useTrading();
+
+  if (isLoading) {
+    return <LoadingScreen />;
+  }
+
+  return <AppNavigator />;
 }
 
 export default function RootLayout() {
