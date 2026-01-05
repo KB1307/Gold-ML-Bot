@@ -1,10 +1,39 @@
 import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Platform, RefreshControl } from "react-native";
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { LinearGradient } from "expo-linear-gradient";
 import { TrendingUp, TrendingDown, Target, Shield, Clock, Zap, BarChart3, Percent, AlertTriangle, Activity, Lightbulb, TrendingUpDown } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
 import { Stack } from "expo-router";
 import PriceChart from "@/components/PriceChart";
+
+const StableChartSection = React.memo(() => {
+  return (
+    <View style={chartSectionStyles.chartCard}>
+      <View style={chartSectionStyles.chartContainer}>
+        <PriceChart />
+      </View>
+    </View>
+  );
+}, () => true);
+
+StableChartSection.displayName = 'StableChartSection';
+
+const chartSectionStyles = StyleSheet.create({
+  chartCard: {
+    backgroundColor: "rgba(255, 255, 255, 0.03)",
+    padding: 20,
+    borderRadius: 16,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.05)",
+  },
+  chartContainer: {
+    width: "100%",
+    height: 350,
+    borderRadius: 8,
+    overflow: "hidden",
+  },
+});
 
 function formatFeatureName(feature: string): string {
   const featureMap: { [key: string]: string } = {
@@ -201,68 +230,34 @@ export default function DashboardScreen() {
 
   const isDataLoading = !marketOutlook;
 
-  const getProgressPercentage = () => {
+  const getProgressPercentage = useCallback(() => {
     if (!currentSignal) return 0;
     
-    const entry = currentSignal.entryPrice;
     const target = currentSignal.tp3;
     const sl = currentSignal.sl;
     
-    console.log(`📊 Progress Bar Debug:`);
-    console.log(`   Signal Type: ${currentSignal.type}`);
-    console.log(`   Current Price: ${currentPrice.toFixed(1)}`);
-    console.log(`   Entry: ${entry.toFixed(1)}`);
-    console.log(`   TP3: ${target.toFixed(1)}`);
-    console.log(`   SL: ${sl.toFixed(1)}`);
-    
     if (currentSignal.type === "BUY") {
-      console.log(`   BUY Logic: TP3 (${target.toFixed(1)}) should be ABOVE Entry (${entry.toFixed(1)})`);
-      console.log(`   BUY Logic: SL (${sl.toFixed(1)}) should be BELOW Entry (${entry.toFixed(1)})`);
-      
-      if (currentPrice >= target) {
-        console.log(`   Result: 100% (Price reached or exceeded TP3)`);
-        return 100;
-      }
-      if (currentPrice <= sl) {
-        console.log(`   Result: 0% (Price at or below SL - trade lost)`);
-        return 0;
-      }
+      if (currentPrice >= target) return 100;
+      if (currentPrice <= sl) return 0;
       
       const totalRange = target - sl;
       const progressFromSL = currentPrice - sl;
       const percentage = (progressFromSL / totalRange) * 100;
       
-      console.log(`   Total Range (TP3 - SL): ${totalRange.toFixed(1)} pips`);
-      console.log(`   Progress from SL (Current - SL): ${progressFromSL.toFixed(1)} pips`);
-      console.log(`   Percentage: ${percentage.toFixed(1)}%`);
-      
       return Math.min(100, Math.max(0, percentage));
     } else {
-      console.log(`   SELL Logic: TP3 (${target.toFixed(1)}) should be BELOW Entry (${entry.toFixed(1)})`);
-      console.log(`   SELL Logic: SL (${sl.toFixed(1)}) should be ABOVE Entry (${entry.toFixed(1)})`);
-      
-      if (currentPrice <= target) {
-        console.log(`   Result: 100% (Price reached or exceeded TP3)`);
-        return 100;
-      }
-      if (currentPrice >= sl) {
-        console.log(`   Result: 0% (Price at or above SL - trade lost)`);
-        return 0;
-      }
+      if (currentPrice <= target) return 100;
+      if (currentPrice >= sl) return 0;
       
       const totalRange = sl - target;
       const progressFromSL = sl - currentPrice;
       const percentage = (progressFromSL / totalRange) * 100;
       
-      console.log(`   Total Range (SL - TP3): ${totalRange.toFixed(1)} pips`);
-      console.log(`   Progress from SL (SL - Current): ${progressFromSL.toFixed(1)} pips`);
-      console.log(`   Percentage: ${percentage.toFixed(1)}%`);
-      
       return Math.min(100, Math.max(0, percentage));
     }
-  };
+  }, [currentSignal, currentPrice]);
 
-  const calculatePnL = () => {
+  const pnl = useMemo(() => {
     if (!currentSignal) return 0;
     
     const diff = currentSignal.type === "BUY" 
@@ -270,9 +265,8 @@ export default function DashboardScreen() {
       : currentSignal.entryPrice - currentPrice;
     
     return diff;
-  };
+  }, [currentSignal, currentPrice]);
 
-  const pnl = calculatePnL();
   const progress = getProgressPercentage();
 
   return (
@@ -314,11 +308,7 @@ export default function DashboardScreen() {
               </View>
             </View>
 
-            <View style={styles.chartCard}>
-              <View style={styles.chartContainer}>
-                <PriceChart />
-              </View>
-            </View>
+            <StableChartSection />
 
             {isDataLoading && (
               <View style={styles.dataLoadingBanner}>

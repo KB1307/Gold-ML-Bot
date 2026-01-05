@@ -4,6 +4,8 @@ import { WebView } from "react-native-webview";
 
 const CHART_HEIGHT = 350;
 
+let chartInstanceId = 0;
+
 interface PriceChartProps {
   onPriceUpdate?: (price: number) => void;
 }
@@ -108,10 +110,19 @@ let globalIframeElement: HTMLIFrameElement | null = null;
 let isChartInitialized = false;
 
 function initializeGlobalChart() {
-  if (typeof document === 'undefined' || isChartInitialized) return;
+  if (typeof document === 'undefined') return;
+  
+  if (isChartInitialized && globalIframeElement && globalIframeContainer) {
+    console.log('[PriceChart] Chart already initialized, reusing existing instance');
+    return;
+  }
   
   isChartInitialized = true;
   console.log('[PriceChart] Initializing global chart container');
+  
+  if (globalIframeContainer && globalIframeContainer.parentNode) {
+    globalIframeContainer.parentNode.removeChild(globalIframeContainer);
+  }
   
   globalIframeContainer = document.createElement('div');
   globalIframeContainer.id = 'tradingview-global-container';
@@ -154,18 +165,36 @@ const WebChart = React.memo(() => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [isLoading, setIsLoading] = useState(true);
   const mountedRef = useRef(true);
+  const instanceIdRef = useRef(++chartInstanceId);
+  const hasInitializedRef = useRef(false);
   
   useEffect(() => {
+    const instanceId = instanceIdRef.current;
+    
+    if (hasInitializedRef.current) {
+      console.log(`[PriceChart ${instanceId}] Already initialized, skipping`);
+      return;
+    }
+    
+    hasInitializedRef.current = true;
     mountedRef.current = true;
+    console.log(`[PriceChart ${instanceId}] Mounting chart component`);
     
     initializeGlobalChart();
     
     const moveChartToContainer = () => {
-      if (!containerRef.current || !globalIframeContainer || !globalIframeElement) {
+      if (!mountedRef.current) {
+        console.log(`[PriceChart ${instanceId}] Component unmounted, aborting move`);
         return;
       }
       
-      console.log('[PriceChart] Moving chart to visible container');
+      if (!containerRef.current || !globalIframeContainer || !globalIframeElement) {
+        console.log(`[PriceChart ${instanceId}] Container or iframe not ready, retrying...`);
+        setTimeout(moveChartToContainer, 200);
+        return;
+      }
+      
+      console.log(`[PriceChart ${instanceId}] Moving chart to visible container`);
       
       globalIframeContainer.style.cssText = `
         width: 100%;
@@ -193,27 +222,10 @@ const WebChart = React.memo(() => {
     }, 3000);
     
     return () => {
+      console.log(`[PriceChart ${instanceId}] Cleanup called`);
       mountedRef.current = false;
       clearTimeout(timeoutId);
       clearTimeout(loadingTimeout);
-      
-      if (globalIframeContainer && document.body) {
-        console.log('[PriceChart] Parking chart off-screen');
-        globalIframeContainer.style.cssText = `
-          position: fixed;
-          top: -9999px;
-          left: -9999px;
-          width: 100%;
-          max-width: 800px;
-          height: ${CHART_HEIGHT}px;
-          pointer-events: none;
-          opacity: 0;
-          z-index: -1;
-        `;
-        if (!document.body.contains(globalIframeContainer)) {
-          document.body.appendChild(globalIframeContainer);
-        }
-      }
     };
   }, []);
   
