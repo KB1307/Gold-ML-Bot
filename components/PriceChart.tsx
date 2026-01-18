@@ -1,36 +1,32 @@
-import React, { useEffect, useState } from 'react';
+import React, { useMemo } from 'react';
 import { StyleSheet, View, Platform, useWindowDimensions } from 'react-native';
 import { WebView } from 'react-native-webview';
 
 // -----------------------------------------------------------------------------
-// WIDGET CONFIGURATION & HTML
+// CONFIGURATION
 // -----------------------------------------------------------------------------
-const WIDGET_CONFIG = {
+const CHART_CONFIG = {
+  "autosize": true,
+  "symbol": "CAPITALCOM:GOLD",
+  "interval": "5",
+  "timezone": "Etc/UTC",
+  "theme": "dark",
+  "style": "1",
+  "locale": "en",
+  "enable_publishing": false,
   "allow_symbol_change": true,
-  "calendar": false,
-  "details": false,
   "hide_side_toolbar": true,
   "hide_top_toolbar": false,
   "hide_legend": false,
+  "save_image": false,
+  "calendar": false,
   "hide_volume": false,
-  "hotlist": false,
-  "interval": "5",
-  "locale": "en",
-  "save_image": true,
-  "style": "1",
-  "symbol": "CAPITALCOM:GOLD",
-  "theme": "dark",
-  "timezone": "Etc/UTC",
+  "support_host": "https://www.tradingview.com",
   "backgroundColor": "#0F0F0F",
   "gridColor": "rgba(242, 242, 242, 0.06)",
-  "watchlist": [],
-  "withdateranges": false,
-  "compareSymbols": [],
-  "studies": [],
-  "autosize": true
 };
 
-const CHART_HTML = `
+const HTML_CONTENT = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -40,21 +36,24 @@ const CHART_HTML = `
     body, html {
       margin: 0;
       padding: 0;
-      width: 100%;
-      height: 100%;
+      width: 100vw;
+      height: 100vh;
       overflow: hidden;
       background-color: #0F0F0F;
     }
     .tradingview-widget-container {
-      width: 100% !important;
-      height: 100% !important;
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
     }
     iframe {
       border: none;
     }
-    /* Hide copyright on small screens/widgets to save space */
+    /* Hide copyright on small screens */
     .tradingview-widget-copyright {
-      display: none;
+      display: none !important;
     }
   </style>
 </head>
@@ -62,7 +61,7 @@ const CHART_HTML = `
   <div class="tradingview-widget-container">
     <div class="tradingview-widget-container__widget"></div>
     <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
-    ${JSON.stringify(WIDGET_CONFIG)}
+      ${JSON.stringify(CHART_CONFIG)}
     </script>
   </div>
 </body>
@@ -70,30 +69,11 @@ const CHART_HTML = `
 `;
 
 // -----------------------------------------------------------------------------
-// WEB IMPLEMENTATION (Stable Iframe)
+// WEB IMPLEMENTATION
 // -----------------------------------------------------------------------------
-// We create the Blob URL *once* outside the component.
-// This ensures that even if the component re-renders, the src remains identical,
-// preventing the iframe from reloading.
-let globalChartUrl: string | null = null;
-
-const getChartUrl = () => {
-  if (Platform.OS === 'web' && !globalChartUrl) {
-    const blob = new Blob([CHART_HTML], { type: 'text/html' });
-    globalChartUrl = URL.createObjectURL(blob);
-  }
-  return globalChartUrl;
-};
-
-const WebChart = () => {
-  const [src, setSrc] = useState<string | null>(null);
-
-  useEffect(() => {
-    // Initialize URL only on client-side mount
-    setSrc(getChartUrl());
-  }, []);
-
-  if (!src) return <View style={styles.loadingPlaceholder} />;
+const WebChart = React.memo(() => {
+  // Use data URI for Web to prevent blob URL issues and ensure stability
+  const src = `data:text/html;charset=utf-8,${encodeURIComponent(HTML_CONTENT)}`;
 
   return (
     <iframe
@@ -102,23 +82,24 @@ const WebChart = () => {
         width: '100%',
         height: '100%',
         border: 'none',
+        overflow: 'hidden',
         backgroundColor: '#0F0F0F',
       }}
       title="TradingView Chart"
+      scrolling="no"
     />
   );
-};
+});
+WebChart.displayName = 'WebChart';
 
 // -----------------------------------------------------------------------------
-// NATIVE IMPLEMENTATION (WebView)
+// NATIVE IMPLEMENTATION
 // -----------------------------------------------------------------------------
-const NATIVE_SOURCE = { html: CHART_HTML };
-
 const NativeChart = React.memo(() => {
   return (
     <WebView
       originWhitelist={['*']}
-      source={NATIVE_SOURCE}
+      source={{ html: HTML_CONTENT }}
       style={styles.webview}
       containerStyle={styles.webviewContainer}
       scrollEnabled={false}
@@ -126,24 +107,32 @@ const NativeChart = React.memo(() => {
       javaScriptEnabled={true}
       domStorageEnabled={true}
       androidLayerType="hardware"
-      opacity={0.99}
+      renderToHardwareTextureAndroid={true}
       scalesPageToFit={true}
       showsVerticalScrollIndicator={false}
       showsHorizontalScrollIndicator={false}
+      onError={(syntheticEvent) => {
+        const { nativeEvent } = syntheticEvent;
+        console.warn('WebView error: ', nativeEvent);
+      }}
     />
   );
 });
 NativeChart.displayName = 'NativeChart';
 
 // -----------------------------------------------------------------------------
-// MAIN COMPONENT
+// MAIN EXPORT
 // -----------------------------------------------------------------------------
 export default function PriceChart() {
   const { width } = useWindowDimensions();
   
-  // FIX: Fixed height of 350px (or slightly less on very small screens)
-  // This solves the "MASSIVE" issue.
-  const chartHeight = Math.min(width * 0.9, 350);
+  // Calculate height once based on width, clamp to reasonable limits
+  // This ensures the chart is large enough but not "massive"
+  const chartHeight = useMemo(() => {
+    // 16:9 Aspect Ratio roughly, but capped
+    const height = width * 0.85; 
+    return Math.min(Math.max(height, 300), 450);
+  }, [width]);
 
   return (
     <View style={[styles.container, { height: chartHeight }]}>
@@ -158,7 +147,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#0F0F0F',
     borderRadius: 12,
     overflow: 'hidden',
-    // Shadow for depth
+    // Consistent shadow/elevation
     ...Platform.select({
       ios: {
         shadowColor: '#000',
@@ -173,7 +162,7 @@ const styles = StyleSheet.create({
   },
   webview: {
     flex: 1,
-    backgroundColor: 'transparent',
+    backgroundColor: '#0F0F0F',
   },
   webviewContainer: {
     flex: 1, 
@@ -181,8 +170,4 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: '#0F0F0F',
   },
-  loadingPlaceholder: {
-    flex: 1,
-    backgroundColor: '#0F0F0F',
-  }
 });
