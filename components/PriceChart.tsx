@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import { StyleSheet, View, Platform, useWindowDimensions } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { StyleSheet, View, Platform } from 'react-native';
 import { WebView } from 'react-native-webview';
 
 // -----------------------------------------------------------------------------
@@ -36,8 +36,8 @@ const HTML_CONTENT = `
     body, html {
       margin: 0;
       padding: 0;
-      width: 100vw;
-      height: 100vh;
+      width: 100%;
+      height: 100%;
       overflow: hidden;
       background-color: #0F0F0F;
     }
@@ -49,11 +49,9 @@ const HTML_CONTENT = `
       height: 100%;
     }
     iframe {
+      width: 100%;
+      height: 100%;
       border: none;
-    }
-    /* Hide copyright on small screens */
-    .tradingview-widget-copyright {
-      display: none !important;
     }
   </style>
 </head>
@@ -69,37 +67,74 @@ const HTML_CONTENT = `
 `;
 
 // -----------------------------------------------------------------------------
-// WEB IMPLEMENTATION
+// WEB IMPLEMENTATION (Global Singleton)
 // -----------------------------------------------------------------------------
+// We store the iframe in a global variable so it persists across re-renders/unmounts
+// preventing the "loading loop" and state loss.
+let globalWebIframe: HTMLIFrameElement | null = null;
+
 const WebChart = React.memo(() => {
-  // Use data URI for Web to prevent blob URL issues and ensure stability
-  const src = `data:text/html;charset=utf-8,${encodeURIComponent(HTML_CONTENT)}`;
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+
+    // 1. Create global iframe if it doesn't exist (Runs once per app session)
+    if (!globalWebIframe) {
+      const iframe = document.createElement('iframe');
+      iframe.style.width = '100%';
+      iframe.style.height = '100%';
+      iframe.style.border = 'none';
+      iframe.style.overflow = 'hidden';
+      iframe.style.backgroundColor = '#0F0F0F';
+      
+      // Use Blob to load content securely
+      const blob = new Blob([HTML_CONTENT], { type: 'text/html' });
+      iframe.src = URL.createObjectURL(blob);
+      
+      globalWebIframe = iframe;
+    }
+
+    // 2. Attach to current container
+    const container = containerRef.current;
+    if (container && globalWebIframe) {
+      // If the iframe is already elsewhere, this moves it here.
+      // If it's already here, it does nothing.
+      if (!container.contains(globalWebIframe)) {
+        container.appendChild(globalWebIframe);
+      }
+    }
+    
+    // NOTE: We intentionally DO NOT remove the iframe on cleanup
+    // to preserve its state/loading progress. 
+    // It stays in memory until attached to a new container.
+  }, []);
 
   return (
-    <iframe
-      src={src}
-      style={{
-        width: '100%',
-        height: '100%',
-        border: 'none',
+    <div 
+      ref={containerRef} 
+      style={{ 
+        width: '100%', 
+        height: '100%', 
         overflow: 'hidden',
-        backgroundColor: '#0F0F0F',
-      }}
-      title="TradingView Chart"
-      scrolling="no"
+        backgroundColor: '#0F0F0F'
+      }} 
     />
   );
-});
+}, () => true); // Strict memoization: Never re-render
+
 WebChart.displayName = 'WebChart';
 
 // -----------------------------------------------------------------------------
 // NATIVE IMPLEMENTATION
 // -----------------------------------------------------------------------------
+const NATIVE_SOURCE = { html: HTML_CONTENT };
+
 const NativeChart = React.memo(() => {
   return (
     <WebView
       originWhitelist={['*']}
-      source={{ html: HTML_CONTENT }}
+      source={NATIVE_SOURCE}
       style={styles.webview}
       containerStyle={styles.webviewContainer}
       scrollEnabled={false}
@@ -107,8 +142,6 @@ const NativeChart = React.memo(() => {
       javaScriptEnabled={true}
       domStorageEnabled={true}
       androidLayerType="hardware"
-      renderToHardwareTextureAndroid={true}
-      scalesPageToFit={true}
       showsVerticalScrollIndicator={false}
       showsHorizontalScrollIndicator={false}
       onError={(syntheticEvent) => {
@@ -117,33 +150,30 @@ const NativeChart = React.memo(() => {
       }}
     />
   );
-});
+}, () => true); // Strict memoization: Never re-render
+
 NativeChart.displayName = 'NativeChart';
 
 // -----------------------------------------------------------------------------
 // MAIN EXPORT
 // -----------------------------------------------------------------------------
-export default function PriceChart() {
-  const { width } = useWindowDimensions();
-  
-  // Calculate height once based on width, clamp to reasonable limits
-  // This ensures the chart is large enough but not "massive"
-  const chartHeight = useMemo(() => {
-    // 16:9 Aspect Ratio roughly, but capped
-    const height = width * 0.85; 
-    return Math.min(Math.max(height, 300), 450);
-  }, [width]);
-
+function PriceChart() {
   return (
-    <View style={[styles.container, { height: chartHeight }]}>
+    <View style={styles.container}>
       {Platform.OS === 'web' ? <WebChart /> : <NativeChart />}
     </View>
   );
 }
 
+// Memoize the main component to prevent any parent-induced re-renders
+export default React.memo(PriceChart);
+
 const styles = StyleSheet.create({
   container: {
     width: '100%',
+    // Use aspectRatio instead of fixed height calculation to avoid re-renders on resize
+    // 1.25 is equivalent to width * 0.8 (1 / 0.8 = 1.25)
+    aspectRatio: 1.25, 
     backgroundColor: '#0F0F0F',
     borderRadius: 12,
     overflow: 'hidden',
