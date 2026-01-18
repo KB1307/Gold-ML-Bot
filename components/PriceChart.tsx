@@ -1,13 +1,36 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { StyleSheet, View, Platform, useWindowDimensions } from 'react-native';
 import { WebView } from 'react-native-webview';
 
 // -----------------------------------------------------------------------------
-// HTML CONTENT
+// WIDGET CONFIGURATION & HTML
 // -----------------------------------------------------------------------------
-// Using the exact snippet structure provided to ensure correct layout.
-// logic: height: calc(100% - 32px) leaves space for the copyright footer.
-const tradingViewHTML = `
+const WIDGET_CONFIG = {
+  "allow_symbol_change": true,
+  "calendar": false,
+  "details": false,
+  "hide_side_toolbar": true,
+  "hide_top_toolbar": false,
+  "hide_legend": false,
+  "hide_volume": false,
+  "hotlist": false,
+  "interval": "5",
+  "locale": "en",
+  "save_image": true,
+  "style": "1",
+  "symbol": "CAPITALCOM:GOLD",
+  "theme": "dark",
+  "timezone": "Etc/UTC",
+  "backgroundColor": "#0F0F0F",
+  "gridColor": "rgba(242, 242, 242, 0.06)",
+  "watchlist": [],
+  "withdateranges": false,
+  "compareSymbols": [],
+  "studies": [],
+  "autosize": true
+};
+
+const CHART_HTML = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -29,95 +52,48 @@ const tradingViewHTML = `
     iframe {
       border: none;
     }
-    /* Hide the copyright text if desired, or style it to match */
+    /* Hide copyright on small screens/widgets to save space */
     .tradingview-widget-copyright {
-      font-size: 13px !important;
-      line-height: 32px !important;
-      text-align: center !important;
-      vertical-align: middle !important;
-      font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif !important;
-      color: #9db2bd !important;
-    }
-    .tradingview-widget-copyright .blue-text {
-      color: #2962FF !important;
-    }
-    .tradingview-widget-copyright a {
-      text-decoration: none !important;
-      color: #9db2bd !important;
-    }
-    .tradingview-widget-copyright a:visited {
-      color: #9db2bd !important;
-    }
-    .tradingview-widget-copyright a:hover .blue-text {
-      color: #1E53E5 !important;
-    }
-    .tradingview-widget-copyright a:hover {
-      color: #1E53E5 !important;
+      display: none;
     }
   </style>
 </head>
 <body>
-  <div class="tradingview-widget-container" style="height:100%;width:100%">
-    <div class="tradingview-widget-container__widget" style="height:calc(100% - 32px);width:100%"></div>
-    <div class="tradingview-widget-copyright">
-      <a href="https://www.tradingview.com/symbols/CAPITALCOM-GOLD/" rel="noopener nofollow" target="_blank">
-        <span class="blue-text">GOLD chart</span>
-      </a>
-      <span class="trademark"> by TradingView</span>
-    </div>
+  <div class="tradingview-widget-container">
+    <div class="tradingview-widget-container__widget"></div>
     <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
-    {
-      "allow_symbol_change": true,
-      "calendar": false,
-      "details": false,
-      "hide_side_toolbar": true,
-      "hide_top_toolbar": false,
-      "hide_legend": false,
-      "hide_volume": false,
-      "hotlist": false,
-      "interval": "5",
-      "locale": "en",
-      "save_image": true,
-      "style": "1",
-      "symbol": "CAPITALCOM:GOLD",
-      "theme": "dark",
-      "timezone": "Etc/UTC",
-      "backgroundColor": "#0F0F0F",
-      "gridColor": "rgba(242, 242, 242, 0.06)",
-      "watchlist": [],
-      "withdateranges": false,
-      "compareSymbols": [],
-      "studies": [],
-      "autosize": true
-    }
+    ${JSON.stringify(WIDGET_CONFIG)}
     </script>
   </div>
 </body>
 </html>
 `;
 
-// Native WebView Source Object (Memoized outside to prevent reload on re-render)
-const CHART_SOURCE = { html: tradingViewHTML };
+// -----------------------------------------------------------------------------
+// WEB IMPLEMENTATION (Stable Iframe)
+// -----------------------------------------------------------------------------
+// We create the Blob URL *once* outside the component.
+// This ensures that even if the component re-renders, the src remains identical,
+// preventing the iframe from reloading.
+let globalChartUrl: string | null = null;
 
-// -----------------------------------------------------------------------------
-// WEB IMPLEMENTATION
-// -----------------------------------------------------------------------------
-// Using a stable Blob URL pattern. This is more robust than moving iframes.
-// We generate the URL once and reuse it.
-let cachedBlobUrl: string | null = null;
+const getChartUrl = () => {
+  if (Platform.OS === 'web' && !globalChartUrl) {
+    const blob = new Blob([CHART_HTML], { type: 'text/html' });
+    globalChartUrl = URL.createObjectURL(blob);
+  }
+  return globalChartUrl;
+};
 
 const WebChart = () => {
   const [src, setSrc] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!cachedBlobUrl) {
-      const blob = new Blob([tradingViewHTML], { type: 'text/html' });
-      cachedBlobUrl = URL.createObjectURL(blob);
-    }
-    setSrc(cachedBlobUrl);
+    // Initialize URL only on client-side mount
+    setSrc(getChartUrl());
   }, []);
 
-  if (!src) return <View style={styles.container} />;
+  if (!src) return <View style={styles.loadingPlaceholder} />;
 
   return (
     <iframe
@@ -134,13 +110,15 @@ const WebChart = () => {
 };
 
 // -----------------------------------------------------------------------------
-// NATIVE IMPLEMENTATION
+// NATIVE IMPLEMENTATION (WebView)
 // -----------------------------------------------------------------------------
+const NATIVE_SOURCE = { html: CHART_HTML };
+
 const NativeChart = React.memo(() => {
   return (
     <WebView
       originWhitelist={['*']}
-      source={CHART_SOURCE}
+      source={NATIVE_SOURCE}
       style={styles.webview}
       containerStyle={styles.webviewContainer}
       scrollEnabled={false}
@@ -148,23 +126,24 @@ const NativeChart = React.memo(() => {
       javaScriptEnabled={true}
       domStorageEnabled={true}
       androidLayerType="hardware"
-      opacity={0.99} // Prevents white flash
-      scalesPageToFit={true} // Ensures viewport meta tag is respected
+      opacity={0.99}
+      scalesPageToFit={true}
+      showsVerticalScrollIndicator={false}
+      showsHorizontalScrollIndicator={false}
     />
   );
 });
-
 NativeChart.displayName = 'NativeChart';
 
 // -----------------------------------------------------------------------------
-// MAIN EXPORT
+// MAIN COMPONENT
 // -----------------------------------------------------------------------------
 export default function PriceChart() {
   const { width } = useWindowDimensions();
   
-  // Dynamic height calculation
-  // 1.2 aspect ratio gives a good height for the chart on mobile
-  const chartHeight = width * 1.2; 
+  // FIX: Fixed height of 350px (or slightly less on very small screens)
+  // This solves the "MASSIVE" issue.
+  const chartHeight = Math.min(width * 0.9, 350);
 
   return (
     <View style={[styles.container, { height: chartHeight }]}>
@@ -179,8 +158,18 @@ const styles = StyleSheet.create({
     backgroundColor: '#0F0F0F',
     borderRadius: 12,
     overflow: 'hidden',
-    // Removed margin to let parent handle spacing if needed, 
-    // but kept rounded corners for design
+    // Shadow for depth
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+      },
+      android: {
+        elevation: 4,
+      },
+    }),
   },
   webview: {
     flex: 1,
@@ -192,4 +181,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: '#0F0F0F',
   },
+  loadingPlaceholder: {
+    flex: 1,
+    backgroundColor: '#0F0F0F',
+  }
 });
