@@ -1,9 +1,12 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { StyleSheet, View, Platform, useWindowDimensions } from 'react-native';
 import { WebView } from 'react-native-webview';
 
-// 1. STABLE HTML SOURCE (Fixes the "Loading Loop")
-// We define this OUTSIDE the component so it never changes identity.
+// -----------------------------------------------------------------------------
+// HTML CONTENT
+// -----------------------------------------------------------------------------
+// Using the exact snippet structure provided to ensure correct layout.
+// logic: height: calc(100% - 32px) leaves space for the copyright footer.
 const tradingViewHTML = `
 <!DOCTYPE html>
 <html>
@@ -17,86 +20,115 @@ const tradingViewHTML = `
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background-color: transparent;
+      background-color: #0F0F0F;
     }
     .tradingview-widget-container {
       width: 100% !important;
       height: 100% !important;
     }
     iframe {
-      width: 100% !important;
-      height: 100% !important;
       border: none;
+    }
+    /* Hide the copyright text if desired, or style it to match */
+    .tradingview-widget-copyright {
+      font-size: 13px !important;
+      line-height: 32px !important;
+      text-align: center !important;
+      vertical-align: middle !important;
+      font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif !important;
+      color: #9db2bd !important;
+    }
+    .tradingview-widget-copyright .blue-text {
+      color: #2962FF !important;
+    }
+    .tradingview-widget-copyright a {
+      text-decoration: none !important;
+      color: #9db2bd !important;
+    }
+    .tradingview-widget-copyright a:visited {
+      color: #9db2bd !important;
+    }
+    .tradingview-widget-copyright a:hover .blue-text {
+      color: #1E53E5 !important;
+    }
+    .tradingview-widget-copyright a:hover {
+      color: #1E53E5 !important;
     }
   </style>
 </head>
 <body>
-  <div class="tradingview-widget-container">
-    <div id="tradingview_widget"></div>
-    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-    <script type="text/javascript">
-      new TradingView.widget({
-        "width": "100%",
-        "height": "100%",
-        "symbol": "OANDA:XAUUSD",
-        "interval": "5",
-        "timezone": "Etc/UTC",
-        "theme": "dark",
-        "style": "1",
-        "locale": "en",
-        "toolbar_bg": "#f1f3f6",
-        "enable_publishing": false,
-        "hide_top_toolbar": true,
-        "save_image": false,
-        "container_id": "tradingview_widget",
-        "studies": [],
-        "hide_volume": true
-      });
+  <div class="tradingview-widget-container" style="height:100%;width:100%">
+    <div class="tradingview-widget-container__widget" style="height:calc(100% - 32px);width:100%"></div>
+    <div class="tradingview-widget-copyright">
+      <a href="https://www.tradingview.com/symbols/CAPITALCOM-GOLD/" rel="noopener nofollow" target="_blank">
+        <span class="blue-text">GOLD chart</span>
+      </a>
+      <span class="trademark"> by TradingView</span>
+    </div>
+    <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
+    {
+      "allow_symbol_change": true,
+      "calendar": false,
+      "details": false,
+      "hide_side_toolbar": true,
+      "hide_top_toolbar": false,
+      "hide_legend": false,
+      "hide_volume": false,
+      "hotlist": false,
+      "interval": "5",
+      "locale": "en",
+      "save_image": true,
+      "style": "1",
+      "symbol": "CAPITALCOM:GOLD",
+      "theme": "dark",
+      "timezone": "Etc/UTC",
+      "backgroundColor": "#0F0F0F",
+      "gridColor": "rgba(242, 242, 242, 0.06)",
+      "watchlist": [],
+      "withdateranges": false,
+      "compareSymbols": [],
+      "studies": [],
+      "autosize": true
+    }
     </script>
   </div>
 </body>
 </html>
 `;
 
-// Native WebView Source Object (Memoized outside)
+// Native WebView Source Object (Memoized outside to prevent reload on re-render)
 const CHART_SOURCE = { html: tradingViewHTML };
 
 // -----------------------------------------------------------------------------
-// WEB IMPLEMENTATION (Fixes "Stays on all tabs")
+// WEB IMPLEMENTATION
 // -----------------------------------------------------------------------------
-let globalIframeElement: HTMLIFrameElement | null = null;
+// Using a stable Blob URL pattern. This is more robust than moving iframes.
+// We generate the URL once and reuse it.
+let cachedBlobUrl: string | null = null;
 
 const WebChart = () => {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const [src, setSrc] = useState<string | null>(null);
 
   useEffect(() => {
-    // If we haven't created the global iframe yet, create it now.
-    if (!globalIframeElement) {
-      const iframe = document.createElement('iframe');
-      iframe.style.width = '100%';
-      iframe.style.height = '100%';
-      iframe.style.border = 'none';
-      // We use a Blob to load the HTML content on web without cross-origin issues
+    if (!cachedBlobUrl) {
       const blob = new Blob([tradingViewHTML], { type: 'text/html' });
-      iframe.src = URL.createObjectURL(blob);
-      globalIframeElement = iframe;
+      cachedBlobUrl = URL.createObjectURL(blob);
     }
-
-    // APPEND TO THE CURRENT CONTAINER ONLY
-    // This ensures it only lives inside this specific component's Div.
-    // When you switch tabs, this Div unmounts, taking the chart with it.
-    if (containerRef.current && globalIframeElement) {
-      containerRef.current.appendChild(globalIframeElement);
-    }
-
-    // Cleanup: When leaving the tab, we DON'T destroy the iframe (to keep state),
-    // but React will remove the container div from the DOM, naturally hiding the chart.
+    setSrc(cachedBlobUrl);
   }, []);
 
+  if (!src) return <View style={styles.container} />;
+
   return (
-    <div 
-      ref={containerRef} 
-      style={{ width: '100%', height: '100%', overflow: 'hidden' }} 
+    <iframe
+      src={src}
+      style={{
+        width: '100%',
+        height: '100%',
+        border: 'none',
+        backgroundColor: '#0F0F0F',
+      }}
+      title="TradingView Chart"
     />
   );
 };
@@ -108,7 +140,7 @@ const NativeChart = React.memo(() => {
   return (
     <WebView
       originWhitelist={['*']}
-      source={CHART_SOURCE} // Using the stable constant
+      source={CHART_SOURCE}
       style={styles.webview}
       containerStyle={styles.webviewContainer}
       scrollEnabled={false}
@@ -116,6 +148,8 @@ const NativeChart = React.memo(() => {
       javaScriptEnabled={true}
       domStorageEnabled={true}
       androidLayerType="hardware"
+      opacity={0.99} // Prevents white flash
+      scalesPageToFit={true} // Ensures viewport meta tag is respected
     />
   );
 });
@@ -128,8 +162,9 @@ NativeChart.displayName = 'NativeChart';
 export default function PriceChart() {
   const { width } = useWindowDimensions();
   
-  // Responsive height based on screen width (roughly 16:9 aspect ratio or similar)
-  const chartHeight = width * 0.8; 
+  // Dynamic height calculation
+  // 1.2 aspect ratio gives a good height for the chart on mobile
+  const chartHeight = width * 1.2; 
 
   return (
     <View style={[styles.container, { height: chartHeight }]}>
@@ -141,10 +176,11 @@ export default function PriceChart() {
 const styles = StyleSheet.create({
   container: {
     width: '100%',
-    backgroundColor: '#131722', // Matches TradingView dark theme background
+    backgroundColor: '#0F0F0F',
     borderRadius: 12,
     overflow: 'hidden',
-    marginVertical: 10,
+    // Removed margin to let parent handle spacing if needed, 
+    // but kept rounded corners for design
   },
   webview: {
     flex: 1,
@@ -154,5 +190,6 @@ const styles = StyleSheet.create({
     flex: 1, 
     borderRadius: 12,
     overflow: 'hidden',
+    backgroundColor: '#0F0F0F',
   },
 });
