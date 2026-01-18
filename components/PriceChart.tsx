@@ -1,5 +1,5 @@
-import React, { useEffect, useRef } from 'react';
-import { StyleSheet, View, Platform } from 'react-native';
+import React, { useMemo } from 'react';
+import { StyleSheet, View, Platform, useWindowDimensions } from 'react-native';
 import { WebView } from 'react-native-webview';
 
 // -----------------------------------------------------------------------------
@@ -42,9 +42,6 @@ const HTML_CONTENT = `
       background-color: #0F0F0F;
     }
     .tradingview-widget-container {
-      position: absolute;
-      top: 0;
-      left: 0;
       width: 100%;
       height: 100%;
     }
@@ -67,59 +64,37 @@ const HTML_CONTENT = `
 `;
 
 // -----------------------------------------------------------------------------
-// WEB IMPLEMENTATION (Global Singleton)
+// WEB IMPLEMENTATION
 // -----------------------------------------------------------------------------
-// We store the iframe in a global variable so it persists across re-renders/unmounts
-// preventing the "loading loop" and state loss.
-let globalWebIframe: HTMLIFrameElement | null = null;
-
 const WebChart = React.memo(() => {
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (Platform.OS !== 'web') return;
-
-    // 1. Create global iframe if it doesn't exist (Runs once per app session)
-    if (!globalWebIframe) {
-      const iframe = document.createElement('iframe');
-      iframe.style.width = '100%';
-      iframe.style.height = '100%';
-      iframe.style.border = 'none';
-      iframe.style.overflow = 'hidden';
-      iframe.style.backgroundColor = '#0F0F0F';
-      
-      // Use Blob to load content securely
+  // 1. Create the Blob URL ONLY ONCE per component instance.
+  //    This ensures the iframe 'src' never changes, preventing reloads.
+  const iframeSrc = useMemo(() => {
+    if (typeof window !== 'undefined' && window.Blob && window.URL) {
       const blob = new Blob([HTML_CONTENT], { type: 'text/html' });
-      iframe.src = URL.createObjectURL(blob);
-      
-      globalWebIframe = iframe;
+      return URL.createObjectURL(blob);
     }
-
-    // 2. Attach to current container
-    const container = containerRef.current;
-    if (container && globalWebIframe) {
-      // If the iframe is already elsewhere, this moves it here.
-      // If it's already here, it does nothing.
-      if (!container.contains(globalWebIframe)) {
-        container.appendChild(globalWebIframe);
-      }
-    }
-    
-    // NOTE: We intentionally DO NOT remove the iframe on cleanup
-    // to preserve its state/loading progress. 
-    // It stays in memory until attached to a new container.
+    return '';
   }, []);
 
   return (
-    <div 
-      ref={containerRef} 
-      style={{ 
-        width: '100%', 
-        height: '100%', 
-        overflow: 'hidden',
-        backgroundColor: '#0F0F0F'
-      }} 
-    />
+    <View style={styles.webContainer}>
+      {/* 
+        Using a standard HTML iframe directly.
+        This provides complete isolation for the TradingView script.
+        The script runs inside the iframe's window, not the main app window.
+      */}
+      {React.createElement('iframe', {
+        src: iframeSrc,
+        style: {
+          width: '100%',
+          height: '100%',
+          border: 'none',
+          backgroundColor: '#0F0F0F',
+        },
+        title: "TradingView Chart"
+      })}
+    </View>
   );
 }, () => true); // Strict memoization: Never re-render
 
@@ -128,13 +103,13 @@ WebChart.displayName = 'WebChart';
 // -----------------------------------------------------------------------------
 // NATIVE IMPLEMENTATION
 // -----------------------------------------------------------------------------
-const NATIVE_SOURCE = { html: HTML_CONTENT };
-
 const NativeChart = React.memo(() => {
+  const source = useMemo(() => ({ html: HTML_CONTENT }), []);
+
   return (
     <WebView
       originWhitelist={['*']}
-      source={NATIVE_SOURCE}
+      source={source}
       style={styles.webview}
       containerStyle={styles.webviewContainer}
       scrollEnabled={false}
@@ -144,40 +119,39 @@ const NativeChart = React.memo(() => {
       androidLayerType="hardware"
       showsVerticalScrollIndicator={false}
       showsHorizontalScrollIndicator={false}
-      onError={(syntheticEvent) => {
-        const { nativeEvent } = syntheticEvent;
-        console.warn('WebView error: ', nativeEvent);
-      }}
     />
   );
-}, () => true); // Strict memoization: Never re-render
+}, () => true);
 
 NativeChart.displayName = 'NativeChart';
 
 // -----------------------------------------------------------------------------
-// MAIN EXPORT
+// MAIN COMPONENT
 // -----------------------------------------------------------------------------
-function PriceChart() {
+export default function PriceChart() {
+  const { width } = useWindowDimensions();
+  
+  // FIX: Fixed height for Web to prevent "massive" chart.
+  // On mobile (native), we can be a bit more flexible with aspect ratio.
+  const chartHeight = Platform.OS === 'web' 
+    ? 450 // Fixed 450px height on Web - proven stable size
+    : Math.min(width * 1.1, 450); // Mobile: proportional but capped
+
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { height: chartHeight }]}>
       {Platform.OS === 'web' ? <WebChart /> : <NativeChart />}
     </View>
   );
 }
 
-// Memoize the main component to prevent any parent-induced re-renders
-export default React.memo(PriceChart);
-
 const styles = StyleSheet.create({
   container: {
     width: '100%',
-    // Use aspectRatio instead of fixed height calculation to avoid re-renders on resize
-    // 1.25 is equivalent to width * 0.8 (1 / 0.8 = 1.25)
-    aspectRatio: 1.25, 
     backgroundColor: '#0F0F0F',
     borderRadius: 12,
     overflow: 'hidden',
-    // Consistent shadow/elevation
+    alignSelf: 'center',
+    // Platform specific shadows
     ...Platform.select({
       ios: {
         shadowColor: '#000',
@@ -188,7 +162,17 @@ const styles = StyleSheet.create({
       android: {
         elevation: 4,
       },
+      web: {
+        boxShadow: '0px 2px 4px rgba(0, 0, 0, 0.3)',
+      },
     }),
+  },
+  // Web specific container style to ensure iframe fills it
+  webContainer: {
+    width: '100%',
+    height: '100%',
+    overflow: 'hidden',
+    backgroundColor: '#0F0F0F',
   },
   webview: {
     flex: 1,
