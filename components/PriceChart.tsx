@@ -1,4 +1,4 @@
-import React, { useRef, useMemo } from 'react';
+import React, { Component, useRef } from 'react';
 import { View, Platform, StyleSheet, useWindowDimensions } from 'react-native';
 import { WebView } from 'react-native-webview';
 
@@ -11,21 +11,39 @@ const CHART_CONFIG = {
   gridColor: "rgba(242, 242, 242, 0.06)"
 };
 
-// 2. STABLE URLS & OBJECTS
-// Defined OUTSIDE the component to ensure referential equality across renders.
-// This prevents the WebView from reloading due to "new object" detection.
-
+// 2. STABLE URL
+// Defined OUTSIDE the component to ensure referential equality.
 const WEB_CHART_URL = `https://s.tradingview.com/widgetembed/?frameElementId=tradingview_widget&symbol=${encodeURIComponent(CHART_CONFIG.symbol)}&interval=${CHART_CONFIG.interval}&theme=${CHART_CONFIG.theme}&style=1&timezone=Etc%2FUTC&hide_side_toolbar=1&hide_top_toolbar=1&save_image=0&backgroundColor=${encodeURIComponent(CHART_CONFIG.backgroundColor)}&gridColor=${encodeURIComponent(CHART_CONFIG.gridColor)}`;
 
 const NATIVE_SOURCE = { uri: WEB_CHART_URL };
 
-// -----------------------------------------------------------------------------
-// NATIVE CHART COMPONENT
-// -----------------------------------------------------------------------------
+// 3. WEB COMPONENT (Class Component for STRICT stability)
+// using a Class Component allows us to use shouldComponentUpdate() returning false
+// to strictly guarantee the component never re-renders, preventing iframe reloads.
+class WebChart extends Component {
+  shouldComponentUpdate() {
+    return false; // NEVER re-render on Web
+  }
+
+  render() {
+    return (
+      <View style={styles.webContainer}>
+        <iframe
+          src={WEB_CHART_URL}
+          style={{ width: '100%', height: '100%', border: 'none' }}
+          title="TradingView Chart"
+          allow="fullscreen"
+          key="tradingview-iframe"
+        />
+      </View>
+    );
+  }
+}
+
+// 4. NATIVE COMPONENT
 const NativeChart = React.memo(() => {
   const webViewRef = useRef<WebView>(null);
   
-  // Prevent external navigation
   const onShouldStartLoadWithRequest = (request: any) => {
     // Only allow the chart URL or about:blank
     const isAllowed = request.url.includes('tradingview.com') || request.url === 'about:blank';
@@ -38,7 +56,7 @@ const NativeChart = React.memo(() => {
         ref={webViewRef}
         key="chart-webview"
         originWhitelist={['*']}
-        source={NATIVE_SOURCE} // USES STABLE CONSTANT
+        source={NATIVE_SOURCE}
         style={styles.webview}
         containerStyle={styles.webview}
         javaScriptEnabled={true}
@@ -59,37 +77,14 @@ const NativeChart = React.memo(() => {
 });
 NativeChart.displayName = 'NativeChart';
 
-// -----------------------------------------------------------------------------
-// WEB CHART COMPONENT
-// -----------------------------------------------------------------------------
-const WebChart = React.memo(() => {
-  return (
-    <View style={styles.webContainer}>
-      <iframe
-        src={WEB_CHART_URL}
-        style={{ width: '100%', height: '100%', border: 'none' }}
-        title="TradingView Chart"
-        scrolling="no"
-        allow="fullscreen"
-        referrerPolicy="no-referrer"
-      />
-    </View>
-  );
-});
-WebChart.displayName = 'WebChart';
-
-// -----------------------------------------------------------------------------
-// MAIN EXPORT
-// -----------------------------------------------------------------------------
+// 5. MAIN EXPORT
 export default function PriceChart() {
   const { width } = useWindowDimensions();
   
   // Responsive height calculation
-  const chartHeight = useMemo(() => {
-    // On web, fixed height prevents layout shifts and infinite grow issues.
-    // On mobile, proportional height works best.
-    return Platform.OS === 'web' ? 450 : Math.min(width * 1.1, 450);
-  }, [width]);
+  // On web, fixed height prevents layout shifts and infinite grow issues.
+  // On mobile, proportional height works best.
+  const chartHeight = Platform.OS === 'web' ? 450 : Math.min(width * 1.1, 450);
 
   return (
     <View style={[styles.container, { height: chartHeight }]}>
