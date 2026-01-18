@@ -1,8 +1,8 @@
-import React, { useRef } from 'react';
+import React, { useRef, useMemo } from 'react';
 import { View, Platform, StyleSheet, useWindowDimensions } from 'react-native';
 import { WebView } from 'react-native-webview';
 
-// 1. Configuration for the chart
+// 1. Configuration
 const CHART_CONFIG = {
   symbol: "OANDA:XAUUSD",
   interval: "5",
@@ -11,78 +11,48 @@ const CHART_CONFIG = {
   gridColor: "rgba(242, 242, 242, 0.06)"
 };
 
-// 2. PRE-CALCULATE HTML CONTENT (STABLE REFERENCE)
-// Defined OUTSIDE the component to prevent re-creation on every render
-const TRADING_VIEW_HTML = `
-<!DOCTYPE html>
-<html>
-  <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <style>
-      body { margin: 0; padding: 0; overflow: hidden; background: ${CHART_CONFIG.backgroundColor}; }
-      .tradingview-widget-container { height: 100vh; width: 100vw; }
-      .tradingview-widget-container__widget { height: 100%; width: 100%; }
-    </style>
-  </head>
-  <body>
-    <div class="tradingview-widget-container">
-      <div id="tradingview_chart" class="tradingview-widget-container__widget"></div>
-      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-      <script type="text/javascript">
-        new TradingView.widget({
-          "autosize": true,
-          "symbol": "${CHART_CONFIG.symbol}",
-          "interval": "${CHART_CONFIG.interval}",
-          "timezone": "Etc/UTC",
-          "theme": "${CHART_CONFIG.theme}",
-          "style": "1",
-          "locale": "en",
-          "toolbar_bg": "${CHART_CONFIG.backgroundColor}",
-          "enable_publishing": false,
-          "allow_symbol_change": true,
-          "container_id": "tradingview_chart",
-          "hide_side_toolbar": true,
-          "studies": [],
-          "show_popup_button": false,
-          "hide_volume": false
-        });
-      </script>
-    </div>
-  </body>
-</html>
-`;
+// 2. STABLE URLS & OBJECTS
+// Defined OUTSIDE the component to ensure referential equality across renders.
+// This prevents the WebView from reloading due to "new object" detection.
 
-// 3. STABLE SOURCE OBJECT
-// This object reference must never change to prevent WebView reloads
-const CHART_SOURCE = { html: TRADING_VIEW_HTML };
+const WEB_CHART_URL = `https://s.tradingview.com/widgetembed/?frameElementId=tradingview_widget&symbol=${encodeURIComponent(CHART_CONFIG.symbol)}&interval=${CHART_CONFIG.interval}&theme=${CHART_CONFIG.theme}&style=1&timezone=Etc%2FUTC&hide_side_toolbar=1&hide_top_toolbar=1&save_image=0&backgroundColor=${encodeURIComponent(CHART_CONFIG.backgroundColor)}&gridColor=${encodeURIComponent(CHART_CONFIG.gridColor)}`;
 
-// 4. STABLE WEB URL
-const WEB_CHART_URL = `https://s.tradingview.com/widgetembed/?frameElementId=tradingview_chart&symbol=${encodeURIComponent(CHART_CONFIG.symbol)}&interval=${CHART_CONFIG.interval}&theme=${CHART_CONFIG.theme}&style=1&timezone=Etc%2FUTC&hide_side_toolbar=1&hide_top_toolbar=0&save_image=0&backgroundColor=${encodeURIComponent(CHART_CONFIG.backgroundColor)}`;
+const NATIVE_SOURCE = { uri: WEB_CHART_URL };
 
 // -----------------------------------------------------------------------------
-// NATIVE IMPLEMENTATION
+// NATIVE CHART COMPONENT
 // -----------------------------------------------------------------------------
 const NativeChart = React.memo(() => {
   const webViewRef = useRef<WebView>(null);
+  
+  // Prevent external navigation
+  const onShouldStartLoadWithRequest = (request: any) => {
+    // Only allow the chart URL or about:blank
+    const isAllowed = request.url.includes('tradingview.com') || request.url === 'about:blank';
+    return isAllowed;
+  };
 
   return (
     <View style={styles.nativeContainer}>
       <WebView
         ref={webViewRef}
-        key="native-chart-webview"
+        key="chart-webview"
         originWhitelist={['*']}
-        source={CHART_SOURCE}
+        source={NATIVE_SOURCE} // USES STABLE CONSTANT
         style={styles.webview}
+        containerStyle={styles.webview}
         javaScriptEnabled={true}
         domStorageEnabled={true}
         startInLoadingState={true}
-        scalesPageToFit={true}
+        scalesPageToFit={false}
         scrollEnabled={false}
         bounces={false}
-        androidLayerType="hardware"
         showsVerticalScrollIndicator={false}
         showsHorizontalScrollIndicator={false}
+        androidLayerType="hardware"
         renderLoading={() => <View style={{flex: 1, backgroundColor: CHART_CONFIG.backgroundColor}} />}
+        onShouldStartLoadWithRequest={onShouldStartLoadWithRequest}
+        setSupportMultipleWindows={false}
       />
     </View>
   );
@@ -90,17 +60,18 @@ const NativeChart = React.memo(() => {
 NativeChart.displayName = 'NativeChart';
 
 // -----------------------------------------------------------------------------
-// WEB IMPLEMENTATION
+// WEB CHART COMPONENT
 // -----------------------------------------------------------------------------
 const WebChart = React.memo(() => {
   return (
     <View style={styles.webContainer}>
       <iframe
-        key="web-chart-iframe"
         src={WEB_CHART_URL}
-        style={{ width: "100%", height: "100%", border: "none", overflow: "hidden" }}
+        style={{ width: '100%', height: '100%', border: 'none' }}
         title="TradingView Chart"
         scrolling="no"
+        allow="fullscreen"
+        referrerPolicy="no-referrer"
       />
     </View>
   );
@@ -113,9 +84,12 @@ WebChart.displayName = 'WebChart';
 export default function PriceChart() {
   const { width } = useWindowDimensions();
   
-  // Calculate height to be responsive but not massive
-  // Fixed height for Web to prevent layout shifts
-  const chartHeight = Platform.OS === 'web' ? 450 : Math.min(width * 1.1, 450);
+  // Responsive height calculation
+  const chartHeight = useMemo(() => {
+    // On web, fixed height prevents layout shifts and infinite grow issues.
+    // On mobile, proportional height works best.
+    return Platform.OS === 'web' ? 450 : Math.min(width * 1.1, 450);
+  }, [width]);
 
   return (
     <View style={[styles.container, { height: chartHeight }]}>
@@ -131,7 +105,6 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: 'hidden',
     alignSelf: 'center',
-    // Platform specific shadows
     ...Platform.select({
       ios: {
         shadowColor: '#000',
@@ -149,6 +122,7 @@ const styles = StyleSheet.create({
   },
   nativeContainer: {
     flex: 1,
+    overflow: 'hidden',
     backgroundColor: CHART_CONFIG.backgroundColor,
   },
   webContainer: {
@@ -161,5 +135,6 @@ const styles = StyleSheet.create({
   webview: {
     flex: 1,
     backgroundColor: CHART_CONFIG.backgroundColor,
+    opacity: 0.99,
   }
 });
