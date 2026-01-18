@@ -1,141 +1,113 @@
-import React, { useMemo } from 'react';
-import { StyleSheet, View, Platform, useWindowDimensions } from 'react-native';
+import React, { useRef } from 'react';
+import { View, Platform, StyleSheet, useWindowDimensions } from 'react-native';
 import { WebView } from 'react-native-webview';
 
-// -----------------------------------------------------------------------------
-// CONFIGURATION
-// -----------------------------------------------------------------------------
+// 1. Configuration for the chart
 const CHART_CONFIG = {
-  "autosize": true,
-  "symbol": "CAPITALCOM:GOLD",
-  "interval": "5",
-  "timezone": "Etc/UTC",
-  "theme": "dark",
-  "style": "1",
-  "locale": "en",
-  "enable_publishing": false,
-  "allow_symbol_change": true,
-  "hide_side_toolbar": true,
-  "hide_top_toolbar": false,
-  "hide_legend": false,
-  "save_image": false,
-  "calendar": false,
-  "hide_volume": false,
-  "support_host": "https://www.tradingview.com",
-  "backgroundColor": "#0F0F0F",
-  "gridColor": "rgba(242, 242, 242, 0.06)",
+  symbol: "OANDA:XAUUSD",
+  interval: "5",
+  theme: "dark",
+  backgroundColor: "#0F0F0F",
+  gridColor: "rgba(242, 242, 242, 0.06)"
 };
-
-const HTML_CONTENT = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <style>
-    body, html {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
-      background-color: #0F0F0F;
-    }
-    .tradingview-widget-container {
-      width: 100%;
-      height: 100%;
-    }
-    iframe {
-      width: 100%;
-      height: 100%;
-      border: none;
-    }
-  </style>
-</head>
-<body>
-  <div class="tradingview-widget-container">
-    <div class="tradingview-widget-container__widget"></div>
-    <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
-      ${JSON.stringify(CHART_CONFIG)}
-    </script>
-  </div>
-</body>
-</html>
-`;
-
-// -----------------------------------------------------------------------------
-// WEB IMPLEMENTATION
-// -----------------------------------------------------------------------------
-const WebChart = React.memo(() => {
-  // 1. Create the Blob URL ONLY ONCE per component instance.
-  //    This ensures the iframe 'src' never changes, preventing reloads.
-  const iframeSrc = useMemo(() => {
-    if (typeof window !== 'undefined' && window.Blob && window.URL) {
-      const blob = new Blob([HTML_CONTENT], { type: 'text/html' });
-      return URL.createObjectURL(blob);
-    }
-    return '';
-  }, []);
-
-  return (
-    <View style={styles.webContainer}>
-      {/* 
-        Using a standard HTML iframe directly.
-        This provides complete isolation for the TradingView script.
-        The script runs inside the iframe's window, not the main app window.
-      */}
-      {React.createElement('iframe', {
-        src: iframeSrc,
-        style: {
-          width: '100%',
-          height: '100%',
-          border: 'none',
-          backgroundColor: '#0F0F0F',
-        },
-        title: "TradingView Chart"
-      })}
-    </View>
-  );
-}, () => true); // Strict memoization: Never re-render
-
-WebChart.displayName = 'WebChart';
 
 // -----------------------------------------------------------------------------
 // NATIVE IMPLEMENTATION
 // -----------------------------------------------------------------------------
 const NativeChart = React.memo(() => {
-  const source = useMemo(() => ({ html: HTML_CONTENT }), []);
+  const webViewRef = useRef<WebView>(null);
+
+  // 2. Native Implementation: HTML String with Widget
+  // Uses tv.js which handles the iframe creation inside the WebView cleanly
+  const tradingViewHTML = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+        <style>
+          body { margin: 0; padding: 0; overflow: hidden; background: ${CHART_CONFIG.backgroundColor}; }
+          .tradingview-widget-container { height: 100vh; width: 100vw; }
+          .tradingview-widget-container__widget { height: 100%; width: 100%; }
+        </style>
+      </head>
+      <body>
+        <div class="tradingview-widget-container">
+          <div id="tradingview_chart" class="tradingview-widget-container__widget"></div>
+          <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+          <script type="text/javascript">
+            new TradingView.widget({
+              "autosize": true,
+              "symbol": "${CHART_CONFIG.symbol}",
+              "interval": "${CHART_CONFIG.interval}",
+              "timezone": "Etc/UTC",
+              "theme": "${CHART_CONFIG.theme}",
+              "style": "1",
+              "locale": "en",
+              "toolbar_bg": "${CHART_CONFIG.backgroundColor}",
+              "enable_publishing": false,
+              "allow_symbol_change": true,
+              "container_id": "tradingview_chart",
+              "hide_side_toolbar": true,
+              "studies": [],
+              "show_popup_button": false,
+              "hide_volume": false
+            });
+          </script>
+        </div>
+      </body>
+    </html>
+  `;
 
   return (
-    <WebView
-      originWhitelist={['*']}
-      source={source}
-      style={styles.webview}
-      containerStyle={styles.webviewContainer}
-      scrollEnabled={false}
-      bounces={false}
-      javaScriptEnabled={true}
-      domStorageEnabled={true}
-      androidLayerType="hardware"
-      showsVerticalScrollIndicator={false}
-      showsHorizontalScrollIndicator={false}
-    />
+    <View style={styles.nativeContainer}>
+      <WebView
+        ref={webViewRef}
+        source={{ html: tradingViewHTML }}
+        style={styles.webview}
+        javaScriptEnabled={true}
+        domStorageEnabled={true}
+        startInLoadingState={true}
+        scalesPageToFit={true}
+        scrollEnabled={false}
+        bounces={false}
+        androidLayerType="hardware"
+        showsVerticalScrollIndicator={false}
+        showsHorizontalScrollIndicator={false}
+      />
+    </View>
   );
-}, () => true);
-
+});
 NativeChart.displayName = 'NativeChart';
 
 // -----------------------------------------------------------------------------
-// MAIN COMPONENT
+// WEB IMPLEMENTATION
+// -----------------------------------------------------------------------------
+const WebChart = React.memo(() => {
+  // 3. Web Implementation: Direct iframe to widgetembed
+  // This avoids Blob/Script injection issues that cause loops on Web
+  const chartUrl = `https://s.tradingview.com/widgetembed/?frameElementId=tradingview_chart&symbol=${encodeURIComponent(CHART_CONFIG.symbol)}&interval=${CHART_CONFIG.interval}&theme=${CHART_CONFIG.theme}&style=1&timezone=Etc%2FUTC&hide_side_toolbar=1&hide_top_toolbar=0&save_image=0&backgroundColor=${encodeURIComponent(CHART_CONFIG.backgroundColor)}`;
+
+  return (
+    <View style={styles.webContainer}>
+      <iframe
+        src={chartUrl}
+        style={{ width: "100%", height: "100%", border: "none", overflow: "hidden" }}
+        title="TradingView Chart"
+        scrolling="no"
+      />
+    </View>
+  );
+});
+WebChart.displayName = 'WebChart';
+
+// -----------------------------------------------------------------------------
+// MAIN EXPORT
 // -----------------------------------------------------------------------------
 export default function PriceChart() {
   const { width } = useWindowDimensions();
   
-  // FIX: Fixed height for Web to prevent "massive" chart.
-  // On mobile (native), we can be a bit more flexible with aspect ratio.
-  const chartHeight = Platform.OS === 'web' 
-    ? 450 // Fixed 450px height on Web - proven stable size
-    : Math.min(width * 1.1, 450); // Mobile: proportional but capped
+  // Calculate height to be responsive but not massive
+  const chartHeight = Platform.OS === 'web' ? 450 : Math.min(width * 1.1, 450);
 
   return (
     <View style={[styles.container, { height: chartHeight }]}>
@@ -147,7 +119,7 @@ export default function PriceChart() {
 const styles = StyleSheet.create({
   container: {
     width: '100%',
-    backgroundColor: '#0F0F0F',
+    backgroundColor: CHART_CONFIG.backgroundColor,
     borderRadius: 12,
     overflow: 'hidden',
     alignSelf: 'center',
@@ -167,21 +139,19 @@ const styles = StyleSheet.create({
       },
     }),
   },
-  // Web specific container style to ensure iframe fills it
+  nativeContainer: {
+    flex: 1,
+    backgroundColor: CHART_CONFIG.backgroundColor,
+  },
   webContainer: {
+    flex: 1,
     width: '100%',
     height: '100%',
+    backgroundColor: CHART_CONFIG.backgroundColor,
     overflow: 'hidden',
-    backgroundColor: '#0F0F0F',
   },
   webview: {
     flex: 1,
-    backgroundColor: '#0F0F0F',
-  },
-  webviewContainer: {
-    flex: 1, 
-    borderRadius: 12,
-    overflow: 'hidden',
-    backgroundColor: '#0F0F0F',
-  },
+    backgroundColor: CHART_CONFIG.backgroundColor,
+  }
 });
