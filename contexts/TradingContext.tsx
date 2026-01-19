@@ -1035,10 +1035,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             if (targetsHit > 0) {
               console.log(`   ✅ TP${targetsHit} was already hit - marking as PARTIAL WIN`);
             }
-            newStatus = "SL_HIT";
+            
+            if (breakevenReached) {
+              newStatus = "CLOSED"; // Treat as CLOSED at entry price, not a loss
+              console.log(`⚖️ BREAKEVEN HIT: Signal closed at entry price. Protected capital.`);
+            } else {
+              newStatus = "SL_HIT";
+              console.log(`⚠️ ⚠️ ⚠️ SL HIT: BUY Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
+            }
+            
             updated = true;
             immediateUpdate = true;
-            console.log(`⚠️ ⚠️ ⚠️ SL HIT: BUY Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (${breakevenReached ? 'Breakeven SL' : 'Original SL'}: ${effectiveSL.toFixed(1)})`);
           } else if (price >= signal.tp3 && targetsHit < 3) {
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
@@ -1067,10 +1074,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             if (targetsHit > 0) {
               console.log(`   ✅ TP${targetsHit} was already hit - marking as PARTIAL WIN`);
             }
-            newStatus = "SL_HIT";
+            
+            if (breakevenReached) {
+              newStatus = "CLOSED"; // Treat as CLOSED at entry price, not a loss
+              console.log(`⚖️ BREAKEVEN HIT: Signal closed at entry price. Protected capital.`);
+            } else {
+              newStatus = "SL_HIT";
+              console.log(`⚠️ ⚠️ ⚠️ SL HIT: SELL Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)}`);
+            }
+            
             updated = true;
             immediateUpdate = true;
-            console.log(`⚠️ ⚠️ ⚠️ SL HIT: SELL Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (${breakevenReached ? 'Breakeven SL' : 'Original SL'}: ${effectiveSL.toFixed(1)})`);
           } else if (price <= signal.tp3 && targetsHit < 3) {
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
@@ -1095,12 +1109,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         }
 
         if (newStatus !== signal.status || targetsHit !== signal.targetsHit) {
-          if (newStatus === "SL_HIT" || newStatus === "ALL_TARGETS_HIT") {
+          if (newStatus === "SL_HIT" || newStatus === "ALL_TARGETS_HIT" || (newStatus === "CLOSED" && breakevenReached)) {
             const exitDate = new Date();
             console.log(`✅ Terminal status reached: Signal ${signal.id.slice(-6)} will remain in history only`);
             
-            const exitPrice = newStatus === "ALL_TARGETS_HIT" ? signal.tp3 : updatedSignal.sl;
-            const result = newStatus === "ALL_TARGETS_HIT" ? "WIN" : "LOSS";
+            const exitPrice = newStatus === "ALL_TARGETS_HIT" ? signal.tp3 : (breakevenReached ? signal.entryPrice : updatedSignal.sl);
+            const result = newStatus === "ALL_TARGETS_HIT" ? "WIN" : (breakevenReached ? "WIN" : "LOSS");
+            
+            // For breakeven, we consider it a 'WIN' in the sense of no loss, or 'WIN' with 0 PnL
+            // Adjust logic based on preference. Here we mark as WIN if breakeven to preserve win rate or separate it.
+            // If result is WIN, PnL is calculated as abs(exit - entry). If exit == entry, PnL is 0.
             
             signalEngine.recordTradeOutcome(
               signal.id,

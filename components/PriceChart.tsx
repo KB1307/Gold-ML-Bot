@@ -1,10 +1,8 @@
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState } from "react";
 import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
 const CHART_HEIGHT = 350;
-
-let chartInstanceId = 0;
 
 interface PriceChartProps {
   onPriceUpdate?: (price: number) => void;
@@ -105,146 +103,25 @@ const tradingViewHTML = `
 </html>
 `;
 
-let globalIframeContainer: HTMLDivElement | null = null;
-let globalIframeElement: HTMLIFrameElement | null = null;
-let isChartInitialized = false;
-
-function initializeGlobalChart() {
-  if (typeof document === 'undefined') return;
-  
-  if (isChartInitialized && globalIframeElement && globalIframeContainer) {
-    console.log('[PriceChart] Chart already initialized, reusing existing instance');
-    return;
-  }
-  
-  isChartInitialized = true;
-  console.log('[PriceChart] Initializing global chart container');
-  
-  if (globalIframeContainer && globalIframeContainer.parentNode) {
-    globalIframeContainer.parentNode.removeChild(globalIframeContainer);
-  }
-  
-  globalIframeContainer = document.createElement('div');
-  globalIframeContainer.id = 'tradingview-global-container';
-  globalIframeContainer.style.cssText = `
-    position: fixed;
-    top: -9999px;
-    left: -9999px;
-    width: 100%;
-    max-width: 800px;
-    height: ${CHART_HEIGHT}px;
-    pointer-events: none;
-    opacity: 0;
-    z-index: -1;
-  `;
-  
-  globalIframeElement = document.createElement('iframe');
-  globalIframeElement.src = CHART_URL;
-  globalIframeElement.style.cssText = `
-    width: 100%;
-    height: 100%;
-    border: none;
-    border-radius: 8px;
-    display: block;
-    background-color: #0F0F0F;
-  `;
-  globalIframeElement.title = 'TradingView Chart';
-  globalIframeElement.referrerPolicy = 'no-referrer';
-  globalIframeElement.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms');
-  globalIframeElement.setAttribute('loading', 'eager');
-  
-  globalIframeElement.onload = () => {
-    console.log('[PriceChart] Global iframe loaded successfully');
-  };
-  
-  globalIframeContainer.appendChild(globalIframeElement);
-  document.body.appendChild(globalIframeContainer);
-}
-
 const WebChart = React.memo(() => {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const mountedRef = useRef(true);
-  const instanceIdRef = useRef(++chartInstanceId);
-  const hasInitializedRef = useRef(false);
-  
-  useEffect(() => {
-    const instanceId = instanceIdRef.current;
-    
-    if (hasInitializedRef.current) {
-      console.log(`[PriceChart ${instanceId}] Already initialized, skipping`);
-      return;
-    }
-    
-    hasInitializedRef.current = true;
-    mountedRef.current = true;
-    console.log(`[PriceChart ${instanceId}] Mounting chart component`);
-    
-    initializeGlobalChart();
-    
-    const moveChartToContainer = () => {
-      if (!mountedRef.current) {
-        console.log(`[PriceChart ${instanceId}] Component unmounted, aborting move`);
-        return;
-      }
-      
-      if (!containerRef.current || !globalIframeContainer || !globalIframeElement) {
-        console.log(`[PriceChart ${instanceId}] Container or iframe not ready, retrying...`);
-        setTimeout(moveChartToContainer, 200);
-        return;
-      }
-      
-      console.log(`[PriceChart ${instanceId}] Moving chart to visible container`);
-      
-      globalIframeContainer.style.cssText = `
-        width: 100%;
-        height: ${CHART_HEIGHT}px;
-        position: relative;
-        pointer-events: auto;
-        opacity: 1;
-        z-index: 1;
-      `;
-      
-      if (globalIframeContainer.parentNode !== containerRef.current) {
-        containerRef.current.appendChild(globalIframeContainer);
-      }
-      
-      if (mountedRef.current) {
-        setIsLoading(false);
-      }
-    };
-    
-    const timeoutId = setTimeout(moveChartToContainer, 100);
-    const loadingTimeout = setTimeout(() => {
-      if (mountedRef.current) {
-        setIsLoading(false);
-      }
-    }, 3000);
-    
-    return () => {
-      console.log(`[PriceChart ${instanceId}] Cleanup called`);
-      mountedRef.current = false;
-      clearTimeout(timeoutId);
-      clearTimeout(loadingTimeout);
-    };
-  }, []);
-  
   return (
     <View style={styles.container}>
-      {isLoading && (
-        <View style={styles.loadingOverlay}>
-          <ActivityIndicator size="large" color="#FFD700" />
-          <Text style={styles.loadingText}>Loading Chart...</Text>
-        </View>
-      )}
       <div
-        ref={containerRef as any}
         style={{
           width: '100%',
           height: CHART_HEIGHT,
+          backgroundColor: '#0F0F0F',
           borderRadius: 8,
           overflow: 'hidden',
-          backgroundColor: '#0F0F0F',
+        }}
+        dangerouslySetInnerHTML={{
+          __html: `<iframe 
+            src="${CHART_URL}" 
+            style="width: 100%; height: 100%; border: none; display: block;" 
+            allowtransparency="true" 
+            scrolling="no"
+            allow="autoplay; encrypted-media"
+          ></iframe>`
         }}
       />
     </View>
