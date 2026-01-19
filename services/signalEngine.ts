@@ -2065,9 +2065,9 @@ class SignalGenerationEngine {
     
     const fibonacciAlignment = nearFibLevel;
     if (fibonacciAlignment) {
-      buySignalStrength += 0.08;
-      sellSignalStrength += 0.08;
-      attentionScores.set('fibonacci_alignment', 0.08);
+      buySignalStrength += 0.15; // Increased from 0.08
+      sellSignalStrength += 0.15; // Increased from 0.08
+      attentionScores.set('fibonacci_alignment', 0.15);
       console.log('✅ Price near Fibonacci Level');
     }
     
@@ -2136,8 +2136,8 @@ class SignalGenerationEngine {
       sweep => sweep.type === 'LOW_SWEEP' && sweep.reversalConfirmed
     );
     if (confirmedLowSweep) {
-      buySignalStrength += 0.22 * confirmedLowSweep.strength;
-      attentionScores.set('session_low_sweep', 0.22);
+      buySignalStrength += 0.30 * confirmedLowSweep.strength; // Increased weight
+      attentionScores.set('session_low_sweep', 0.30);
       console.log(`✅ BUY: ${confirmedLowSweep.sessionType} Session Low Sweep Confirmed (Liquidity Grab)`);
       console.log(`   Sweep @ ${confirmedLowSweep.sweepPrice.toFixed(1)} - Reversal confirmed`);
     }
@@ -2146,8 +2146,8 @@ class SignalGenerationEngine {
       sweep => sweep.type === 'HIGH_SWEEP' && sweep.reversalConfirmed
     );
     if (confirmedHighSweep) {
-      sellSignalStrength += 0.22 * confirmedHighSweep.strength;
-      attentionScores.set('session_high_sweep', 0.22);
+      sellSignalStrength += 0.30 * confirmedHighSweep.strength; // Increased weight
+      attentionScores.set('session_high_sweep', 0.30);
       console.log(`🔴 SELL: ${confirmedHighSweep.sessionType} Session High Sweep Confirmed (Liquidity Grab)`);
       console.log(`   Sweep @ ${confirmedHighSweep.sweepPrice.toFixed(1)} - Reversal confirmed`);
     }
@@ -2157,8 +2157,8 @@ class SignalGenerationEngine {
     console.log(`   SELL Strength: ${sellSignalStrength.toFixed(3)}`);
     console.log('='.repeat(60) + '\n');
     
-    const MINIMUM_CONVICTION_THRESHOLD = 0.55;
-    const MINIMUM_STRENGTH_DIFFERENCE = 0.10;
+    const MINIMUM_CONVICTION_THRESHOLD = 0.80; // Increased for high accuracy
+    const MINIMUM_STRENGTH_DIFFERENCE = 0.20; // Increased for clearer direction
     
     const winningStrength = Math.max(buySignalStrength, sellSignalStrength);
     const strengthDifference = Math.abs(buySignalStrength - sellSignalStrength);
@@ -2218,7 +2218,7 @@ class SignalGenerationEngine {
     baseConfidence += Math.abs(sentimentImpact) * 0.1;
     
     if (fibonacciAlignment) {
-      baseConfidence += 0.05;
+      baseConfidence += 0.10; // Increased boost
     }
     
     if (features.marketRegime.confidence > 0.85) {
@@ -3073,8 +3073,8 @@ class SignalGenerationEngine {
       return null;
     }
     
-    if (analysis.confidence < 0.60) {
-      console.log(`❌ REJECTED: Confidence ${(analysis.confidence * 100).toFixed(1)}% below absolute minimum (60%)`);
+    if (analysis.confidence < 0.90) {
+      console.log(`❌ REJECTED: Confidence ${(analysis.confidence * 100).toFixed(1)}% below absolute minimum (90%) for high accuracy mode`);
       console.log(`${'='.repeat(80)}\n`);
       return null;
     }
