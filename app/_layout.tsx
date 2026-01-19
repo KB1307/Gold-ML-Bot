@@ -46,18 +46,6 @@ function LoadingScreen() {
   );
 }
 
-const AppNavigator = React.memo(() => {
-  return (
-    <Stack screenOptions={{ headerBackTitle: "Back" }}>
-      <Stack.Screen name="index" options={{ headerShown: false }} />
-      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen name="+not-found" />
-    </Stack>
-  );
-});
-
-AppNavigator.displayName = "AppNavigator";
-
 function RootLayoutNav() {
   const { isLoading } = useTrading();
 
@@ -65,7 +53,13 @@ function RootLayoutNav() {
     return <LoadingScreen />;
   }
 
-  return <AppNavigator />;
+  return (
+    <Stack screenOptions={{ headerBackTitle: "Back" }}>
+      <Stack.Screen name="index" options={{ headerShown: false }} />
+      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      <Stack.Screen name="+not-found" />
+    </Stack>
+  );
 }
 
 export default function RootLayout() {
