@@ -106,23 +106,15 @@ const tradingViewHTML = `
 const WebChart = React.memo(() => {
   return (
     <View style={styles.container}>
-      <div
+      <iframe
+        src={CHART_URL}
         style={{
           width: '100%',
-          height: CHART_HEIGHT,
+          height: '100%',
+          border: 'none',
           backgroundColor: '#0F0F0F',
-          borderRadius: 8,
-          overflow: 'hidden',
         }}
-        dangerouslySetInnerHTML={{
-          __html: `<iframe 
-            src="${CHART_URL}" 
-            style="width: 100%; height: 100%; border: none; display: block;" 
-            allowtransparency="true" 
-            scrolling="no"
-            allow="autoplay; encrypted-media"
-          ></iframe>`
-        }}
+        allow="autoplay; encrypted-media"
       />
     </View>
   );

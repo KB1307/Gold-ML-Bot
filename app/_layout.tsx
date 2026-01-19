@@ -49,17 +49,19 @@ function LoadingScreen() {
 function RootLayoutNav() {
   const { isLoading } = useTrading();
 
-  if (isLoading) {
-    return <LoadingScreen />;
-  }
-
-  return (
+  const navigationStack = React.useMemo(() => (
     <Stack screenOptions={{ headerBackTitle: "Back" }}>
       <Stack.Screen name="index" options={{ headerShown: false }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="+not-found" />
     </Stack>
-  );
+  ), []);
+
+  if (isLoading) {
+    return <LoadingScreen />;
+  }
+
+  return navigationStack;
 }
 
 export default function RootLayout() {
