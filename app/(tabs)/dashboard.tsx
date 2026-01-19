@@ -29,6 +29,7 @@ const chartSectionStyles = StyleSheet.create({
   },
   chartContainer: {
     width: "100%",
+    height: 350,
     borderRadius: 8,
     overflow: "hidden",
   },
@@ -1371,6 +1372,7 @@ const styles = StyleSheet.create({
   } as const,
   chartContainer: {
     width: "100%",
+    height: 350,
     borderRadius: 8,
     overflow: "hidden",
   },
