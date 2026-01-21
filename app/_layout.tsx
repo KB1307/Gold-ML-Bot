@@ -32,9 +32,13 @@ const queryClient = new QueryClient({
   },
 });
 
-function LoadingScreen() {
+const LoadingOverlay = React.memo(() => {
+  const { isLoading } = useTrading();
+  
+  if (!isLoading) return null;
+  
   return (
-    <View style={styles.loadingContainer}>
+    <View style={[styles.loadingContainer, StyleSheet.absoluteFill]}>
       <LinearGradient
         colors={["#0a0a0a", "#1a1a2e"]}
         style={styles.loadingGradient}
@@ -44,24 +48,25 @@ function LoadingScreen() {
       </LinearGradient>
     </View>
   );
-}
+});
 
-function RootLayoutNav() {
-  const { isLoading } = useTrading();
-
-  const navigationStack = React.useMemo(() => (
+const AppNavigation = React.memo(() => {
+  return (
     <Stack screenOptions={{ headerBackTitle: "Back" }}>
       <Stack.Screen name="index" options={{ headerShown: false }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="+not-found" />
     </Stack>
-  ), []);
+  );
+});
 
-  if (isLoading) {
-    return <LoadingScreen />;
-  }
-
-  return navigationStack;
+function RootLayoutNav() {
+  return (
+    <View style={{ flex: 1 }}>
+      <AppNavigation />
+      <LoadingOverlay />
+    </View>
+  );
 }
 
 export default function RootLayout() {
