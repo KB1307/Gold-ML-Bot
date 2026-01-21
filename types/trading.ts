@@ -29,6 +29,7 @@ export interface TradingSignal {
   targetsHit: number;
   entryTime: string;
   exitTime?: string;
+  exitPrice?: number;
   topFeatures: FeatureConfidence[];
   macroWarning?: MacroEvent;
   riskJustification: string;

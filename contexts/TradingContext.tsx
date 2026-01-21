@@ -732,25 +732,20 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       const currentPrice = signalEngine.getCurrentPrice();
       let pnl = 0;
       
+      // Use the recorded exit price if available, otherwise calculate based on status
+      const exitPrice = signal.exitPrice !== undefined ? signal.exitPrice : (
+        signal.status === "ALL_TARGETS_HIT" ? signal.tp3 :
+        signal.status === "SL_HIT" ? signal.sl :
+        currentPrice
+      );
+
       if (signal.type === "BUY") {
-        if (signal.status === "ALL_TARGETS_HIT") {
-          pnl = (signal.tp3 - signal.entryPrice) * settings.basePositionSize;
-        } else if (signal.status === "SL_HIT") {
-          pnl = (signal.sl - signal.entryPrice) * settings.basePositionSize;
-        } else {
-          pnl = (currentPrice - signal.entryPrice) * settings.basePositionSize;
-        }
+        pnl = (exitPrice - signal.entryPrice) * settings.basePositionSize;
       } else {
-        if (signal.status === "ALL_TARGETS_HIT") {
-          pnl = (signal.entryPrice - signal.tp3) * settings.basePositionSize;
-        } else if (signal.status === "SL_HIT") {
-          pnl = (signal.entryPrice - signal.sl) * settings.basePositionSize;
-        } else {
-          pnl = (signal.entryPrice - currentPrice) * settings.basePositionSize;
-        }
+        pnl = (signal.entryPrice - exitPrice) * settings.basePositionSize;
       }
 
-      if (pnl > 0) {
+      if (pnl >= 0) {
         winningTrades++;
         totalProfit += pnl;
         profits.push(pnl);
@@ -1141,6 +1136,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
               breakevenReached,
               breakevenTime,
               exitTime: exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+              exitPrice,
             };
           }
           

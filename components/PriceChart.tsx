@@ -104,17 +104,36 @@ const tradingViewHTML = `
 `;
 
 const WebChart = React.memo(() => {
+  const containerRef = useRef<View>(null);
+
+  React.useEffect(() => {
+    // Use a small timeout to ensure the View is mounted and ref is available
+    const timer = setTimeout(() => {
+      // @ts-ignore - accessing DOM element from View ref on web
+      const div = containerRef.current as unknown as HTMLDivElement;
+      if (div) {
+        div.innerHTML = '';
+        
+        const iframe = document.createElement('iframe');
+        iframe.src = CHART_URL;
+        iframe.style.width = '100%';
+        iframe.style.height = '100%';
+        iframe.style.border = 'none';
+        iframe.style.backgroundColor = '#0F0F0F';
+        iframe.allow = 'autoplay; encrypted-media';
+        
+        div.appendChild(iframe);
+      }
+    }, 100);
+
+    return () => clearTimeout(timer);
+  }, []);
+
   return (
     <View style={styles.container}>
-      <iframe
-        src={CHART_URL}
-        style={{
-          width: '100%',
-          height: '100%',
-          border: 'none',
-          backgroundColor: '#0F0F0F',
-        }}
-        allow="autoplay; encrypted-media"
+      <View 
+        ref={containerRef} 
+        style={{ width: '100%', height: '100%', overflow: 'hidden' }} 
       />
     </View>
   );

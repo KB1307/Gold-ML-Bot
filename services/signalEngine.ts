@@ -2065,10 +2065,10 @@ class SignalGenerationEngine {
     
     const fibonacciAlignment = nearFibLevel;
     if (fibonacciAlignment) {
-      buySignalStrength += 0.15; // Increased from 0.08
-      sellSignalStrength += 0.15; // Increased from 0.08
-      attentionScores.set('fibonacci_alignment', 0.15);
-      console.log('✅ Price near Fibonacci Level');
+      buySignalStrength += 0.20; // Increased boost for high accuracy mode
+      sellSignalStrength += 0.20; // Increased boost for high accuracy mode
+      attentionScores.set('fibonacci_alignment', 0.20);
+      console.log('✅ Price near Fibonacci Level (Boosted for High Accuracy)');
     }
     
     if (features.emaCrossover > 0.5) {
@@ -2136,9 +2136,9 @@ class SignalGenerationEngine {
       sweep => sweep.type === 'LOW_SWEEP' && sweep.reversalConfirmed
     );
     if (confirmedLowSweep) {
-      buySignalStrength += 0.30 * confirmedLowSweep.strength; // Increased weight
-      attentionScores.set('session_low_sweep', 0.30);
-      console.log(`✅ BUY: ${confirmedLowSweep.sessionType} Session Low Sweep Confirmed (Liquidity Grab)`);
+      buySignalStrength += 0.35 * confirmedLowSweep.strength; // Increased for high accuracy
+      attentionScores.set('session_low_sweep', 0.35);
+      console.log(`✅ BUY: ${confirmedLowSweep.sessionType} Session Low Sweep Confirmed (High Accuracy Setup)`);
       console.log(`   Sweep @ ${confirmedLowSweep.sweepPrice.toFixed(1)} - Reversal confirmed`);
     }
     
@@ -2146,9 +2146,9 @@ class SignalGenerationEngine {
       sweep => sweep.type === 'HIGH_SWEEP' && sweep.reversalConfirmed
     );
     if (confirmedHighSweep) {
-      sellSignalStrength += 0.30 * confirmedHighSweep.strength; // Increased weight
-      attentionScores.set('session_high_sweep', 0.30);
-      console.log(`🔴 SELL: ${confirmedHighSweep.sessionType} Session High Sweep Confirmed (Liquidity Grab)`);
+      sellSignalStrength += 0.35 * confirmedHighSweep.strength; // Increased for high accuracy
+      attentionScores.set('session_high_sweep', 0.35);
+      console.log(`🔴 SELL: ${confirmedHighSweep.sessionType} Session High Sweep Confirmed (High Accuracy Setup)`);
       console.log(`   Sweep @ ${confirmedHighSweep.sweepPrice.toFixed(1)} - Reversal confirmed`);
     }
     
@@ -3075,6 +3075,7 @@ class SignalGenerationEngine {
     
     if (analysis.confidence < 0.90) {
       console.log(`❌ REJECTED: Confidence ${(analysis.confidence * 100).toFixed(1)}% below absolute minimum (90%) for high accuracy mode`);
+      console.log(`   Requirement: >90% accuracy (Fibonacci + Session Sweeps active)`);
       console.log(`${'='.repeat(80)}\n`);
       return null;
     }
