@@ -198,7 +198,7 @@ function calculateRealVelocity(history: number[]): number {
   return recentChange - olderChange;
 }
 
-  private async fetchYahooChart(symbol: string): Promise<number | null> {
+async function fetchYahooChart(symbol: string): Promise<number | null> {
     try {
       const url = Platform.OS === 'web'
         ? `https://corsproxy.io/?${encodeURIComponent(`https://query2.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1m&range=1d`)}`
@@ -225,7 +225,7 @@ function calculateRealVelocity(history: number[]): number {
     }
   }
 
-  async fetchIntermarketData(): Promise<IntermarketData> {
+async function fetchIntermarketData(): Promise<IntermarketData> {
     const now = Date.now();
     
     if (cachedDXY !== null && cachedUS10Y !== null && cachedVIX !== null && now - lastIntermarketFetchTime < INTERMARKET_CACHE_DURATION) {
@@ -249,7 +249,7 @@ function calculateRealVelocity(history: number[]): number {
     }
 
     // Fetch DXY
-    const dxyPrice = await this.fetchYahooChart('DX=F');
+    const dxyPrice = await fetchYahooChart('DX=F');
     if (dxyPrice !== null) {
       cachedDXY = dxyPrice;
     } else if (!cachedDXY) {
@@ -258,7 +258,7 @@ function calculateRealVelocity(history: number[]): number {
     }
 
     // Fetch US10Y
-    const us10yPrice = await this.fetchYahooChart('%5ETNX');
+    const us10yPrice = await fetchYahooChart('%5ETNX');
     if (us10yPrice !== null) {
       cachedUS10Y = us10yPrice;
     } else if (!cachedUS10Y) {
@@ -267,7 +267,7 @@ function calculateRealVelocity(history: number[]): number {
     }
 
     // Fetch VIX
-    const vixPrice = await this.fetchYahooChart('%5EVIX');
+    const vixPrice = await fetchYahooChart('%5EVIX');
     if (vixPrice !== null) {
       cachedVIX = vixPrice;
     } else if (!cachedVIX) {
