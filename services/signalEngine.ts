@@ -198,156 +198,112 @@ function calculateRealVelocity(history: number[]): number {
   return recentChange - olderChange;
 }
 
-async function fetchIntermarketData(): Promise<IntermarketData> {
-  const now = Date.now();
-  
-  if (cachedDXY !== null && cachedUS10Y !== null && cachedVIX !== null && now - lastIntermarketFetchTime < INTERMARKET_CACHE_DURATION) {
+  private async fetchYahooChart(symbol: string): Promise<number | null> {
+    try {
+      const url = Platform.OS === 'web'
+        ? `https://corsproxy.io/?${encodeURIComponent(`https://query2.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1m&range=1d`)}`
+        : `https://query2.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1m&range=1d`;
+        
+      console.log(`🌐 Fetching ${symbol} [${Platform.OS}]...`);
+      const response = await fetch(url, {
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (compatible; TradingApp/1.0)',
+        },
+      });
+      
+      const data = await response.json();
+      if (data?.chart?.result?.[0]?.meta?.regularMarketPrice) {
+        const price = parseFloat(data.chart.result[0].meta.regularMarketPrice);
+        console.log(`✓ Fetched ${symbol}:`, price);
+        return price;
+      }
+      return null;
+    } catch (error) {
+      console.log(`⚠️ ${symbol} fetch failed`);
+      return null;
+    }
+  }
+
+  async fetchIntermarketData(): Promise<IntermarketData> {
+    const now = Date.now();
+    
+    if (cachedDXY !== null && cachedUS10Y !== null && cachedVIX !== null && now - lastIntermarketFetchTime < INTERMARKET_CACHE_DURATION) {
+      // ... (existing cache logic)
+      const dxyChange = calculateRealChange(intermarketHistory.dxyPrices);
+      const dxyVelocity = calculateRealVelocity(intermarketHistory.dxyPrices);
+      const us10yChange = calculateRealChange(intermarketHistory.us10yYields);
+      const vixChange = calculateRealChange(intermarketHistory.vixPrices);
+      
+      return {
+        dxyPrice: cachedDXY,
+        dxyChange,
+        dxyVelocity,
+        us10yYield: cachedUS10Y,
+        us10yChange,
+        vixPrice: cachedVIX,
+        vixChange,
+        goldDxyCorrelation: -0.65 + (Math.random() - 0.5) * 0.2, // Keep small variance for correlation
+        goldYieldCorrelation: -0.55 + (Math.random() - 0.5) * 0.2,
+      };
+    }
+
+    // Fetch DXY
+    const dxyPrice = await this.fetchYahooChart('DX=F');
+    if (dxyPrice !== null) {
+      cachedDXY = dxyPrice;
+    } else if (!cachedDXY) {
+      cachedDXY = 103.5 + (Math.random() - 0.5) * 2;
+      console.log('⚠️ DXY: Using simulated price:', cachedDXY.toFixed(2));
+    }
+
+    // Fetch US10Y
+    const us10yPrice = await this.fetchYahooChart('%5ETNX');
+    if (us10yPrice !== null) {
+      cachedUS10Y = us10yPrice;
+    } else if (!cachedUS10Y) {
+      cachedUS10Y = 4.2 + (Math.random() - 0.5) * 0.5;
+      console.log('⚠️ US10Y: Using simulated yield:', cachedUS10Y.toFixed(2));
+    }
+
+    // Fetch VIX
+    const vixPrice = await this.fetchYahooChart('%5EVIX');
+    if (vixPrice !== null) {
+      cachedVIX = vixPrice;
+    } else if (!cachedVIX) {
+      cachedVIX = 18 + (Math.random() - 0.5) * 5;
+      console.log('⚠️ VIX: Using simulated price:', cachedVIX.toFixed(2));
+    }
+
+    lastIntermarketFetchTime = now;
+
+    // ... (rest of the history update logic)
+    intermarketHistory.dxyPrices.push(cachedDXY || 103.5);
+    intermarketHistory.us10yYields.push(cachedUS10Y || 4.2);
+    intermarketHistory.vixPrices.push(cachedVIX || 18);
+    intermarketHistory.lastUpdate = now;
+    
+    if (intermarketHistory.dxyPrices.length > 30) intermarketHistory.dxyPrices.shift();
+    if (intermarketHistory.us10yYields.length > 30) intermarketHistory.us10yYields.shift();
+    if (intermarketHistory.vixPrices.length > 30) intermarketHistory.vixPrices.shift();
+
     const dxyChange = calculateRealChange(intermarketHistory.dxyPrices);
     const dxyVelocity = calculateRealVelocity(intermarketHistory.dxyPrices);
     const us10yChange = calculateRealChange(intermarketHistory.us10yYields);
     const vixChange = calculateRealChange(intermarketHistory.vixPrices);
-    
-    console.log(`✅ Using REAL intermarket changes from history:`);
-    console.log(`   DXY Change: ${dxyChange.toFixed(3)}, Velocity: ${dxyVelocity.toFixed(3)}`);
-    console.log(`   US10Y Change: ${us10yChange.toFixed(3)}`);
-    console.log(`   VIX Change: ${vixChange.toFixed(2)}`);
-    
+
     return {
-      dxyPrice: cachedDXY,
+      dxyPrice: cachedDXY || 103.5,
       dxyChange,
       dxyVelocity,
-      us10yYield: cachedUS10Y,
+      us10yYield: cachedUS10Y || 4.2,
       us10yChange,
-      vixPrice: cachedVIX,
+      vixPrice: cachedVIX || 18,
       vixChange,
       goldDxyCorrelation: -0.65 + (Math.random() - 0.5) * 0.2,
       goldYieldCorrelation: -0.55 + (Math.random() - 0.5) * 0.2,
     };
   }
-
-  try {
-    const dxyUrl = Platform.OS === 'web' 
-      ? `https://corsproxy.io/?${encodeURIComponent('https://query2.finance.yahoo.com/v8/finance/chart/DX=F?interval=1m&range=1d')}`
-      : 'https://query2.finance.yahoo.com/v8/finance/chart/DX=F?interval=1m&range=1d';
-    console.log(`🌐 Fetching DXY [${Platform.OS}]: ${Platform.OS === 'web' ? 'via CORS proxy' : 'direct API access'}`);
-    const dxyResponse = await fetch(dxyUrl, {
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (compatible; TradingApp/1.0)',
-      },
-    });
-    const dxyData = await dxyResponse.json();
-    if (dxyData?.chart?.result?.[0]?.meta?.regularMarketPrice) {
-      cachedDXY = parseFloat(dxyData.chart.result[0].meta.regularMarketPrice);
-      console.log('✓ Fetched DXY:', cachedDXY);
-    } else if (!cachedDXY) {
-      cachedDXY = 103.5 + (Math.random() - 0.5) * 2;
-      console.log('⚠️ DXY: Using simulated price:', cachedDXY.toFixed(2));
-    }
-  } catch {
-    if (!cachedDXY) {
-      cachedDXY = 103.5 + (Math.random() - 0.5) * 2;
-      console.log('⚠️ DXY fetch failed, using simulated price:', cachedDXY.toFixed(2));
-    } else {
-      console.log('⚠️ DXY fetch failed, using last cached price:', cachedDXY.toFixed(2));
-    }
-  }
-
-  try {
-    const yieldUrl = Platform.OS === 'web'
-      ? `https://corsproxy.io/?${encodeURIComponent('https://query2.finance.yahoo.com/v8/finance/chart/%5ETNX?interval=1m&range=1d')}`
-      : 'https://query2.finance.yahoo.com/v8/finance/chart/%5ETNX?interval=1m&range=1d';
-    console.log(`🌐 Fetching US10Y [${Platform.OS}]: ${Platform.OS === 'web' ? 'via CORS proxy' : 'direct API access'}`);
-    const yieldResponse = await fetch(yieldUrl, {
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (compatible; TradingApp/1.0)',
-      },
-    });
-    const yieldData = await yieldResponse.json();
-    if (yieldData?.chart?.result?.[0]?.meta?.regularMarketPrice) {
-      cachedUS10Y = parseFloat(yieldData.chart.result[0].meta.regularMarketPrice);
-      console.log('✓ Fetched US10Y:', cachedUS10Y);
-    } else if (!cachedUS10Y) {
-      cachedUS10Y = 4.2 + (Math.random() - 0.5) * 0.5;
-      console.log('⚠️ US10Y: Using simulated yield:', cachedUS10Y.toFixed(2));
-    }
-  } catch {
-    if (!cachedUS10Y) {
-      cachedUS10Y = 4.2 + (Math.random() - 0.5) * 0.5;
-      console.log('⚠️ US10Y fetch failed, using simulated yield:', cachedUS10Y.toFixed(2));
-    } else {
-      console.log('⚠️ US10Y fetch failed, using last cached yield:', cachedUS10Y.toFixed(2));
-    }
-  }
-
-  try {
-    const vixUrl = Platform.OS === 'web'
-      ? `https://corsproxy.io/?${encodeURIComponent('https://query2.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1m&range=1d')}`
-      : 'https://query2.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1m&range=1d';
-    console.log(`🌐 Fetching VIX [${Platform.OS}]: ${Platform.OS === 'web' ? 'via CORS proxy' : 'direct API access'}`);
-    const vixResponse = await fetch(vixUrl, {
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (compatible; TradingApp/1.0)',
-      },
-    });
-    const vixData = await vixResponse.json();
-    if (vixData?.chart?.result?.[0]?.meta?.regularMarketPrice) {
-      cachedVIX = parseFloat(vixData.chart.result[0].meta.regularMarketPrice);
-      console.log('✓ Fetched VIX:', cachedVIX);
-    } else if (!cachedVIX) {
-      cachedVIX = 18 + (Math.random() - 0.5) * 5;
-      console.log('⚠️ VIX: Using simulated price:', cachedVIX.toFixed(2));
-    }
-  } catch {
-    if (!cachedVIX) {
-      cachedVIX = 18 + (Math.random() - 0.5) * 5;
-      console.log('⚠️ VIX fetch failed, using simulated price:', cachedVIX.toFixed(2));
-    } else {
-      console.log('⚠️ VIX fetch failed, using last cached price:', cachedVIX.toFixed(2));
-    }
-  }
-
-  lastIntermarketFetchTime = now;
-
-  intermarketHistory.dxyPrices.push(cachedDXY || 103.5);
-  intermarketHistory.us10yYields.push(cachedUS10Y || 4.2);
-  intermarketHistory.vixPrices.push(cachedVIX || 18);
-  intermarketHistory.lastUpdate = now;
-  
-  if (intermarketHistory.dxyPrices.length > 30) {
-    intermarketHistory.dxyPrices.shift();
-  }
-  if (intermarketHistory.us10yYields.length > 30) {
-    intermarketHistory.us10yYields.shift();
-  }
-  if (intermarketHistory.vixPrices.length > 30) {
-    intermarketHistory.vixPrices.shift();
-  }
-
-  const dxyChange = calculateRealChange(intermarketHistory.dxyPrices);
-  const dxyVelocity = calculateRealVelocity(intermarketHistory.dxyPrices);
-  const us10yChange = calculateRealChange(intermarketHistory.us10yYields);
-  const vixChange = calculateRealChange(intermarketHistory.vixPrices);
-
-  console.log(`✅ REAL Intermarket Data (from history):`);
-  console.log(`   DXY: ${(cachedDXY || 103.5).toFixed(2)}, Change: ${dxyChange.toFixed(3)}, Velocity: ${dxyVelocity.toFixed(3)}`);
-  console.log(`   US10Y: ${(cachedUS10Y || 4.2).toFixed(2)}, Change: ${us10yChange.toFixed(3)}`);
-  console.log(`   VIX: ${(cachedVIX || 18).toFixed(1)}, Change: ${vixChange.toFixed(2)}`);
-
-  return {
-    dxyPrice: cachedDXY || 103.5,
-    dxyChange,
-    dxyVelocity,
-    us10yYield: cachedUS10Y || 4.2,
-    us10yChange,
-    vixPrice: cachedVIX || 18,
-    vixChange,
-    goldDxyCorrelation: -0.65 + (Math.random() - 0.5) * 0.2,
-    goldYieldCorrelation: -0.55 + (Math.random() - 0.5) * 0.2,
-  };
-}
 
 let backendFailureCount = 0;
 let lastBackendAttempt = 0;
@@ -689,20 +645,48 @@ class SignalGenerationEngine {
   }
 
   private calculateOrderFlow(): OrderFlowData {
-    console.log('⚠️ ⚠️ ⚠️ ORDER FLOW: SIMULATED DATA (No real-time order book access available)');
-    console.log('   This feature requires institutional-grade order book feed (not available in current APIs)');
-    const bidVolume = 1000 + Math.random() * 500;
-    const askVolume = 1000 + Math.random() * 500;
-    const volumeImbalance = (askVolume - bidVolume) / (askVolume + bidVolume);
+    if (this.priceHistory.length < 5) {
+      return {
+        bidVolume: 1000,
+        askVolume: 1000,
+        volumeImbalance: 0,
+        largeOrdersDetected: false,
+        institutionalFootprint: 0
+      };
+    }
+
+    // Synthetic Order Flow based on price action velocity and range
+    const recentPrices = this.priceHistory.slice(-5);
+    const priceChange = recentPrices[recentPrices.length - 1] - recentPrices[0];
+    const range = Math.max(...recentPrices) - Math.min(...recentPrices);
+    const momentum = priceChange / (range || 1); // -1 to 1
+
+    // Base volume
+    let bidVolume = 1000 + (Math.random() * 200);
+    let askVolume = 1000 + (Math.random() * 200);
+
+    // Adjust based on momentum (if price going up, bids > asks)
+    if (momentum > 0.2) {
+      bidVolume *= (1 + momentum);
+    } else if (momentum < -0.2) {
+      askVolume *= (1 + Math.abs(momentum));
+    }
+
+    const volumeImbalance = (bidVolume - askVolume) / (bidVolume + askVolume);
     
-    const largeOrdersDetected = Math.abs(volumeImbalance) > 0.15;
-    const institutionalFootprint = Math.abs(volumeImbalance) * (this.volumeHistory.length > 0 
-      ? this.volumeHistory.slice(-10).reduce((a, b) => a + b, 0) / 10
-      : 1000) / 1000;
+    // Large orders detected if momentum is high but range is low (absorption)
+    // or if momentum is extremely high (aggression)
+    const isAbsorption = Math.abs(momentum) < 0.3 && range > 5; // Lots of movement but little net change
+    const isAggression = Math.abs(momentum) > 0.8;
+    const largeOrdersDetected = isAbsorption || isAggression;
+
+    // Institutional footprint (synthetic)
+    // Higher if large orders detected and consistent direction
+    const institutionalFootprint = (Math.abs(volumeImbalance) * (largeOrdersDetected ? 2 : 1)) * 1.5;
     
     return {
-      bidVolume,
-      askVolume,
+      bidVolume: Math.floor(bidVolume),
+      askVolume: Math.floor(askVolume),
       volumeImbalance: parseFloat(volumeImbalance.toFixed(3)),
       largeOrdersDetected,
       institutionalFootprint: parseFloat(institutionalFootprint.toFixed(2)),
@@ -710,24 +694,72 @@ class SignalGenerationEngine {
   }
   
   private calculateVolumeProfile(): VolumeProfile {
-    const currentPrice = this.currentPrice;
-    const priceRanges = [];
-    const step = 5;
-    
-    for (let i = -50; i <= 50; i += step) {
-      priceRanges.push(currentPrice + i);
+    // Synthetic Volume Profile based on recent price history
+    if (this.priceHistory.length < 20) {
+      // Fallback if not enough data
+      return {
+        highVolumeNodes: [this.currentPrice],
+        lowVolumeNodes: [this.currentPrice - 10, this.currentPrice + 10],
+        pointOfControl: this.currentPrice,
+        valueAreaHigh: this.currentPrice + 5,
+        valueAreaLow: this.currentPrice - 5
+      };
     }
+
+    const lookback = Math.min(100, this.priceHistory.length);
+    const prices = this.priceHistory.slice(-lookback);
     
-    const highVolumeNodes = priceRanges.filter((_, idx) => Math.random() > 0.7);
-    const lowVolumeNodes = priceRanges.filter((_, idx) => Math.random() > 0.85);
+    // Create buckets
+    const buckets = new Map<number, number>();
+    const bucketSize = 2.0; // $2 buckets
+
+    for (const price of prices) {
+      const bucket = Math.floor(price / bucketSize) * bucketSize;
+      buckets.set(bucket, (buckets.get(bucket) || 0) + 1);
+    }
+
+    // Sort buckets by volume (count)
+    const sortedBuckets = Array.from(buckets.entries()).sort((a, b) => b[1] - a[1]);
     
-    const pointOfControl = currentPrice + (Math.random() - 0.5) * 10;
-    const valueAreaHigh = pointOfControl + 15 + Math.random() * 10;
-    const valueAreaLow = pointOfControl - 15 - Math.random() * 10;
+    // Point of Control (highest volume)
+    const pointOfControl = sortedBuckets[0][0];
+
+    // Value Area (70% of volume)
+    const totalVolume = prices.length;
+    let volumeSum = 0;
+    let vaBuckets: number[] = [];
     
+    // Naive VA calculation (just taking top buckets until 70%)
+    // Real profile expands from POC, but this is a good synthetic approx
+    for (const [price, count] of sortedBuckets) {
+      volumeSum += count;
+      vaBuckets.push(price);
+      if (volumeSum > totalVolume * 0.7) break;
+    }
+
+    const valueAreaHigh = Math.max(...vaBuckets);
+    const valueAreaLow = Math.min(...vaBuckets);
+
+    // High Volume Nodes (peaks) - Top 3 buckets
+    const highVolumeNodes = sortedBuckets.slice(0, 3).map(b => b[0]);
+
+    // Low Volume Nodes (valleys) - we can look for gaps or low counts in the range
+    const lowVolumeNodes: number[] = [];
+    const minPrice = Math.min(...prices);
+    const maxPrice = Math.max(...prices);
+    
+    for (let p = minPrice; p <= maxPrice; p += bucketSize) {
+      const bucketPrice = Math.floor(p / bucketSize) * bucketSize;
+      const count = buckets.get(bucketPrice) || 0;
+      // If count is low relative to POC
+      if (count < sortedBuckets[0][1] * 0.2) {
+        lowVolumeNodes.push(bucketPrice);
+      }
+    }
+
     return {
-      highVolumeNodes: highVolumeNodes.slice(0, 3),
-      lowVolumeNodes: lowVolumeNodes.slice(0, 2),
+      highVolumeNodes,
+      lowVolumeNodes: lowVolumeNodes.slice(0, 3), // Top 3 LVNs
       pointOfControl: parseFloat(pointOfControl.toFixed(1)),
       valueAreaHigh: parseFloat(valueAreaHigh.toFixed(1)),
       valueAreaLow: parseFloat(valueAreaLow.toFixed(1)),
@@ -1189,29 +1221,39 @@ class SignalGenerationEngine {
   }
 
   private generateSentimentAnalysis(): SentimentData {
-    const now = new Date();
-    const hour = now.getUTCHours();
+    const rsi = this.calculateRealRSI(14);
+    const trendStrength = this.calculateTrendStrength();
+    const priceDirection = this.detectPriceDirection();
     
-    const newsEvents = [
-      { keyword: "inflation", sentiment: -0.3 },
-      { keyword: "fed_hawkish", sentiment: -0.4 },
-      { keyword: "geopolitical_tension", sentiment: 0.5 },
-      { keyword: "recession_fears", sentiment: 0.6 },
-      { keyword: "dollar_strength", sentiment: -0.4 },
-      { keyword: "safe_haven_demand", sentiment: 0.7 },
-    ];
+    // Derive sentiment score from technicals (-1 to 1)
+    let technicalSentiment = 0;
     
-    const londonBoost = (hour >= 6 && hour < 13) ? 0.2 : 0;
-    const randomEvent = newsEvents[Math.floor(Math.random() * newsEvents.length)];
-    const randomNoise = (Math.random() - 0.5) * 0.2;
+    if (rsi > 60) technicalSentiment += 0.3;
+    if (rsi < 40) technicalSentiment -= 0.3;
+    if (trendStrength > 0.5) {
+       technicalSentiment += (priceDirection * 0.4);
+    }
     
-    const baseScore = randomEvent.sentiment + londonBoost + randomNoise;
+    // News simulation (synthetic)
+    const now = Date.now();
+    const hour = new Date().getUTCHours();
+    
+    // Market more optimistic during London/NY overlap usually? Synthetic bias.
+    const timeBias = (hour >= 13 && hour <= 16) ? 0.1 : 0;
+    
+    const baseScore = technicalSentiment + timeBias;
     const normalizedScore = Math.max(-1, Math.min(1, baseScore));
+    
+    let keyword = "neutral";
+    if (normalizedScore > 0.5) keyword = "strong_buy_momentum";
+    else if (normalizedScore > 0.2) keyword = "bullish_sentiment";
+    else if (normalizedScore < -0.5) keyword = "strong_sell_pressure";
+    else if (normalizedScore < -0.2) keyword = "bearish_sentiment";
     
     return {
       score: parseFloat(normalizedScore.toFixed(2)),
-      confidence: parseFloat((0.75 + Math.random() * 0.2).toFixed(2)),
-      source: randomEvent.keyword.replace("_", " ").toUpperCase(),
+      confidence: parseFloat((0.6 + Math.abs(normalizedScore) * 0.3).toFixed(2)),
+      source: keyword.replace(/_/g, " ").toUpperCase(),
     };
   }
 
@@ -1323,8 +1365,27 @@ class SignalGenerationEngine {
   private async calculateMarketFeatures(): Promise<MarketFeatures> {
     const currentPrice = this.currentPrice;
     
-    const asianHigh = currentPrice + Math.random() * 20 + 10;
-    const asianLow = currentPrice - Math.random() * 20 - 10;
+    // Synthetic Asian Session Range based on recent price history or ATR
+    // If we have history, find min/max of last N bars to simulate session
+    let asianHigh = currentPrice;
+    let asianLow = currentPrice;
+    
+    if (this.priceHistory.length > 20) {
+      const recent = this.priceHistory.slice(-50); // Last 50 ticks
+      asianHigh = Math.max(...recent);
+      asianLow = Math.min(...recent);
+      // Expand slightly to simulate a session range if ticks are tight
+      if (asianHigh - asianLow < 2) {
+        const atr = this.calculateRealATR(14);
+        asianHigh += atr;
+        asianLow -= atr;
+      }
+    } else {
+       // Fallback using synthetic volatility
+       const volatility = this.calculateRealTimeVolatility();
+       asianHigh = currentPrice + volatility * 2;
+       asianLow = currentPrice - volatility * 2;
+    }
     
     const ohlc = this.getDerivedDailyOHLC();
     const yesterdayHigh = ohlc.yesterdayHigh;
@@ -1343,21 +1404,32 @@ class SignalGenerationEngine {
     
     const rsi = this.calculateRealRSI(14);
     const atr = this.calculateRealATR(14);
-    const volumeRatio = 0.8 + Math.random() * 0.4;
+    const volumeRatio = this.calculateRealVolumeRatio();
     
-    const weeklyVolatilityRange = currentPrice * 0.025;
-    const weeklyHigh = currentPrice + (Math.random() * weeklyVolatilityRange);
-    const weeklyLow = currentPrice - (Math.random() * weeklyVolatilityRange);
-    const weeklyClose = currentPrice - (Math.random() - 0.5) * (weeklyVolatilityRange * 0.5);
+    // Weekly pivots - derived from daily for consistency if not real
+    // Just estimate weekly range as 2x daily range for synthetic purposes if needed
+    const weeklyPivot = dailyPivot; // Simplified for now to avoid random noise, or track real weekly
     
-    const weeklyPivot = (weeklyHigh + weeklyLow + weeklyClose) / 3;
+    // Fractals from price history
+    let fractalResistance = currentPrice;
+    let fractalSupport = currentPrice;
     
-    const recentVolatilityRange = currentPrice * 0.012;
-    const recentHigh = currentPrice + (Math.random() * recentVolatilityRange);
-    const recentLow = currentPrice - (Math.random() * recentVolatilityRange);
-    
-    const fractalResistance = recentHigh + Math.random() * 10;
-    const fractalSupport = recentLow - Math.random() * 10;
+    if (this.highHistory.length >= 5) {
+       const highs = this.highHistory.slice(-5);
+       const lows = this.lowHistory.slice(-5);
+       // Simple fractal: High surrounded by lower highs
+       if (highs[2] > highs[0] && highs[2] > highs[1] && highs[2] > highs[3] && highs[2] > highs[4]) {
+         fractalResistance = highs[2];
+       } else {
+         fractalResistance = Math.max(...highs) + atr;
+       }
+       
+       if (lows[2] < lows[0] && lows[2] < lows[1] && lows[2] < lows[3] && lows[2] < lows[4]) {
+         fractalSupport = lows[2];
+       } else {
+         fractalSupport = Math.min(...lows) - atr;
+       }
+    }
     
     const macdHistogram = this.calculateRealMACD();
     const emaCrossover = this.calculateRealEMACrossover();
@@ -1380,7 +1452,7 @@ class SignalGenerationEngine {
     
     const sessionVolatilityIndex = volumeRatio * atr / 10;
     
-    const fibonacci = this.calculateFibonacciLevels(recentHigh, recentLow);
+    const fibonacci = this.calculateFibonacciLevels(fractalResistance, fractalSupport);
     const sentiment = this.generateSentimentAnalysis();
     const orderFlow = this.calculateOrderFlow();
     const volumeProfile = this.calculateVolumeProfile();
@@ -2410,8 +2482,8 @@ class SignalGenerationEngine {
   
   private calculateRealMACD(): number {
     if (this.priceHistory.length < 26) {
-      console.log('⚠️ MACD: Insufficient data for calculation, using simulated value');
-      return (Math.random() - 0.5) * 2;
+      console.log('⚠️ MACD: Insufficient data for calculation, using neutral value');
+      return 0;
     }
 
     const ema12 = this.calculateEMA(this.priceHistory, 12);
@@ -2435,8 +2507,8 @@ class SignalGenerationEngine {
 
   private calculateRealEMACrossover(): number {
     if (this.priceHistory.length < 50) {
-      console.log('⚠️ EMA Crossover: Insufficient data for calculation, using simulated value');
-      return (Math.random() - 0.5) * 1.5;
+      console.log('⚠️ EMA Crossover: Insufficient data for calculation, using neutral value');
+      return 0;
     }
 
     const ema9 = this.calculateEMA(this.priceHistory, 9);

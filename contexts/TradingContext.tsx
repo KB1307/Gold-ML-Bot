@@ -17,7 +17,7 @@ const DEFAULT_SETTINGS: Settings = {
   tp3Pips: 65,
   slPips: 70,
   numberOfTPs: 3,
-  minConfidence: 0.70,
+  minConfidence: 0.90,
   enableNotifications: true,
   basePositionSize: 0.01,
   maxRiskPercentage: 2.0,

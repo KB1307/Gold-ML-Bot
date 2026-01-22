@@ -60,14 +60,14 @@ const AppNavigation = React.memo(() => {
   );
 });
 
-function RootLayoutNav() {
+const RootLayoutNav = React.memo(() => {
   return (
     <View style={{ flex: 1 }}>
       <AppNavigation />
       <LoadingOverlay />
     </View>
   );
-}
+});
 
 export default function RootLayout() {
   useEffect(() => {

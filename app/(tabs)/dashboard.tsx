@@ -216,15 +216,6 @@ export default function DashboardScreen() {
   }, [refreshData]);
 
   useEffect(() => {
-    const autoRefreshInterval = setInterval(() => {
-      console.log('Auto-refreshing dashboard data...');
-      refreshData();
-    }, 60000);
-
-    return () => clearInterval(autoRefreshInterval);
-  }, [refreshData]);
-
-  useEffect(() => {
     console.log(`📊 Dashboard UI update triggered (TP status changed) - Trigger: ${signalUpdateTrigger}`);
   }, [signalUpdateTrigger, signalHistory]);
 
