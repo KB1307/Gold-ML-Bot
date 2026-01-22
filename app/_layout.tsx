@@ -49,6 +49,7 @@ const LoadingOverlay = React.memo(() => {
     </View>
   );
 });
+LoadingOverlay.displayName = 'LoadingOverlay';
 
 const AppNavigation = React.memo(() => {
   return (
@@ -59,6 +60,7 @@ const AppNavigation = React.memo(() => {
     </Stack>
   );
 });
+AppNavigation.displayName = 'AppNavigation';
 
 const RootLayoutNav = React.memo(() => {
   return (
@@ -68,6 +70,7 @@ const RootLayoutNav = React.memo(() => {
     </View>
   );
 });
+RootLayoutNav.displayName = 'RootLayoutNav';
 
 export default function RootLayout() {
   useEffect(() => {

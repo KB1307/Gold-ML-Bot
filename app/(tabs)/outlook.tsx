@@ -225,7 +225,7 @@ export default function OutlookScreen() {
               </View>
               <View style={styles.pivotInfo}>
                 <Text style={styles.pivotInfoText}>
-                  Pivot points are calculated from previous day's high, low, and close prices
+                  Pivot points are calculated from previous day&apos;s high, low, and close prices
                 </Text>
               </View>
             </View>
