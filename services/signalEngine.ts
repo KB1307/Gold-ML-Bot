@@ -200,27 +200,43 @@ function calculateRealVelocity(history: number[]): number {
 
 async function fetchYahooChart(symbol: string): Promise<number | null> {
     try {
-      const url = Platform.OS === 'web'
-        ? `https://corsproxy.io/?${encodeURIComponent(`https://query2.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1m&range=1d`)}`
-        : `https://query2.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1m&range=1d`;
-        
-      console.log(`🌐 Fetching ${symbol} [${Platform.OS}]...`);
-      const response = await fetch(url, {
-        headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (compatible; TradingApp/1.0)',
-        },
-      });
+      // Try query1 first, then query2 if needed
+      const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
+      const timestamp = Date.now();
       
-      const data = await response.json();
-      if (data?.chart?.result?.[0]?.meta?.regularMarketPrice) {
-        const price = parseFloat(data.chart.result[0].meta.regularMarketPrice);
-        console.log(`✓ Fetched ${symbol}:`, price);
-        return price;
+      for (const host of hosts) {
+        try {
+          const url = Platform.OS === 'web'
+            ? `https://corsproxy.io/?${encodeURIComponent(`https://${host}/v8/finance/chart/${symbol}?interval=1m&range=1d&_t=${timestamp}`)}`
+            : `https://${host}/v8/finance/chart/${symbol}?interval=1m&range=1d&_t=${timestamp}`;
+            
+          console.log(`🌐 Fetching ${symbol} from ${host} [${Platform.OS}]...`);
+          const response = await fetch(url, {
+            headers: {
+              'Accept': 'application/json',
+              'User-Agent': 'Mozilla/5.0 (compatible; TradingApp/1.0)',
+            },
+          });
+          
+          if (!response.ok) {
+            console.log(`⚠️ ${host} returned ${response.status} for ${symbol}`);
+            continue; // Try next host
+          }
+          
+          const data = await response.json();
+          if (data?.chart?.result?.[0]?.meta?.regularMarketPrice) {
+            const price = parseFloat(data.chart.result[0].meta.regularMarketPrice);
+            console.log(`✓ Fetched ${symbol}:`, price);
+            return price;
+          }
+        } catch (e) {
+          console.log(`⚠️ Failed to fetch from ${host}`, e);
+        }
       }
+      
       return null;
     } catch (error) {
-      console.log(`⚠️ ${symbol} fetch failed`);
+      console.log(`⚠️ ${symbol} fetch failed completely`);
       return null;
     }
   }
@@ -310,31 +326,14 @@ let lastBackendAttempt = 0;
 const BACKEND_RETRY_DELAY = 30000;
 
 async function fetchDirectGoldPrice(): Promise<{ price: number; source: string } | null> {
-  // On web, direct API calls fail due to CORS - skip and return null
-  if (Platform.OS === 'web') {
-    console.log('⚠️ Direct API calls not available on web (CORS) - use backend proxy');
-    return null;
-  }
+  // Use CORS proxy for web to allow direct fetching as fallback
+  const isWeb = Platform.OS === 'web';
+  const wrapUrl = (url: string) => isWeb ? `https://corsproxy.io/?${encodeURIComponent(url)}` : url;
+  const timestamp = Date.now();
 
+  // Try GoldPrice.org FIRST (most reliable)
   try {
-    const response = await fetch('https://api.metals.live/v1/spot/gold', {
-      headers: {
-        'Accept': 'application/json',
-      },
-    });
-    
-    if (response.ok) {
-      const data = await response.json();
-      if (data && data[0] && typeof data[0].price === 'number') {
-        return { price: Number(data[0].price.toFixed(2)), source: 'metals.live' };
-      }
-    }
-  } catch {
-    console.log('⚠️ Metals.live direct fetch failed');
-  }
-
-  try {
-    const response = await fetch('https://data-asg.goldprice.org/dbXRates/USD', {
+    const response = await fetch(wrapUrl(`https://data-asg.goldprice.org/dbXRates/USD?_t=${timestamp}`), {
       headers: {
         'Accept': 'application/json',
       },
@@ -350,6 +349,38 @@ async function fetchDirectGoldPrice(): Promise<{ price: number; source: string }
     console.log('⚠️ GoldPrice.org direct fetch failed');
   }
 
+  // Try metals.live SECOND
+  try {
+    const response = await fetch(wrapUrl(`https://api.metals.live/v1/spot/gold?_t=${timestamp}`), {
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data[0] && typeof data[0].price === 'number') {
+        return { price: Number(data[0].price.toFixed(2)), source: 'metals.live' };
+      }
+    }
+  } catch {
+    console.log('⚠️ Metals.live direct fetch failed');
+  }
+
+  // Try Binance (PAXG) THIRD (Reliable Crypto Fallback)
+  try {
+    const response = await fetch(wrapUrl(`https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT&_t=${timestamp}`));
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data.price) {
+        return { price: Number(parseFloat(data.price).toFixed(2)), source: 'binance' };
+      }
+    }
+  } catch {
+    console.log('⚠️ Binance direct fetch failed');
+  }
+
   return null;
 }
 
@@ -363,8 +394,8 @@ async function fetchLiveGoldPrice(): Promise<number> {
   // On web, always use backend due to CORS restrictions
   const isWeb = Platform.OS === 'web';
   
-  // If backend recently failed on native, try direct API first
-  if (!isWeb && backendFailureCount > 0 && now - lastBackendAttempt < BACKEND_RETRY_DELAY) {
+  // If backend recently failed, try direct API first (works on web now via proxy)
+  if (backendFailureCount > 0 && now - lastBackendAttempt < BACKEND_RETRY_DELAY) {
     const directResult = await fetchDirectGoldPrice();
     if (directResult) {
       cachedGoldPrice = directResult.price;
@@ -378,7 +409,7 @@ async function fetchLiveGoldPrice(): Promise<number> {
     return 2650;
   }
 
-  // Try backend first (required for web due to CORS)
+  // Try backend first
   try {
     lastBackendAttempt = now;
     console.log(`🔄 Fetching gold price via backend [${Platform.OS}]...`);
@@ -398,15 +429,13 @@ async function fetchLiveGoldPrice(): Promise<number> {
     }
   }
 
-  // Only try direct API on native (web has CORS issues)
-  if (!isWeb) {
-    const directResult = await fetchDirectGoldPrice();
-    if (directResult) {
-      cachedGoldPrice = directResult.price;
-      lastFetchTime = now;
-      console.log(`✅ Fetched gold price directly: ${directResult.price} (source: ${directResult.source})`);
-      return directResult.price;
-    }
+  // Fallback to direct API if backend failed (now supported on web)
+  const directResult = await fetchDirectGoldPrice();
+  if (directResult) {
+    cachedGoldPrice = directResult.price;
+    lastFetchTime = now;
+    console.log(`✅ Fetched gold price directly: ${directResult.price} (source: ${directResult.source})`);
+    return directResult.price;
   }
 
   if (cachedGoldPrice !== null) {
