@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useEffect } from "react";
 import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
@@ -105,9 +105,8 @@ const tradingViewHTML = `
 
 const WebChart = React.memo(() => {
   const divRef = useRef<HTMLDivElement>(null);
-  const iframeHtml = `<iframe src="${CHART_URL}" style="width: 100%; height: 100%; border: none; background-color: #0F0F0F;" allow="autoplay; encrypted-media" title="TradingView Chart"></iframe>`;
-  
   useEffect(() => {
+    const iframeHtml = `<iframe src="${CHART_URL}" style="width: 100%; height: 100%; border: none; background-color: #0F0F0F;" allow="autoplay; encrypted-media" title="TradingView Chart"></iframe>`;
     if (divRef.current) {
       divRef.current.innerHTML = iframeHtml;
     }
