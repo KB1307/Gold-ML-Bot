@@ -104,38 +104,16 @@ const tradingViewHTML = `
 `;
 
 const WebChart = React.memo(() => {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
-
-  React.useEffect(() => {
-    if (!containerRef.current || iframeRef.current) return;
-
-    console.log('[WebChart] Initializing iframe...');
-    const iframe = document.createElement('iframe');
-    iframe.src = CHART_URL;
-    iframe.style.width = '100%';
-    iframe.style.height = '100%';
-    iframe.style.border = 'none';
-    iframe.style.backgroundColor = '#0F0F0F';
-    iframe.allow = 'autoplay; encrypted-media';
-    
-    containerRef.current.appendChild(iframe);
-    iframeRef.current = iframe;
-
-    return () => {
-      console.log('[WebChart] Unmounting - cleaning up iframe');
-      // We explicitly allow the iframe to be destroyed if the component unmounts
-      // ensuring no ghost iframes are left behind.
-      if (iframeRef.current) {
-        iframeRef.current.remove();
-        iframeRef.current = null;
-      }
-    };
-  }, []);
-
-  return React.createElement('div', {
-    ref: containerRef,
-    style: { width: '100%', height: '100%', backgroundColor: '#0F0F0F', overflow: 'hidden' },
+  return React.createElement('iframe', {
+    src: CHART_URL,
+    style: { 
+      width: '100%', 
+      height: '100%', 
+      border: 'none', 
+      backgroundColor: '#0F0F0F' 
+    },
+    allow: 'autoplay; encrypted-media',
+    title: 'TradingView Chart'
   });
 }, () => true);
 

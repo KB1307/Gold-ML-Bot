@@ -260,6 +260,12 @@ export default function DashboardScreen() {
 
   const progress = getProgressPercentage();
 
+  const chartSection = useMemo(() => (
+    <View style={{ height: 350, width: '100%', marginBottom: 20 }}>
+      <StableChartSection />
+    </View>
+  ), []);
+
   return (
     <>
       <Stack.Screen options={{ 
@@ -274,6 +280,7 @@ export default function DashboardScreen() {
             style={styles.scrollView}
             contentContainerStyle={styles.scrollContent}
             showsVerticalScrollIndicator={false}
+            removeClippedSubviews={false}
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}
@@ -299,7 +306,7 @@ export default function DashboardScreen() {
               </View>
             </View>
 
-            <StableChartSection />
+            {chartSection}
 
             {isDataLoading && (
               <View style={styles.dataLoadingBanner}>

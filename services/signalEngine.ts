@@ -235,7 +235,7 @@ async function fetchYahooChart(symbol: string): Promise<number | null> {
       }
       
       return null;
-    } catch (error) {
+    } catch {
       console.log(`⚠️ ${symbol} fetch failed completely`);
       return null;
     }
@@ -392,7 +392,7 @@ async function fetchLiveGoldPrice(): Promise<number> {
   }
 
   // On web, always use backend due to CORS restrictions
-  const isWeb = Platform.OS === 'web';
+  // const isWeb = Platform.OS === 'web';
   
   // If backend recently failed, try direct API first (works on web now via proxy)
   if (backendFailureCount > 0 && now - lastBackendAttempt < BACKEND_RETRY_DELAY) {
@@ -1264,7 +1264,7 @@ class SignalGenerationEngine {
     }
     
     // News simulation (synthetic)
-    const now = Date.now();
+    // const now = Date.now();
     const hour = new Date().getUTCHours();
     
     // Market more optimistic during London/NY overlap usually? Synthetic bias.
