@@ -104,12 +104,18 @@ const tradingViewHTML = `
 `;
 
 const WebChart = React.memo(() => {
-  // Use a ref to ensure we only create the iframe HTML once and avoid React re-creating the iframe element
+  const divRef = useRef<HTMLDivElement>(null);
   const iframeHtml = `<iframe src="${CHART_URL}" style="width: 100%; height: 100%; border: none; background-color: #0F0F0F;" allow="autoplay; encrypted-media" title="TradingView Chart"></iframe>`;
   
+  useEffect(() => {
+    if (divRef.current) {
+      divRef.current.innerHTML = iframeHtml;
+    }
+  }, []);
+
   return React.createElement('div', {
-    style: { width: '100%', height: '100%', backgroundColor: '#0F0F0F' },
-    dangerouslySetInnerHTML: { __html: iframeHtml }
+    ref: divRef,
+    style: { width: '100%', height: '100%', backgroundColor: '#0F0F0F' }
   });
 }, () => true);
 
