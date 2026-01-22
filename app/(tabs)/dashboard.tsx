@@ -260,6 +260,15 @@ export default function DashboardScreen() {
 
   const progress = getProgressPercentage();
 
+  const refreshControl = useMemo(() => (
+    <RefreshControl
+      refreshing={refreshing}
+      onRefresh={onRefresh}
+      tintColor="#FFD700"
+      colors={["#FFD700"]}
+    />
+  ), [refreshing, onRefresh]);
+
   const chartSection = useMemo(() => (
     <View style={{ height: 350, width: '100%', marginBottom: 20 }}>
       <StableChartSection />
@@ -281,14 +290,7 @@ export default function DashboardScreen() {
             contentContainerStyle={styles.scrollContent}
             showsVerticalScrollIndicator={false}
             removeClippedSubviews={false}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={onRefresh}
-                tintColor="#FFD700"
-                colors={["#FFD700"]}
-              />
-            }
+            refreshControl={refreshControl}
           >
             <View style={styles.header}>
               <View>

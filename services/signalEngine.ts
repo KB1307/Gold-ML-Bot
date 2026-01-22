@@ -349,7 +349,35 @@ async function fetchDirectGoldPrice(): Promise<{ price: number; source: string }
     console.log('⚠️ GoldPrice.org direct fetch failed');
   }
 
-  // Try metals.live SECOND
+  // Try Binance (PAXG) SECOND (Reliable Crypto Fallback - often supports CORS directly)
+  try {
+    // Try direct fetch first for Binance as it often allows CORS
+    const directUrl = `https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT&_t=${timestamp}`;
+    const response = await fetch(directUrl);
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data.price) {
+        return { price: Number(parseFloat(data.price).toFixed(2)), source: 'binance' };
+      }
+    }
+  } catch {
+    console.log('⚠️ Binance direct fetch failed, trying proxy...');
+    // Fallback to proxy if direct failed
+    try {
+      const response = await fetch(wrapUrl(`https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT&_t=${timestamp}`));
+      if (response.ok) {
+        const data = await response.json();
+        if (data && data.price) {
+          return { price: Number(parseFloat(data.price).toFixed(2)), source: 'binance-proxy' };
+        }
+      }
+    } catch {
+      console.log('⚠️ Binance proxy fetch failed');
+    }
+  }
+
+  // Try metals.live THIRD
   try {
     const response = await fetch(wrapUrl(`https://api.metals.live/v1/spot/gold?_t=${timestamp}`), {
       headers: {
@@ -365,20 +393,6 @@ async function fetchDirectGoldPrice(): Promise<{ price: number; source: string }
     }
   } catch {
     console.log('⚠️ Metals.live direct fetch failed');
-  }
-
-  // Try Binance (PAXG) THIRD (Reliable Crypto Fallback)
-  try {
-    const response = await fetch(wrapUrl(`https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT&_t=${timestamp}`));
-    
-    if (response.ok) {
-      const data = await response.json();
-      if (data && data.price) {
-        return { price: Number(parseFloat(data.price).toFixed(2)), source: 'binance' };
-      }
-    }
-  } catch {
-    console.log('⚠️ Binance direct fetch failed');
   }
 
   return null;

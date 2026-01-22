@@ -104,16 +104,12 @@ const tradingViewHTML = `
 `;
 
 const WebChart = React.memo(() => {
-  return React.createElement('iframe', {
-    src: CHART_URL,
-    style: { 
-      width: '100%', 
-      height: '100%', 
-      border: 'none', 
-      backgroundColor: '#0F0F0F' 
-    },
-    allow: 'autoplay; encrypted-media',
-    title: 'TradingView Chart'
+  // Use a ref to ensure we only create the iframe HTML once and avoid React re-creating the iframe element
+  const iframeHtml = `<iframe src="${CHART_URL}" style="width: 100%; height: 100%; border: none; background-color: #0F0F0F;" allow="autoplay; encrypted-media" title="TradingView Chart"></iframe>`;
+  
+  return React.createElement('div', {
+    style: { width: '100%', height: '100%', backgroundColor: '#0F0F0F' },
+    dangerouslySetInnerHTML: { __html: iframeHtml }
   });
 }, () => true);
 
