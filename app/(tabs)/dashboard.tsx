@@ -416,20 +416,41 @@ export default function DashboardScreen() {
                       )}
                     </View>
                     <View style={styles.targetRow}>
-                      <Shield size={16} color="#ef4444" />
-                      <Text style={[styles.targetLabel, { color: "#ef4444" }]}>SL</Text>
-                      <Text style={[styles.targetValue, { color: "#ef4444" }]}>${currentSignal.sl.toFixed(1)}</Text>
+                      <Shield size={16} color={currentSignal.trailingSLLevel ? "#FFD700" : "#ef4444"} />
+                      <Text style={[styles.targetLabel, { color: currentSignal.trailingSLLevel ? "#FFD700" : "#ef4444" }]}>
+                        {currentSignal.trailingSLLevel === 'TP2' ? 'TSL@TP2' : currentSignal.trailingSLLevel === 'ENTRY' ? 'TSL@BE' : 'SL'}
+                      </Text>
+                      <Text style={[styles.targetValue, { color: currentSignal.trailingSLLevel ? "#FFD700" : "#ef4444" }]}>
+                        ${(currentSignal.trailingSLPrice || currentSignal.sl).toFixed(1)}
+                      </Text>
+                      {currentSignal.trailingSLLevel && (
+                        <View style={[styles.hitBadge, { backgroundColor: 'rgba(255, 215, 0, 0.2)' }]}>
+                          <Text style={[styles.hitText, { color: '#FFD700' }]}>LOCKED</Text>
+                        </View>
+                      )}
                     </View>
                   </View>
 
-                  {currentSignal.breakevenReached && (
+                  {currentSignal.trailingSLLevel === 'TP2' && (
+                    <View style={[styles.breakevenInfoCard, { borderColor: '#22c55e' }]}>
+                      <View style={styles.breakevenIcon}>
+                        <Text style={styles.breakevenIconText}>🔒</Text>
+                      </View>
+                      <View style={styles.breakevenTextContainer}>
+                        <Text style={[styles.breakevenTitle, { color: '#22c55e' }]}>TP2 Profit Locked In!</Text>
+                        <Text style={styles.breakevenSubtext}>Trailing SL moved to TP2 (${currentSignal.tp2.toFixed(1)}) - Full TP2 profit secured</Text>
+                      </View>
+                    </View>
+                  )}
+
+                  {currentSignal.breakevenReached && currentSignal.trailingSLLevel !== 'TP2' && (
                     <View style={styles.breakevenInfoCard}>
                       <View style={styles.breakevenIcon}>
                         <Text style={styles.breakevenIconText}>⚖️</Text>
                       </View>
                       <View style={styles.breakevenTextContainer}>
                         <Text style={styles.breakevenTitle}>Breakeven Protection Active</Text>
-                        <Text style={styles.breakevenSubtext}>TP1 hit at {currentSignal.breakevenTime || 'N/A'} - Original SL maintained at ${currentSignal.sl.toFixed(1)}</Text>
+                        <Text style={styles.breakevenSubtext}>TP1 hit at {currentSignal.breakevenTime || 'N/A'} - Trailing SL at entry ${currentSignal.entryPrice.toFixed(1)}</Text>
                       </View>
                     </View>
                   )}

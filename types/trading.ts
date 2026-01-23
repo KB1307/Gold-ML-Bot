@@ -42,6 +42,8 @@ export interface TradingSignal {
   createdAt?: number;
   breakevenReached?: boolean;
   breakevenTime?: string;
+  trailingSLPrice?: number;
+  trailingSLLevel?: 'ENTRY' | 'TP1' | 'TP2';
 }
 
 export interface MarketSession {
