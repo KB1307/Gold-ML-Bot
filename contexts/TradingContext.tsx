@@ -757,26 +757,82 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const losses: number[] = [];
 
     closedTrades.forEach(signal => {
-      const currentPrice = signalEngine.getCurrentPrice();
       let pnl = 0;
       
-      // Use the recorded exit price if available, otherwise calculate based on status
-      const exitPrice = signal.exitPrice !== undefined ? signal.exitPrice : (
-        signal.status === "ALL_TARGETS_HIT" ? signal.tp3 :
-        signal.status === "SL_HIT" ? signal.sl :
-        currentPrice
-      );
+      // Determine exit price based on status and available data
+      let exitPrice: number;
+      
+      if (signal.exitPrice !== undefined) {
+        exitPrice = signal.exitPrice;
+      } else if (signal.status === "ALL_TARGETS_HIT") {
+        exitPrice = signal.tp3;
+      } else if (signal.status === "PARTIAL_WIN_SL_HIT") {
+        // For partial wins, use the highest TP hit level or entry if breakeven
+        if (signal.targetsHit >= 2) {
+          exitPrice = signal.tp2;
+        } else if (signal.targetsHit >= 1) {
+          exitPrice = signal.tp1;
+        } else {
+          exitPrice = signal.entryPrice; // Breakeven
+        }
+      } else if (signal.status === "CLOSED") {
+        // CLOSED status - check if breakeven was reached
+        if (signal.breakevenReached) {
+          // Breakeven hit after TP1 - calculate profit from TP1
+          if (signal.targetsHit >= 2) {
+            exitPrice = signal.tp2;
+          } else if (signal.targetsHit >= 1) {
+            exitPrice = signal.tp1;
+          } else {
+            exitPrice = signal.entryPrice; // True breakeven - 0 P/L
+          }
+        } else {
+          exitPrice = signal.entryPrice; // Manual close or expired
+        }
+      } else if (signal.status === "SL_HIT") {
+        // Check if this was actually a breakeven hit (SL moved to entry)
+        if (signal.breakevenReached && signal.targetsHit > 0) {
+          // TP was hit before "SL" (which was at breakeven) - this is a partial win
+          if (signal.targetsHit >= 2) {
+            exitPrice = signal.tp2;
+          } else {
+            exitPrice = signal.tp1;
+          }
+        } else if (signal.breakevenReached) {
+          // Breakeven hit with no TP - protected capital
+          exitPrice = signal.entryPrice;
+        } else {
+          exitPrice = signal.sl;
+        }
+      } else {
+        exitPrice = signal.entryPrice;
+      }
 
+      // Calculate P/L based on signal type
       if (signal.type === "BUY") {
         pnl = (exitPrice - signal.entryPrice) * settings.basePositionSize;
       } else {
         pnl = (signal.entryPrice - exitPrice) * settings.basePositionSize;
       }
 
-      if (pnl >= 0) {
+      // Classify as win/loss based on P/L and status
+      // PARTIAL_WIN_SL_HIT and breakeven hits with targets are WINS
+      const isDefiniteWin = signal.status === "ALL_TARGETS_HIT" || 
+                           signal.status === "PARTIAL_WIN_SL_HIT" ||
+                           (signal.breakevenReached && signal.targetsHit > 0);
+      
+      // Breakeven with no targets hit is neither win nor loss (0 P/L)
+      const isBreakevenZero = signal.breakevenReached && signal.targetsHit === 0 && 
+                              (signal.status === "CLOSED" || Math.abs(pnl) < 0.01);
+
+      if (isDefiniteWin || pnl > 0) {
         winningTrades++;
-        totalProfit += pnl;
-        profits.push(pnl);
+        totalProfit += Math.max(0, pnl);
+        if (pnl > 0) profits.push(pnl);
+      } else if (isBreakevenZero) {
+        // Breakeven with 0 P/L - count as win (capital protected)
+        winningTrades++;
+        console.log(`📊 Breakeven hit counted as WIN (capital protected): Signal ${signal.id.slice(-6)}`);
       } else {
         losingTrades++;
         totalLoss += Math.abs(pnl);
@@ -1134,12 +1190,42 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             const exitDate = new Date();
             console.log(`✅ Terminal status reached: Signal ${signal.id.slice(-6)} will remain in history only`);
             
-            const exitPrice = newStatus === "ALL_TARGETS_HIT" ? signal.tp3 : (breakevenReached ? signal.entryPrice : updatedSignal.sl);
-            const result = newStatus === "ALL_TARGETS_HIT" ? "WIN" : (newStatus === "PARTIAL_WIN_SL_HIT" ? "WIN" : (breakevenReached ? "WIN" : "LOSS"));
+            // Calculate exit price based on status and targets hit
+            let exitPrice: number;
+            let result: 'WIN' | 'LOSS';
             
-            // For breakeven, we consider it a 'WIN' in the sense of no loss, or 'WIN' with 0 PnL
-            // Adjust logic based on preference. Here we mark as WIN if breakeven to preserve win rate or separate it.
-            // If result is WIN, PnL is calculated as abs(exit - entry). If exit == entry, PnL is 0.
+            if (newStatus === "ALL_TARGETS_HIT") {
+              exitPrice = signal.tp3;
+              result = "WIN";
+            } else if (newStatus === "PARTIAL_WIN_SL_HIT") {
+              // For partial wins, use the highest TP level that was hit
+              // This records the actual profit taken from the TP
+              if (targetsHit >= 2) {
+                exitPrice = signal.tp2;
+              } else if (targetsHit >= 1) {
+                exitPrice = signal.tp1;
+              } else {
+                exitPrice = signal.entryPrice; // Breakeven case
+              }
+              result = "WIN";
+              console.log(`   📈 PARTIAL WIN: TP${targetsHit} profit secured at ${exitPrice.toFixed(1)} before breakeven/SL`);
+            } else if (breakevenReached) {
+              // Breakeven hit - no loss, capital protected
+              if (targetsHit >= 2) {
+                exitPrice = signal.tp2;
+                result = "WIN";
+              } else if (targetsHit >= 1) {
+                exitPrice = signal.tp1;
+                result = "WIN";
+              } else {
+                exitPrice = signal.entryPrice;
+                result = "WIN"; // Breakeven counts as WIN (0 P/L but capital protected)
+              }
+              console.log(`   ⚖️ BREAKEVEN: Capital protected, exit at ${exitPrice.toFixed(1)}`);
+            } else {
+              exitPrice = updatedSignal.sl;
+              result = "LOSS";
+            }
             
             signalEngine.recordTradeOutcome(
               signal.id,
