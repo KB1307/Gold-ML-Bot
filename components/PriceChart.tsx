@@ -128,7 +128,7 @@ function injectWebChart(containerId: string) {
   container.appendChild(iframe);
 }
 
-class WebChart extends React.PureComponent {
+class WebChart extends React.Component {
   private mounted = false;
 
   componentDidMount() {
