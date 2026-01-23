@@ -278,7 +278,10 @@ export default function DashboardScreen() {
               </View>
             </View>
 
-            {chartSection}
+            {/* Static Chart Section with explicit key to prevent unmounting */}
+            <View key="static-chart-section" style={styles.staticChartSection}>
+              {chartSection}
+            </View>
 
             {isDataLoading && (
               <View style={styles.dataLoadingBanner}>
@@ -1568,5 +1571,8 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: "#bbb",
     lineHeight: 15,
+  },
+  staticChartSection: {
+    zIndex: 1,
   },
 });

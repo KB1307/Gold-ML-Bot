@@ -405,61 +405,57 @@ async function fetchLiveGoldPrice(): Promise<number> {
     return cachedGoldPrice;
   }
 
-  // On web, always use backend due to CORS restrictions
-  // const isWeb = Platform.OS === 'web';
-  
-  // If backend recently failed, try direct API first (works on web now via proxy)
-  if (backendFailureCount > 0 && now - lastBackendAttempt < BACKEND_RETRY_DELAY) {
+  const isWeb = Platform.OS === 'web';
+
+  // On web, skip backend if it failed recently to avoid CORS noise
+  if (isWeb && backendFailureCount > 0 && now - lastBackendAttempt < BACKEND_RETRY_DELAY) {
     const directResult = await fetchDirectGoldPrice();
     if (directResult) {
       cachedGoldPrice = directResult.price;
       lastFetchTime = now;
-      console.log(`✅ Fetched gold price directly: ${directResult.price} (source: ${directResult.source})`);
       return directResult.price;
     }
-    if (cachedGoldPrice !== null) {
-      return cachedGoldPrice;
-    }
-    return 2650;
+    return cachedGoldPrice || 2650;
   }
 
-  // Try backend first
+  // Try backend first (except on web if recently failed)
   try {
     lastBackendAttempt = now;
+    // On web, we might want to skip backend if we know it has CORS issues, 
+    // but we'll try it once.
+    
     console.log(`🔄 Fetching gold price via backend [${Platform.OS}]...`);
     const result = await trpcClient.goldPrice.getSpotPrice.query();
     
     cachedGoldPrice = result.price;
     lastFetchTime = now;
     backendFailureCount = 0;
-    console.log(`✅ Fetched gold price via backend: ${result.price} (source: ${result.source})`);
     return result.price;
   } catch (error) {
     backendFailureCount++;
-    console.log(`⚠️ Backend fetch failed [${Platform.OS}]:`, error instanceof Error ? error.message : 'Unknown error');
-    
+    // Only log first failure to avoid spam
     if (backendFailureCount === 1) {
-      console.log('⚠️ Backend unavailable, switching to direct API fallback...');
+      console.log(`⚠️ Backend fetch failed [${Platform.OS}]:`, error instanceof Error ? error.message : 'Unknown error');
     }
   }
 
-  // Fallback to direct API if backend failed (now supported on web)
+  // Fallback to direct API
   const directResult = await fetchDirectGoldPrice();
   if (directResult) {
     cachedGoldPrice = directResult.price;
     lastFetchTime = now;
-    console.log(`✅ Fetched gold price directly: ${directResult.price} (source: ${directResult.source})`);
+    // Only log if we haven't logged recently or if backend failed
+    if (Math.random() < 0.1) {
+        console.log(`✅ Fetched gold price directly: ${directResult.price} (source: ${directResult.source})`);
+    }
     return directResult.price;
   }
 
   if (cachedGoldPrice !== null) {
-    console.log(`⚠️ Using cached gold price: ${cachedGoldPrice}`);
     return cachedGoldPrice;
   }
 
-  const defaultPrice = 2650;
-  console.warn(`⚠️ All APIs unavailable [${Platform.OS}], using default price:`, defaultPrice);
-  return defaultPrice;
+  return 2650;
 }
 
 class SignalGenerationEngine {

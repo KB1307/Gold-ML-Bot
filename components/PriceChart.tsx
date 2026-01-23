@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useEffect } from "react";
 import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
@@ -106,27 +106,47 @@ const tradingViewHTML = `
 
 // Web implementation using class component for absolute stability against re-renders
 class WebChart extends React.Component {
+  private containerRef: React.RefObject<HTMLDivElement>;
+
+  constructor(props: {}) {
+    super(props);
+    this.containerRef = React.createRef<HTMLDivElement>();
+  }
+
+  componentDidMount() {
+    console.log('[WebChart] Mounted - Injecting Iframe');
+    if (this.containerRef.current) {
+      // Check if iframe already exists to prevent duplicates
+      if (this.containerRef.current.querySelector('iframe')) return;
+
+      const iframe = document.createElement('iframe');
+      iframe.src = CHART_URL;
+      iframe.style.width = '100%';
+      iframe.style.height = '100%';
+      iframe.style.border = 'none';
+      iframe.style.backgroundColor = '#0F0F0F';
+      iframe.allow = 'autoplay; encrypted-media';
+      iframe.title = 'TradingView Chart';
+      this.containerRef.current.appendChild(iframe);
+    }
+  }
+
+  componentWillUnmount() {
+    console.log('[WebChart] Unmounting');
+  }
+
   shouldComponentUpdate() {
     return false;
   }
 
   render() {
     return (
-      <View style={styles.container}>
-        {
-          // @ts-ignore - React Native Web supports standard HTML elements
-          React.createElement('iframe', {
-            src: CHART_URL,
-            style: {
-              width: '100%',
-              height: '100%',
-              border: 'none',
-              backgroundColor: '#0F0F0F',
-            },
-            allow: "autoplay; encrypted-media",
-            title: "TradingView Chart"
-          })
-        }
+      <View style={styles.container} testID="web-chart-container">
+        {/* @ts-ignore - div is valid in React Native Web */}
+        <div 
+          ref={this.containerRef}
+          style={{ width: '100%', height: '100%', overflow: 'hidden' }} 
+        />
       </View>
     );
   }
