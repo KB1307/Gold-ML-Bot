@@ -4,36 +4,8 @@ import { LinearGradient } from "expo-linear-gradient";
 import { TrendingUp, TrendingDown, Target, Shield, Clock, Zap, BarChart3, Percent, AlertTriangle, Activity, Lightbulb, TrendingUpDown } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
 import { Stack } from "expo-router";
-import PriceChart from "@/components/PriceChart";
+import DashboardChart from "@/components/DashboardChart";
 
-const StableChartSection = React.memo(() => {
-  return (
-    <View style={chartSectionStyles.chartCard}>
-      <View style={chartSectionStyles.chartContainer}>
-        <PriceChart />
-      </View>
-    </View>
-  );
-}, () => true);
-
-StableChartSection.displayName = 'StableChartSection';
-
-const chartSectionStyles = StyleSheet.create({
-  chartCard: {
-    backgroundColor: "rgba(255, 255, 255, 0.03)",
-    padding: 20,
-    borderRadius: 16,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.05)",
-  },
-  chartContainer: {
-    width: "100%",
-    height: 350,
-    borderRadius: 8,
-    overflow: "hidden",
-  },
-});
 
 function formatFeatureName(feature: string): string {
   const featureMap: { [key: string]: string } = {
@@ -270,9 +242,7 @@ export default function DashboardScreen() {
   ), [refreshing, onRefresh]);
 
   const chartSection = useMemo(() => (
-    <View style={{ height: 350, width: '100%', marginBottom: 20 }}>
-      <StableChartSection />
-    </View>
+    <DashboardChart />
   ), []);
 
   return (

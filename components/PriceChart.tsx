@@ -8,6 +8,7 @@ interface PriceChartProps {
   onPriceUpdate?: (price: number) => void;
 }
 
+// Fixed chart URL with no variables to ensure stability
 const CHART_URL = "https://s.tradingview.com/widgetembed/?frameElementId=tradingview_chart&symbol=OANDA%3AXAUUSD&interval=5&theme=dark&style=1&timezone=Etc%2FUTC&studies=%5B%5D&hide_side_toolbar=0&allow_symbol_change=1&save_image=0&locale=en&toolbar_bg=%230F0F0F&enable_publishing=false";
 
 const tradingViewHTML = `
@@ -103,20 +104,31 @@ const tradingViewHTML = `
 </html>
 `;
 
+// Web implementation using iframe directly for better stability
 const WebChart = React.memo(() => {
-  const divRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const iframeHtml = `<iframe src="${CHART_URL}" style="width: 100%; height: 100%; border: none; background-color: #0F0F0F;" allow="autoplay; encrypted-media" title="TradingView Chart"></iframe>`;
-    if (divRef.current) {
-      divRef.current.innerHTML = iframeHtml;
-    }
-  }, []);
-
-  return React.createElement('div', {
-    ref: divRef,
-    style: { width: '100%', height: '100%', backgroundColor: '#0F0F0F' }
-  });
-}, () => true);
+  // Use a simple div with an iframe inside to ensure it doesn't get messed with by React's DOM diffing
+  // using dangerouslySetInnerHTML can sometimes be more stable for iframes than direct jsx in some React versions,
+  // but direct JSX is usually preferred. Let's try direct JSX first, but isolated.
+  
+  return (
+    <View style={styles.container}>
+      {
+        // @ts-ignore - React Native Web supports standard HTML elements but TS might complain
+        React.createElement('iframe', {
+          src: CHART_URL,
+          style: {
+            width: '100%',
+            height: '100%',
+            border: 'none',
+            backgroundColor: '#0F0F0F',
+          },
+          allow: "autoplay; encrypted-media",
+          title: "TradingView Chart"
+        })
+      }
+    </View>
+  );
+}, () => true); // Never re-render
 
 WebChart.displayName = 'WebChart';
 
@@ -173,20 +185,17 @@ const NativeChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
         onMessage={(event) => {
           try {
             const data = JSON.parse(event.nativeEvent.data);
-            console.log('[PriceChart] Message received:', data.type);
             if (data.type === 'chartReady') {
-              console.log('[PriceChart] Chart is ready');
               setIsLoading(false);
             }
             if (data.type === 'chartError') {
-              console.error('[PriceChart] Chart error:', data.error);
               setHasError(true);
             }
             if (data.type === 'price' && data.value && onPriceUpdate) {
               onPriceUpdate(data.value);
             }
           } catch (e) {
-            console.log('[PriceChart] Error parsing WebView message:', e);
+            // Ignore parse errors
           }
         }}
         testID="tradingview-chart"
@@ -202,7 +211,7 @@ const PriceChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
     return <WebChart />;
   }
   return <NativeChart onPriceUpdate={onPriceUpdate} />;
-});
+}, () => true); // Never re-render the main wrapper either
 
 PriceChart.displayName = 'PriceChart';
 
@@ -259,10 +268,14 @@ const styles = StyleSheet.create({
     color: '#ef4444',
     fontSize: 14,
     fontWeight: '600' as const,
+    width: '100%',
+    textAlign: 'center',
   },
   errorSubtext: {
     color: '#666',
     fontSize: 12,
     marginTop: 4,
+    width: '100%',
+    textAlign: 'center',
   },
 });
