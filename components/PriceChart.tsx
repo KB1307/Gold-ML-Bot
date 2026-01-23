@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState } from "react";
 import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
@@ -8,8 +8,10 @@ interface PriceChartProps {
   onPriceUpdate?: (price: number) => void;
 }
 
-// Fixed chart URL with no variables to ensure stability
 const CHART_URL = "https://s.tradingview.com/widgetembed/?frameElementId=tradingview_chart&symbol=OANDA%3AXAUUSD&interval=5&theme=dark&style=1&timezone=Etc%2FUTC&studies=%5B%5D&hide_side_toolbar=0&allow_symbol_change=1&save_image=0&locale=en&toolbar_bg=%230F0F0F&enable_publishing=false";
+
+let webChartInjected = false;
+let webChartContainerId = 'tradingview-stable-container-' + Math.random().toString(36).substr(2, 9);
 
 const tradingViewHTML = `
 <!DOCTYPE html>
@@ -104,35 +106,35 @@ const tradingViewHTML = `
 </html>
 `;
 
-// Web implementation using class component for absolute stability against re-renders
-class WebChart extends React.Component {
-  private containerRef: React.RefObject<HTMLDivElement>;
+function injectWebChart(containerId: string) {
+  if (typeof document === 'undefined') return;
+  if (webChartInjected) return;
+  
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  if (container.querySelector('iframe')) return;
+  
+  console.log('[WebChart] Injecting iframe ONCE');
+  webChartInjected = true;
+  
+  const iframe = document.createElement('iframe');
+  iframe.src = CHART_URL;
+  iframe.style.width = '100%';
+  iframe.style.height = '100%';
+  iframe.style.border = 'none';
+  iframe.style.backgroundColor = '#0F0F0F';
+  iframe.allow = 'autoplay; encrypted-media';
+  iframe.title = 'TradingView Chart';
+  container.appendChild(iframe);
+}
 
-  constructor(props: {}) {
-    super(props);
-    this.containerRef = React.createRef<HTMLDivElement>();
-  }
+class WebChart extends React.PureComponent {
+  private mounted = false;
 
   componentDidMount() {
-    console.log('[WebChart] Mounted - Injecting Iframe');
-    if (this.containerRef.current) {
-      // Check if iframe already exists to prevent duplicates
-      if (this.containerRef.current.querySelector('iframe')) return;
-
-      const iframe = document.createElement('iframe');
-      iframe.src = CHART_URL;
-      iframe.style.width = '100%';
-      iframe.style.height = '100%';
-      iframe.style.border = 'none';
-      iframe.style.backgroundColor = '#0F0F0F';
-      iframe.allow = 'autoplay; encrypted-media';
-      iframe.title = 'TradingView Chart';
-      this.containerRef.current.appendChild(iframe);
-    }
-  }
-
-  componentWillUnmount() {
-    console.log('[WebChart] Unmounting');
+    if (this.mounted) return;
+    this.mounted = true;
+    setTimeout(() => injectWebChart(webChartContainerId), 100);
   }
 
   shouldComponentUpdate() {
@@ -141,13 +143,7 @@ class WebChart extends React.Component {
 
   render() {
     return (
-      <View style={styles.container} testID="web-chart-container">
-        {/* @ts-ignore - div is valid in React Native Web */}
-        <div 
-          ref={this.containerRef}
-          style={{ width: '100%', height: '100%', overflow: 'hidden' }} 
-        />
-      </View>
+      <View style={styles.container} testID="web-chart-container" nativeID={webChartContainerId} />
     );
   }
 }
