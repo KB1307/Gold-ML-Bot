@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState } from "react";
 import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
@@ -104,33 +104,33 @@ const tradingViewHTML = `
 </html>
 `;
 
-// Web implementation using iframe directly for better stability
-const WebChart = React.memo(() => {
-  // Use a simple div with an iframe inside to ensure it doesn't get messed with by React's DOM diffing
-  // using dangerouslySetInnerHTML can sometimes be more stable for iframes than direct jsx in some React versions,
-  // but direct JSX is usually preferred. Let's try direct JSX first, but isolated.
-  
-  return (
-    <View style={styles.container}>
-      {
-        // @ts-ignore - React Native Web supports standard HTML elements but TS might complain
-        React.createElement('iframe', {
-          src: CHART_URL,
-          style: {
-            width: '100%',
-            height: '100%',
-            border: 'none',
-            backgroundColor: '#0F0F0F',
-          },
-          allow: "autoplay; encrypted-media",
-          title: "TradingView Chart"
-        })
-      }
-    </View>
-  );
-}, () => true); // Never re-render
+// Web implementation using class component for absolute stability against re-renders
+class WebChart extends React.Component {
+  shouldComponentUpdate() {
+    return false;
+  }
 
-WebChart.displayName = 'WebChart';
+  render() {
+    return (
+      <View style={styles.container}>
+        {
+          // @ts-ignore - React Native Web supports standard HTML elements
+          React.createElement('iframe', {
+            src: CHART_URL,
+            style: {
+              width: '100%',
+              height: '100%',
+              border: 'none',
+              backgroundColor: '#0F0F0F',
+            },
+            allow: "autoplay; encrypted-media",
+            title: "TradingView Chart"
+          })
+        }
+      </View>
+    );
+  }
+}
 
 const NativeChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
   const webViewRef = useRef<WebView>(null);
@@ -194,7 +194,7 @@ const NativeChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
             if (data.type === 'price' && data.value && onPriceUpdate) {
               onPriceUpdate(data.value);
             }
-          } catch (e) {
+          } catch {
             // Ignore parse errors
           }
         }}
