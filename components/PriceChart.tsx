@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useEffect } from "react";
 import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
@@ -8,145 +8,102 @@ interface PriceChartProps {
   onPriceUpdate?: (price: number) => void;
 }
 
-const CHART_URL = "https://s.tradingview.com/widgetembed/?frameElementId=tradingview_chart&symbol=OANDA%3AXAUUSD&interval=5&theme=dark&style=1&timezone=Etc%2FUTC&studies=%5B%5D&hide_side_toolbar=0&allow_symbol_change=1&save_image=0&locale=en&toolbar_bg=%230F0F0F&enable_publishing=false";
-
-let webChartInjected = false;
-let webChartContainerId = 'tradingview-stable-container-' + Math.random().toString(36).substr(2, 9);
+const webChartContainerId = 'tradingview-widget-container-' + Math.random().toString(36).substr(2, 9);
 
 const tradingViewHTML = `
 <!DOCTYPE html>
 <html>
   <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline' 'unsafe-eval' https://s3.tradingview.com https://www.tradingview-widget.com; frame-src https://s.tradingview.com;">
     <style>
-      body { margin: 0; padding: 0; overflow: hidden; background: #0F0F0F; }
-      .tradingview-widget-container { height: 100vh; width: 100vw; }
-      .tradingview-widget-container__widget { height: calc(100% - 32px); width: 100%; }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { height: 100%; width: 100%; overflow: hidden; background: #0F0F0F; }
+      .tradingview-widget-container { height: 100%; width: 100%; }
+      .tradingview-widget-container__widget { height: 100%; width: 100%; }
+      .tradingview-widget-copyright { display: none !important; }
     </style>
   </head>
   <body>
     <div class="tradingview-widget-container">
-      <div id="tradingview_chart" class="tradingview-widget-container__widget"></div>
+      <div class="tradingview-widget-container__widget"></div>
+      <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
+      {
+        "autosize": true,
+        "symbol": "CAPITALCOM:GOLD",
+        "interval": "5",
+        "timezone": "Etc/UTC",
+        "theme": "dark",
+        "style": "1",
+        "locale": "en",
+        "backgroundColor": "rgba(15, 15, 15, 1)",
+        "gridColor": "rgba(242, 242, 242, 0.06)",
+        "allow_symbol_change": true,
+        "calendar": false,
+        "hide_top_toolbar": false,
+        "hide_legend": false,
+        "save_image": false,
+        "hide_volume": false,
+        "support_host": "https://www.tradingview.com"
+      }
+      </script>
     </div>
-    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-    <script type="text/javascript">
-      (function() {
-        let chartWidget = null;
-        let isChartReady = false;
-        
-        try {
-          chartWidget = new TradingView.widget({
-            autosize: true,
-            symbol: "OANDA:XAUUSD",
-            interval: "5",
-            timezone: "Etc/UTC",
-            theme: "dark",
-            style: "1",
-            locale: "en",
-            toolbar_bg: "#0F0F0F",
-            enable_publishing: false,
-            allow_symbol_change: true,
-            container_id: "tradingview_chart",
-            hide_side_toolbar: false,
-            studies: [],
-            show_popup_button: true,
-            popup_width: "1000",
-            popup_height: "800",
-            disable_resolution_rebuild: true,
-            
-            onChartReady: function() {
-              console.log("TradingView chart ready");
-              isChartReady = true;
-              
-              if (window.ReactNativeWebView) {
-                window.ReactNativeWebView.postMessage(JSON.stringify({ 
-                  type: 'chartReady', 
-                  timestamp: Date.now() 
-                }));
-              }
-            }
-          });
-          
-          setInterval(function() {
-            if (!isChartReady) return;
-            
-            try {
-              const iframe = document.querySelector('iframe');
-              if (iframe && iframe.contentWindow) {
-                const priceElement = iframe.contentDocument?.querySelector('.price-axis-last-price');
-                if (priceElement) {
-                  const price = parseFloat(priceElement.textContent);
-                  if (!isNaN(price) && price > 0) {
-                    if (window.ReactNativeWebView) {
-                      window.ReactNativeWebView.postMessage(JSON.stringify({ 
-                        type: 'price', 
-                        value: price 
-                      }));
-                    }
-                  }
-                }
-              }
-            } catch (e) {
-            }
-          }, 2000);
-          
-        } catch (error) {
-          console.error("TradingView widget initialization failed:", error);
-          if (window.ReactNativeWebView) {
-            window.ReactNativeWebView.postMessage(JSON.stringify({ 
-              type: 'chartError', 
-              error: error.message 
-            }));
-          }
-        }
-      })();
-    </script>
   </body>
 </html>
 `;
 
-function injectWebChart(containerId: string) {
-  if (typeof document === 'undefined') return;
-  if (webChartInjected) return;
-  
-  const container = document.getElementById(containerId);
-  if (!container) return;
-  if (container.querySelector('iframe')) return;
-  
-  console.log('[WebChart] Injecting iframe ONCE');
-  webChartInjected = true;
-  
-  const iframe = document.createElement('iframe');
-  iframe.src = CHART_URL;
-  iframe.style.width = '100%';
-  iframe.style.height = '100%';
-  iframe.style.border = 'none';
-  iframe.style.backgroundColor = '#0F0F0F';
-  iframe.allow = 'autoplay; encrypted-media';
-  iframe.title = 'TradingView Chart';
-  container.appendChild(iframe);
-}
+const WebChart = React.memo(() => {
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-class WebChart extends React.Component {
-  private mounted = false;
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    
+    const container = document.getElementById(webChartContainerId);
+    if (!container || iframeRef.current) return;
 
-  componentDidMount() {
-    if (this.mounted) return;
-    this.mounted = true;
-    setTimeout(() => injectWebChart(webChartContainerId), 100);
-  }
+    console.log('[WebChart] Creating iframe');
+    
+    const iframe = document.createElement('iframe');
+    iframe.srcdoc = tradingViewHTML;
+    iframe.style.width = '100%';
+    iframe.style.height = '100%';
+    iframe.style.border = 'none';
+    iframe.style.backgroundColor = '#0F0F0F';
+    iframe.allow = 'autoplay; encrypted-media';
+    iframe.title = 'TradingView Chart';
+    iframe.onload = () => {
+      console.log('[WebChart] Iframe loaded');
+      setIsLoading(false);
+    };
+    
+    iframeRef.current = iframe;
+    container.appendChild(iframe);
 
-  shouldComponentUpdate() {
-    return false;
-  }
+    return () => {
+      if (iframeRef.current && container.contains(iframeRef.current)) {
+        container.removeChild(iframeRef.current);
+        iframeRef.current = null;
+      }
+    };
+  }, []);
 
-  render() {
-    return (
-      <View style={styles.container} testID="web-chart-container" nativeID={webChartContainerId} />
-    );
-  }
-}
+  return (
+    <View style={styles.container} testID="web-chart-container">
+      {isLoading && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#FFD700" />
+          <Text style={styles.loadingText}>Loading Chart...</Text>
+        </View>
+      )}
+      <View 
+        style={styles.webChartInner} 
+        nativeID={webChartContainerId}
+      />
+    </View>
+  );
+}, () => true);
+
+WebChart.displayName = 'WebChart';
 
 const NativeChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
   const webViewRef = useRef<WebView>(null);
@@ -241,6 +198,11 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     overflow: 'hidden',
   },
+  webChartInner: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+  },
   webview: {
     flex: 1,
     backgroundColor: '#0F0F0F',
@@ -259,10 +221,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 10,
-  },
-  loadingHidden: {
-    opacity: 0,
-    pointerEvents: 'none',
   },
   loadingText: {
     color: '#999',
