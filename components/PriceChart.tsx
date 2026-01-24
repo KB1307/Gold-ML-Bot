@@ -7,8 +7,7 @@ const CHART_HEIGHT = 350;
 // Module-level singleton for web - completely outside React lifecycle
 let globalIframeElement: HTMLIFrameElement | null = null;
 let iframeFullyLoaded = false;
-let iframeLoadPromise: Promise<void> | null = null;
-let chartContainerRegistry = new Map<string, HTMLElement>();
+let iframeInitialized = false;
 
 interface PriceChartProps {
   onPriceUpdate?: (price: number) => void;
@@ -55,106 +54,105 @@ const tradingViewHTML = `
 </html>
 `;
 
-// Create iframe once globally, completely outside React
-function ensureGlobalIframe(): Promise<void> {
-  if (iframeFullyLoaded && globalIframeElement) {
-    return Promise.resolve();
-  }
+// Initialize iframe once globally - append to body and never move it
+function initializeGlobalIframe(): void {
+  if (iframeInitialized) return;
+  if (typeof document === 'undefined') return;
   
-  if (iframeLoadPromise) {
-    return iframeLoadPromise;
-  }
+  iframeInitialized = true;
+  console.log('[WebChart] Initializing global iframe (once)');
   
-  iframeLoadPromise = new Promise((resolve) => {
-    console.log('[WebChart] Creating global iframe (once)');
-    
-    const iframe = document.createElement('iframe');
-    iframe.srcdoc = tradingViewHTML;
-    iframe.style.cssText = 'width:100%;height:100%;border:none;background:#0F0F0F;display:block;position:absolute;top:0;left:0;';
-    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms');
-    iframe.title = 'TradingView Chart';
-    
-    iframe.onload = () => {
-      console.log('[WebChart] Global iframe loaded');
-      iframeFullyLoaded = true;
-      resolve();
-    };
-    
-    iframe.onerror = () => {
-      console.log('[WebChart] Global iframe error');
-      iframeLoadPromise = null;
-      resolve();
-    };
-    
-    globalIframeElement = iframe;
-    
-    // Fallback timeout
-    setTimeout(() => {
-      if (!iframeFullyLoaded) {
-        console.log('[WebChart] Fallback timeout');
-        iframeFullyLoaded = true;
-        resolve();
-      }
-    }, 10000);
-  });
+  const iframe = document.createElement('iframe');
+  iframe.srcdoc = tradingViewHTML;
+  iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;background:#0F0F0F;pointer-events:none;opacity:0;';
+  iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms');
+  iframe.title = 'TradingView Chart';
+  iframe.id = 'tradingview-global-iframe';
   
-  return iframeLoadPromise;
+  iframe.onload = () => {
+    console.log('[WebChart] Global iframe loaded (final)');
+    iframeFullyLoaded = true;
+  };
+  
+  globalIframeElement = iframe;
+  document.body.appendChild(iframe);
 }
 
-// Attach iframe to a specific container
-function attachIframeToContainer(containerId: string, container: HTMLElement) {
+// Position the iframe over a container without moving it in DOM
+function positionIframeOverContainer(container: HTMLElement): void {
   if (!globalIframeElement) return;
   
-  // Check if already attached to this container
-  if (globalIframeElement.parentElement === container) {
-    return;
-  }
-  
-  // Move iframe to new container
-  try {
-    container.appendChild(globalIframeElement);
-    chartContainerRegistry.set(containerId, container);
-  } catch (e) {
-    console.error('[WebChart] Error attaching iframe:', e);
-  }
+  const rect = container.getBoundingClientRect();
+  globalIframeElement.style.cssText = `
+    position:fixed;
+    top:${rect.top}px;
+    left:${rect.left}px;
+    width:${rect.width}px;
+    height:${rect.height}px;
+    border:none;
+    background:#0F0F0F;
+    pointer-events:auto;
+    opacity:1;
+    z-index:1;
+  `;
+}
+
+// Hide the iframe (move offscreen)
+function hideIframe(): void {
+  if (!globalIframeElement) return;
+  globalIframeElement.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;opacity:0;pointer-events:none;';
 }
 
 const WebChart = React.memo(() => {
   const [isLoading, setIsLoading] = useState(!iframeFullyLoaded);
   const [hasError, setHasError] = useState(false);
   const containerRef = useRef<View>(null);
-  const containerIdRef = useRef(`chart-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
   const mountedRef = useRef(true);
+  const positionIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
     
     if (Platform.OS !== 'web') return;
     
-    const containerId = containerIdRef.current;
+    // Initialize iframe once (appends to body, never moves)
+    initializeGlobalIframe();
     
-    // Use requestAnimationFrame to ensure DOM is ready
-    const rafId = requestAnimationFrame(() => {
+    // Function to update position
+    const updatePosition = () => {
+      if (!mountedRef.current) return;
       const domNode = containerRef.current as unknown as HTMLElement;
-      if (!domNode || !mountedRef.current) return;
-      
-      ensureGlobalIframe().then(() => {
-        if (!mountedRef.current) return;
-        
-        attachIframeToContainer(containerId, domNode);
-        setIsLoading(false);
-      }).catch(() => {
-        if (mountedRef.current) {
-          setHasError(true);
+      if (domNode && globalIframeElement) {
+        positionIframeOverContainer(domNode);
+        if (!iframeFullyLoaded) {
+          // Keep checking until loaded
+        } else {
           setIsLoading(false);
         }
-      });
-    });
+      }
+    };
+    
+    // Initial position update after a short delay for DOM to be ready
+    const initialTimeout = setTimeout(updatePosition, 100);
+    
+    // Update position periodically to handle scroll/resize
+    positionIntervalRef.current = setInterval(updatePosition, 500);
+    
+    // Also update on scroll and resize
+    const handleScrollResize = () => updatePosition();
+    window.addEventListener('scroll', handleScrollResize, true);
+    window.addEventListener('resize', handleScrollResize);
     
     return () => {
       mountedRef.current = false;
-      cancelAnimationFrame(rafId);
-      // Don't remove iframe on unmount - keep it in last container
+      clearTimeout(initialTimeout);
+      if (positionIntervalRef.current) {
+        clearInterval(positionIntervalRef.current);
+      }
+      window.removeEventListener('scroll', handleScrollResize, true);
+      window.removeEventListener('resize', handleScrollResize);
+      // Hide iframe when component unmounts
+      hideIframe();
     };
   }, []);
 
