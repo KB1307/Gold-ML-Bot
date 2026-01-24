@@ -52,68 +52,48 @@ const tradingViewHTML = `
 const WebChart = React.memo(() => {
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const mountedRef = useRef(true);
-  const initializingRef = useRef(false);
-
-  const handleLoad = useCallback(() => {
-    if (mountedRef.current) {
-      console.log('[WebChart] Chart loaded successfully');
-      setIsLoading(false);
-    }
-  }, []);
-
-  const handleError = useCallback(() => {
-    if (mountedRef.current) {
-      console.log('[WebChart] Chart load error');
-      setHasError(true);
-      setIsLoading(false);
-    }
-  }, []);
+  const iframeCreatedRef = useRef(false);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    mountedRef.current = true;
-    
     return () => {
-      mountedRef.current = false;
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
     };
   }, []);
 
-  const containerRef = useCallback((node: View | null) => {
-    if (Platform.OS !== 'web' || !node || initializingRef.current) return;
+  const setContainerRef = useCallback((node: View | null) => {
+    if (Platform.OS !== 'web' || !node || iframeCreatedRef.current) return;
     
-    initializingRef.current = true;
-    
+    iframeCreatedRef.current = true;
     const domNode = node as unknown as HTMLElement;
     
-    if (iframeRef.current && domNode.contains(iframeRef.current)) {
-      setIsLoading(false);
-      return;
-    }
-    
-    while (domNode.firstChild) {
-      domNode.removeChild(domNode.firstChild);
-    }
-    
-    console.log('[WebChart] Creating iframe');
+    console.log('[WebChart] Creating iframe (once)');
     
     const iframe = document.createElement('iframe');
     iframe.srcdoc = tradingViewHTML;
     iframe.style.cssText = 'width:100%;height:100%;border:none;background:#0F0F0F;display:block;';
-    iframe.allow = 'autoplay; encrypted-media';
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms');
     iframe.title = 'TradingView Chart';
-    iframe.onload = handleLoad;
-    iframe.onerror = handleError;
     
-    iframeRef.current = iframe;
+    iframe.onload = () => {
+      console.log('[WebChart] Iframe loaded');
+      setIsLoading(false);
+    };
+    
+    iframe.onerror = () => {
+      console.log('[WebChart] Iframe error');
+      setHasError(true);
+      setIsLoading(false);
+    };
+    
     domNode.appendChild(iframe);
     
-    setTimeout(() => {
-      if (mountedRef.current && isLoading) {
-        setIsLoading(false);
-      }
-    }, 8000);
-  }, [handleLoad, handleError, isLoading]);
+    timeoutRef.current = setTimeout(() => {
+      setIsLoading(false);
+    }, 10000);
+  }, []);
 
   if (hasError) {
     return (
@@ -135,7 +115,7 @@ const WebChart = React.memo(() => {
         </View>
       )}
       <View 
-        ref={containerRef}
+        ref={setContainerRef}
         style={styles.webChartInner}
       />
     </View>
