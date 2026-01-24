@@ -1,15 +1,14 @@
-import React, { useRef, useState, useEffect, useCallback } from "react";
+import React, { useRef, useState, useEffect } from "react";
 import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
 const CHART_HEIGHT = 350;
 
-// Module-level singleton to prevent iframe recreation across component remounts
+// Module-level singleton for web - completely outside React lifecycle
 let globalIframeElement: HTMLIFrameElement | null = null;
-let globalContainerElement: HTMLElement | null = null;
-let iframeCreationInProgress = false;
 let iframeFullyLoaded = false;
-let mountCount = 0;
+let iframeLoadPromise: Promise<void> | null = null;
+let chartContainerRegistry = new Map<string, HTMLElement>();
 
 interface PriceChartProps {
   onPriceUpdate?: (price: number) => void;
@@ -56,102 +55,108 @@ const tradingViewHTML = `
 </html>
 `;
 
+// Create iframe once globally, completely outside React
+function ensureGlobalIframe(): Promise<void> {
+  if (iframeFullyLoaded && globalIframeElement) {
+    return Promise.resolve();
+  }
+  
+  if (iframeLoadPromise) {
+    return iframeLoadPromise;
+  }
+  
+  iframeLoadPromise = new Promise((resolve) => {
+    console.log('[WebChart] Creating global iframe (once)');
+    
+    const iframe = document.createElement('iframe');
+    iframe.srcdoc = tradingViewHTML;
+    iframe.style.cssText = 'width:100%;height:100%;border:none;background:#0F0F0F;display:block;position:absolute;top:0;left:0;';
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms');
+    iframe.title = 'TradingView Chart';
+    
+    iframe.onload = () => {
+      console.log('[WebChart] Global iframe loaded');
+      iframeFullyLoaded = true;
+      resolve();
+    };
+    
+    iframe.onerror = () => {
+      console.log('[WebChart] Global iframe error');
+      iframeLoadPromise = null;
+      resolve();
+    };
+    
+    globalIframeElement = iframe;
+    
+    // Fallback timeout
+    setTimeout(() => {
+      if (!iframeFullyLoaded) {
+        console.log('[WebChart] Fallback timeout');
+        iframeFullyLoaded = true;
+        resolve();
+      }
+    }, 10000);
+  });
+  
+  return iframeLoadPromise;
+}
+
+// Attach iframe to a specific container
+function attachIframeToContainer(containerId: string, container: HTMLElement) {
+  if (!globalIframeElement) return;
+  
+  // Check if already attached to this container
+  if (globalIframeElement.parentElement === container) {
+    return;
+  }
+  
+  // Move iframe to new container
+  try {
+    container.appendChild(globalIframeElement);
+    chartContainerRegistry.set(containerId, container);
+  } catch (e) {
+    console.error('[WebChart] Error attaching iframe:', e);
+  }
+}
+
 const WebChart = React.memo(() => {
-  const currentMountId = useRef(++mountCount);
-  const [isLoading, setIsLoading] = useState(() => !iframeFullyLoaded);
+  const [isLoading, setIsLoading] = useState(!iframeFullyLoaded);
   const [hasError, setHasError] = useState(false);
   const containerRef = useRef<View>(null);
-  const hasAttachedRef = useRef(false);
-
-  const attachIframeToContainer = useCallback((domNode: HTMLElement) => {
-    if (!globalIframeElement || hasAttachedRef.current) return;
-    
-    if (globalContainerElement !== domNode) {
-      try {
-        domNode.appendChild(globalIframeElement);
-        globalContainerElement = domNode;
-        hasAttachedRef.current = true;
-      } catch (e) {
-        console.error('[WebChart] Error attaching iframe:', e);
-      }
-    } else {
-      hasAttachedRef.current = true;
-    }
-    
-    if (iframeFullyLoaded) {
-      setIsLoading(false);
-    }
-  }, []);
+  const containerIdRef = useRef(`chart-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
+    mountedRef.current = true;
+    
     if (Platform.OS !== 'web') return;
     
-    const domNode = containerRef.current as unknown as HTMLElement;
-    if (!domNode) return;
+    const containerId = containerIdRef.current;
     
-    const thisMountId = currentMountId.current;
-    
-    // If iframe already exists and is loaded, just attach it
-    if (globalIframeElement && iframeFullyLoaded) {
-      console.log(`[WebChart] Mount #${thisMountId}: Reusing fully loaded iframe`);
-      attachIframeToContainer(domNode);
-      setIsLoading(false);
-      return;
-    }
-    
-    // If iframe exists but not loaded yet, attach and wait
-    if (globalIframeElement && iframeCreationInProgress) {
-      console.log(`[WebChart] Mount #${thisMountId}: Iframe creation in progress, attaching`);
-      attachIframeToContainer(domNode);
-      return;
-    }
-    
-    // Create iframe only once globally
-    if (!globalIframeElement && !iframeCreationInProgress) {
-      iframeCreationInProgress = true;
-      console.log(`[WebChart] Mount #${thisMountId}: Creating new iframe (first time)`);
+    // Use requestAnimationFrame to ensure DOM is ready
+    const rafId = requestAnimationFrame(() => {
+      const domNode = containerRef.current as unknown as HTMLElement;
+      if (!domNode || !mountedRef.current) return;
       
-      const iframe = document.createElement('iframe');
-      iframe.srcdoc = tradingViewHTML;
-      iframe.style.cssText = 'width:100%;height:100%;border:none;background:#0F0F0F;display:block;';
-      iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms');
-      iframe.title = 'TradingView Chart';
-      
-      iframe.onload = () => {
-        console.log(`[WebChart] Iframe fully loaded`);
-        iframeFullyLoaded = true;
+      ensureGlobalIframe().then(() => {
+        if (!mountedRef.current) return;
+        
+        attachIframeToContainer(containerId, domNode);
         setIsLoading(false);
-      };
-      
-      iframe.onerror = () => {
-        console.log('[WebChart] Iframe error');
-        setHasError(true);
-        setIsLoading(false);
-        iframeCreationInProgress = false;
-        iframeFullyLoaded = false;
-        globalIframeElement = null;
-      };
-      
-      globalIframeElement = iframe;
-      globalContainerElement = domNode;
-      hasAttachedRef.current = true;
-      domNode.appendChild(iframe);
-      
-      // Fallback timeout
-      setTimeout(() => {
-        if (!iframeFullyLoaded) {
-          console.log('[WebChart] Fallback timeout - marking as loaded');
-          iframeFullyLoaded = true;
+      }).catch(() => {
+        if (mountedRef.current) {
+          setHasError(true);
           setIsLoading(false);
         }
-      }, 10000);
-    }
+      });
+    });
     
-    // Cleanup: don't remove iframe on unmount, just detach reference
     return () => {
-      hasAttachedRef.current = false;
+      mountedRef.current = false;
+      cancelAnimationFrame(rafId);
+      // Don't remove iframe on unmount - keep it in last container
     };
-  }, [attachIframeToContainer]);
+  }, []);
 
   if (hasError) {
     return (

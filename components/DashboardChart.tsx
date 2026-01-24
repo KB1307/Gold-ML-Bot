@@ -1,29 +1,32 @@
-import React, { useRef } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { View, StyleSheet } from 'react-native';
 import PriceChart from '@/components/PriceChart';
 
-// Create stable chart instance outside component to prevent recreation
-const StablePriceChart = React.memo(() => <PriceChart />, () => true);
-StablePriceChart.displayName = 'StablePriceChart';
+// Module-level flag to track if chart has ever been mounted
+let chartMountedOnce = false;
+let chartInstanceId = 0;
 
 const DashboardChart = React.memo(() => {
-  // Use ref to track mount count for debugging
-  const mountCountRef = useRef(0);
-  mountCountRef.current++;
+  const instanceIdRef = useRef(++chartInstanceId);
+  const [shouldRenderChart, setShouldRenderChart] = useState(chartMountedOnce);
   
-  // Only log on actual remount, not re-render
-  if (mountCountRef.current === 1) {
-    console.log('[DashboardChart] Initial mount');
-  }
+  useEffect(() => {
+    // Only log once per app session
+    if (!chartMountedOnce) {
+      console.log(`[DashboardChart] First mount (instance #${instanceIdRef.current})`);
+      chartMountedOnce = true;
+      setShouldRenderChart(true);
+    }
+  }, []);
   
   return (
     <View style={styles.chartCard}>
       <View style={styles.chartContainer}>
-        <StablePriceChart />
+        {shouldRenderChart && <PriceChart />}
       </View>
     </View>
   );
-}, () => true); // strict memoization: never re-render
+}, () => true);
 
 DashboardChart.displayName = 'DashboardChart';
 
