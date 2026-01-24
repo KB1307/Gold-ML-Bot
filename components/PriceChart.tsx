@@ -8,6 +8,8 @@ const CHART_HEIGHT = 350;
 let globalIframeElement: HTMLIFrameElement | null = null;
 let iframeFullyLoaded = false;
 let iframeInitialized = false;
+let mountedInstanceCount = 0;
+let hideDebounceTimeout: ReturnType<typeof setTimeout> | null = null;
 
 interface PriceChartProps {
   onPriceUpdate?: (price: number) => void;
@@ -116,6 +118,13 @@ const WebChart = React.memo(() => {
     
     if (Platform.OS !== 'web') return;
     
+    // Track mounted instances to prevent hide during rapid re-renders
+    mountedInstanceCount++;
+    if (hideDebounceTimeout) {
+      clearTimeout(hideDebounceTimeout);
+      hideDebounceTimeout = null;
+    }
+    
     initializeGlobalIframe();
     
     const updatePosition = () => {
@@ -130,7 +139,7 @@ const WebChart = React.memo(() => {
           positionIframeOverContainer(domNode);
         }
         
-        if (iframeFullyLoaded) {
+        if (iframeFullyLoaded && isLoading) {
           setIsLoading(false);
         }
       }
@@ -165,7 +174,16 @@ const WebChart = React.memo(() => {
       clearInterval(loadCheckInterval);
       window.removeEventListener('scroll', handleScrollResize, true);
       window.removeEventListener('resize', handleScrollResize);
-      hideIframe();
+      
+      // Debounce hide to prevent flicker during rapid unmount/remount cycles
+      mountedInstanceCount--;
+      if (mountedInstanceCount === 0) {
+        hideDebounceTimeout = setTimeout(() => {
+          if (mountedInstanceCount === 0) {
+            hideIframe();
+          }
+        }, 150);
+      }
     };
   }, []);
 
