@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState, useEffect, useCallback } from "react";
 import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
@@ -7,10 +7,6 @@ const CHART_HEIGHT = 350;
 interface PriceChartProps {
   onPriceUpdate?: (price: number) => void;
 }
-
-const WEB_CHART_CONTAINER_ID = 'tradingview-chart-singleton';
-let webChartInitialized = false;
-let webChartIframe: HTMLIFrameElement | null = null;
 
 const tradingViewHTML = `
 <!DOCTYPE html>
@@ -54,51 +50,81 @@ const tradingViewHTML = `
 `;
 
 const WebChart = React.memo(() => {
-  const [isLoading, setIsLoading] = useState(!webChartInitialized);
-  const hasInitializedRef = useRef(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [hasError, setHasError] = useState(false);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const mountedRef = useRef(true);
+  const initializingRef = useRef(false);
+
+  const handleLoad = useCallback(() => {
+    if (mountedRef.current) {
+      console.log('[WebChart] Chart loaded successfully');
+      setIsLoading(false);
+    }
+  }, []);
+
+  const handleError = useCallback(() => {
+    if (mountedRef.current) {
+      console.log('[WebChart] Chart load error');
+      setHasError(true);
+      setIsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
-    if (hasInitializedRef.current) return;
-    hasInitializedRef.current = true;
-
-    const initChart = () => {
-      const container = document.getElementById(WEB_CHART_CONTAINER_ID);
-      if (!container) {
-        setTimeout(initChart, 100);
-        return;
-      }
-
-      if (webChartInitialized && webChartIframe) {
-        if (!container.contains(webChartIframe)) {
-          container.appendChild(webChartIframe);
-        }
-        setIsLoading(false);
-        return;
-      }
-
-      console.log('[WebChart] Creating singleton iframe');
-      
-      const iframe = document.createElement('iframe');
-      iframe.srcdoc = tradingViewHTML;
-      iframe.style.width = '100%';
-      iframe.style.height = '100%';
-      iframe.style.border = 'none';
-      iframe.style.backgroundColor = '#0F0F0F';
-      iframe.allow = 'autoplay; encrypted-media';
-      iframe.title = 'TradingView Chart';
-      iframe.onload = () => {
-        console.log('[WebChart] Iframe loaded');
-        setIsLoading(false);
-      };
-      
-      webChartIframe = iframe;
-      webChartInitialized = true;
-      container.appendChild(iframe);
+    mountedRef.current = true;
+    
+    return () => {
+      mountedRef.current = false;
     };
-
-    initChart();
   }, []);
+
+  const containerRef = useCallback((node: View | null) => {
+    if (Platform.OS !== 'web' || !node || initializingRef.current) return;
+    
+    initializingRef.current = true;
+    
+    const domNode = node as unknown as HTMLElement;
+    
+    if (iframeRef.current && domNode.contains(iframeRef.current)) {
+      setIsLoading(false);
+      return;
+    }
+    
+    while (domNode.firstChild) {
+      domNode.removeChild(domNode.firstChild);
+    }
+    
+    console.log('[WebChart] Creating iframe');
+    
+    const iframe = document.createElement('iframe');
+    iframe.srcdoc = tradingViewHTML;
+    iframe.style.cssText = 'width:100%;height:100%;border:none;background:#0F0F0F;display:block;';
+    iframe.allow = 'autoplay; encrypted-media';
+    iframe.title = 'TradingView Chart';
+    iframe.onload = handleLoad;
+    iframe.onerror = handleError;
+    
+    iframeRef.current = iframe;
+    domNode.appendChild(iframe);
+    
+    setTimeout(() => {
+      if (mountedRef.current && isLoading) {
+        setIsLoading(false);
+      }
+    }, 8000);
+  }, [handleLoad, handleError, isLoading]);
+
+  if (hasError) {
+    return (
+      <View style={styles.container} testID="web-chart-container">
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>Failed to load chart</Text>
+          <Text style={styles.errorSubtext}>Please refresh the page</Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container} testID="web-chart-container">
@@ -109,8 +135,8 @@ const WebChart = React.memo(() => {
         </View>
       )}
       <View 
-        style={styles.webChartInner} 
-        nativeID={WEB_CHART_CONTAINER_ID}
+        ref={containerRef}
+        style={styles.webChartInner}
       />
     </View>
   );
