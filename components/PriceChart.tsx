@@ -1,8 +1,13 @@
-import React, { useRef, useState, useEffect, useCallback } from "react";
+import React, { useRef, useState, useEffect } from "react";
 import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
 const CHART_HEIGHT = 350;
+
+// Module-level singleton to prevent iframe recreation across component remounts
+let globalIframeElement: HTMLIFrameElement | null = null;
+let globalContainerElement: HTMLElement | null = null;
+let iframeInitialized = false;
 
 interface PriceChartProps {
   onPriceUpdate?: (price: number) => void;
@@ -50,49 +55,62 @@ const tradingViewHTML = `
 `;
 
 const WebChart = React.memo(() => {
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(!iframeInitialized);
   const [hasError, setHasError] = useState(false);
-  const iframeCreatedRef = useRef(false);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const containerRef = useRef<View>(null);
 
   useEffect(() => {
-    return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
+    if (Platform.OS !== 'web') return;
+    
+    const domNode = containerRef.current as unknown as HTMLElement;
+    if (!domNode) return;
+    
+    // If iframe already exists globally, just move it to current container
+    if (globalIframeElement && iframeInitialized) {
+      console.log('[WebChart] Reusing existing iframe');
+      
+      // If iframe is in a different container, move it
+      if (globalContainerElement !== domNode) {
+        domNode.appendChild(globalIframeElement);
+        globalContainerElement = domNode;
       }
-    };
-  }, []);
-
-  const setContainerRef = useCallback((node: View | null) => {
-    if (Platform.OS !== 'web' || !node || iframeCreatedRef.current) return;
-    
-    iframeCreatedRef.current = true;
-    const domNode = node as unknown as HTMLElement;
-    
-    console.log('[WebChart] Creating iframe (once)');
-    
-    const iframe = document.createElement('iframe');
-    iframe.srcdoc = tradingViewHTML;
-    iframe.style.cssText = 'width:100%;height:100%;border:none;background:#0F0F0F;display:block;';
-    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms');
-    iframe.title = 'TradingView Chart';
-    
-    iframe.onload = () => {
-      console.log('[WebChart] Iframe loaded');
       setIsLoading(false);
-    };
+      return;
+    }
     
-    iframe.onerror = () => {
-      console.log('[WebChart] Iframe error');
-      setHasError(true);
-      setIsLoading(false);
-    };
-    
-    domNode.appendChild(iframe);
-    
-    timeoutRef.current = setTimeout(() => {
-      setIsLoading(false);
-    }, 10000);
+    // Create iframe only once globally
+    if (!iframeInitialized) {
+      iframeInitialized = true;
+      console.log('[WebChart] Creating iframe (singleton)');
+      
+      const iframe = document.createElement('iframe');
+      iframe.srcdoc = tradingViewHTML;
+      iframe.style.cssText = 'width:100%;height:100%;border:none;background:#0F0F0F;display:block;';
+      iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms');
+      iframe.title = 'TradingView Chart';
+      
+      iframe.onload = () => {
+        console.log('[WebChart] Iframe loaded');
+        setIsLoading(false);
+      };
+      
+      iframe.onerror = () => {
+        console.log('[WebChart] Iframe error');
+        setHasError(true);
+        setIsLoading(false);
+        iframeInitialized = false;
+        globalIframeElement = null;
+      };
+      
+      globalIframeElement = iframe;
+      globalContainerElement = domNode;
+      domNode.appendChild(iframe);
+      
+      // Fallback timeout
+      setTimeout(() => {
+        setIsLoading(false);
+      }, 10000);
+    }
   }, []);
 
   if (hasError) {
@@ -115,7 +133,7 @@ const WebChart = React.memo(() => {
         </View>
       )}
       <View 
-        ref={setContainerRef}
+        ref={containerRef}
         style={styles.webChartInner}
       />
     </View>
