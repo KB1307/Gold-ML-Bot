@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState, useEffect, useCallback } from "react";
 import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
@@ -7,7 +7,9 @@ const CHART_HEIGHT = 350;
 // Module-level singleton to prevent iframe recreation across component remounts
 let globalIframeElement: HTMLIFrameElement | null = null;
 let globalContainerElement: HTMLElement | null = null;
-let iframeInitialized = false;
+let iframeCreationInProgress = false;
+let iframeFullyLoaded = false;
+let mountCount = 0;
 
 interface PriceChartProps {
   onPriceUpdate?: (price: number) => void;
@@ -55,9 +57,31 @@ const tradingViewHTML = `
 `;
 
 const WebChart = React.memo(() => {
-  const [isLoading, setIsLoading] = useState(!iframeInitialized);
+  const currentMountId = useRef(++mountCount);
+  const [isLoading, setIsLoading] = useState(() => !iframeFullyLoaded);
   const [hasError, setHasError] = useState(false);
   const containerRef = useRef<View>(null);
+  const hasAttachedRef = useRef(false);
+
+  const attachIframeToContainer = useCallback((domNode: HTMLElement) => {
+    if (!globalIframeElement || hasAttachedRef.current) return;
+    
+    if (globalContainerElement !== domNode) {
+      try {
+        domNode.appendChild(globalIframeElement);
+        globalContainerElement = domNode;
+        hasAttachedRef.current = true;
+      } catch (e) {
+        console.error('[WebChart] Error attaching iframe:', e);
+      }
+    } else {
+      hasAttachedRef.current = true;
+    }
+    
+    if (iframeFullyLoaded) {
+      setIsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -65,23 +89,27 @@ const WebChart = React.memo(() => {
     const domNode = containerRef.current as unknown as HTMLElement;
     if (!domNode) return;
     
-    // If iframe already exists globally, just move it to current container
-    if (globalIframeElement && iframeInitialized) {
-      console.log('[WebChart] Reusing existing iframe');
-      
-      // If iframe is in a different container, move it
-      if (globalContainerElement !== domNode) {
-        domNode.appendChild(globalIframeElement);
-        globalContainerElement = domNode;
-      }
+    const thisMountId = currentMountId.current;
+    
+    // If iframe already exists and is loaded, just attach it
+    if (globalIframeElement && iframeFullyLoaded) {
+      console.log(`[WebChart] Mount #${thisMountId}: Reusing fully loaded iframe`);
+      attachIframeToContainer(domNode);
       setIsLoading(false);
       return;
     }
     
+    // If iframe exists but not loaded yet, attach and wait
+    if (globalIframeElement && iframeCreationInProgress) {
+      console.log(`[WebChart] Mount #${thisMountId}: Iframe creation in progress, attaching`);
+      attachIframeToContainer(domNode);
+      return;
+    }
+    
     // Create iframe only once globally
-    if (!iframeInitialized) {
-      iframeInitialized = true;
-      console.log('[WebChart] Creating iframe (singleton)');
+    if (!globalIframeElement && !iframeCreationInProgress) {
+      iframeCreationInProgress = true;
+      console.log(`[WebChart] Mount #${thisMountId}: Creating new iframe (first time)`);
       
       const iframe = document.createElement('iframe');
       iframe.srcdoc = tradingViewHTML;
@@ -90,7 +118,8 @@ const WebChart = React.memo(() => {
       iframe.title = 'TradingView Chart';
       
       iframe.onload = () => {
-        console.log('[WebChart] Iframe loaded');
+        console.log(`[WebChart] Iframe fully loaded`);
+        iframeFullyLoaded = true;
         setIsLoading(false);
       };
       
@@ -98,20 +127,31 @@ const WebChart = React.memo(() => {
         console.log('[WebChart] Iframe error');
         setHasError(true);
         setIsLoading(false);
-        iframeInitialized = false;
+        iframeCreationInProgress = false;
+        iframeFullyLoaded = false;
         globalIframeElement = null;
       };
       
       globalIframeElement = iframe;
       globalContainerElement = domNode;
+      hasAttachedRef.current = true;
       domNode.appendChild(iframe);
       
       // Fallback timeout
       setTimeout(() => {
-        setIsLoading(false);
+        if (!iframeFullyLoaded) {
+          console.log('[WebChart] Fallback timeout - marking as loaded');
+          iframeFullyLoaded = true;
+          setIsLoading(false);
+        }
       }, 10000);
     }
-  }, []);
+    
+    // Cleanup: don't remove iframe on unmount, just detach reference
+    return () => {
+      hasAttachedRef.current = false;
+    };
+  }, [attachIframeToContainer]);
 
   if (hasError) {
     return (

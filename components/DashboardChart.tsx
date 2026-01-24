@@ -1,16 +1,31 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { View, StyleSheet } from 'react-native';
 import PriceChart from '@/components/PriceChart';
 
+// Create stable chart instance outside component to prevent recreation
+const StablePriceChart = React.memo(() => <PriceChart />, () => true);
+StablePriceChart.displayName = 'StablePriceChart';
+
 const DashboardChart = React.memo(() => {
+  // Use ref to track mount count for debugging
+  const mountCountRef = useRef(0);
+  mountCountRef.current++;
+  
+  // Only log on actual remount, not re-render
+  if (mountCountRef.current === 1) {
+    console.log('[DashboardChart] Initial mount');
+  }
+  
   return (
     <View style={styles.chartCard}>
       <View style={styles.chartContainer}>
-        <PriceChart />
+        <StablePriceChart />
       </View>
     </View>
   );
 }, () => true); // strict memoization: never re-render
+
+DashboardChart.displayName = 'DashboardChart';
 
 const styles = StyleSheet.create({
   chartCard: {
