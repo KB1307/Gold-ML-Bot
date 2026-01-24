@@ -8,7 +8,9 @@ interface PriceChartProps {
   onPriceUpdate?: (price: number) => void;
 }
 
-const webChartContainerId = 'tradingview-widget-container-' + Math.random().toString(36).substr(2, 9);
+const WEB_CHART_CONTAINER_ID = 'tradingview-chart-singleton';
+let webChartInitialized = false;
+let webChartIframe: HTMLIFrameElement | null = null;
 
 const tradingViewHTML = `
 <!DOCTYPE html>
@@ -52,39 +54,50 @@ const tradingViewHTML = `
 `;
 
 const WebChart = React.memo(() => {
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(!webChartInitialized);
+  const hasInitializedRef = useRef(false);
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof document === 'undefined') return;
-    
-    const container = document.getElementById(webChartContainerId);
-    if (!container || iframeRef.current) return;
+    if (hasInitializedRef.current) return;
+    hasInitializedRef.current = true;
 
-    console.log('[WebChart] Creating iframe');
-    
-    const iframe = document.createElement('iframe');
-    iframe.srcdoc = tradingViewHTML;
-    iframe.style.width = '100%';
-    iframe.style.height = '100%';
-    iframe.style.border = 'none';
-    iframe.style.backgroundColor = '#0F0F0F';
-    iframe.allow = 'autoplay; encrypted-media';
-    iframe.title = 'TradingView Chart';
-    iframe.onload = () => {
-      console.log('[WebChart] Iframe loaded');
-      setIsLoading(false);
-    };
-    
-    iframeRef.current = iframe;
-    container.appendChild(iframe);
-
-    return () => {
-      if (iframeRef.current && container.contains(iframeRef.current)) {
-        container.removeChild(iframeRef.current);
-        iframeRef.current = null;
+    const initChart = () => {
+      const container = document.getElementById(WEB_CHART_CONTAINER_ID);
+      if (!container) {
+        setTimeout(initChart, 100);
+        return;
       }
+
+      if (webChartInitialized && webChartIframe) {
+        if (!container.contains(webChartIframe)) {
+          container.appendChild(webChartIframe);
+        }
+        setIsLoading(false);
+        return;
+      }
+
+      console.log('[WebChart] Creating singleton iframe');
+      
+      const iframe = document.createElement('iframe');
+      iframe.srcdoc = tradingViewHTML;
+      iframe.style.width = '100%';
+      iframe.style.height = '100%';
+      iframe.style.border = 'none';
+      iframe.style.backgroundColor = '#0F0F0F';
+      iframe.allow = 'autoplay; encrypted-media';
+      iframe.title = 'TradingView Chart';
+      iframe.onload = () => {
+        console.log('[WebChart] Iframe loaded');
+        setIsLoading(false);
+      };
+      
+      webChartIframe = iframe;
+      webChartInitialized = true;
+      container.appendChild(iframe);
     };
+
+    initChart();
   }, []);
 
   return (
@@ -97,7 +110,7 @@ const WebChart = React.memo(() => {
       )}
       <View 
         style={styles.webChartInner} 
-        nativeID={webChartContainerId}
+        nativeID={WEB_CHART_CONTAINER_ID}
       />
     </View>
   );
