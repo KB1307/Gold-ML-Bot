@@ -108,50 +108,63 @@ const WebChart = React.memo(() => {
   const [hasError, setHasError] = useState(false);
   const containerRef = useRef<View>(null);
   const mountedRef = useRef(true);
-  const positionIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastPositionRef = useRef<string>('');
+  const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
     
     if (Platform.OS !== 'web') return;
     
-    // Initialize iframe once (appends to body, never moves)
     initializeGlobalIframe();
     
-    // Function to update position
     const updatePosition = () => {
       if (!mountedRef.current) return;
       const domNode = containerRef.current as unknown as HTMLElement;
       if (domNode && globalIframeElement) {
-        positionIframeOverContainer(domNode);
-        if (!iframeFullyLoaded) {
-          // Keep checking until loaded
-        } else {
+        const rect = domNode.getBoundingClientRect();
+        const posKey = `${rect.top.toFixed(0)},${rect.left.toFixed(0)},${rect.width.toFixed(0)},${rect.height.toFixed(0)}`;
+        
+        if (posKey !== lastPositionRef.current) {
+          lastPositionRef.current = posKey;
+          positionIframeOverContainer(domNode);
+        }
+        
+        if (iframeFullyLoaded) {
           setIsLoading(false);
         }
       }
     };
     
-    // Initial position update after a short delay for DOM to be ready
     const initialTimeout = setTimeout(updatePosition, 100);
     
-    // Update position periodically to handle scroll/resize
-    positionIntervalRef.current = setInterval(updatePosition, 500);
+    let scrollTimeout: ReturnType<typeof setTimeout> | null = null;
+    const handleScrollResize = () => {
+      if (scrollTimeout) clearTimeout(scrollTimeout);
+      scrollTimeout = setTimeout(() => {
+        if (rafRef.current) cancelAnimationFrame(rafRef.current);
+        rafRef.current = requestAnimationFrame(updatePosition);
+      }, 16);
+    };
     
-    // Also update on scroll and resize
-    const handleScrollResize = () => updatePosition();
     window.addEventListener('scroll', handleScrollResize, true);
     window.addEventListener('resize', handleScrollResize);
+    
+    const loadCheckInterval = setInterval(() => {
+      if (iframeFullyLoaded && mountedRef.current) {
+        setIsLoading(false);
+        clearInterval(loadCheckInterval);
+      }
+    }, 200);
     
     return () => {
       mountedRef.current = false;
       clearTimeout(initialTimeout);
-      if (positionIntervalRef.current) {
-        clearInterval(positionIntervalRef.current);
-      }
+      if (scrollTimeout) clearTimeout(scrollTimeout);
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      clearInterval(loadCheckInterval);
       window.removeEventListener('scroll', handleScrollResize, true);
       window.removeEventListener('resize', handleScrollResize);
-      // Hide iframe when component unmounts
       hideIframe();
     };
   }, []);
