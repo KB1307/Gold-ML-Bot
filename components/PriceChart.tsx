@@ -56,6 +56,9 @@ const tradingViewHTML = `
 </html>
 `;
 
+// Track which container is currently showing the chart
+let activeContainerId: string | null = null;
+
 // Initialize iframe once globally - append to body and never move it
 function initializeGlobalIframe(): void {
   if (iframeInitialized) return;
@@ -81,9 +84,10 @@ function initializeGlobalIframe(): void {
 }
 
 // Position the iframe over a container without moving it in DOM
-function positionIframeOverContainer(container: HTMLElement): void {
+function positionIframeOverContainer(container: HTMLElement, containerId: string): void {
   if (!globalIframeElement) return;
   
+  activeContainerId = containerId;
   const rect = container.getBoundingClientRect();
   globalIframeElement.style.cssText = `
     position:fixed;
@@ -105,6 +109,9 @@ function hideIframe(): void {
   globalIframeElement.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;opacity:0;pointer-events:none;';
 }
 
+// Generate unique ID for each WebChart instance
+let instanceCounter = 0;
+
 const WebChart = React.memo(() => {
   const [isLoading, setIsLoading] = useState(!iframeFullyLoaded);
   const [hasError, setHasError] = useState(false);
@@ -112,6 +119,7 @@ const WebChart = React.memo(() => {
   const mountedRef = useRef(true);
   const lastPositionRef = useRef<string>('');
   const rafRef = useRef<number | null>(null);
+  const instanceIdRef = useRef<string>(`webchart-${++instanceCounter}`);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -138,19 +146,35 @@ const WebChart = React.memo(() => {
                         rect.top < window.innerHeight && rect.bottom > 0 &&
                         rect.left < window.innerWidth && rect.right > 0;
       
-      // Also check if element is in the DOM and visible via offsetParent
+      // Check if element is in the DOM and visible via offsetParent
       const isInDOM = domNode.offsetParent !== null || domNode.style.position === 'fixed';
       
-      if (!isVisible || !isInDOM) {
-        hideIframe();
+      // Check if any parent has display:none or visibility:hidden (tab switching detection)
+      let isParentVisible = true;
+      let parent = domNode.parentElement;
+      while (parent) {
+        const style = window.getComputedStyle(parent);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+          isParentVisible = false;
+          break;
+        }
+        parent = parent.parentElement;
+      }
+      
+      if (!isVisible || !isInDOM || !isParentVisible) {
+        // Only hide if we were the active container
+        if (activeContainerId === instanceIdRef.current) {
+          hideIframe();
+          activeContainerId = null;
+        }
         return;
       }
       
       const posKey = `${rect.top.toFixed(0)},${rect.left.toFixed(0)},${rect.width.toFixed(0)},${rect.height.toFixed(0)}`;
       
-      if (posKey !== lastPositionRef.current) {
+      if (posKey !== lastPositionRef.current || activeContainerId !== instanceIdRef.current) {
         lastPositionRef.current = posKey;
-        positionIframeOverContainer(domNode);
+        positionIframeOverContainer(domNode, instanceIdRef.current);
       }
       
       if (iframeFullyLoaded && isLoading) {
@@ -193,10 +217,16 @@ const WebChart = React.memo(() => {
       window.removeEventListener('resize', handleScrollResize);
       
       mountedInstanceCount--;
+      // Hide immediately if this was the active container
+      if (activeContainerId === instanceIdRef.current) {
+        hideIframe();
+        activeContainerId = null;
+      }
       if (mountedInstanceCount === 0) {
         hideDebounceTimeout = setTimeout(() => {
           if (mountedInstanceCount === 0) {
             hideIframe();
+            activeContainerId = null;
           }
         }, 150);
       }
