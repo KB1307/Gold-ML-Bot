@@ -118,7 +118,6 @@ const WebChart = React.memo(() => {
     
     if (Platform.OS !== 'web') return;
     
-    // Track mounted instances to prevent hide during rapid re-renders
     mountedInstanceCount++;
     if (hideDebounceTimeout) {
       clearTimeout(hideDebounceTimeout);
@@ -127,37 +126,54 @@ const WebChart = React.memo(() => {
     
     initializeGlobalIframe();
     
-    const updatePosition = () => {
+    const checkVisibilityAndPosition = () => {
       if (!mountedRef.current) return;
       const domNode = containerRef.current as unknown as HTMLElement;
-      if (domNode && globalIframeElement) {
-        const rect = domNode.getBoundingClientRect();
-        const posKey = `${rect.top.toFixed(0)},${rect.left.toFixed(0)},${rect.width.toFixed(0)},${rect.height.toFixed(0)}`;
-        
-        if (posKey !== lastPositionRef.current) {
-          lastPositionRef.current = posKey;
-          positionIframeOverContainer(domNode);
-        }
-        
-        if (iframeFullyLoaded && isLoading) {
-          setIsLoading(false);
-        }
+      if (!domNode || !globalIframeElement) return;
+      
+      const rect = domNode.getBoundingClientRect();
+      
+      // Check if container is actually visible (not hidden by tab switching)
+      const isVisible = rect.width > 0 && rect.height > 0 && 
+                        rect.top < window.innerHeight && rect.bottom > 0 &&
+                        rect.left < window.innerWidth && rect.right > 0;
+      
+      // Also check if element is in the DOM and visible via offsetParent
+      const isInDOM = domNode.offsetParent !== null || domNode.style.position === 'fixed';
+      
+      if (!isVisible || !isInDOM) {
+        hideIframe();
+        return;
+      }
+      
+      const posKey = `${rect.top.toFixed(0)},${rect.left.toFixed(0)},${rect.width.toFixed(0)},${rect.height.toFixed(0)}`;
+      
+      if (posKey !== lastPositionRef.current) {
+        lastPositionRef.current = posKey;
+        positionIframeOverContainer(domNode);
+      }
+      
+      if (iframeFullyLoaded && isLoading) {
+        setIsLoading(false);
       }
     };
     
-    const initialTimeout = setTimeout(updatePosition, 100);
+    const initialTimeout = setTimeout(checkVisibilityAndPosition, 100);
     
     let scrollTimeout: ReturnType<typeof setTimeout> | null = null;
     const handleScrollResize = () => {
       if (scrollTimeout) clearTimeout(scrollTimeout);
       scrollTimeout = setTimeout(() => {
         if (rafRef.current) cancelAnimationFrame(rafRef.current);
-        rafRef.current = requestAnimationFrame(updatePosition);
+        rafRef.current = requestAnimationFrame(checkVisibilityAndPosition);
       }, 16);
     };
     
     window.addEventListener('scroll', handleScrollResize, true);
     window.addEventListener('resize', handleScrollResize);
+    
+    // Poll for visibility changes (handles tab switching)
+    const visibilityInterval = setInterval(checkVisibilityAndPosition, 300);
     
     const loadCheckInterval = setInterval(() => {
       if (iframeFullyLoaded && mountedRef.current) {
@@ -172,10 +188,10 @@ const WebChart = React.memo(() => {
       if (scrollTimeout) clearTimeout(scrollTimeout);
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       clearInterval(loadCheckInterval);
+      clearInterval(visibilityInterval);
       window.removeEventListener('scroll', handleScrollResize, true);
       window.removeEventListener('resize', handleScrollResize);
       
-      // Debounce hide to prevent flicker during rapid unmount/remount cycles
       mountedInstanceCount--;
       if (mountedInstanceCount === 0) {
         hideDebounceTimeout = setTimeout(() => {
