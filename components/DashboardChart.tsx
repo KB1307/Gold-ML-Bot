@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { View, StyleSheet } from 'react-native';
+import { usePathname } from 'expo-router';
 import PriceChart from '@/components/PriceChart';
 
 // Module-level flag to track if chart has ever been mounted
@@ -9,9 +10,11 @@ let chartInstanceId = 0;
 const DashboardChart = React.memo(() => {
   const instanceIdRef = useRef(++chartInstanceId);
   const [shouldRenderChart, setShouldRenderChart] = useState(chartMountedOnce);
+  const pathname = usePathname();
+  
+  const isOnDashboard = pathname === '/' || pathname === '/dashboard' || pathname.includes('dashboard');
   
   useEffect(() => {
-    // Only log once per app session
     if (!chartMountedOnce) {
       console.log(`[DashboardChart] First mount (instance #${instanceIdRef.current})`);
       chartMountedOnce = true;
@@ -22,7 +25,7 @@ const DashboardChart = React.memo(() => {
   return (
     <View style={styles.chartCard}>
       <View style={styles.chartContainer}>
-        {shouldRenderChart && <PriceChart />}
+        {shouldRenderChart && <PriceChart isActive={isOnDashboard} />}
       </View>
     </View>
   );
