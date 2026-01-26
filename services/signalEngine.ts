@@ -3184,9 +3184,9 @@ class SignalGenerationEngine {
       return null;
     }
     
-    if (analysis.confidence < 0.90) {
-      console.log(`❌ REJECTED: Confidence ${(analysis.confidence * 100).toFixed(1)}% below absolute minimum (90%) for high accuracy mode`);
-      console.log(`   Requirement: >90% accuracy (Fibonacci + Session Sweeps active)`);
+    if (analysis.confidence < 0.85) {
+      console.log(`❌ REJECTED: Confidence ${(analysis.confidence * 100).toFixed(1)}% below absolute minimum (85%) for high accuracy mode`);
+      console.log(`   Requirement: >85% accuracy (Fibonacci + Session Sweeps active)`);
       console.log(`${'='.repeat(80)}\n`);
       return null;
     }
