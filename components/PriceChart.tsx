@@ -115,7 +115,7 @@ let instanceCounter = 0;
 
 const WebChart = React.memo(({ isActive = true }: { isActive?: boolean }) => {
   const [isLoading, setIsLoading] = useState(!iframeFullyLoaded);
-  const [hasError] = useState(false);
+  const [hasError, setHasError] = useState(false);
   const containerRef = useRef<View>(null);
   const mountedRef = useRef(true);
   const lastPositionRef = useRef<string>('');
@@ -124,8 +124,9 @@ const WebChart = React.memo(({ isActive = true }: { isActive?: boolean }) => {
   const isActiveRef = useRef(isActive);
   
   useEffect(() => {
+    const currentId = instanceIdRef.current;
     isActiveRef.current = isActive;
-    if (!isActive && activeContainerId === instanceIdRef.current) {
+    if (!isActive && activeContainerId === currentId) {
       hideIframe();
       activeContainerId = null;
     }
@@ -144,9 +145,11 @@ const WebChart = React.memo(({ isActive = true }: { isActive?: boolean }) => {
     
     initializeGlobalIframe();
     
+    const currentInstanceId = instanceIdRef.current;
+    
     const checkVisibilityAndPosition = () => {
       if (!mountedRef.current || !isActiveRef.current) {
-        if (activeContainerId === instanceIdRef.current) {
+        if (activeContainerId === currentInstanceId) {
           hideIframe();
           activeContainerId = null;
         }
@@ -165,7 +168,7 @@ const WebChart = React.memo(({ isActive = true }: { isActive?: boolean }) => {
       const isInDOM = domNode.offsetParent !== null || domNode.style.position === 'fixed';
       
       if (!isVisible || !isInDOM) {
-        if (activeContainerId === instanceIdRef.current) {
+        if (activeContainerId === currentInstanceId) {
           hideIframe();
           activeContainerId = null;
         }
@@ -174,9 +177,9 @@ const WebChart = React.memo(({ isActive = true }: { isActive?: boolean }) => {
       
       const posKey = `${rect.top.toFixed(0)},${rect.left.toFixed(0)},${rect.width.toFixed(0)},${rect.height.toFixed(0)}`;
       
-      if (posKey !== lastPositionRef.current || activeContainerId !== instanceIdRef.current) {
+      if (posKey !== lastPositionRef.current || activeContainerId !== currentInstanceId) {
         lastPositionRef.current = posKey;
-        positionIframeOverContainer(domNode, instanceIdRef.current);
+        positionIframeOverContainer(domNode, currentInstanceId);
       }
       
       if (iframeFullyLoaded && isLoading) {
@@ -207,8 +210,6 @@ const WebChart = React.memo(({ isActive = true }: { isActive?: boolean }) => {
         clearInterval(loadCheckInterval);
       }
     }, 200);
-    
-    const currentInstanceId = instanceIdRef.current;
     
     return () => {
       mountedRef.current = false;
@@ -242,6 +243,7 @@ const WebChart = React.memo(({ isActive = true }: { isActive?: boolean }) => {
         <View style={styles.errorContainer}>
           <Text style={styles.errorText}>Failed to load chart</Text>
           <Text style={styles.errorSubtext}>Please refresh the page</Text>
+          <Text style={styles.errorSubtext} onPress={() => setHasError(false)}>Tap to retry</Text>
         </View>
       </View>
     );
