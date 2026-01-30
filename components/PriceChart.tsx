@@ -115,7 +115,6 @@ let instanceCounter = 0;
 
 const WebChart = React.memo(({ isActive = true }: { isActive?: boolean }) => {
   const [isLoading, setIsLoading] = useState(!iframeFullyLoaded);
-  const [hasError, setHasError] = useState(false);
   const containerRef = useRef<View>(null);
   const mountedRef = useRef(true);
   const lastPositionRef = useRef<string>('');
@@ -236,18 +235,6 @@ const WebChart = React.memo(({ isActive = true }: { isActive?: boolean }) => {
       }
     };
   }, [isLoading]);
-
-  if (hasError) {
-    return (
-      <View style={styles.container} testID="web-chart-container">
-        <View style={styles.errorContainer}>
-          <Text style={styles.errorText}>Failed to load chart</Text>
-          <Text style={styles.errorSubtext}>Please refresh the page</Text>
-          <Text style={styles.errorSubtext} onPress={() => setHasError(false)}>Tap to retry</Text>
-        </View>
-      </View>
-    );
-  }
 
   return (
     <View style={styles.container} testID="web-chart-container">
