@@ -2,8 +2,9 @@ import { createTRPCRouter, publicProcedure } from "../create-context";
 
 let goldPriceCache: { price: number; source: string; timestamp: number } | null = null;
 let intermarketCache: { dxy: number; us10y: number; vix: number; timestamp: number } | null = null;
-const GOLD_CACHE_MS = 3000;
-const INTERMARKET_CACHE_MS = 10000;
+const GOLD_CACHE_MS = 5000;
+const INTERMARKET_CACHE_MS = 15000;
+const STALE_CACHE_MS = 60000;
 
 async function fetchWithTimeout(url: string, timeout = 10000, headers?: Record<string, string>): Promise<Response> {
   const controller = new AbortController();
@@ -29,14 +30,13 @@ async function fetchWithTimeout(url: string, timeout = 10000, headers?: Record<s
 async function fetchYahooGold(): Promise<{ price: number; source: string } | null> {
   const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
   const symbols = ['GC=F', 'GC%3DF'];
-  const timestamp = Date.now();
   
   for (const host of hosts) {
     for (const symbol of symbols) {
       try {
-        const url = `https://${host}/v8/finance/chart/${symbol}?interval=1m&range=1d&_t=${timestamp}`;
+        const url = `https://${host}/v8/finance/chart/${symbol}?interval=1m&range=1d`;
         console.log(`[GOLD] Trying Yahoo: ${url}`);
-        const response = await fetchWithTimeout(url);
+        const response = await fetchWithTimeout(url, 8000);
         
         if (!response.ok) {
           console.log(`[GOLD] Yahoo ${host} returned ${response.status}`);
@@ -58,14 +58,52 @@ async function fetchYahooGold(): Promise<{ price: number; source: string } | nul
   return null;
 }
 
+async function fetchGoldApi(): Promise<{ price: number; source: string } | null> {
+  try {
+    console.log('[GOLD] Trying goldapi.io...');
+    const response = await fetchWithTimeout('https://www.goldapi.io/api/XAU/USD', 8000, {
+      'x-access-token': 'goldapi-free-demo',
+    });
+    if (response.ok) {
+      const data = await response.json();
+      if (data?.price && data.price > 1000) {
+        console.log(`[GOLD] goldapi.io success: ${data.price}`);
+        return { price: parseFloat(data.price.toFixed(2)), source: 'goldapi.io' };
+      }
+    }
+  } catch (e) {
+    console.log('[GOLD] goldapi.io error:', e instanceof Error ? e.message : 'Unknown');
+  }
+  return null;
+}
+
+async function fetchForexApi(): Promise<{ price: number; source: string } | null> {
+  try {
+    console.log('[GOLD] Trying frankfurter (forex rates)...');
+    const response = await fetchWithTimeout('https://api.frankfurter.app/latest?from=XAU&to=USD', 8000);
+    if (response.ok) {
+      const data = await response.json();
+      if (data?.rates?.USD) {
+        const price = 1 / data.rates.USD;
+        if (price > 1000) {
+          console.log(`[GOLD] frankfurter success: ${price}`);
+          return { price: parseFloat(price.toFixed(2)), source: 'frankfurter' };
+        }
+      }
+    }
+  } catch (e) {
+    console.log('[GOLD] frankfurter error:', e instanceof Error ? e.message : 'Unknown');
+  }
+  return null;
+}
+
 async function fetchYahooSymbol(symbol: string): Promise<number | null> {
   const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
-  const timestamp = Date.now();
   
   for (const host of hosts) {
     try {
-      const url = `https://${host}/v8/finance/chart/${symbol}?interval=1m&range=1d&_t=${timestamp}`;
-      const response = await fetchWithTimeout(url);
+      const url = `https://${host}/v8/finance/chart/${symbol}?interval=1m&range=1d`;
+      const response = await fetchWithTimeout(url, 8000);
       
       if (!response.ok) continue;
       
@@ -90,19 +128,35 @@ export const goldPriceRouter = createTRPCRouter({
       return { price: goldPriceCache.price, source: goldPriceCache.source, timestamp: goldPriceCache.timestamp, cached: true };
     }
     
-    const timestamp = now;
+    // Try all sources in parallel for faster response
+    const [yahooResult, goldApiResult, forexResult] = await Promise.allSettled([
+      fetchYahooGold(),
+      fetchGoldApi(),
+      fetchForexApi(),
+    ]);
     
-    // Primary: Yahoo Finance Gold Futures (most reliable)
-    const yahooResult = await fetchYahooGold();
-    if (yahooResult) {
-      goldPriceCache = { price: yahooResult.price, source: yahooResult.source, timestamp: now };
-      return { price: yahooResult.price, source: yahooResult.source, timestamp: now, cached: false };
+    // Check Yahoo first (most reliable)
+    if (yahooResult.status === 'fulfilled' && yahooResult.value) {
+      goldPriceCache = { price: yahooResult.value.price, source: yahooResult.value.source, timestamp: now };
+      return { price: yahooResult.value.price, source: yahooResult.value.source, timestamp: now, cached: false };
     }
     
-    // Fallback 1: goldprice.org
+    // Check goldapi.io
+    if (goldApiResult.status === 'fulfilled' && goldApiResult.value) {
+      goldPriceCache = { price: goldApiResult.value.price, source: goldApiResult.value.source, timestamp: now };
+      return { price: goldApiResult.value.price, source: goldApiResult.value.source, timestamp: now, cached: false };
+    }
+    
+    // Check forex API
+    if (forexResult.status === 'fulfilled' && forexResult.value) {
+      goldPriceCache = { price: forexResult.value.price, source: forexResult.value.source, timestamp: now };
+      return { price: forexResult.value.price, source: forexResult.value.source, timestamp: now, cached: false };
+    }
+    
+    // Fallback: goldprice.org
     try {
       console.log('[GOLD] Trying goldprice.org...');
-      const response = await fetchWithTimeout(`https://data-asg.goldprice.org/dbXRates/USD?_t=${timestamp}`);
+      const response = await fetchWithTimeout('https://data-asg.goldprice.org/dbXRates/USD', 8000);
       
       if (response.ok) {
         const data = await response.json();
@@ -117,10 +171,10 @@ export const goldPriceRouter = createTRPCRouter({
       console.log('[GOLD] goldprice.org error:', e instanceof Error ? e.message : 'Unknown');
     }
     
-    // Fallback 2: metals.live
+    // Fallback: metals.live
     try {
       console.log('[GOLD] Trying metals.live...');
-      const response = await fetchWithTimeout(`https://api.metals.live/v1/spot/gold?_t=${timestamp}`);
+      const response = await fetchWithTimeout('https://api.metals.live/v1/spot/gold', 8000);
       if (response.ok) {
         const data = await response.json();
         if (data?.[0]?.price) {
@@ -134,10 +188,10 @@ export const goldPriceRouter = createTRPCRouter({
       console.log('[GOLD] metals.live error:', e instanceof Error ? e.message : 'Unknown');
     }
     
-    // Fallback 3: Binance PAXG
+    // Fallback: Binance PAXG
     try {
       console.log('[GOLD] Trying binance...');
-      const response = await fetchWithTimeout(`https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT&_t=${timestamp}`);
+      const response = await fetchWithTimeout('https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT', 8000);
       if (response.ok) {
         const data = await response.json();
         if (data?.price) {
@@ -151,14 +205,41 @@ export const goldPriceRouter = createTRPCRouter({
       console.log('[GOLD] binance error:', e instanceof Error ? e.message : 'Unknown');
     }
     
-    // Last resort: return cached or indicate failure
-    if (goldPriceCache) {
+    // Return stale cache if available (within 60s)
+    if (goldPriceCache && now - goldPriceCache.timestamp < STALE_CACHE_MS) {
       console.log(`[GOLD] All sources failed, returning stale cache: ${goldPriceCache.price}`);
       return { price: goldPriceCache.price, source: 'stale-cache', timestamp: goldPriceCache.timestamp, cached: true };
     }
     
+    // Very stale cache (better than nothing)
+    if (goldPriceCache) {
+      console.log(`[GOLD] All sources failed, returning very stale cache: ${goldPriceCache.price}`);
+      return { price: goldPriceCache.price, source: 'very-stale-cache', timestamp: goldPriceCache.timestamp, cached: true };
+    }
+    
     console.log('[GOLD] All sources failed, no cache available');
     return { price: 0, source: 'unavailable', timestamp: now, cached: false };
+  }),
+
+  // Health check endpoint
+  healthCheck: publicProcedure.query(async () => {
+    const sources = [
+      { name: 'yahoo', test: () => fetchYahooGold() },
+      { name: 'goldapi', test: () => fetchGoldApi() },
+    ];
+    
+    const results = await Promise.allSettled(
+      sources.map(async (s) => {
+        const result = await s.test();
+        return { name: s.name, working: !!result, price: result?.price };
+      })
+    );
+    
+    return {
+      timestamp: Date.now(),
+      cache: goldPriceCache ? { price: goldPriceCache.price, age: Date.now() - goldPriceCache.timestamp } : null,
+      sources: results.map((r) => r.status === 'fulfilled' ? r.value : { name: 'unknown', working: false }),
+    };
   }),
 
   getIntermarketData: publicProcedure.query(async () => {
