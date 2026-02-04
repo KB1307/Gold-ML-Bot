@@ -97,6 +97,48 @@ async function fetchForexApi(): Promise<{ price: number; source: string } | null
   return null;
 }
 
+async function fetchCoinGecko(): Promise<{ price: number; source: string } | null> {
+  try {
+    console.log('[GOLD] Trying CoinGecko (PAXG)...');
+    const response = await fetchWithTimeout('https://api.coingecko.com/api/v3/simple/price?ids=pax-gold&vs_currencies=usd', 8000, {
+      'Accept': 'application/json',
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (data?.['pax-gold']?.usd) {
+        const price = data['pax-gold'].usd;
+        if (price > 1000) {
+          console.log(`[GOLD] CoinGecko success: ${price}`);
+          return { price: parseFloat(price.toFixed(2)), source: 'coingecko' };
+        }
+      }
+    }
+  } catch (e) {
+    console.log('[GOLD] CoinGecko error:', e instanceof Error ? e.message : 'Unknown');
+  }
+  return null;
+}
+
+async function fetchBinance(): Promise<{ price: number; source: string } | null> {
+  try {
+    console.log('[GOLD] Trying binance...');
+    // Add timestamp to avoid caching
+    const response = await fetchWithTimeout(`https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT&t=${Date.now()}`, 8000);
+    if (response.ok) {
+      const data = await response.json();
+      if (data?.price) {
+        const price = Number(parseFloat(data.price).toFixed(2));
+        console.log(`[GOLD] binance success: ${price}`);
+        return { price, source: 'binance' };
+      }
+    }
+  } catch (e) {
+    console.log('[GOLD] binance error:', e instanceof Error ? e.message : 'Unknown');
+  }
+  return null;
+}
+
 async function fetchYahooSymbol(symbol: string): Promise<number | null> {
   const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
   
@@ -129,16 +171,29 @@ export const goldPriceRouter = createTRPCRouter({
     }
     
     // Try all sources in parallel for faster response
-    const [yahooResult, goldApiResult, forexResult] = await Promise.allSettled([
+    const [yahooResult, coinGeckoResult, binanceResult, goldApiResult] = await Promise.allSettled([
       fetchYahooGold(),
+      fetchCoinGecko(),
+      fetchBinance(),
       fetchGoldApi(),
-      fetchForexApi(),
     ]);
     
-    // Check Yahoo first (most reliable)
+    // Check Yahoo first (most reliable usually)
     if (yahooResult.status === 'fulfilled' && yahooResult.value) {
       goldPriceCache = { price: yahooResult.value.price, source: yahooResult.value.source, timestamp: now };
       return { price: yahooResult.value.price, source: yahooResult.value.source, timestamp: now, cached: false };
+    }
+
+    // Check CoinGecko (reliable fallback)
+    if (coinGeckoResult.status === 'fulfilled' && coinGeckoResult.value) {
+      goldPriceCache = { price: coinGeckoResult.value.price, source: coinGeckoResult.value.source, timestamp: now };
+      return { price: coinGeckoResult.value.price, source: coinGeckoResult.value.source, timestamp: now, cached: false };
+    }
+    
+    // Check Binance
+    if (binanceResult.status === 'fulfilled' && binanceResult.value) {
+      goldPriceCache = { price: binanceResult.value.price, source: binanceResult.value.source, timestamp: now };
+      return { price: binanceResult.value.price, source: binanceResult.value.source, timestamp: now, cached: false };
     }
     
     // Check goldapi.io
@@ -147,12 +202,8 @@ export const goldPriceRouter = createTRPCRouter({
       return { price: goldApiResult.value.price, source: goldApiResult.value.source, timestamp: now, cached: false };
     }
     
-    // Check forex API
-    if (forexResult.status === 'fulfilled' && forexResult.value) {
-      goldPriceCache = { price: forexResult.value.price, source: forexResult.value.source, timestamp: now };
-      return { price: forexResult.value.price, source: forexResult.value.source, timestamp: now, cached: false };
-    }
-    
+    // Removed failed forex API
+
     // Fallback: goldprice.org
     try {
       console.log('[GOLD] Trying goldprice.org...');
@@ -186,23 +237,6 @@ export const goldPriceRouter = createTRPCRouter({
       }
     } catch (e) {
       console.log('[GOLD] metals.live error:', e instanceof Error ? e.message : 'Unknown');
-    }
-    
-    // Fallback: Binance PAXG
-    try {
-      console.log('[GOLD] Trying binance...');
-      const response = await fetchWithTimeout('https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT', 8000);
-      if (response.ok) {
-        const data = await response.json();
-        if (data?.price) {
-          const price = Number(parseFloat(data.price).toFixed(2));
-          console.log(`[GOLD] binance success: ${price}`);
-          goldPriceCache = { price, source: 'binance', timestamp: now };
-          return { price, source: 'binance', timestamp: now, cached: false };
-        }
-      }
-    } catch (e) {
-      console.log('[GOLD] binance error:', e instanceof Error ? e.message : 'Unknown');
     }
     
     // Return stale cache if available (within 60s)

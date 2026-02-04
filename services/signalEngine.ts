@@ -372,7 +372,15 @@ class SignalGenerationEngine {
   async updateCurrentPrice(): Promise<number> {
     try {
       const livePrice = await fetchLiveGoldPrice();
-      this.currentPrice = livePrice;
+      
+      // Only update if we got a valid price
+      if (livePrice > 0) {
+        this.currentPrice = livePrice;
+      } else {
+        console.warn(`⚠️ Invalid price received (${livePrice}), keeping previous price: ${this.currentPrice}`);
+        // Return current price so we don't break downstream consumers
+        return this.currentPrice;
+      }
       
       this.priceHistory.push(this.currentPrice);
       if (this.priceHistory.length > 100) {
