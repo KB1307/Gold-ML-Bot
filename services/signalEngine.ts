@@ -277,20 +277,49 @@ async function fetchLiveGoldPrice(): Promise<number> {
     return cachedGoldPrice;
   }
 
+  // Primary: Backend tRPC
   try {
     const result = await trpcClient.goldPrice.getSpotPrice.query();
-    cachedGoldPrice = result.price;
-    lastFetchTime = now;
-    return result.price;
+    if (result.price > 0 && result.source !== 'unavailable') {
+      console.log(`✅ Live gold price: ${result.price} (${result.source})`);
+      cachedGoldPrice = result.price;
+      lastFetchTime = now;
+      return result.price;
+    } else {
+      console.log('⚠️ Backend returned unavailable price');
+    }
   } catch (error) {
     console.log('⚠️ Backend gold price fetch failed:', error instanceof Error ? error.message : 'Unknown');
   }
 
+  // Fallback: Direct Yahoo Finance fetch (for native apps without CORS)
+  try {
+    const response = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d', {
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    if (response.ok) {
+      const data = await response.json();
+      const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
+      if (price && price > 1000) {
+        console.log(`✅ Direct Yahoo gold price: ${price}`);
+        cachedGoldPrice = price;
+        lastFetchTime = now;
+        return price;
+      }
+    }
+  } catch {
+    // Expected to fail on web due to CORS
+  }
+
+  // Return cached if available (stale data is better than none)
   if (cachedGoldPrice !== null) {
+    console.log(`⚠️ Using stale cached price: ${cachedGoldPrice}`);
     return cachedGoldPrice;
   }
 
-  return 2650;
+  // Absolute last resort - this should rarely happen
+  console.error('❌ All price sources failed, no cache available');
+  return 0;
 }
 
 class SignalGenerationEngine {
