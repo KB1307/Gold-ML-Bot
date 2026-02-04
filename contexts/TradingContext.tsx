@@ -4,6 +4,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { TradingSignal, SignalStatus, Settings, MarketOutlook, PerformanceMetrics, PositionSizing, DailyOHLC } from "@/types/trading";
 import { signalEngine } from "@/services/signalEngine";
 import { Platform } from "react-native";
+import { trpcClient } from "@/lib/trpc";
 import { 
   registerBackgroundTask, 
   setupNotificationChannel, 
@@ -157,68 +158,20 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   const fetchPriceHistory = async (fromTime: number, toTime: number): Promise<{timestamp: number, open: number, high: number, low: number, close: number}[]> => {
     try {
-      console.log(`📊 Fetching historical 1-MINUTE OHLCV data (UPGRADED)...`);
+      console.log(`📊 Fetching historical 1-MINUTE OHLCV data (via tRPC)...`);
       console.log(`   From: ${new Date(fromTime).toISOString()}`);
       console.log(`   To: ${new Date(toTime).toISOString()}`);
-      console.log(`   Duration: ${((toTime - fromTime) / 1000 / 60).toFixed(1)} minutes`);
-      console.log(`   ⚠️ Resolution: 1-MINUTE BARS (60-second window, minimal ambiguity)`);
       
-      const url = Platform.OS === 'web' 
-        ? `https://corsproxy.io/?${encodeURIComponent('https://query2.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d')}`
-        : 'https://query2.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d';
-      
-      const response = await fetch(url, {
-        headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (compatible; TradingApp/1.0)',
-        },
+      const bars = await trpcClient.goldPrice.getHistoricalData.query({
+        fromTime,
+        toTime
       });
       
-      if (!response.ok) {
-        console.error(`❌ Failed to fetch price history: HTTP ${response.status}`);
-        return [];
-      }
+      console.log(`✅ Fetched ${bars.length} historical 1-MINUTE bars`);
       
-      const data = await response.json();
-      
-      if (!data?.chart?.result?.[0]?.timestamp) {
-        console.error('❌ Invalid response format from Yahoo Finance');
-        return [];
-      }
-      
-      const result = data.chart.result[0];
-      const timestamps = result.timestamp;
-      const quotes = result.indicators.quote[0];
-      
-      const bars: {timestamp: number, open: number, high: number, low: number, close: number}[] = [];
-      
-      for (let i = 0; i < timestamps.length; i++) {
-        const barTime = timestamps[i] * 1000;
-        
-        if (barTime >= fromTime && barTime <= toTime) {
-          const open = quotes.open[i];
-          const high = quotes.high[i];
-          const low = quotes.low[i];
-          const close = quotes.close[i];
-          
-          if (open !== null && high !== null && low !== null && close !== null) {
-            bars.push({
-              timestamp: barTime,
-              open,
-              high,
-              low,
-              close,
-            });
-          }
-        }
-      }
-      
-      console.log(`✅ Fetched ${bars.length} historical 1-MINUTE bars (Upgraded Resolution)`);
       if (bars.length > 0) {
         console.log(`   First bar: ${new Date(bars[0].timestamp).toISOString()} - Close: ${bars[0].close.toFixed(2)}`);
         console.log(`   Last bar: ${new Date(bars[bars.length - 1].timestamp).toISOString()} - Close: ${bars[bars.length - 1].close.toFixed(2)}`);
-        console.log(`   Bar Ambiguity Window: 60 seconds (vs. 300 seconds with 5min bars)`);
-        console.log(`   Accuracy Improvement: ~83% reduction in unobservable time`);
       }
       
       return bars;

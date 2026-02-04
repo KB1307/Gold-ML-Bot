@@ -1,4 +1,5 @@
 import { createTRPCRouter, publicProcedure } from "../create-context";
+import * as z from "zod";
 
 let goldPriceCache: { price: number; source: string; timestamp: number } | null = null;
 let intermarketCache: { dxy: number; us10y: number; vix: number; timestamp: number } | null = null;
@@ -6,7 +7,7 @@ const GOLD_CACHE_MS = 5000;
 const INTERMARKET_CACHE_MS = 15000;
 const STALE_CACHE_MS = 60000;
 
-async function fetchWithTimeout(url: string, timeout = 10000, headers?: Record<string, string>): Promise<Response> {
+async function fetchWithTimeout(url: string, timeout = 4000, headers?: Record<string, string>): Promise<Response> {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
@@ -36,7 +37,7 @@ async function fetchYahooGold(): Promise<{ price: number; source: string } | nul
       try {
         const url = `https://${host}/v8/finance/chart/${symbol}?interval=1m&range=1d`;
         console.log(`[GOLD] Trying Yahoo: ${url}`);
-        const response = await fetchWithTimeout(url, 8000);
+        const response = await fetchWithTimeout(url, 4000);
         
         if (!response.ok) {
           console.log(`[GOLD] Yahoo ${host} returned ${response.status}`);
@@ -61,7 +62,7 @@ async function fetchYahooGold(): Promise<{ price: number; source: string } | nul
 async function fetchGoldApi(): Promise<{ price: number; source: string } | null> {
   try {
     console.log('[GOLD] Trying goldapi.io...');
-    const response = await fetchWithTimeout('https://www.goldapi.io/api/XAU/USD', 8000, {
+    const response = await fetchWithTimeout('https://www.goldapi.io/api/XAU/USD', 4000, {
       'x-access-token': 'goldapi-free-demo',
     });
     if (response.ok) {
@@ -80,7 +81,7 @@ async function fetchGoldApi(): Promise<{ price: number; source: string } | null>
 async function fetchForexApi(): Promise<{ price: number; source: string } | null> {
   try {
     console.log('[GOLD] Trying frankfurter (forex rates)...');
-    const response = await fetchWithTimeout('https://api.frankfurter.app/latest?from=XAU&to=USD', 8000);
+    const response = await fetchWithTimeout('https://api.frankfurter.app/latest?from=XAU&to=USD', 4000);
     if (response.ok) {
       const data = await response.json();
       if (data?.rates?.USD) {
@@ -100,7 +101,7 @@ async function fetchForexApi(): Promise<{ price: number; source: string } | null
 async function fetchCoinGecko(): Promise<{ price: number; source: string } | null> {
   try {
     console.log('[GOLD] Trying CoinGecko (PAXG)...');
-    const response = await fetchWithTimeout('https://api.coingecko.com/api/v3/simple/price?ids=pax-gold&vs_currencies=usd', 8000, {
+    const response = await fetchWithTimeout('https://api.coingecko.com/api/v3/simple/price?ids=pax-gold&vs_currencies=usd', 4000, {
       'Accept': 'application/json',
     });
     
@@ -124,7 +125,7 @@ async function fetchBinance(): Promise<{ price: number; source: string } | null>
   try {
     console.log('[GOLD] Trying binance...');
     // Add timestamp to avoid caching
-    const response = await fetchWithTimeout(`https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT&t=${Date.now()}`, 8000);
+    const response = await fetchWithTimeout(`https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT&t=${Date.now()}`, 4000);
     if (response.ok) {
       const data = await response.json();
       if (data?.price) {
@@ -139,13 +140,33 @@ async function fetchBinance(): Promise<{ price: number; source: string } | null>
   return null;
 }
 
+async function fetchKraken(): Promise<{ price: number; source: string } | null> {
+  try {
+    console.log('[GOLD] Trying Kraken...');
+    const response = await fetchWithTimeout('https://api.kraken.com/0/public/Ticker?pair=PAXGUSD', 4000);
+    if (response.ok) {
+      const data = await response.json();
+      // Kraken format: { result: { PAXGUSD: { c: ["2000.00", "0.1"] } } }
+      const pair = data?.result?.PAXGUSD || data?.result?.XPAXGZUSD;
+      if (pair && pair.c && pair.c[0]) {
+        const price = parseFloat(pair.c[0]);
+        console.log(`[GOLD] Kraken success: ${price}`);
+        return { price, source: 'kraken' };
+      }
+    }
+  } catch (e) {
+    console.log('[GOLD] Kraken error:', e instanceof Error ? e.message : 'Unknown');
+  }
+  return null;
+}
+
 async function fetchYahooSymbol(symbol: string): Promise<number | null> {
   const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
   
   for (const host of hosts) {
     try {
       const url = `https://${host}/v8/finance/chart/${symbol}?interval=1m&range=1d`;
-      const response = await fetchWithTimeout(url, 8000);
+      const response = await fetchWithTimeout(url, 4000);
       
       if (!response.ok) continue;
       
@@ -171,17 +192,24 @@ export const goldPriceRouter = createTRPCRouter({
     }
     
     // Try all sources in parallel for faster response
-    const [yahooResult, coinGeckoResult, binanceResult, goldApiResult] = await Promise.allSettled([
+    const [yahooResult, coinGeckoResult, binanceResult, goldApiResult, krakenResult] = await Promise.allSettled([
       fetchYahooGold(),
       fetchCoinGecko(),
       fetchBinance(),
       fetchGoldApi(),
+      fetchKraken(),
     ]);
     
     // Check Yahoo first (most reliable usually)
     if (yahooResult.status === 'fulfilled' && yahooResult.value) {
       goldPriceCache = { price: yahooResult.value.price, source: yahooResult.value.source, timestamp: now };
       return { price: yahooResult.value.price, source: yahooResult.value.source, timestamp: now, cached: false };
+    }
+
+    // Check Kraken (reliable)
+    if (krakenResult.status === 'fulfilled' && krakenResult.value) {
+      goldPriceCache = { price: krakenResult.value.price, source: krakenResult.value.source, timestamp: now };
+      return { price: krakenResult.value.price, source: krakenResult.value.source, timestamp: now, cached: false };
     }
 
     // Check CoinGecko (reliable fallback)
@@ -207,7 +235,7 @@ export const goldPriceRouter = createTRPCRouter({
     // Fallback: goldprice.org
     try {
       console.log('[GOLD] Trying goldprice.org...');
-      const response = await fetchWithTimeout('https://data-asg.goldprice.org/dbXRates/USD', 8000);
+      const response = await fetchWithTimeout('https://data-asg.goldprice.org/dbXRates/USD', 4000);
       
       if (response.ok) {
         const data = await response.json();
@@ -225,7 +253,7 @@ export const goldPriceRouter = createTRPCRouter({
     // Fallback: metals.live
     try {
       console.log('[GOLD] Trying metals.live...');
-      const response = await fetchWithTimeout('https://api.metals.live/v1/spot/gold', 8000);
+      const response = await fetchWithTimeout('https://api.metals.live/v1/spot/gold', 4000);
       if (response.ok) {
         const data = await response.json();
         if (data?.[0]?.price) {
@@ -259,6 +287,7 @@ export const goldPriceRouter = createTRPCRouter({
   healthCheck: publicProcedure.query(async () => {
     const sources = [
       { name: 'yahoo', test: () => fetchYahooGold() },
+      { name: 'kraken', test: () => fetchKraken() },
       { name: 'goldapi', test: () => fetchGoldApi() },
     ];
     
@@ -275,6 +304,74 @@ export const goldPriceRouter = createTRPCRouter({
       sources: results.map((r) => r.status === 'fulfilled' ? r.value : { name: 'unknown', working: false }),
     };
   }),
+
+  getHistoricalData: publicProcedure
+    .input(z.object({
+      fromTime: z.number(),
+      toTime: z.number(),
+    }))
+    .query(async ({ input }) => {
+      const { fromTime, toTime } = input;
+      // Convert to seconds for Yahoo API
+      const period1 = Math.floor(fromTime / 1000);
+      const period2 = Math.floor(toTime / 1000) + 120; // Add 2 min buffer
+
+      const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
+      
+      for (const host of hosts) {
+        try {
+          const url = `https://${host}/v8/finance/chart/GC=F?interval=1m&period1=${period1}&period2=${period2}`;
+          console.log(`[GOLD-HISTORY] Fetching ${url}`);
+          const response = await fetchWithTimeout(url, 5000);
+          
+          if (!response.ok) {
+            console.log(`[GOLD-HISTORY] ${host} returned ${response.status}`);
+            continue;
+          }
+          
+          const data = await response.json();
+          if (!data?.chart?.result?.[0]?.timestamp) {
+            console.log(`[GOLD-HISTORY] Invalid data from ${host}`);
+            continue;
+          }
+          
+          const result = data.chart.result[0];
+          const timestamps = result.timestamp;
+          const quotes = result.indicators.quote[0];
+          
+          const bars = [];
+          
+          for (let i = 0; i < timestamps.length; i++) {
+            const barTime = timestamps[i] * 1000;
+            
+            if (barTime >= fromTime && barTime <= toTime) {
+              const open = quotes.open[i];
+              const high = quotes.high[i];
+              const low = quotes.low[i];
+              const close = quotes.close[i];
+              
+              if (open !== null && high !== null && low !== null && close !== null) {
+                bars.push({
+                  timestamp: barTime,
+                  open,
+                  high,
+                  low,
+                  close,
+                });
+              }
+            }
+          }
+          
+          console.log(`[GOLD-HISTORY] Success: fetched ${bars.length} bars`);
+          return bars;
+        } catch (e) {
+          console.error(`[GOLD-HISTORY] Error fetching from ${host}:`, e);
+          continue;
+        }
+      }
+      
+      return [];
+    }),
 
   getIntermarketData: publicProcedure.query(async () => {
     const now = Date.now();
