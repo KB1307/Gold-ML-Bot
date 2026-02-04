@@ -1,6 +1,5 @@
 import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC } from "@/types/trading";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { Platform } from "react-native";
 import { trpcClient } from "@/lib/trpc";
 
 interface OrderFlowData {
@@ -198,204 +197,77 @@ function calculateRealVelocity(history: number[]): number {
   return recentChange - olderChange;
 }
 
-async function fetchYahooChart(symbol: string): Promise<number | null> {
-    try {
-      // Try query1 first, then query2 if needed
-      const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
-      const timestamp = Date.now();
-      
-      for (const host of hosts) {
-        try {
-          const url = Platform.OS === 'web'
-            ? `https://corsproxy.io/?${encodeURIComponent(`https://${host}/v8/finance/chart/${symbol}?interval=1m&range=1d&_t=${timestamp}`)}`
-            : `https://${host}/v8/finance/chart/${symbol}?interval=1m&range=1d&_t=${timestamp}`;
-            
-          console.log(`🌐 Fetching ${symbol} from ${host} [${Platform.OS}]...`);
-          const response = await fetch(url, {
-            headers: {
-              'Accept': 'application/json',
-              'User-Agent': 'Mozilla/5.0 (compatible; TradingApp/1.0)',
-            },
-          });
-          
-          if (!response.ok) {
-            console.log(`⚠️ ${host} returned ${response.status} for ${symbol}`);
-            continue; // Try next host
-          }
-          
-          const data = await response.json();
-          if (data?.chart?.result?.[0]?.meta?.regularMarketPrice) {
-            const price = parseFloat(data.chart.result[0].meta.regularMarketPrice);
-            console.log(`✓ Fetched ${symbol}:`, price);
-            return price;
-          }
-        } catch (e) {
-          console.log(`⚠️ Failed to fetch from ${host}`, e);
-        }
-      }
-      
-      return null;
-    } catch {
-      console.log(`⚠️ ${symbol} fetch failed completely`);
-      return null;
-    }
+async function fetchIntermarketViaBackend(): Promise<{ dxy: number; us10y: number; vix: number } | null> {
+  try {
+    const result = await trpcClient.goldPrice.getIntermarketData.query();
+    return { dxy: result.dxy, us10y: result.us10y, vix: result.vix };
+  } catch (error) {
+    console.log('⚠️ Backend intermarket fetch failed:', error instanceof Error ? error.message : 'Unknown');
+    return null;
   }
+}
 
 async function fetchIntermarketData(): Promise<IntermarketData> {
-    const now = Date.now();
-    
-    if (cachedDXY !== null && cachedUS10Y !== null && cachedVIX !== null && now - lastIntermarketFetchTime < INTERMARKET_CACHE_DURATION) {
-      // ... (existing cache logic)
-      const dxyChange = calculateRealChange(intermarketHistory.dxyPrices);
-      const dxyVelocity = calculateRealVelocity(intermarketHistory.dxyPrices);
-      const us10yChange = calculateRealChange(intermarketHistory.us10yYields);
-      const vixChange = calculateRealChange(intermarketHistory.vixPrices);
-      
-      return {
-        dxyPrice: cachedDXY,
-        dxyChange,
-        dxyVelocity,
-        us10yYield: cachedUS10Y,
-        us10yChange,
-        vixPrice: cachedVIX,
-        vixChange,
-        goldDxyCorrelation: -0.65 + (Math.random() - 0.5) * 0.2, // Keep small variance for correlation
-        goldYieldCorrelation: -0.55 + (Math.random() - 0.5) * 0.2,
-      };
-    }
-
-    // Fetch DXY
-    const dxyPrice = await fetchYahooChart('DX=F');
-    if (dxyPrice !== null) {
-      cachedDXY = dxyPrice;
-    } else if (!cachedDXY) {
-      cachedDXY = 103.5 + (Math.random() - 0.5) * 2;
-      console.log('⚠️ DXY: Using simulated price:', cachedDXY.toFixed(2));
-    }
-
-    // Fetch US10Y
-    const us10yPrice = await fetchYahooChart('%5ETNX');
-    if (us10yPrice !== null) {
-      cachedUS10Y = us10yPrice;
-    } else if (!cachedUS10Y) {
-      cachedUS10Y = 4.2 + (Math.random() - 0.5) * 0.5;
-      console.log('⚠️ US10Y: Using simulated yield:', cachedUS10Y.toFixed(2));
-    }
-
-    // Fetch VIX
-    const vixPrice = await fetchYahooChart('%5EVIX');
-    if (vixPrice !== null) {
-      cachedVIX = vixPrice;
-    } else if (!cachedVIX) {
-      cachedVIX = 18 + (Math.random() - 0.5) * 5;
-      console.log('⚠️ VIX: Using simulated price:', cachedVIX.toFixed(2));
-    }
-
-    lastIntermarketFetchTime = now;
-
-    // ... (rest of the history update logic)
-    intermarketHistory.dxyPrices.push(cachedDXY || 103.5);
-    intermarketHistory.us10yYields.push(cachedUS10Y || 4.2);
-    intermarketHistory.vixPrices.push(cachedVIX || 18);
-    intermarketHistory.lastUpdate = now;
-    
-    if (intermarketHistory.dxyPrices.length > 30) intermarketHistory.dxyPrices.shift();
-    if (intermarketHistory.us10yYields.length > 30) intermarketHistory.us10yYields.shift();
-    if (intermarketHistory.vixPrices.length > 30) intermarketHistory.vixPrices.shift();
-
+  const now = Date.now();
+  
+  if (cachedDXY !== null && cachedUS10Y !== null && cachedVIX !== null && now - lastIntermarketFetchTime < INTERMARKET_CACHE_DURATION) {
     const dxyChange = calculateRealChange(intermarketHistory.dxyPrices);
     const dxyVelocity = calculateRealVelocity(intermarketHistory.dxyPrices);
     const us10yChange = calculateRealChange(intermarketHistory.us10yYields);
     const vixChange = calculateRealChange(intermarketHistory.vixPrices);
-
+    
     return {
-      dxyPrice: cachedDXY || 103.5,
+      dxyPrice: cachedDXY,
       dxyChange,
       dxyVelocity,
-      us10yYield: cachedUS10Y || 4.2,
+      us10yYield: cachedUS10Y,
       us10yChange,
-      vixPrice: cachedVIX || 18,
+      vixPrice: cachedVIX,
       vixChange,
       goldDxyCorrelation: -0.65 + (Math.random() - 0.5) * 0.2,
       goldYieldCorrelation: -0.55 + (Math.random() - 0.5) * 0.2,
     };
   }
 
-let backendFailureCount = 0;
-let lastBackendAttempt = 0;
-const BACKEND_RETRY_DELAY = 30000;
-
-async function fetchDirectGoldPrice(): Promise<{ price: number; source: string } | null> {
-  // Use CORS proxy for web to allow direct fetching as fallback
-  const isWeb = Platform.OS === 'web';
-  const wrapUrl = (url: string) => isWeb ? `https://corsproxy.io/?${encodeURIComponent(url)}` : url;
-  const timestamp = Date.now();
-
-  // Try GoldPrice.org FIRST (most reliable)
-  try {
-    const response = await fetch(wrapUrl(`https://data-asg.goldprice.org/dbXRates/USD?_t=${timestamp}`), {
-      headers: {
-        'Accept': 'application/json',
-      },
-    });
-    
-    if (response.ok) {
-      const data = await response.json();
-      if (data.items && data.items[0] && data.items[0].xauPrice) {
-        return { price: Number(parseFloat(data.items[0].xauPrice).toFixed(2)), source: 'goldprice.org' };
-      }
-    }
-  } catch {
-    console.log('⚠️ GoldPrice.org direct fetch failed');
+  const backendData = await fetchIntermarketViaBackend();
+  
+  if (backendData) {
+    cachedDXY = backendData.dxy;
+    cachedUS10Y = backendData.us10y;
+    cachedVIX = backendData.vix;
+  } else {
+    if (!cachedDXY) cachedDXY = 103.5;
+    if (!cachedUS10Y) cachedUS10Y = 4.2;
+    if (!cachedVIX) cachedVIX = 18;
   }
 
-  // Try Binance (PAXG) SECOND (Reliable Crypto Fallback - often supports CORS directly)
-  try {
-    // Try direct fetch first for Binance as it often allows CORS
-    const directUrl = `https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT&_t=${timestamp}`;
-    const response = await fetch(directUrl);
-    
-    if (response.ok) {
-      const data = await response.json();
-      if (data && data.price) {
-        return { price: Number(parseFloat(data.price).toFixed(2)), source: 'binance' };
-      }
-    }
-  } catch {
-    console.log('⚠️ Binance direct fetch failed, trying proxy...');
-    // Fallback to proxy if direct failed
-    try {
-      const response = await fetch(wrapUrl(`https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT&_t=${timestamp}`));
-      if (response.ok) {
-        const data = await response.json();
-        if (data && data.price) {
-          return { price: Number(parseFloat(data.price).toFixed(2)), source: 'binance-proxy' };
-        }
-      }
-    } catch {
-      console.log('⚠️ Binance proxy fetch failed');
-    }
-  }
+  lastIntermarketFetchTime = now;
 
-  // Try metals.live THIRD
-  try {
-    const response = await fetch(wrapUrl(`https://api.metals.live/v1/spot/gold?_t=${timestamp}`), {
-      headers: {
-        'Accept': 'application/json',
-      },
-    });
-    
-    if (response.ok) {
-      const data = await response.json();
-      if (data && data[0] && typeof data[0].price === 'number') {
-        return { price: Number(data[0].price.toFixed(2)), source: 'metals.live' };
-      }
-    }
-  } catch {
-    console.log('⚠️ Metals.live direct fetch failed');
-  }
+  intermarketHistory.dxyPrices.push(cachedDXY);
+  intermarketHistory.us10yYields.push(cachedUS10Y);
+  intermarketHistory.vixPrices.push(cachedVIX);
+  intermarketHistory.lastUpdate = now;
+  
+  if (intermarketHistory.dxyPrices.length > 30) intermarketHistory.dxyPrices.shift();
+  if (intermarketHistory.us10yYields.length > 30) intermarketHistory.us10yYields.shift();
+  if (intermarketHistory.vixPrices.length > 30) intermarketHistory.vixPrices.shift();
 
-  return null;
+  const dxyChange = calculateRealChange(intermarketHistory.dxyPrices);
+  const dxyVelocity = calculateRealVelocity(intermarketHistory.dxyPrices);
+  const us10yChange = calculateRealChange(intermarketHistory.us10yYields);
+  const vixChange = calculateRealChange(intermarketHistory.vixPrices);
+
+  return {
+    dxyPrice: cachedDXY,
+    dxyChange,
+    dxyVelocity,
+    us10yYield: cachedUS10Y,
+    us10yChange,
+    vixPrice: cachedVIX,
+    vixChange,
+    goldDxyCorrelation: -0.65 + (Math.random() - 0.5) * 0.2,
+    goldYieldCorrelation: -0.55 + (Math.random() - 0.5) * 0.2,
+  };
 }
 
 async function fetchLiveGoldPrice(): Promise<number> {
@@ -405,50 +277,13 @@ async function fetchLiveGoldPrice(): Promise<number> {
     return cachedGoldPrice;
   }
 
-  const isWeb = Platform.OS === 'web';
-
-  // On web, skip backend if it failed recently to avoid CORS noise
-  if (isWeb && backendFailureCount > 0 && now - lastBackendAttempt < BACKEND_RETRY_DELAY) {
-    const directResult = await fetchDirectGoldPrice();
-    if (directResult) {
-      cachedGoldPrice = directResult.price;
-      lastFetchTime = now;
-      return directResult.price;
-    }
-    return cachedGoldPrice || 2650;
-  }
-
-  // Try backend first (except on web if recently failed)
   try {
-    lastBackendAttempt = now;
-    // On web, we might want to skip backend if we know it has CORS issues, 
-    // but we'll try it once.
-    
-    console.log(`🔄 Fetching gold price via backend [${Platform.OS}]...`);
     const result = await trpcClient.goldPrice.getSpotPrice.query();
-    
     cachedGoldPrice = result.price;
     lastFetchTime = now;
-    backendFailureCount = 0;
     return result.price;
   } catch (error) {
-    backendFailureCount++;
-    // Only log first failure to avoid spam
-    if (backendFailureCount === 1) {
-      console.log(`⚠️ Backend fetch failed [${Platform.OS}]:`, error instanceof Error ? error.message : 'Unknown error');
-    }
-  }
-
-  // Fallback to direct API
-  const directResult = await fetchDirectGoldPrice();
-  if (directResult) {
-    cachedGoldPrice = directResult.price;
-    lastFetchTime = now;
-    // Only log if we haven't logged recently or if backend failed
-    if (Math.random() < 0.1) {
-        console.log(`✅ Fetched gold price directly: ${directResult.price} (source: ${directResult.source})`);
-    }
-    return directResult.price;
+    console.log('⚠️ Backend gold price fetch failed:', error instanceof Error ? error.message : 'Unknown');
   }
 
   if (cachedGoldPrice !== null) {
