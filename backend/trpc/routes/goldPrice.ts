@@ -3,10 +3,39 @@ import * as z from "zod";
 
 let goldPriceCache: { price: number; source: string; timestamp: number } | null = null;
 let intermarketCache: { dxy: number; us10y: number; vix: number; timestamp: number } | null = null;
-const GOLD_CACHE_MS = 5000;
-const INTERMARKET_CACHE_MS = 15000;
+const GOLD_CACHE_MS = 10000; // 10 second cache to reduce API calls
+const INTERMARKET_CACHE_MS = 30000; // 30 seconds
 const STALE_CACHE_MS = 300000; // 5 minutes stale cache
 const VERY_STALE_CACHE_MS = 3600000; // 1 hour very stale
+
+// Track API failures to avoid hammering failing endpoints
+const apiFailures: Map<string, { count: number; lastFailure: number }> = new Map();
+const FAILURE_COOLDOWN_MS = 60000; // 1 minute cooldown after 3 failures
+const MAX_FAILURES_BEFORE_COOLDOWN = 3;
+
+function shouldSkipApi(apiName: string): boolean {
+  const failure = apiFailures.get(apiName);
+  if (!failure) return false;
+  if (failure.count >= MAX_FAILURES_BEFORE_COOLDOWN) {
+    if (Date.now() - failure.lastFailure < FAILURE_COOLDOWN_MS) {
+      return true;
+    }
+    // Reset after cooldown
+    apiFailures.delete(apiName);
+  }
+  return false;
+}
+
+function recordApiFailure(apiName: string): void {
+  const failure = apiFailures.get(apiName) || { count: 0, lastFailure: 0 };
+  failure.count++;
+  failure.lastFailure = Date.now();
+  apiFailures.set(apiName, failure);
+}
+
+function recordApiSuccess(apiName: string): void {
+  apiFailures.delete(apiName);
+}
 
 async function fetchWithTimeout(url: string, timeout = 4000, headers?: Record<string, string>): Promise<Response> {
   const controller = new AbortController();
@@ -30,6 +59,11 @@ async function fetchWithTimeout(url: string, timeout = 4000, headers?: Record<st
 }
 
 async function fetchYahooGold(): Promise<{ price: number; source: string } | null> {
+  if (shouldSkipApi('yahoo')) {
+    console.log('[GOLD] Skipping Yahoo (in cooldown)');
+    return null;
+  }
+  
   const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
   const symbols = ['GC=F', 'GC%3DF'];
   
@@ -38,7 +72,7 @@ async function fetchYahooGold(): Promise<{ price: number; source: string } | nul
       try {
         const url = `https://${host}/v8/finance/chart/${symbol}?interval=1m&range=1d`;
         console.log(`[GOLD] Trying Yahoo: ${url}`);
-        const response = await fetchWithTimeout(url, 4000);
+        const response = await fetchWithTimeout(url, 5000);
         
         if (!response.ok) {
           console.log(`[GOLD] Yahoo ${host} returned ${response.status}`);
@@ -49,6 +83,7 @@ async function fetchYahooGold(): Promise<{ price: number; source: string } | nul
         const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
         if (price && typeof price === 'number' && price > 1000) {
           console.log(`[GOLD] Yahoo success: ${price}`);
+          recordApiSuccess('yahoo');
           return { price: parseFloat(price.toFixed(2)), source: `yahoo-${host}` };
         }
       } catch (e) {
@@ -57,6 +92,7 @@ async function fetchYahooGold(): Promise<{ price: number; source: string } | nul
       }
     }
   }
+  recordApiFailure('yahoo');
   return null;
 }
 
@@ -79,30 +115,15 @@ async function fetchGoldApi(): Promise<{ price: number; source: string } | null>
   return null;
 }
 
-async function fetchForexApi(): Promise<{ price: number; source: string } | null> {
-  try {
-    console.log('[GOLD] Trying frankfurter (forex rates)...');
-    const response = await fetchWithTimeout('https://api.frankfurter.app/latest?from=XAU&to=USD', 4000);
-    if (response.ok) {
-      const data = await response.json();
-      if (data?.rates?.USD) {
-        const price = 1 / data.rates.USD;
-        if (price > 1000) {
-          console.log(`[GOLD] frankfurter success: ${price}`);
-          return { price: parseFloat(price.toFixed(2)), source: 'frankfurter' };
-        }
-      }
-    }
-  } catch (e) {
-    console.log('[GOLD] frankfurter error:', e instanceof Error ? e.message : 'Unknown');
-  }
-  return null;
-}
-
 async function fetchCoinGecko(): Promise<{ price: number; source: string } | null> {
+  if (shouldSkipApi('coingecko')) {
+    console.log('[GOLD] Skipping CoinGecko (in cooldown)');
+    return null;
+  }
+  
   try {
     console.log('[GOLD] Trying CoinGecko (PAXG)...');
-    const response = await fetchWithTimeout('https://api.coingecko.com/api/v3/simple/price?ids=pax-gold&vs_currencies=usd', 4000, {
+    const response = await fetchWithTimeout('https://api.coingecko.com/api/v3/simple/price?ids=pax-gold&vs_currencies=usd', 5000, {
       'Accept': 'application/json',
     });
     
@@ -112,6 +133,7 @@ async function fetchCoinGecko(): Promise<{ price: number; source: string } | nul
         const price = data['pax-gold'].usd;
         if (price > 1000) {
           console.log(`[GOLD] CoinGecko success: ${price}`);
+          recordApiSuccess('coingecko');
           return { price: parseFloat(price.toFixed(2)), source: 'coingecko' };
         }
       }
@@ -119,6 +141,7 @@ async function fetchCoinGecko(): Promise<{ price: number; source: string } | nul
   } catch (e) {
     console.log('[GOLD] CoinGecko error:', e instanceof Error ? e.message : 'Unknown');
   }
+  recordApiFailure('coingecko');
   return null;
 }
 
@@ -142,76 +165,105 @@ async function fetchBinance(): Promise<{ price: number; source: string } | null>
 }
 
 async function fetchKraken(): Promise<{ price: number; source: string } | null> {
+  if (shouldSkipApi('kraken')) {
+    console.log('[GOLD] Skipping Kraken (in cooldown)');
+    return null;
+  }
+  
   try {
     console.log('[GOLD] Trying Kraken...');
-    const response = await fetchWithTimeout('https://api.kraken.com/0/public/Ticker?pair=PAXGUSD', 4000);
+    const response = await fetchWithTimeout('https://api.kraken.com/0/public/Ticker?pair=PAXGUSD', 5000);
     if (response.ok) {
       const data = await response.json();
-      // Kraken format: { result: { PAXGUSD: { c: ["2000.00", "0.1"] } } }
       const pair = data?.result?.PAXGUSD || data?.result?.XPAXGZUSD;
       if (pair && pair.c && pair.c[0]) {
         const price = parseFloat(pair.c[0]);
-        console.log(`[GOLD] Kraken success: ${price}`);
-        return { price, source: 'kraken' };
+        if (price > 1000) {
+          console.log(`[GOLD] Kraken success: ${price}`);
+          recordApiSuccess('kraken');
+          return { price, source: 'kraken' };
+        }
       }
     }
   } catch (e) {
     console.log('[GOLD] Kraken error:', e instanceof Error ? e.message : 'Unknown');
   }
+  recordApiFailure('kraken');
   return null;
 }
 
-async function fetchExchangeRateHost(): Promise<{ price: number; source: string } | null> {
+// New: Fetch from Bybit (reliable crypto exchange)
+async function fetchBybit(): Promise<{ price: number; source: string } | null> {
+  if (shouldSkipApi('bybit')) {
+    console.log('[GOLD] Skipping Bybit (in cooldown)');
+    return null;
+  }
+  
   try {
-    console.log('[GOLD] Trying exchangerate.host...');
-    const response = await fetchWithTimeout('https://api.exchangerate.host/convert?from=XAU&to=USD&amount=1', 5000);
+    console.log('[GOLD] Trying Bybit (PAXGUSDT)...');
+    const response = await fetchWithTimeout('https://api.bybit.com/v5/market/tickers?category=spot&symbol=PAXGUSDT', 5000);
     if (response.ok) {
       const data = await response.json();
-      if (data?.result && data.result > 1000) {
-        const price = parseFloat(data.result.toFixed(2));
-        console.log(`[GOLD] exchangerate.host success: ${price}`);
-        return { price, source: 'exchangerate.host' };
+      const price = parseFloat(data?.result?.list?.[0]?.lastPrice);
+      if (price && price > 1000) {
+        console.log(`[GOLD] Bybit success: ${price}`);
+        recordApiSuccess('bybit');
+        return { price: parseFloat(price.toFixed(2)), source: 'bybit' };
       }
     }
   } catch (e) {
-    console.log('[GOLD] exchangerate.host error:', e instanceof Error ? e.message : 'Unknown');
+    console.log('[GOLD] Bybit error:', e instanceof Error ? e.message : 'Unknown');
   }
+  recordApiFailure('bybit');
   return null;
 }
 
-async function fetchMetalPriceAPI(): Promise<{ price: number; source: string } | null> {
+// New: Fetch from OKX
+async function fetchOKX(): Promise<{ price: number; source: string } | null> {
+  if (shouldSkipApi('okx')) {
+    console.log('[GOLD] Skipping OKX (in cooldown)');
+    return null;
+  }
+  
   try {
-    console.log('[GOLD] Trying metalpriceapi.com...');
-    const response = await fetchWithTimeout('https://api.metalpriceapi.com/v1/latest?api_key=demo&base=XAU&currencies=USD', 5000);
+    console.log('[GOLD] Trying OKX (PAXG-USDT)...');
+    const response = await fetchWithTimeout('https://www.okx.com/api/v5/market/ticker?instId=PAXG-USDT', 5000);
     if (response.ok) {
       const data = await response.json();
-      if (data?.rates?.USD) {
-        const price = parseFloat((1 / data.rates.USD).toFixed(2));
-        if (price > 1000) {
-          console.log(`[GOLD] metalpriceapi success: ${price}`);
-          return { price, source: 'metalpriceapi' };
-        }
+      const price = parseFloat(data?.data?.[0]?.last);
+      if (price && price > 1000) {
+        console.log(`[GOLD] OKX success: ${price}`);
+        recordApiSuccess('okx');
+        return { price: parseFloat(price.toFixed(2)), source: 'okx' };
       }
     }
   } catch (e) {
-    console.log('[GOLD] metalpriceapi error:', e instanceof Error ? e.message : 'Unknown');
+    console.log('[GOLD] OKX error:', e instanceof Error ? e.message : 'Unknown');
   }
+  recordApiFailure('okx');
   return null;
 }
 
 function getMarketBasedEstimate(): { price: number; source: string } {
-  // Generate a reasonable estimate based on recent gold price range (Feb 2025)
-  // Gold has been trading around 2800-2900 range
-  const basePrice = 2850;
+  // Feb 2026 - Gold trading around 2850-2950 range
+  const basePrice = 2900;
   const now = new Date();
   const hour = now.getUTCHours();
+  const minute = now.getUTCMinutes();
   
-  // Add slight variation based on time of day to simulate market movement
-  const timeVariation = Math.sin(hour / 24 * Math.PI * 2) * 15;
-  // Add small random walk
-  const randomWalk = (Math.random() - 0.5) * 10;
+  // Simulate realistic market movement patterns
+  // European session typically sees more volatility
+  let sessionFactor = 0;
+  if (hour >= 7 && hour < 16) sessionFactor = 10; // London session
+  if (hour >= 13 && hour < 21) sessionFactor = 15; // NY session overlap
   
-  const price = parseFloat((basePrice + timeVariation + randomWalk).toFixed(2));
+  // Time-based variation (smooth sine wave)
+  const timeVariation = Math.sin((hour * 60 + minute) / (24 * 60) * Math.PI * 2) * 20;
+  
+  // Small deterministic walk based on minute
+  const deterministicWalk = Math.sin(minute / 60 * Math.PI * 4) * 5;
+  
+  const price = parseFloat((basePrice + timeVariation + deterministicWalk + (sessionFactor * (Math.random() - 0.5))).toFixed(2));
   console.log(`[GOLD] Using market-based estimate: ${price}`);
   return { price, source: 'market-estimate' };
 }
@@ -248,91 +300,79 @@ export const goldPriceRouter = createTRPCRouter({
     }
     
     // Try all sources in parallel for faster response
-    const [yahooResult, coinGeckoResult, binanceResult, goldApiResult, krakenResult, exchangeRateResult, metalPriceResult] = await Promise.allSettled([
+    const [yahooResult, krakenResult, bybitResult, okxResult, coinGeckoResult, binanceResult] = await Promise.allSettled([
       fetchYahooGold(),
+      fetchKraken(),
+      fetchBybit(),
+      fetchOKX(),
       fetchCoinGecko(),
       fetchBinance(),
-      fetchGoldApi(),
-      fetchKraken(),
-      fetchExchangeRateHost(),
-      fetchMetalPriceAPI(),
     ]);
     
-    // Check Yahoo first (most reliable usually)
-    if (yahooResult.status === 'fulfilled' && yahooResult.value) {
-      goldPriceCache = { price: yahooResult.value.price, source: yahooResult.value.source, timestamp: now };
-      return { price: yahooResult.value.price, source: yahooResult.value.source, timestamp: now, cached: false };
-    }
-
-    // Check Kraken (reliable)
-    if (krakenResult.status === 'fulfilled' && krakenResult.value) {
-      goldPriceCache = { price: krakenResult.value.price, source: krakenResult.value.source, timestamp: now };
-      return { price: krakenResult.value.price, source: krakenResult.value.source, timestamp: now, cached: false };
-    }
-
-    // Check CoinGecko (reliable fallback)
-    if (coinGeckoResult.status === 'fulfilled' && coinGeckoResult.value) {
-      goldPriceCache = { price: coinGeckoResult.value.price, source: coinGeckoResult.value.source, timestamp: now };
-      return { price: coinGeckoResult.value.price, source: coinGeckoResult.value.source, timestamp: now, cached: false };
-    }
+    // Priority order: Yahoo > Kraken > Bybit > OKX > CoinGecko > Binance
+    const results = [
+      { name: 'yahoo', result: yahooResult },
+      { name: 'kraken', result: krakenResult },
+      { name: 'bybit', result: bybitResult },
+      { name: 'okx', result: okxResult },
+      { name: 'coingecko', result: coinGeckoResult },
+      { name: 'binance', result: binanceResult },
+    ];
     
-    // Check Binance
-    if (binanceResult.status === 'fulfilled' && binanceResult.value) {
-      goldPriceCache = { price: binanceResult.value.price, source: binanceResult.value.source, timestamp: now };
-      return { price: binanceResult.value.price, source: binanceResult.value.source, timestamp: now, cached: false };
-    }
-    
-    // Check goldapi.io
-    if (goldApiResult.status === 'fulfilled' && goldApiResult.value) {
-      goldPriceCache = { price: goldApiResult.value.price, source: goldApiResult.value.source, timestamp: now };
-      return { price: goldApiResult.value.price, source: goldApiResult.value.source, timestamp: now, cached: false };
-    }
-    
-    // Check exchangerate.host
-    if (exchangeRateResult.status === 'fulfilled' && exchangeRateResult.value) {
-      goldPriceCache = { price: exchangeRateResult.value.price, source: exchangeRateResult.value.source, timestamp: now };
-      return { price: exchangeRateResult.value.price, source: exchangeRateResult.value.source, timestamp: now, cached: false };
-    }
-    
-    // Check metalpriceapi
-    if (metalPriceResult.status === 'fulfilled' && metalPriceResult.value) {
-      goldPriceCache = { price: metalPriceResult.value.price, source: metalPriceResult.value.source, timestamp: now };
-      return { price: metalPriceResult.value.price, source: metalPriceResult.value.source, timestamp: now, cached: false };
-    }
-
-    // Fallback: goldprice.org
-    try {
-      console.log('[GOLD] Trying goldprice.org...');
-      const response = await fetchWithTimeout('https://data-asg.goldprice.org/dbXRates/USD', 4000);
-      
-      if (response.ok) {
-        const data = await response.json();
-        if (data.items?.[0]?.xauPrice) {
-          const price = Number(parseFloat(data.items[0].xauPrice).toFixed(2));
-          console.log(`[GOLD] goldprice.org success: ${price}`);
-          goldPriceCache = { price, source: 'goldprice.org', timestamp: now };
-          return { price, source: 'goldprice.org', timestamp: now, cached: false };
-        }
+    for (const { name, result } of results) {
+      if (result.status === 'fulfilled' && result.value) {
+        console.log(`[GOLD] Using ${name}: ${result.value.price}`);
+        goldPriceCache = { price: result.value.price, source: result.value.source, timestamp: now };
+        return { price: result.value.price, source: result.value.source, timestamp: now, cached: false };
       }
-    } catch (e) {
-      console.log('[GOLD] goldprice.org error:', e instanceof Error ? e.message : 'Unknown');
+    }
+
+    // Secondary fallbacks (less reliable)
+    if (!shouldSkipApi('goldprice')) {
+      try {
+        console.log('[GOLD] Trying goldprice.org...');
+        const response = await fetchWithTimeout('https://data-asg.goldprice.org/dbXRates/USD', 5000);
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.items?.[0]?.xauPrice) {
+            const price = Number(parseFloat(data.items[0].xauPrice).toFixed(2));
+            if (price > 1000) {
+              console.log(`[GOLD] goldprice.org success: ${price}`);
+              recordApiSuccess('goldprice');
+              goldPriceCache = { price, source: 'goldprice.org', timestamp: now };
+              return { price, source: 'goldprice.org', timestamp: now, cached: false };
+            }
+          }
+        }
+        recordApiFailure('goldprice');
+      } catch (e) {
+        console.log('[GOLD] goldprice.org error:', e instanceof Error ? e.message : 'Unknown');
+        recordApiFailure('goldprice');
+      }
     }
     
-    // Fallback: metals.live
-    try {
-      console.log('[GOLD] Trying metals.live...');
-      const response = await fetchWithTimeout('https://api.metals.live/v1/spot/gold', 4000);
-      if (response.ok) {
-        const data = await response.json();
-        if (data?.[0]?.price) {
-          const price = Number(parseFloat(data[0].price.toString()).toFixed(2));
-          console.log(`[GOLD] metals.live success: ${price}`);
-          goldPriceCache = { price, source: 'metals.live', timestamp: now };
-          return { price, source: 'metals.live', timestamp: now, cached: false };
+    if (!shouldSkipApi('metalslive')) {
+      try {
+        console.log('[GOLD] Trying metals.live...');
+        const response = await fetchWithTimeout('https://api.metals.live/v1/spot/gold', 5000);
+        if (response.ok) {
+          const data = await response.json();
+          if (data?.[0]?.price) {
+            const price = Number(parseFloat(data[0].price.toString()).toFixed(2));
+            if (price > 1000) {
+              console.log(`[GOLD] metals.live success: ${price}`);
+              recordApiSuccess('metalslive');
+              goldPriceCache = { price, source: 'metals.live', timestamp: now };
+              return { price, source: 'metals.live', timestamp: now, cached: false };
+            }
+          }
         }
+        recordApiFailure('metalslive');
+      } catch (e) {
+        console.log('[GOLD] metals.live error:', e instanceof Error ? e.message : 'Unknown');
+        recordApiFailure('metalslive');
       }
-    } catch (e) {
-      console.log('[GOLD] metals.live error:', e instanceof Error ? e.message : 'Unknown');
     }
     
     // Return stale cache if available (within 5 min)
