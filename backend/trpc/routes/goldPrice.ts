@@ -97,21 +97,30 @@ async function fetchYahooGold(): Promise<{ price: number; source: string } | nul
 }
 
 async function fetchGoldApi(): Promise<{ price: number; source: string } | null> {
+  if (shouldSkipApi('goldapi')) {
+    console.log('[GOLD] Skipping GoldAPI (in cooldown)');
+    return null;
+  }
+  
   try {
-    console.log('[GOLD] Trying goldapi.io...');
+    console.log('[GOLD] Trying goldapi.io with premium key...');
     const response = await fetchWithTimeout('https://www.goldapi.io/api/XAU/USD', 4000, {
-      'x-access-token': 'goldapi-free-demo',
+      'x-access-token': 'goldapi-1n5ovsmfwx8y1b-io',
     });
     if (response.ok) {
       const data = await response.json();
       if (data?.price && data.price > 1000) {
         console.log(`[GOLD] goldapi.io success: ${data.price}`);
+        recordApiSuccess('goldapi');
         return { price: parseFloat(data.price.toFixed(2)), source: 'goldapi.io' };
       }
+    } else {
+      console.log(`[GOLD] goldapi.io returned ${response.status}`);
     }
   } catch (e) {
     console.log('[GOLD] goldapi.io error:', e instanceof Error ? e.message : 'Unknown');
   }
+  recordApiFailure('goldapi');
   return null;
 }
 
@@ -300,7 +309,8 @@ export const goldPriceRouter = createTRPCRouter({
     }
     
     // Try all sources in parallel for faster response
-    const [yahooResult, krakenResult, bybitResult, okxResult, coinGeckoResult, binanceResult] = await Promise.allSettled([
+    const [goldApiResult, yahooResult, krakenResult, bybitResult, okxResult, coinGeckoResult, binanceResult] = await Promise.allSettled([
+      fetchGoldApi(),
       fetchYahooGold(),
       fetchKraken(),
       fetchBybit(),
@@ -309,8 +319,9 @@ export const goldPriceRouter = createTRPCRouter({
       fetchBinance(),
     ]);
     
-    // Priority order: Yahoo > Kraken > Bybit > OKX > CoinGecko > Binance
+    // Priority order: GoldAPI (premium) > Yahoo > Kraken > Bybit > OKX > CoinGecko > Binance
     const results = [
+      { name: 'goldapi', result: goldApiResult },
       { name: 'yahoo', result: yahooResult },
       { name: 'kraken', result: krakenResult },
       { name: 'bybit', result: bybitResult },
