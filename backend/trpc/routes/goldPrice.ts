@@ -245,8 +245,8 @@ async function fetchOKX(): Promise<{ price: number; source: string } | null> {
 }
 
 function getMarketBasedEstimate(): { price: number; source: string } {
-  // Feb 2026 - Gold trading around 2850-2950 range
-  const basePrice = 2900;
+  // Feb 2026 - Gold trading around 4860-4920 range
+  const basePrice = 4890;
   const now = new Date();
   const hour = now.getUTCHours();
   const minute = now.getUTCMinutes();

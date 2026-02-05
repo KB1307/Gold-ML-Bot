@@ -318,8 +318,8 @@ async function fetchLiveGoldPrice(): Promise<number> {
   }
 
   // Last resort: Use a market-based estimate so the app doesn't break
-  // Feb 2026 gold trading around 2850-2950
-  const basePrice = 2900;
+  // Feb 2026 gold trading around 4860-4920
+  const basePrice = 4890;
   const hour = new Date().getUTCHours();
   const timeVariation = Math.sin(hour / 24 * Math.PI * 2) * 20;
   const fallbackPrice = parseFloat((basePrice + timeVariation).toFixed(2));
