@@ -61,6 +61,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [signalUpdateTrigger, setSignalUpdateTrigger] = useState<number>(0);
   const [appLaunchTime] = useState<number>(Date.now());
   const [backgroundTaskActive, setBackgroundTaskActive] = useState<boolean>(false);
+  const [priceSource, setPriceSource] = useState<string>('connecting...');
+  const [livePriceError, setLivePriceError] = useState<string | null>(null);
 
   useEffect(() => {
     const init = async () => {
@@ -104,7 +106,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       try {
         await signalEngine.updateCurrentPrice();
         const price = signalEngine.getCurrentPrice();
+        const source = signalEngine.getPriceSource();
+        
         setCurrentPrice(price);
+        setPriceSource(source);
+        setLivePriceError(null);
         
         const now = Date.now();
         setPriceHistory(prev => {
@@ -133,7 +139,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           });
         }
       } catch (error) {
-        console.error('Failed to update price:', error);
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+        console.error('❌ Failed to update price:', errorMsg);
+        
+        if (errorMsg.includes('LIVE_PRICE_UNAVAILABLE')) {
+          setLivePriceError('Live price unavailable - all sources failed');
+          setPriceSource('error');
+        }
       }
     };
 
@@ -1455,6 +1467,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     priceHistory,
     dailyOHLCHistory,
     signalUpdateTrigger,
+    priceSource,
+    livePriceError,
     login,
     logout,
     clearHistory,

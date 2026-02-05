@@ -135,6 +135,7 @@ interface MarketFeatures {
 const CACHE_DURATION = 2000;
 let cachedGoldPrice: number | null = null;
 let lastFetchTime: number = 0;
+let lastPriceSource: string = 'connecting...';
 let cachedDXY: number | null = null;
 let cachedUS10Y: number | null = null;
 let cachedVIX: number | null = null;
@@ -270,21 +271,25 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
   };
 }
 
-async function fetchLiveGoldPrice(): Promise<number> {
+async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> {
   const now = Date.now();
   
   if (cachedGoldPrice !== null && now - lastFetchTime < CACHE_DURATION) {
-    return cachedGoldPrice;
+    return { price: cachedGoldPrice, source: lastPriceSource };
   }
 
   // Primary: Backend tRPC
   try {
     const result = await trpcClient.goldPrice.getSpotPrice.query();
     if (result.price > 0) {
-      console.log(`✅ Live gold price: ${result.price} (${result.source})`);
+      // Check if it's a live source or cached
+      const isLive = !result.source.includes('cache') && !result.source.includes('estimate');
+      const displaySource = isLive ? `🟢 ${result.source}` : `🟡 ${result.source}`;
+      console.log(`✅ Gold price: ${result.price} (${result.source})`);
       cachedGoldPrice = result.price;
       lastFetchTime = now;
-      return result.price;
+      lastPriceSource = displaySource;
+      return { price: result.price, source: displaySource };
     } else {
       console.log('⚠️ Backend returned zero price');
     }
@@ -304,30 +309,26 @@ async function fetchLiveGoldPrice(): Promise<number> {
         console.log(`✅ Direct Yahoo gold price: ${price}`);
         cachedGoldPrice = price;
         lastFetchTime = now;
-        return price;
+        lastPriceSource = '🟢 yahoo-direct';
+        return { price, source: '🟢 yahoo-direct' };
       }
     }
   } catch {
     // Expected to fail on web due to CORS
   }
 
-  // Return cached if available (stale data is better than none)
-  if (cachedGoldPrice !== null) {
-    console.log(`⚠️ Using stale cached price: ${cachedGoldPrice}`);
-    return cachedGoldPrice;
+  // Return cached if available (only if recent - within 2 minutes)
+  if (cachedGoldPrice !== null && now - lastFetchTime < 120000) {
+    const ageSeconds = ((now - lastFetchTime) / 1000).toFixed(0);
+    console.log(`⚠️ Using recent cached price (${ageSeconds}s old): ${cachedGoldPrice}`);
+    lastPriceSource = `🟡 cache (${ageSeconds}s)`;
+    return { price: cachedGoldPrice, source: lastPriceSource };
   }
 
-  // Last resort: Use a market-based estimate so the app doesn't break
-  // Feb 2026 gold trading around 4860-4920
-  const basePrice = 4890;
-  const hour = new Date().getUTCHours();
-  const timeVariation = Math.sin(hour / 24 * Math.PI * 2) * 20;
-  const fallbackPrice = parseFloat((basePrice + timeVariation).toFixed(2));
-  
-  console.warn(`⚠️ All price sources failed, using fallback estimate: ${fallbackPrice}`);
-  cachedGoldPrice = fallbackPrice;
-  lastFetchTime = now;
-  return fallbackPrice;
+  // NO FALLBACK - Throw error so the app knows live data is unavailable
+  lastPriceSource = '🔴 error';
+  console.error('❌ LIVE PRICE UNAVAILABLE: All sources failed and no recent cache');
+  throw new Error('LIVE_PRICE_UNAVAILABLE: Cannot fetch live gold price');
 }
 
 class SignalGenerationEngine {
@@ -379,13 +380,13 @@ class SignalGenerationEngine {
   
   async updateCurrentPrice(): Promise<number> {
     try {
-      const livePrice = await fetchLiveGoldPrice();
+      const result = await fetchLiveGoldPrice();
       
       // Only update if we got a valid price
-      if (livePrice > 0) {
-        this.currentPrice = livePrice;
+      if (result.price > 0) {
+        this.currentPrice = result.price;
       } else {
-        console.warn(`⚠️ Invalid price received (${livePrice}), keeping previous price: ${this.currentPrice}`);
+        console.warn(`⚠️ Invalid price received (${result.price}), keeping previous price: ${this.currentPrice}`);
         // Return current price so we don't break downstream consumers
         return this.currentPrice;
       }
@@ -541,6 +542,10 @@ class SignalGenerationEngine {
   
   getCurrentPrice(): number {
     return this.currentPrice;
+  }
+  
+  getPriceSource(): string {
+    return lastPriceSource;
   }
   
   private calculateFibonacciLevels(high: number, low: number): FibonacciLevel[] {

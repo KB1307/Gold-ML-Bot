@@ -176,7 +176,7 @@ function getIndicatorInfo(feature: string, signalType: string): { description: s
 }
 
 export default function DashboardScreen() {
-  const { signalHistory, marketOutlook, performanceMetrics, positionSizing, currentPrice, refreshData, signalUpdateTrigger } = useTrading();
+  const { signalHistory, marketOutlook, performanceMetrics, positionSizing, currentPrice, priceSource, livePriceError, refreshData, signalUpdateTrigger } = useTrading();
   
   const currentSignal = signalHistory.find(s => s.status === "ACTIVE" || s.status === "PARTIALLY_MANAGED" || s.status === "TP1_HIT" || s.status === "TP2_HIT") || null;
   const [refreshing, setRefreshing] = useState(false);
@@ -269,6 +269,16 @@ export default function DashboardScreen() {
               </View>
               <View style={styles.priceContainer}>
                 <Text style={styles.currentPrice}>${currentPrice.toFixed(1)}</Text>
+                <View style={styles.priceSourceRow}>
+                  <Text style={[
+                    styles.priceSourceText,
+                    priceSource?.includes('🟢') && styles.priceSourceLive,
+                    priceSource?.includes('🟡') && styles.priceSourceCached,
+                    priceSource?.includes('🔴') && styles.priceSourceError,
+                  ]}>
+                    {priceSource || 'connecting...'}
+                  </Text>
+                </View>
                 <View style={[styles.sessionBadge, marketOutlook?.isMarketOpen && styles.sessionBadgeActive]}>
                   <View style={[styles.sessionDot, marketOutlook?.isMarketOpen && styles.sessionDotActive]} />
                   <Text style={styles.sessionText}>
@@ -287,6 +297,13 @@ export default function DashboardScreen() {
               <View style={styles.dataLoadingBanner}>
                 <ActivityIndicator size="small" color="#FFD700" />
                 <Text style={styles.dataLoadingText}>Loading market data...</Text>
+              </View>
+            )}
+
+            {livePriceError && (
+              <View style={styles.priceErrorBanner}>
+                <AlertTriangle size={16} color="#ef4444" />
+                <Text style={styles.priceErrorText}>{livePriceError}</Text>
               </View>
             )}
 
@@ -1595,5 +1612,41 @@ const styles = StyleSheet.create({
   },
   staticChartSection: {
     zIndex: 1,
+  },
+  priceSourceRow: {
+    marginTop: 2,
+    alignItems: "flex-end",
+  },
+  priceSourceText: {
+    fontSize: 9,
+    color: "#888",
+    fontWeight: "500" as const,
+  },
+  priceSourceLive: {
+    color: "#22c55e",
+  },
+  priceSourceCached: {
+    color: "#FFA500",
+  },
+  priceSourceError: {
+    color: "#ef4444",
+  },
+  priceErrorBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(239, 68, 68, 0.15)",
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    marginBottom: 16,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.3)",
+  },
+  priceErrorText: {
+    color: "#ef4444",
+    fontSize: 12,
+    flex: 1,
+    fontWeight: "500" as const,
   },
 });

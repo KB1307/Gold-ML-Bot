@@ -5,8 +5,7 @@ let goldPriceCache: { price: number; source: string; timestamp: number } | null 
 let intermarketCache: { dxy: number; us10y: number; vix: number; timestamp: number } | null = null;
 const GOLD_CACHE_MS = 10000; // 10 second cache to reduce API calls
 const INTERMARKET_CACHE_MS = 30000; // 30 seconds
-const STALE_CACHE_MS = 300000; // 5 minutes stale cache
-const VERY_STALE_CACHE_MS = 3600000; // 1 hour very stale
+const RECENT_CACHE_MS = 120000; // 2 minute recent cache (acceptable for brief outages)
 
 // Track API failures to avoid hammering failing endpoints
 const apiFailures: Map<string, { count: number; lastFailure: number }> = new Map();
@@ -253,29 +252,7 @@ async function fetchOKX(): Promise<{ price: number; source: string } | null> {
   return null;
 }
 
-function getMarketBasedEstimate(): { price: number; source: string } {
-  // Feb 2026 - Gold trading around 4860-4920 range
-  const basePrice = 4890;
-  const now = new Date();
-  const hour = now.getUTCHours();
-  const minute = now.getUTCMinutes();
-  
-  // Simulate realistic market movement patterns
-  // European session typically sees more volatility
-  let sessionFactor = 0;
-  if (hour >= 7 && hour < 16) sessionFactor = 10; // London session
-  if (hour >= 13 && hour < 21) sessionFactor = 15; // NY session overlap
-  
-  // Time-based variation (smooth sine wave)
-  const timeVariation = Math.sin((hour * 60 + minute) / (24 * 60) * Math.PI * 2) * 20;
-  
-  // Small deterministic walk based on minute
-  const deterministicWalk = Math.sin(minute / 60 * Math.PI * 4) * 5;
-  
-  const price = parseFloat((basePrice + timeVariation + deterministicWalk + (sessionFactor * (Math.random() - 0.5))).toFixed(2));
-  console.log(`[GOLD] Using market-based estimate: ${price}`);
-  return { price, source: 'market-estimate' };
-}
+// NO FALLBACK ESTIMATES - Only live market data is acceptable
 
 async function fetchYahooSymbol(symbol: string): Promise<number | null> {
   const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
@@ -386,29 +363,15 @@ export const goldPriceRouter = createTRPCRouter({
       }
     }
     
-    // Return stale cache if available (within 5 min)
-    if (goldPriceCache && now - goldPriceCache.timestamp < STALE_CACHE_MS) {
-      console.log(`[GOLD] All sources failed, returning stale cache: ${goldPriceCache.price}`);
-      return { price: goldPriceCache.price, source: 'stale-cache', timestamp: goldPriceCache.timestamp, cached: true };
+    // Return recent cache if available (within 2 min) - this is acceptable for brief API outages
+    if (goldPriceCache && now - goldPriceCache.timestamp < RECENT_CACHE_MS) {
+      console.log(`[GOLD] Using recent cache (${((now - goldPriceCache.timestamp) / 1000).toFixed(0)}s old): ${goldPriceCache.price}`);
+      return { price: goldPriceCache.price, source: 'recent-cache', timestamp: goldPriceCache.timestamp, cached: true };
     }
     
-    // Very stale cache (within 1 hour - better than nothing)
-    if (goldPriceCache && now - goldPriceCache.timestamp < VERY_STALE_CACHE_MS) {
-      console.log(`[GOLD] All sources failed, returning very stale cache: ${goldPriceCache.price}`);
-      return { price: goldPriceCache.price, source: 'very-stale-cache', timestamp: goldPriceCache.timestamp, cached: true };
-    }
-    
-    // Any cache is better than nothing
-    if (goldPriceCache) {
-      console.log(`[GOLD] All sources failed, returning old cache: ${goldPriceCache.price}`);
-      return { price: goldPriceCache.price, source: 'old-cache', timestamp: goldPriceCache.timestamp, cached: true };
-    }
-    
-    // Last resort: market-based estimate (so the app doesn't break completely)
-    console.log('[GOLD] All sources failed, using market-based estimate');
-    const estimate = getMarketBasedEstimate();
-    goldPriceCache = { price: estimate.price, source: estimate.source, timestamp: now };
-    return { price: estimate.price, source: estimate.source, timestamp: now, cached: false };
+    // NO FALLBACK - Throw error so frontend knows live data is unavailable
+    console.error('[GOLD] ❌ ALL LIVE PRICE SOURCES FAILED - No acceptable cached data');
+    throw new Error('LIVE_PRICE_UNAVAILABLE: All price sources failed and no recent cache available')
   }),
 
   // Health check endpoint
