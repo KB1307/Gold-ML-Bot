@@ -55,7 +55,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [performanceMetrics, setPerformanceMetrics] = useState<PerformanceMetrics>(DEFAULT_METRICS);
   const [positionSizing, setPositionSizing] = useState<PositionSizing | null>(null);
   const [accountBalance, setAccountBalance] = useState<number>(100);
-  const [currentPrice, setCurrentPrice] = useState<number>(2650);
+  const [currentPrice, setCurrentPrice] = useState<number>(0);
   const [priceHistory, setPriceHistory] = useState<PriceDataPoint[]>([]);
   const [dailyOHLCHistory, setDailyOHLCHistory] = useState<DailyOHLC[]>([]);
   const [signalUpdateTrigger, setSignalUpdateTrigger] = useState<number>(0);
@@ -432,6 +432,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const now = Date.now();
     const currentPrice = signalEngine.getCurrentPrice();
     const twoHoursInMs = 2 * 60 * 60 * 1000;
+    
+    if (currentPrice <= 0) {
+      console.log('⏳ Skipping catch-up evaluation - no valid price yet');
+      return history;
+    }
     
     let updatedHistory = [...history];
     let hasChanges = false;
@@ -1113,6 +1118,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const now = Date.now();
     const twoHoursInMs = 2 * 60 * 60 * 1000;
     const GRACE_PERIOD_MS = 5000;
+    
+    if (price <= 0) {
+      console.log('⏳ Skipping signal status update - no valid price yet');
+      return;
+    }
     
     console.log(`🔄 [${Platform.OS}] Checking signal status updates - Current Price: ${price.toFixed(1)}`);
 

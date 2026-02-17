@@ -579,7 +579,7 @@ async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> 
 }
 
 class SignalGenerationEngine {
-  private currentPrice: number = 2650;
+  private currentPrice: number = 0;
   private priceHistory: number[] = [];
   private highHistory: number[] = [];
   private lowHistory: number[] = [];
@@ -3295,6 +3295,13 @@ class SignalGenerationEngine {
     }
     
     await this.updateCurrentPrice();
+    
+    if (this.currentPrice <= 0) {
+      console.log('❌ REJECTED: No valid price available yet - cannot generate signal');
+      console.log(`${'='.repeat(80)}\n`);
+      return null;
+    }
+    
     const features = await this.calculateMarketFeatures();
     
     await this.detectConceptDrift(features);

@@ -268,22 +268,22 @@ export default function DashboardScreen() {
                 <Text style={styles.headerSubtitle}>Gold Trading Signals</Text>
               </View>
               <View style={styles.priceContainer}>
-                <Text style={styles.currentPrice}>${currentPrice.toFixed(1)}</Text>
+                <Text style={styles.currentPrice}>{currentPrice > 0 ? `${currentPrice.toFixed(1)}` : '---'}</Text>
                 <View style={styles.statusBubble}>
                   <View style={styles.statusRow}>
                     <View style={[
                       styles.statusDot,
                       priceSource?.includes('🟢') && styles.statusDotLive,
                       priceSource?.includes('🟡') && styles.statusDotCached,
-                      priceSource?.includes('🔴') && styles.statusDotError,
+                      (priceSource?.includes('🔴') || currentPrice <= 0) && styles.statusDotError,
                     ]} />
                     <Text style={[
                       styles.statusSourceText,
                       priceSource?.includes('🟢') && styles.priceSourceLive,
                       priceSource?.includes('🟡') && styles.priceSourceCached,
-                      priceSource?.includes('🔴') && styles.priceSourceError,
+                      (priceSource?.includes('🔴') || currentPrice <= 0) && styles.priceSourceError,
                     ]}>
-                      {(priceSource || 'connecting...').replace(/🟢 |🟡 |🔴 /g, '')}
+                      {currentPrice <= 0 ? 'connecting...' : (priceSource || 'connecting...').replace(/🟢 |🟡 |🔴 /g, '')}
                     </Text>
                   </View>
                   <View style={styles.statusDivider} />
