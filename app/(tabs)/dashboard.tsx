@@ -269,21 +269,33 @@ export default function DashboardScreen() {
               </View>
               <View style={styles.priceContainer}>
                 <Text style={styles.currentPrice}>${currentPrice.toFixed(1)}</Text>
-                <View style={styles.priceSourceRow}>
-                  <Text style={[
-                    styles.priceSourceText,
-                    priceSource?.includes('🟢') && styles.priceSourceLive,
-                    priceSource?.includes('🟡') && styles.priceSourceCached,
-                    priceSource?.includes('🔴') && styles.priceSourceError,
-                  ]}>
-                    {priceSource || 'connecting...'}
-                  </Text>
-                </View>
-                <View style={[styles.sessionBadge, marketOutlook?.isMarketOpen && styles.sessionBadgeActive]}>
-                  <View style={[styles.sessionDot, marketOutlook?.isMarketOpen && styles.sessionDotActive]} />
-                  <Text style={styles.sessionText}>
-                    {marketOutlook?.isMarketOpen ? marketOutlook.currentSession : "CLOSED"}
-                  </Text>
+                <View style={styles.statusBubble}>
+                  <View style={styles.statusRow}>
+                    <View style={[
+                      styles.statusDot,
+                      priceSource?.includes('🟢') && styles.statusDotLive,
+                      priceSource?.includes('🟡') && styles.statusDotCached,
+                      priceSource?.includes('🔴') && styles.statusDotError,
+                    ]} />
+                    <Text style={[
+                      styles.statusSourceText,
+                      priceSource?.includes('🟢') && styles.priceSourceLive,
+                      priceSource?.includes('🟡') && styles.priceSourceCached,
+                      priceSource?.includes('🔴') && styles.priceSourceError,
+                    ]}>
+                      {(priceSource || 'connecting...').replace(/🟢 |🟡 |🔴 /g, '')}
+                    </Text>
+                  </View>
+                  <View style={styles.statusDivider} />
+                  <View style={styles.statusRow}>
+                    <View style={[styles.sessionDot, marketOutlook?.isMarketOpen && styles.sessionDotActive]} />
+                    <Text style={[
+                      styles.sessionText,
+                      marketOutlook?.isMarketOpen && styles.sessionTextActive,
+                    ]}>
+                      {marketOutlook?.isMarketOpen ? marketOutlook.currentSession : "CLOSED"}
+                    </Text>
+                  </View>
                 </View>
               </View>
             </View>
@@ -843,38 +855,68 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: "700",
     color: "#FFD700",
-    marginBottom: 8,
+    marginBottom: 6,
   } as const,
-  sessionBadge: {
+  statusBubble: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.05)",
-    paddingHorizontal: 12,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: "rgba(255, 255, 255, 0.1)",
+    gap: 0,
   },
-  sessionBadgeActive: {
-    backgroundColor: "rgba(34, 197, 94, 0.1)",
-    borderColor: "rgba(34, 197, 94, 0.3)",
+  statusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
   },
-  sessionDot: {
-    width: 6,
-    height: 6,
+  statusDot: {
+    width: 5,
+    height: 5,
     borderRadius: 3,
     backgroundColor: "#666",
-    marginRight: 6,
+  },
+  statusDotLive: {
+    backgroundColor: "#22c55e",
+  },
+  statusDotCached: {
+    backgroundColor: "#FFA500",
+  },
+  statusDotError: {
+    backgroundColor: "#ef4444",
+  },
+  statusSourceText: {
+    fontSize: 9,
+    fontWeight: "500" as const,
+    color: "#888",
+  },
+  statusDivider: {
+    width: 1,
+    height: 10,
+    backgroundColor: "rgba(255, 255, 255, 0.15)",
+    marginHorizontal: 8,
+  },
+  sessionDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: "#666",
   },
   sessionDotActive: {
     backgroundColor: "#22c55e",
   },
   sessionText: {
-    fontSize: 11,
+    fontSize: 9,
     fontWeight: "600",
     color: "#999",
-    letterSpacing: 0.5,
+    letterSpacing: 0.3,
   } as const,
+  sessionTextActive: {
+    color: "#22c55e",
+  },
   closedBanner: {
     flexDirection: "row",
     alignItems: "center",
@@ -1612,15 +1654,6 @@ const styles = StyleSheet.create({
   },
   staticChartSection: {
     zIndex: 1,
-  },
-  priceSourceRow: {
-    marginTop: 2,
-    alignItems: "flex-end",
-  },
-  priceSourceText: {
-    fontSize: 9,
-    color: "#888",
-    fontWeight: "500" as const,
   },
   priceSourceLive: {
     color: "#22c55e",

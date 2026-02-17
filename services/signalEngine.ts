@@ -359,43 +359,7 @@ async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> 
   } catch {
   }
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 6000);
-    const response = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT', {
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (response.ok) {
-      const data = await response.json();
-      if (data?.price) {
-        const price = Number(parseFloat(data.price).toFixed(2));
-        if (price > 1000) {
-          console.log(`✅ Direct Binance gold price: ${price}`);
-          return markPriceSuccess(price, '🟢 binance-direct', now);
-        }
-      }
-    }
-  } catch {
-  }
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 6000);
-    const response = await fetch('https://api.bybit.com/v5/market/tickers?category=spot&symbol=PAXGUSDT', {
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (response.ok) {
-      const data = await response.json();
-      const price = parseFloat(data?.result?.list?.[0]?.lastPrice);
-      if (price && price > 1000) {
-        console.log(`✅ Direct Bybit gold price: ${price}`);
-        return markPriceSuccess(price, '🟢 bybit-direct', now);
-      }
-    }
-  } catch {
-  }
 
   consecutiveFailures++;
 
