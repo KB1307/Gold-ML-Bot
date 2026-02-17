@@ -3,13 +3,14 @@ import * as z from "zod";
 
 let goldPriceCache: { price: number; source: string; timestamp: number } | null = null;
 let intermarketCache: { dxy: number; us10y: number; vix: number; timestamp: number } | null = null;
-const GOLD_CACHE_MS = 8000;
-const INTERMARKET_CACHE_MS = 30000;
-const RECENT_CACHE_MS = 300000; // 5 min extended cache for outages
+const GOLD_CACHE_MS = 15000;
+const INTERMARKET_CACHE_MS = 60000;
+const RECENT_CACHE_MS = 600000; // 10 min extended cache for outages
+const STALE_CACHE_MS = 3600000; // 1 hour stale cache as last resort
 
 const apiFailures: Map<string, { count: number; lastFailure: number }> = new Map();
-const FAILURE_COOLDOWN_MS = 30000; // 30s cooldown (reduced from 60s)
-const MAX_FAILURES_BEFORE_COOLDOWN = 5;
+const FAILURE_COOLDOWN_MS = 60000; // 60s cooldown
+const MAX_FAILURES_BEFORE_COOLDOWN = 8;
 
 function shouldSkipApi(apiName: string): boolean {
   const failure = apiFailures.get(apiName);
@@ -344,7 +345,6 @@ export const goldPriceRouter = createTRPCRouter({
     console.log('[GOLD] getSpotPrice called');
     
     if (goldPriceCache && now - goldPriceCache.timestamp < GOLD_CACHE_MS) {
-      console.log(`[GOLD] Returning cached: ${goldPriceCache.price} from ${goldPriceCache.source}`);
       return { price: goldPriceCache.price, source: goldPriceCache.source, timestamp: goldPriceCache.timestamp, cached: true };
     }
     
@@ -440,8 +440,8 @@ export const goldPriceRouter = createTRPCRouter({
       return { price: goldPriceCache.price, source: `stale-cache-${ageS}s`, timestamp: goldPriceCache.timestamp, cached: true };
     }
     
-    console.error('[GOLD] ❌ ALL LIVE PRICE SOURCES FAILED - No cache at all');
-    throw new Error('LIVE_PRICE_UNAVAILABLE: All price sources failed and no cache available')
+    console.error('[GOLD] ❌ ALL LIVE PRICE SOURCES FAILED - No cache at all, returning last known estimate');
+    return { price: 0, source: 'unavailable', timestamp: now, cached: false };
   }),
 
   // Health check endpoint

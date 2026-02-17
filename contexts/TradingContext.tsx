@@ -102,60 +102,73 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   }, []);
 
   useEffect(() => {
+    let isMounted = true;
+    let isUpdating = false;
+
     const updatePrice = async () => {
+      if (!isMounted || isUpdating) return;
+      isUpdating = true;
       try {
         await signalEngine.updateCurrentPrice();
         const price = signalEngine.getCurrentPrice();
         const source = signalEngine.getPriceSource();
         
-        setCurrentPrice(price);
-        setPriceSource(source);
-        setLivePriceError(null);
-        
-        const now = Date.now();
-        setPriceHistory(prev => {
-          const newHistory = [...prev, { timestamp: now, price }];
-          const maxPoints = 60;
-          if (newHistory.length > maxPoints) {
-            return newHistory.slice(newHistory.length - maxPoints);
-          }
-          return newHistory;
-        });
+        if (!isMounted) return;
 
-        const updatedOHLC = await signalEngine.updateDailyOHLC(price);
-        if (updatedOHLC) {
-          setDailyOHLCHistory(prev => {
-            const existingIndex = prev.findIndex(d => d.date === updatedOHLC.date);
-            if (existingIndex >= 0) {
-              const updated = [...prev];
-              updated[existingIndex] = updatedOHLC;
-              return updated;
-            }
-            const newHistory = [...prev, updatedOHLC];
-            if (newHistory.length > 30) {
-              return newHistory.slice(-30);
+        if (price > 0) {
+          setCurrentPrice(price);
+          setPriceSource(source);
+          setLivePriceError(null);
+          
+          const now = Date.now();
+          setPriceHistory(prev => {
+            const newHistory = [...prev, { timestamp: now, price }];
+            const maxPoints = 60;
+            if (newHistory.length > maxPoints) {
+              return newHistory.slice(newHistory.length - maxPoints);
             }
             return newHistory;
           });
+
+          const updatedOHLC = await signalEngine.updateDailyOHLC(price);
+          if (updatedOHLC) {
+            setDailyOHLCHistory(prev => {
+              const existingIndex = prev.findIndex(d => d.date === updatedOHLC.date);
+              if (existingIndex >= 0) {
+                const updated = [...prev];
+                updated[existingIndex] = updatedOHLC;
+                return updated;
+              }
+              const newHistory = [...prev, updatedOHLC];
+              if (newHistory.length > 30) {
+                return newHistory.slice(-30);
+              }
+              return newHistory;
+            });
+          }
+        } else {
+          setPriceSource(source);
+          console.log('⏳ Waiting for first valid price...');
         }
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : 'Unknown error';
         console.error('❌ Failed to update price:', errorMsg);
-        
-        if (errorMsg.includes('LIVE_PRICE_UNAVAILABLE')) {
-          setLivePriceError('Live price unavailable - all sources failed');
-          setPriceSource('error');
-        }
+        setPriceSource('retrying...');
+      } finally {
+        isUpdating = false;
       }
     };
 
     const priceInterval = setInterval(() => {
       updatePrice();
-    }, 1000);
+    }, 10000);
 
     updatePrice();
 
-    return () => clearInterval(priceInterval);
+    return () => {
+      isMounted = false;
+      clearInterval(priceInterval);
+    };
   }, []);
 
   useEffect(() => {

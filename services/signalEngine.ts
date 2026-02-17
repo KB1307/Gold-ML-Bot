@@ -132,10 +132,12 @@ interface MarketFeatures {
   sessionSweeps: SessionSweep[];
 }
 
-const CACHE_DURATION = 2000;
+const CACHE_DURATION = 10000;
 let cachedGoldPrice: number | null = null;
 let lastFetchTime: number = 0;
 let lastPriceSource: string = 'connecting...';
+let lastKnownGoodPrice: number = 0;
+let consecutiveFailures: number = 0;
 let cachedDXY: number | null = null;
 let cachedUS10Y: number | null = null;
 let cachedVIX: number | null = null;
@@ -271,9 +273,18 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
   };
 }
 
+function markPriceSuccess(price: number, source: string, now: number): { price: number; source: string } {
+  cachedGoldPrice = price;
+  lastFetchTime = now;
+  lastPriceSource = source;
+  lastKnownGoodPrice = price;
+  consecutiveFailures = 0;
+  return { price, source };
+}
+
 async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> {
   const now = Date.now();
-  
+
   if (cachedGoldPrice !== null && now - lastFetchTime < CACHE_DURATION) {
     return { price: cachedGoldPrice, source: lastPriceSource };
   }
@@ -281,57 +292,77 @@ async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> 
   try {
     const result = await trpcClient.goldPrice.getSpotPrice.query();
     if (result.price > 0) {
-      const isLive = !result.source.includes('cache') && !result.source.includes('estimate') && !result.source.includes('stale');
+      const isLive = !result.source.includes('cache') && !result.source.includes('estimate') && !result.source.includes('stale') && !result.source.includes('unavailable');
       const displaySource = isLive ? `🟢 ${result.source}` : `🟡 ${result.source}`;
       console.log(`✅ Gold price: ${result.price} (${result.source})`);
-      cachedGoldPrice = result.price;
-      lastFetchTime = now;
-      lastPriceSource = displaySource;
-      return { price: result.price, source: displaySource };
+      return markPriceSuccess(result.price, displaySource, now);
     } else {
-      console.log('⚠️ Backend returned zero price');
+      console.log('⚠️ Backend returned zero/unavailable price');
     }
   } catch (error) {
     console.log('⚠️ Backend fetch failed:', error instanceof Error ? error.message : 'Unknown');
   }
 
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
     const response = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d', {
-      headers: { 'User-Agent': 'Mozilla/5.0' }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
     if (response.ok) {
       const data = await response.json();
       const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
       if (price && price > 1000) {
         console.log(`✅ Direct Yahoo gold price: ${price}`);
-        cachedGoldPrice = price;
-        lastFetchTime = now;
-        lastPriceSource = '🟢 yahoo-direct';
-        return { price, source: '🟢 yahoo-direct' };
+        return markPriceSuccess(price, '🟢 yahoo-direct', now);
       }
     }
   } catch {
   }
 
   try {
-    const response = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT`);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6000);
+    const response = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT', {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
     if (response.ok) {
       const data = await response.json();
       if (data?.price) {
         const price = Number(parseFloat(data.price).toFixed(2));
         if (price > 1000) {
           console.log(`✅ Direct Binance gold price: ${price}`);
-          cachedGoldPrice = price;
-          lastFetchTime = now;
-          lastPriceSource = '🟢 binance-direct';
-          return { price, source: '🟢 binance-direct' };
+          return markPriceSuccess(price, '🟢 binance-direct', now);
         }
       }
     }
   } catch {
   }
 
-  if (cachedGoldPrice !== null && now - lastFetchTime < 300000) {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6000);
+    const response = await fetch('https://api.bybit.com/v5/market/tickers?category=spot&symbol=PAXGUSDT', {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (response.ok) {
+      const data = await response.json();
+      const price = parseFloat(data?.result?.list?.[0]?.lastPrice);
+      if (price && price > 1000) {
+        console.log(`✅ Direct Bybit gold price: ${price}`);
+        return markPriceSuccess(price, '🟢 bybit-direct', now);
+      }
+    }
+  } catch {
+  }
+
+  consecutiveFailures++;
+
+  if (cachedGoldPrice !== null && now - lastFetchTime < 600000) {
     const ageSeconds = ((now - lastFetchTime) / 1000).toFixed(0);
     console.log(`⚠️ Using cached price (${ageSeconds}s old): ${cachedGoldPrice}`);
     lastPriceSource = `🟡 cache (${ageSeconds}s)`;
@@ -345,9 +376,15 @@ async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> 
     return { price: cachedGoldPrice, source: lastPriceSource };
   }
 
-  lastPriceSource = '🔴 error';
-  console.error('❌ LIVE PRICE UNAVAILABLE: All sources failed and no cache');
-  throw new Error('LIVE_PRICE_UNAVAILABLE: Cannot fetch live gold price');
+  if (lastKnownGoodPrice > 0) {
+    console.warn(`⚠️ Using last known good price: ${lastKnownGoodPrice}`);
+    lastPriceSource = '🟠 last-known';
+    return { price: lastKnownGoodPrice, source: lastPriceSource };
+  }
+
+  console.warn('⚠️ No price data available yet, waiting for first successful fetch...');
+  lastPriceSource = '🔴 waiting';
+  return { price: 0, source: lastPriceSource };
 }
 
 class SignalGenerationEngine {
