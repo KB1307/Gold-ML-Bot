@@ -433,6 +433,69 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   ]);
 }
 
+async function fetchBackendPriceWithRetry(maxRetries: number = 3): Promise<{ price: number; source: string } | null> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`🔄 Backend price fetch attempt ${attempt}/${maxRetries}...`);
+      const result = await withTimeout(
+        trpcClient.goldPrice.getSpotPrice.query(),
+        12000,
+        'getSpotPrice'
+      );
+      if (result.price > 0) {
+        const isLive = !result.source.includes('cache') && !result.source.includes('estimate') && !result.source.includes('stale') && !result.source.includes('unavailable');
+        const displaySource = isLive ? `🟢 ${result.source}` : `🟡 ${result.source}`;
+        console.log(`✅ Gold price via backend: ${result.price} (${result.source})`);
+        return { price: result.price, source: displaySource };
+      } else {
+        console.log('⚠️ Backend returned zero/unavailable price');
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Unknown';
+      console.log(`⚠️ Backend fetch attempt ${attempt} failed: ${msg}`);
+      if (attempt < maxRetries) {
+        const delay = Math.min(1000 * attempt, 3000);
+        console.log(`   Retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  return null;
+}
+
+async function fetchBackendDirectHttp(): Promise<{ price: number; source: string } | null> {
+  const baseUrl = process.env.EXPO_PUBLIC_RORK_API_BASE_URL;
+  if (!baseUrl) return null;
+
+  try {
+    console.log('🔄 Trying direct HTTP fallback to backend...');
+    const url = `${baseUrl}/api/trpc/goldPrice.getSpotPrice?input=${encodeURIComponent(JSON.stringify({ json: null, meta: { values: ["undefined"], v: 1 } }))}`;
+    const response = await fetchWithClientTimeout(url, 10000);
+    if (response.ok) {
+      const data = await response.json();
+      const resultData = data?.result?.data;
+      let price = 0;
+      let source = 'direct-http';
+      if (resultData?.json) {
+        price = resultData.json.price;
+        source = resultData.json.source || 'direct-http';
+      } else if (resultData?.price) {
+        price = resultData.price;
+        source = resultData.source || 'direct-http';
+      }
+      if (typeof price === 'number' && price > 1000 && price < 10000) {
+        console.log(`✅ Direct HTTP fallback success: ${price} (${source})`);
+        return { price, source: `🟢 ${source}` };
+      }
+    } else {
+      console.log(`⚠️ Direct HTTP fallback returned ${response.status}`);
+    }
+  } catch (e) {
+    console.log('⚠️ Direct HTTP fallback failed:', e instanceof Error ? e.message : 'Unknown');
+  }
+  return null;
+}
+
 async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> {
   const now = Date.now();
 
@@ -440,25 +503,17 @@ async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> 
     return { price: cachedGoldPrice, source: lastPriceSource };
   }
 
-  try {
-    const result = await withTimeout(
-      trpcClient.goldPrice.getSpotPrice.query(),
-      12000,
-      'getSpotPrice'
-    );
-    if (result.price > 0) {
-      const isLive = !result.source.includes('cache') && !result.source.includes('estimate') && !result.source.includes('stale') && !result.source.includes('unavailable');
-      const displaySource = isLive ? `🟢 ${result.source}` : `🟡 ${result.source}`;
-      console.log(`✅ Gold price via backend: ${result.price} (${result.source})`);
-      return markPriceSuccess(result.price, displaySource, now);
-    } else {
-      console.log('⚠️ Backend returned zero/unavailable price');
-    }
-  } catch (error) {
-    console.log('⚠️ Backend fetch failed:', error instanceof Error ? error.message : 'Unknown');
+  const backendResult = await fetchBackendPriceWithRetry(3);
+  if (backendResult) {
+    return markPriceSuccess(backendResult.price, backendResult.source, now);
   }
 
-  console.log('🔄 Backend unavailable, trying direct client-side sources...');
+  const directResult = await fetchBackendDirectHttp();
+  if (directResult) {
+    return markPriceSuccess(directResult.price, directResult.source, now);
+  }
+
+  console.log('🔄 Backend unavailable after retries, trying direct client-side sources...');
 
   if (Platform.OS === 'web') {
     console.log('⚠️ Client-side APIs blocked by CORS on web, skipping direct fetches');
