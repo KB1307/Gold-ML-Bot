@@ -7,6 +7,7 @@ const GOLD_CACHE_MS = 15000;
 const INTERMARKET_CACHE_MS = 60000;
 const RECENT_CACHE_MS = 600000; // 10 min extended cache for outages
 const STALE_CACHE_MS = 3600000; // 1 hour stale cache as last resort
+const PAXG_PREMIUM_OFFSET = 10; // PAXG trades ~$10 above spot gold
 
 const apiFailures: Map<string, { count: number; lastFailure: number }> = new Map();
 const FAILURE_COOLDOWN_MS = 60000; // 60s cooldown
@@ -139,11 +140,12 @@ async function fetchCoinGecko(): Promise<{ price: number; source: string } | nul
     if (response.ok) {
       const data = await response.json();
       if (data?.['pax-gold']?.usd) {
-        const price = data['pax-gold'].usd;
-        if (price > 1000) {
-          console.log(`[GOLD] CoinGecko success: ${price}`);
+        const rawPrice = data['pax-gold'].usd;
+        if (rawPrice > 1000) {
+          const price = parseFloat((rawPrice - PAXG_PREMIUM_OFFSET).toFixed(2));
+          console.log(`[GOLD] CoinGecko raw: ${rawPrice}, adjusted: ${price} (PAXG premium removed)`);
           recordApiSuccess('coingecko');
-          return { price: parseFloat(price.toFixed(2)), source: 'coingecko' };
+          return { price, source: 'coingecko-adj' };
         }
       }
     }
@@ -165,11 +167,12 @@ async function fetchBinance(): Promise<{ price: number; source: string } | null>
     if (response.ok) {
       const data = await response.json();
       if (data?.price) {
-        const price = Number(parseFloat(data.price).toFixed(2));
-        if (price > 1000) {
-          console.log(`[GOLD] binance success: ${price}`);
+        const rawPrice = Number(parseFloat(data.price).toFixed(2));
+        if (rawPrice > 1000) {
+          const price = Number((rawPrice - PAXG_PREMIUM_OFFSET).toFixed(2));
+          console.log(`[GOLD] binance raw: ${rawPrice}, adjusted: ${price} (PAXG premium removed)`);
           recordApiSuccess('binance');
-          return { price, source: 'binance' };
+          return { price, source: 'binance-adj' };
         }
       }
     }
@@ -193,11 +196,12 @@ async function fetchKraken(): Promise<{ price: number; source: string } | null> 
       const data = await response.json();
       const pair = data?.result?.PAXGUSD || data?.result?.XPAXGZUSD;
       if (pair && pair.c && pair.c[0]) {
-        const price = parseFloat(pair.c[0]);
-        if (price > 1000) {
-          console.log(`[GOLD] Kraken success: ${price}`);
+        const rawPrice = parseFloat(pair.c[0]);
+        if (rawPrice > 1000) {
+          const price = parseFloat((rawPrice - PAXG_PREMIUM_OFFSET).toFixed(2));
+          console.log(`[GOLD] Kraken raw: ${rawPrice}, adjusted: ${price} (PAXG premium removed)`);
           recordApiSuccess('kraken');
-          return { price, source: 'kraken' };
+          return { price, source: 'kraken-adj' };
         }
       }
     }
@@ -219,11 +223,12 @@ async function fetchBybit(): Promise<{ price: number; source: string } | null> {
     const response = await fetchWithTimeout('https://api.bybit.com/v5/market/tickers?category=spot&symbol=PAXGUSDT', 6000);
     if (response.ok) {
       const data = await response.json();
-      const price = parseFloat(data?.result?.list?.[0]?.lastPrice);
-      if (price && price > 1000) {
-        console.log(`[GOLD] Bybit success: ${price}`);
+      const rawPrice = parseFloat(data?.result?.list?.[0]?.lastPrice);
+      if (rawPrice && rawPrice > 1000) {
+        const price = parseFloat((rawPrice - PAXG_PREMIUM_OFFSET).toFixed(2));
+        console.log(`[GOLD] Bybit raw: ${rawPrice}, adjusted: ${price} (PAXG premium removed)`);
         recordApiSuccess('bybit');
-        return { price: parseFloat(price.toFixed(2)), source: 'bybit' };
+        return { price, source: 'bybit-adj' };
       }
     }
   } catch (e) {
@@ -244,11 +249,12 @@ async function fetchOKX(): Promise<{ price: number; source: string } | null> {
     const response = await fetchWithTimeout('https://www.okx.com/api/v5/market/ticker?instId=PAXG-USDT', 6000);
     if (response.ok) {
       const data = await response.json();
-      const price = parseFloat(data?.data?.[0]?.last);
-      if (price && price > 1000) {
-        console.log(`[GOLD] OKX success: ${price}`);
+      const rawPrice = parseFloat(data?.data?.[0]?.last);
+      if (rawPrice && rawPrice > 1000) {
+        const price = parseFloat((rawPrice - PAXG_PREMIUM_OFFSET).toFixed(2));
+        console.log(`[GOLD] OKX raw: ${rawPrice}, adjusted: ${price} (PAXG premium removed)`);
         recordApiSuccess('okx');
-        return { price: parseFloat(price.toFixed(2)), source: 'okx' };
+        return { price, source: 'okx-adj' };
       }
     }
   } catch (e) {
