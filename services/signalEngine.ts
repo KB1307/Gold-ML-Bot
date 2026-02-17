@@ -1,6 +1,7 @@
 import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC } from "@/types/trading";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { trpcClient } from "@/lib/trpc";
+import { Platform } from "react-native";
 
 interface OrderFlowData {
   bidVolume: number;
@@ -420,11 +421,15 @@ async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> 
 
   console.log('🔄 Backend unavailable, trying direct client-side sources...');
 
-  const clientResults = await Promise.allSettled([
+  if (Platform.OS === 'web') {
+    console.log('⚠️ Client-side APIs blocked by CORS on web, skipping direct fetches');
+  }
+
+  const clientResults = Platform.OS !== 'web' ? await Promise.allSettled([
     fetchClientSwissquote(),
     fetchClientMetalsLive(),
     fetchClientGoldPriceOrg(),
-  ]);
+  ]) : [];
 
   const validPrices: { price: number; source: string }[] = [];
   for (const result of clientResults) {
