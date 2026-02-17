@@ -319,6 +319,84 @@ function markPriceSuccess(price: number, source: string, now: number): { price: 
   return { price, source };
 }
 
+async function fetchWithClientTimeout(url: string, timeoutMs: number = 8000): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+    return response;
+  } catch (error) {
+    clearTimeout(timeout);
+    throw error;
+  }
+}
+
+async function fetchClientSwissquote(): Promise<{ price: number; source: string } | null> {
+  try {
+    const response = await fetchWithClientTimeout(
+      'https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD',
+      8000
+    );
+    if (response.ok) {
+      const data = await response.json();
+      if (Array.isArray(data) && data.length > 0) {
+        const quote = data[0];
+        const bid = quote?.spreadProfilePrices?.[0]?.bid;
+        const ask = quote?.spreadProfilePrices?.[0]?.ask;
+        if (bid && ask && typeof bid === 'number' && typeof ask === 'number') {
+          const price = parseFloat(((bid + ask) / 2).toFixed(2));
+          if (price > 1000 && price < 10000) {
+            console.log(`✅ Client Swissquote: ${price} (bid: ${bid}, ask: ${ask})`);
+            return { price, source: 'swissquote-spot' };
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.log('⚠️ Client Swissquote failed:', e instanceof Error ? e.message : 'Unknown');
+  }
+  return null;
+}
+
+async function fetchClientMetalsLive(): Promise<{ price: number; source: string } | null> {
+  try {
+    const response = await fetchWithClientTimeout('https://api.metals.live/v1/spot/gold', 6000);
+    if (response.ok) {
+      const data = await response.json();
+      if (data?.[0]?.price) {
+        const price = Number(parseFloat(data[0].price.toString()).toFixed(2));
+        if (price > 1000 && price < 10000) {
+          console.log(`✅ Client metals.live: ${price}`);
+          return { price, source: 'metals.live-spot' };
+        }
+      }
+    }
+  } catch (e) {
+    console.log('⚠️ Client metals.live failed:', e instanceof Error ? e.message : 'Unknown');
+  }
+  return null;
+}
+
+async function fetchClientGoldPriceOrg(): Promise<{ price: number; source: string } | null> {
+  try {
+    const response = await fetchWithClientTimeout('https://data-asg.goldprice.org/dbXRates/USD', 6000);
+    if (response.ok) {
+      const data = await response.json();
+      if (data.items?.[0]?.xauPrice) {
+        const price = Number(parseFloat(data.items[0].xauPrice).toFixed(2));
+        if (price > 1000 && price < 10000) {
+          console.log(`✅ Client goldprice.org: ${price}`);
+          return { price, source: 'goldprice.org-spot' };
+        }
+      }
+    }
+  } catch (e) {
+    console.log('⚠️ Client goldprice.org failed:', e instanceof Error ? e.message : 'Unknown');
+  }
+  return null;
+}
+
 async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> {
   const now = Date.now();
 
@@ -331,7 +409,7 @@ async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> 
     if (result.price > 0) {
       const isLive = !result.source.includes('cache') && !result.source.includes('estimate') && !result.source.includes('stale') && !result.source.includes('unavailable');
       const displaySource = isLive ? `🟢 ${result.source}` : `🟡 ${result.source}`;
-      console.log(`✅ Gold price: ${result.price} (${result.source})`);
+      console.log(`✅ Gold price via backend: ${result.price} (${result.source})`);
       return markPriceSuccess(result.price, displaySource, now);
     } else {
       console.log('⚠️ Backend returned zero/unavailable price');
@@ -340,26 +418,38 @@ async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> 
     console.log('⚠️ Backend fetch failed:', error instanceof Error ? error.message : 'Unknown');
   }
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-    const response = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d', {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (response.ok) {
-      const data = await response.json();
-      const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
-      if (price && price > 1000) {
-        console.log(`✅ Direct Yahoo gold price: ${price}`);
-        return markPriceSuccess(price, '🟢 yahoo-direct', now);
-      }
+  console.log('🔄 Backend unavailable, trying direct client-side sources...');
+
+  const clientResults = await Promise.allSettled([
+    fetchClientSwissquote(),
+    fetchClientMetalsLive(),
+    fetchClientGoldPriceOrg(),
+  ]);
+
+  const validPrices: { price: number; source: string }[] = [];
+  for (const result of clientResults) {
+    if (result.status === 'fulfilled' && result.value) {
+      validPrices.push(result.value);
     }
-  } catch {
   }
 
+  if (validPrices.length >= 2) {
+    validPrices.sort((a, b) => a.price - b.price);
+    const median = validPrices[Math.floor(validPrices.length / 2)];
+    const filtered = validPrices.filter(p => Math.abs(p.price - median.price) < 15);
+    if (filtered.length >= 2) {
+      const avgPrice = parseFloat((filtered.reduce((sum, p) => sum + p.price, 0) / filtered.length).toFixed(2));
+      const sourceNames = filtered.map(p => p.source).join('+');
+      console.log(`✅ Client consensus (${filtered.length} sources): ${avgPrice}`);
+      return markPriceSuccess(avgPrice, `🟢 ${sourceNames}`, now);
+    }
+  }
 
+  if (validPrices.length === 1) {
+    const best = validPrices[0];
+    console.log(`✅ Client single source: ${best.price} (${best.source})`);
+    return markPriceSuccess(best.price, `🟢 ${best.source}`, now);
+  }
 
   consecutiveFailures++;
 
