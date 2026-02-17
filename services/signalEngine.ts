@@ -424,6 +424,51 @@ async function fetchClientFinnhub(): Promise<{ price: number; source: string } |
   return null;
 }
 
+async function fetchWebCorsProxy(): Promise<{ price: number; source: string } | null> {
+  const proxyApis = [
+    {
+      name: 'frankfurter',
+      url: 'https://api.frankfurter.app/latest?from=XAU&to=USD',
+      parse: (data: any) => {
+        if (data?.rates?.USD && typeof data.rates.USD === 'number' && data.rates.USD > 1000) {
+          return data.rates.USD;
+        }
+        return null;
+      },
+    },
+    {
+      name: 'exchangerate',
+      url: 'https://open.er-api.com/v6/latest/XAU',
+      parse: (data: any) => {
+        if (data?.rates?.USD && typeof data.rates.USD === 'number') {
+          const price = data.rates.USD;
+          if (price > 1000 && price < 10000) return price;
+        }
+        return null;
+      },
+    },
+  ];
+
+  for (const api of proxyApis) {
+    try {
+      console.log(`🌐 Web fallback: trying ${api.name}...`);
+      const response = await fetchWithClientTimeout(api.url, 8000);
+      if (response.ok) {
+        const data = await response.json();
+        const price = api.parse(data);
+        if (price && price > 1000 && price < 10000) {
+          const rounded = parseFloat(price.toFixed(2));
+          console.log(`✅ Web fallback ${api.name}: ${rounded}`);
+          return { price: rounded, source: `${api.name}-web` };
+        }
+      }
+    } catch (e) {
+      console.log(`⚠️ Web fallback ${api.name} failed:`, e instanceof Error ? e.message : 'Unknown');
+    }
+  }
+  return null;
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
     promise,
@@ -433,13 +478,13 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   ]);
 }
 
-async function fetchBackendPriceWithRetry(maxRetries: number = 3): Promise<{ price: number; source: string } | null> {
+async function fetchBackendPriceWithRetry(maxRetries: number = 4): Promise<{ price: number; source: string } | null> {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       console.log(`🔄 Backend price fetch attempt ${attempt}/${maxRetries}...`);
       const result = await withTimeout(
         trpcClient.goldPrice.getSpotPrice.query(),
-        12000,
+        15000,
         'getSpotPrice'
       );
       if (result.price > 0) {
@@ -452,10 +497,13 @@ async function fetchBackendPriceWithRetry(maxRetries: number = 3): Promise<{ pri
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Unknown';
-      console.log(`⚠️ Backend fetch attempt ${attempt} failed: ${msg}`);
+      const is503 = msg.includes('503') || msg.includes('CORS') || msg.includes('NetworkError') || msg.includes('Failed to fetch');
+      console.log(`⚠️ Backend fetch attempt ${attempt} failed: ${msg}${is503 ? ' (likely cold start 503)' : ''}`);
       if (attempt < maxRetries) {
-        const delay = Math.min(1000 * attempt, 3000);
-        console.log(`   Retrying in ${delay}ms...`);
+        const delay = is503 
+          ? Math.min(2000 * Math.pow(2, attempt - 1), 8000)
+          : Math.min(1000 * attempt, 3000);
+        console.log(`   Cold start detected - retrying in ${delay}ms (attempt ${attempt}/${maxRetries})...`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
@@ -515,16 +563,25 @@ async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> 
 
   console.log('🔄 Backend unavailable after retries, trying direct client-side sources...');
 
+  const clientFetches: Promise<{ price: number; source: string } | null>[] = [];
+
   if (Platform.OS === 'web') {
-    console.log('⚠️ Client-side APIs blocked by CORS on web, skipping direct fetches');
+    console.log('🌐 Web platform: trying CORS-friendly APIs...');
+    clientFetches.push(
+      fetchClientMetalsLive(),
+      fetchClientGoldPriceOrg(),
+      fetchWebCorsProxy(),
+    );
+  } else {
+    clientFetches.push(
+      fetchClientFinnhub(),
+      fetchClientSwissquote(),
+      fetchClientMetalsLive(),
+      fetchClientGoldPriceOrg(),
+    );
   }
 
-  const clientResults = Platform.OS !== 'web' ? await Promise.allSettled([
-    fetchClientFinnhub(),
-    fetchClientSwissquote(),
-    fetchClientMetalsLive(),
-    fetchClientGoldPriceOrg(),
-  ]) : [];
+  const clientResults = await Promise.allSettled(clientFetches);
 
   const validPrices: { price: number; source: string }[] = [];
   for (const result of clientResults) {
