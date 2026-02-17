@@ -169,6 +169,49 @@ async function fetchFinnhubGold(): Promise<{ price: number; source: string } | n
   return null;
 }
 
+async function fetchMetalPriceApi(): Promise<{ price: number; source: string } | null> {
+  if (shouldSkipApi('metalpriceapi')) {
+    console.log('[GOLD] Skipping MetalPriceAPI (in cooldown)');
+    return null;
+  }
+
+  const apiKey = process.env.METALPRICE_API_KEY;
+  if (!apiKey) {
+    console.log('[GOLD] MetalPriceAPI key not configured');
+    return null;
+  }
+
+  try {
+    console.log('[GOLD] Trying MetalPriceAPI XAU/USD...');
+    const response = await fetchWithTimeout(
+      `https://api.metalpriceapi.com/v1/latest?api_key=${apiKey}&base=USD&currencies=XAU`,
+      5000
+    );
+    if (response.ok) {
+      const data = await response.json();
+      if (data?.success && data?.rates?.USDXAU) {
+        const ratePerOz = 1 / data.rates.USDXAU;
+        const price = parseFloat(ratePerOz.toFixed(2));
+        if (price > 1000 && price < 10000) {
+          console.log(`[GOLD] MetalPriceAPI success: ${price}`);
+          recordApiSuccess('metalpriceapi');
+          return { price, source: 'metalpriceapi' };
+        } else {
+          console.log(`[GOLD] MetalPriceAPI invalid price: ${price}`, data);
+        }
+      } else {
+        console.log(`[GOLD] MetalPriceAPI invalid response:`, data);
+      }
+    } else {
+      console.log(`[GOLD] MetalPriceAPI returned ${response.status}`);
+    }
+  } catch (e) {
+    console.log('[GOLD] MetalPriceAPI error:', e instanceof Error ? e.message : 'Unknown');
+  }
+  recordApiFailure('metalpriceapi');
+  return null;
+}
+
 async function fetchSwissquoteGold(): Promise<{ price: number; source: string } | null> {
   if (shouldSkipApi('swissquote')) {
     console.log('[GOLD] Skipping Swissquote (in cooldown)');
@@ -366,10 +409,11 @@ export const goldPriceRouter = createTRPCRouter({
       fetchGoldApiIo(),
       fetchMetalsDev(),
       fetchFinnhubGold(),
+      fetchMetalPriceApi(),
     ]);
 
     const tier1Prices: { price: number; source: string; name: string }[] = [];
-    const tier1Names = ['goldapiio', 'metalsdev', 'finnhub'];
+    const tier1Names = ['goldapiio', 'metalsdev', 'finnhub', 'metalpriceapi'];
     for (let i = 0; i < tier1Results.length; i++) {
       const r = tier1Results[i];
       if (r.status === 'fulfilled' && r.value) {
@@ -458,6 +502,7 @@ export const goldPriceRouter = createTRPCRouter({
       { name: 'goldapi.io', test: () => fetchGoldApiIo() },
       { name: 'metals.dev', test: () => fetchMetalsDev() },
       { name: 'finnhub', test: () => fetchFinnhubGold() },
+      { name: 'metalpriceapi', test: () => fetchMetalPriceApi() },
       { name: 'swissquote', test: () => fetchSwissquoteGold() },
       { name: 'fxcm', test: () => fetchFXCMGold() },
       { name: 'metals.live', test: () => fetchMetalsLive() },
