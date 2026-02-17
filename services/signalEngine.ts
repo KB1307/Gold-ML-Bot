@@ -133,7 +133,7 @@ interface MarketFeatures {
   sessionSweeps: SessionSweep[];
 }
 
-const CACHE_DURATION = 10000;
+const CACHE_DURATION = 7000;
 let cachedGoldPrice: number | null = null;
 let lastFetchTime: number = 0;
 let lastPriceSource: string = 'connecting...';
@@ -265,7 +265,11 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
     };
   }
 
-  const backendData = await fetchIntermarketViaBackend();
+  const backendData = await withTimeout(
+    fetchIntermarketViaBackend(),
+    10000,
+    'intermarketData'
+  ).catch(() => null);
   
   if (backendData) {
     cachedDXY = backendData.dxy;
@@ -420,6 +424,15 @@ async function fetchClientFinnhub(): Promise<{ price: number; source: string } |
   return null;
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    ),
+  ]);
+}
+
 async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> {
   const now = Date.now();
 
@@ -428,7 +441,11 @@ async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> 
   }
 
   try {
-    const result = await trpcClient.goldPrice.getSpotPrice.query();
+    const result = await withTimeout(
+      trpcClient.goldPrice.getSpotPrice.query(),
+      12000,
+      'getSpotPrice'
+    );
     if (result.price > 0) {
       const isLive = !result.source.includes('cache') && !result.source.includes('estimate') && !result.source.includes('stale') && !result.source.includes('unavailable');
       const displaySource = isLive ? `🟢 ${result.source}` : `🟡 ${result.source}`;
@@ -568,10 +585,14 @@ class SignalGenerationEngine {
       const toTime = now;
       const fromTime = now - (100 * 60 * 1000);
       
-      const bars = await trpcClient.goldPrice.getHistoricalData.query({
-        fromTime,
-        toTime,
-      });
+      const bars = await withTimeout(
+        trpcClient.goldPrice.getHistoricalData.query({
+          fromTime,
+          toTime,
+        }),
+        10000,
+        'getHistoricalData'
+      );
       
       if (bars && bars.length > 0) {
         this.highHistory = bars.map((b: { high: number }) => b.high);
@@ -623,12 +644,11 @@ class SignalGenerationEngine {
     try {
       const result = await fetchLiveGoldPrice();
       
-      // Only update if we got a valid price
       if (result.price > 0) {
         this.currentPrice = result.price;
+        console.log(`📊 Price set to ${this.currentPrice.toFixed(2)} from ${result.source}`);
       } else {
         console.warn(`⚠️ Invalid price received (${result.price}), keeping previous price: ${this.currentPrice}`);
-        // Return current price so we don't break downstream consumers
         return this.currentPrice;
       }
       
@@ -642,7 +662,9 @@ class SignalGenerationEngine {
         this.closeHistory.shift();
       }
       
-      await this.fetchAndUpdateOHLCHistory();
+      this.fetchAndUpdateOHLCHistory().catch(err => {
+        console.warn('⚠️ Non-blocking OHLC fetch failed:', err instanceof Error ? err.message : 'Unknown');
+      });
       
       this.update5MinCandles();
       
@@ -651,11 +673,11 @@ class SignalGenerationEngine {
       const realVolatility = this.calculateRealTimeVolatility();
       const priceDirection = this.detectPriceDirection();
       
-      console.log(`📊 Price Update: Close=${this.currentPrice.toFixed(1)}, H=${latestHigh.toFixed(1)}, L=${latestLow.toFixed(1)} | Volatility: ${realVolatility.toFixed(2)} | Direction: ${priceDirection > 0 ? '↑' : priceDirection < 0 ? '↓' : '→'} | OHLC Source: ${this.ohlcDataSource}`);
+      console.log(`📊 Price Detail: Close=${this.currentPrice.toFixed(1)}, H=${latestHigh.toFixed(1)}, L=${latestLow.toFixed(1)} | Vol: ${realVolatility.toFixed(2)} | Dir: ${priceDirection > 0 ? '↑' : priceDirection < 0 ? '↓' : '→'} | OHLC: ${this.ohlcDataSource}`);
       
       return this.currentPrice;
     } catch (error) {
-      console.error('Failed to update current price:', error);
+      console.error('❌ Failed to update current price:', error instanceof Error ? error.message : 'Unknown');
       return this.currentPrice;
     }
   }

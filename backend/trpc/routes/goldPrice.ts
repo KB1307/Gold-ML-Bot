@@ -189,15 +189,23 @@ async function fetchMetalPriceApi(): Promise<{ price: number; source: string } |
     );
     if (response.ok) {
       const data = await response.json();
-      if (data?.success && data?.rates?.USDXAU) {
-        const ratePerOz = 1 / data.rates.USDXAU;
-        const price = parseFloat(ratePerOz.toFixed(2));
+      if (data?.success && data?.rates) {
+        let price = 0;
+        if (data.rates.XAU && typeof data.rates.XAU === 'number' && data.rates.XAU > 0 && data.rates.XAU < 1) {
+          price = parseFloat((1 / data.rates.XAU).toFixed(2));
+        } else if (data.rates.USDXAU && typeof data.rates.USDXAU === 'number') {
+          if (data.rates.USDXAU > 1000) {
+            price = parseFloat(data.rates.USDXAU.toFixed(2));
+          } else if (data.rates.USDXAU > 0 && data.rates.USDXAU < 1) {
+            price = parseFloat((1 / data.rates.USDXAU).toFixed(2));
+          }
+        }
         if (price > 1000 && price < 10000) {
-          console.log(`[GOLD] MetalPriceAPI success: ${price}`);
+          console.log(`[GOLD] MetalPriceAPI success: ${price} (XAU=${data.rates.XAU}, USDXAU=${data.rates.USDXAU})`);
           recordApiSuccess('metalpriceapi');
           return { price, source: 'metalpriceapi' };
         } else {
-          console.log(`[GOLD] MetalPriceAPI invalid price: ${price}`, data);
+          console.log(`[GOLD] MetalPriceAPI invalid price: ${price}`, data.rates);
         }
       } else {
         console.log(`[GOLD] MetalPriceAPI invalid response:`, data);

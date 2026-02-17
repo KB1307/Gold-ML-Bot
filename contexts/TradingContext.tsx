@@ -104,10 +104,23 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   useEffect(() => {
     let isMounted = true;
     let isUpdating = false;
+    let lastUpdateStart = 0;
 
     const updatePrice = async () => {
-      if (!isMounted || isUpdating) return;
+      if (!isMounted) return;
+      
+      if (isUpdating) {
+        const stuckDuration = Date.now() - lastUpdateStart;
+        if (stuckDuration > 15000) {
+          console.warn(`⚠️ Price update was stuck for ${(stuckDuration/1000).toFixed(1)}s - forcing reset`);
+          isUpdating = false;
+        } else {
+          return;
+        }
+      }
+      
       isUpdating = true;
+      lastUpdateStart = Date.now();
       try {
         await signalEngine.updateCurrentPrice();
         const price = signalEngine.getCurrentPrice();
@@ -130,8 +143,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             return newHistory;
           });
 
-          const updatedOHLC = await signalEngine.updateDailyOHLC(price);
-          if (updatedOHLC) {
+          signalEngine.updateDailyOHLC(price).then(updatedOHLC => {
+            if (!isMounted || !updatedOHLC) return;
             setDailyOHLCHistory(prev => {
               const existingIndex = prev.findIndex(d => d.date === updatedOHLC.date);
               if (existingIndex >= 0) {
@@ -145,7 +158,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
               }
               return newHistory;
             });
-          }
+          }).catch(err => {
+            console.warn('⚠️ Daily OHLC update failed (non-blocking):', err instanceof Error ? err.message : 'Unknown');
+          });
         } else {
           setPriceSource(source);
           console.log('⏳ Waiting for first valid price...');
@@ -153,7 +168,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : 'Unknown error';
         console.error('❌ Failed to update price:', errorMsg);
-        setPriceSource('retrying...');
+        if (isMounted) {
+          setPriceSource('retrying...');
+        }
       } finally {
         isUpdating = false;
       }
@@ -187,10 +204,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log(`   From: ${new Date(fromTime).toISOString()}`);
       console.log(`   To: ${new Date(toTime).toISOString()}`);
       
-      const bars = await trpcClient.goldPrice.getHistoricalData.query({
-        fromTime,
-        toTime
-      });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('fetchPriceHistory timed out after 15s')), 15000)
+      );
+      const bars = await Promise.race([
+        trpcClient.goldPrice.getHistoricalData.query({ fromTime, toTime }),
+        timeoutPromise,
+      ]);
       
       console.log(`✅ Fetched ${bars.length} historical 1-MINUTE bars`);
       
