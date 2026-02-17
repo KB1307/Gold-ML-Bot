@@ -7,7 +7,6 @@ const GOLD_CACHE_MS = 15000;
 const INTERMARKET_CACHE_MS = 60000;
 const RECENT_CACHE_MS = 600000; // 10 min extended cache for outages
 const STALE_CACHE_MS = 3600000; // 1 hour stale cache as last resort
-const PAXG_PREMIUM_OFFSET = 10; // PAXG trades ~$10 above spot gold
 
 const apiFailures: Map<string, { count: number; lastFailure: number }> = new Map();
 const FAILURE_COOLDOWN_MS = 60000; // 60s cooldown
@@ -125,145 +124,6 @@ async function fetchGoldApi(): Promise<{ price: number; source: string } | null>
   return null;
 }
 
-async function fetchCoinGecko(): Promise<{ price: number; source: string } | null> {
-  if (shouldSkipApi('coingecko')) {
-    console.log('[GOLD] Skipping CoinGecko (in cooldown)');
-    return null;
-  }
-  
-  try {
-    console.log('[GOLD] Trying CoinGecko (PAXG)...');
-    const response = await fetchWithTimeout('https://api.coingecko.com/api/v3/simple/price?ids=pax-gold&vs_currencies=usd', 5000, {
-      'Accept': 'application/json',
-    });
-    
-    if (response.ok) {
-      const data = await response.json();
-      if (data?.['pax-gold']?.usd) {
-        const rawPrice = data['pax-gold'].usd;
-        if (rawPrice > 1000) {
-          const price = parseFloat((rawPrice - PAXG_PREMIUM_OFFSET).toFixed(2));
-          console.log(`[GOLD] CoinGecko raw: ${rawPrice}, adjusted: ${price} (PAXG premium removed)`);
-          recordApiSuccess('coingecko');
-          return { price, source: 'coingecko-adj' };
-        }
-      }
-    }
-  } catch (e) {
-    console.log('[GOLD] CoinGecko error:', e instanceof Error ? e.message : 'Unknown');
-  }
-  recordApiFailure('coingecko');
-  return null;
-}
-
-async function fetchBinance(): Promise<{ price: number; source: string } | null> {
-  if (shouldSkipApi('binance')) {
-    console.log('[GOLD] Skipping Binance (in cooldown)');
-    return null;
-  }
-  try {
-    console.log('[GOLD] Trying binance...');
-    const response = await fetchWithTimeout(`https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT`, 6000);
-    if (response.ok) {
-      const data = await response.json();
-      if (data?.price) {
-        const rawPrice = Number(parseFloat(data.price).toFixed(2));
-        if (rawPrice > 1000) {
-          const price = Number((rawPrice - PAXG_PREMIUM_OFFSET).toFixed(2));
-          console.log(`[GOLD] binance raw: ${rawPrice}, adjusted: ${price} (PAXG premium removed)`);
-          recordApiSuccess('binance');
-          return { price, source: 'binance-adj' };
-        }
-      }
-    }
-  } catch (e) {
-    console.log('[GOLD] binance error:', e instanceof Error ? e.message : 'Unknown');
-  }
-  recordApiFailure('binance');
-  return null;
-}
-
-async function fetchKraken(): Promise<{ price: number; source: string } | null> {
-  if (shouldSkipApi('kraken')) {
-    console.log('[GOLD] Skipping Kraken (in cooldown)');
-    return null;
-  }
-  
-  try {
-    console.log('[GOLD] Trying Kraken...');
-    const response = await fetchWithTimeout('https://api.kraken.com/0/public/Ticker?pair=PAXGUSD', 5000);
-    if (response.ok) {
-      const data = await response.json();
-      const pair = data?.result?.PAXGUSD || data?.result?.XPAXGZUSD;
-      if (pair && pair.c && pair.c[0]) {
-        const rawPrice = parseFloat(pair.c[0]);
-        if (rawPrice > 1000) {
-          const price = parseFloat((rawPrice - PAXG_PREMIUM_OFFSET).toFixed(2));
-          console.log(`[GOLD] Kraken raw: ${rawPrice}, adjusted: ${price} (PAXG premium removed)`);
-          recordApiSuccess('kraken');
-          return { price, source: 'kraken-adj' };
-        }
-      }
-    }
-  } catch (e) {
-    console.log('[GOLD] Kraken error:', e instanceof Error ? e.message : 'Unknown');
-  }
-  recordApiFailure('kraken');
-  return null;
-}
-
-async function fetchBybit(): Promise<{ price: number; source: string } | null> {
-  if (shouldSkipApi('bybit')) {
-    console.log('[GOLD] Skipping Bybit (in cooldown)');
-    return null;
-  }
-  
-  try {
-    console.log('[GOLD] Trying Bybit (PAXGUSDT)...');
-    const response = await fetchWithTimeout('https://api.bybit.com/v5/market/tickers?category=spot&symbol=PAXGUSDT', 6000);
-    if (response.ok) {
-      const data = await response.json();
-      const rawPrice = parseFloat(data?.result?.list?.[0]?.lastPrice);
-      if (rawPrice && rawPrice > 1000) {
-        const price = parseFloat((rawPrice - PAXG_PREMIUM_OFFSET).toFixed(2));
-        console.log(`[GOLD] Bybit raw: ${rawPrice}, adjusted: ${price} (PAXG premium removed)`);
-        recordApiSuccess('bybit');
-        return { price, source: 'bybit-adj' };
-      }
-    }
-  } catch (e) {
-    console.log('[GOLD] Bybit error:', e instanceof Error ? e.message : 'Unknown');
-  }
-  recordApiFailure('bybit');
-  return null;
-}
-
-async function fetchOKX(): Promise<{ price: number; source: string } | null> {
-  if (shouldSkipApi('okx')) {
-    console.log('[GOLD] Skipping OKX (in cooldown)');
-    return null;
-  }
-  
-  try {
-    console.log('[GOLD] Trying OKX (PAXG-USDT)...');
-    const response = await fetchWithTimeout('https://www.okx.com/api/v5/market/ticker?instId=PAXG-USDT', 6000);
-    if (response.ok) {
-      const data = await response.json();
-      const rawPrice = parseFloat(data?.data?.[0]?.last);
-      if (rawPrice && rawPrice > 1000) {
-        const price = parseFloat((rawPrice - PAXG_PREMIUM_OFFSET).toFixed(2));
-        console.log(`[GOLD] OKX raw: ${rawPrice}, adjusted: ${price} (PAXG premium removed)`);
-        recordApiSuccess('okx');
-        return { price, source: 'okx-adj' };
-      }
-    }
-  } catch (e) {
-    console.log('[GOLD] OKX error:', e instanceof Error ? e.message : 'Unknown');
-  }
-  recordApiFailure('okx');
-  return null;
-}
-
 async function fetchKitco(): Promise<{ price: number; source: string } | null> {
   if (shouldSkipApi('kitco')) {
     console.log('[GOLD] Skipping Kitco (in cooldown)');
@@ -354,14 +214,9 @@ export const goldPriceRouter = createTRPCRouter({
       return { price: goldPriceCache.price, source: goldPriceCache.source, timestamp: goldPriceCache.timestamp, cached: true };
     }
     
-    const [goldApiResult, yahooResult, krakenResult, bybitResult, okxResult, coinGeckoResult, binanceResult, kitcoResult, forexResult] = await Promise.allSettled([
+    const [goldApiResult, yahooResult, kitcoResult, forexResult] = await Promise.allSettled([
       fetchGoldApi(),
       fetchYahooGold(),
-      fetchKraken(),
-      fetchBybit(),
-      fetchOKX(),
-      fetchCoinGecko(),
-      fetchBinance(),
       fetchKitco(),
       fetchForexApi(),
     ]);
@@ -369,11 +224,6 @@ export const goldPriceRouter = createTRPCRouter({
     const results = [
       { name: 'goldapi', result: goldApiResult },
       { name: 'yahoo', result: yahooResult },
-      { name: 'binance', result: binanceResult },
-      { name: 'bybit', result: bybitResult },
-      { name: 'okx', result: okxResult },
-      { name: 'kraken', result: krakenResult },
-      { name: 'coingecko', result: coinGeckoResult },
       { name: 'kitco', result: kitcoResult },
       { name: 'forexapi', result: forexResult },
     ];
@@ -454,7 +304,7 @@ export const goldPriceRouter = createTRPCRouter({
   healthCheck: publicProcedure.query(async () => {
     const sources = [
       { name: 'yahoo', test: () => fetchYahooGold() },
-      { name: 'kraken', test: () => fetchKraken() },
+      { name: 'kitco', test: () => fetchKitco() },
       { name: 'goldapi', test: () => fetchGoldApi() },
     ];
     
