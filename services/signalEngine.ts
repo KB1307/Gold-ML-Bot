@@ -183,6 +183,38 @@ let intermarketHistory: IntermarketHistory = {
   lastUpdate: 0,
 };
 
+let goldPriceHistoryForCorrelation: number[] = [];
+
+function calculateRollingCorrelation(x: number[], y: number[], fallback: number): number {
+  const minLen = Math.min(x.length, y.length);
+  if (minLen < 5) return fallback;
+  
+  const xSlice = x.slice(-minLen);
+  const ySlice = y.slice(-minLen);
+  const n = xSlice.length;
+  
+  const meanX = xSlice.reduce((a, b) => a + b, 0) / n;
+  const meanY = ySlice.reduce((a, b) => a + b, 0) / n;
+  
+  let numerator = 0;
+  let denomX = 0;
+  let denomY = 0;
+  
+  for (let i = 0; i < n; i++) {
+    const dx = xSlice[i] - meanX;
+    const dy = ySlice[i] - meanY;
+    numerator += dx * dy;
+    denomX += dx * dx;
+    denomY += dy * dy;
+  }
+  
+  const denominator = Math.sqrt(denomX * denomY);
+  if (denominator === 0) return fallback;
+  
+  const corr = numerator / denominator;
+  return parseFloat(Math.max(-1, Math.min(1, corr)).toFixed(3));
+}
+
 function calculateRealChange(history: number[]): number {
   if (history.length < 2) return 0;
   const current = history[history.length - 1];
@@ -227,8 +259,8 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
       us10yChange,
       vixPrice: cachedVIX,
       vixChange,
-      goldDxyCorrelation: -0.65 + (Math.random() - 0.5) * 0.2,
-      goldYieldCorrelation: -0.55 + (Math.random() - 0.5) * 0.2,
+      goldDxyCorrelation: calculateRollingCorrelation(goldPriceHistoryForCorrelation, intermarketHistory.dxyPrices, -0.65),
+      goldYieldCorrelation: calculateRollingCorrelation(goldPriceHistoryForCorrelation, intermarketHistory.us10yYields, -0.55),
     };
   }
 
@@ -251,6 +283,11 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
   intermarketHistory.vixPrices.push(cachedVIX);
   intermarketHistory.lastUpdate = now;
   
+  if (cachedGoldPrice) {
+    goldPriceHistoryForCorrelation.push(cachedGoldPrice);
+    if (goldPriceHistoryForCorrelation.length > 30) goldPriceHistoryForCorrelation.shift();
+  }
+  
   if (intermarketHistory.dxyPrices.length > 30) intermarketHistory.dxyPrices.shift();
   if (intermarketHistory.us10yYields.length > 30) intermarketHistory.us10yYields.shift();
   if (intermarketHistory.vixPrices.length > 30) intermarketHistory.vixPrices.shift();
@@ -268,8 +305,8 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
     us10yChange,
     vixPrice: cachedVIX,
     vixChange,
-    goldDxyCorrelation: -0.65 + (Math.random() - 0.5) * 0.2,
-    goldYieldCorrelation: -0.55 + (Math.random() - 0.5) * 0.2,
+    goldDxyCorrelation: calculateRollingCorrelation(goldPriceHistoryForCorrelation, intermarketHistory.dxyPrices, -0.65),
+    goldYieldCorrelation: calculateRollingCorrelation(goldPriceHistoryForCorrelation, intermarketHistory.us10yYields, -0.55),
   };
 }
 
@@ -433,6 +470,72 @@ class SignalGenerationEngine {
   private nySessionHigh: number = 0;
   private nySessionLow: number = Infinity;
   private lastSessionUpdate: number = 0;
+  private lastOHLCFetchTime: number = 0;
+  private ohlcDataSource: string = 'estimated';
+  
+  private async fetchAndUpdateOHLCHistory(): Promise<void> {
+    const now = Date.now();
+    const OHLC_FETCH_INTERVAL = 60000;
+    
+    if (now - this.lastOHLCFetchTime < OHLC_FETCH_INTERVAL) {
+      return;
+    }
+    this.lastOHLCFetchTime = now;
+    
+    try {
+      const toTime = now;
+      const fromTime = now - (100 * 60 * 1000);
+      
+      const bars = await trpcClient.goldPrice.getHistoricalData.query({
+        fromTime,
+        toTime,
+      });
+      
+      if (bars && bars.length > 0) {
+        this.highHistory = bars.map((b: { high: number }) => b.high);
+        this.lowHistory = bars.map((b: { low: number }) => b.low);
+        this.ohlcDataSource = 'real-ohlc';
+        console.log(`✅ OHLC: Loaded ${bars.length} real 1-min bars (H/L from Yahoo)`);
+        return;
+      }
+    } catch (error) {
+      console.log('⚠️ OHLC fetch failed, using 5-min candle fallback:', error instanceof Error ? error.message : 'Unknown');
+    }
+    
+    if (this.fiveMinCandles.length >= 5) {
+      this.highHistory = this.fiveMinCandles.map(c => c.high);
+      this.lowHistory = this.fiveMinCandles.map(c => c.low);
+      this.ohlcDataSource = '5min-candles';
+      console.log(`📊 OHLC: Using ${this.fiveMinCandles.length} locally-built 5-min candles for H/L`);
+      return;
+    }
+    
+    const realVolatility = this.calculateRealTimeVolatility();
+    const priceDirection = this.detectPriceDirection();
+    
+    let estimatedHigh: number;
+    let estimatedLow: number;
+    
+    if (priceDirection > 0) {
+      estimatedHigh = this.currentPrice + (realVolatility * 0.6);
+      estimatedLow = this.currentPrice - (realVolatility * 0.3);
+    } else if (priceDirection < 0) {
+      estimatedHigh = this.currentPrice + (realVolatility * 0.3);
+      estimatedLow = this.currentPrice - (realVolatility * 0.6);
+    } else {
+      estimatedHigh = this.currentPrice + (realVolatility * 0.4);
+      estimatedLow = this.currentPrice - (realVolatility * 0.4);
+    }
+    
+    this.highHistory.push(estimatedHigh);
+    this.lowHistory.push(estimatedLow);
+    
+    if (this.highHistory.length > 100) {
+      this.highHistory.shift();
+      this.lowHistory.shift();
+    }
+    this.ohlcDataSource = 'estimated';
+  }
   
   async updateCurrentPrice(): Promise<number> {
     try {
@@ -452,36 +555,21 @@ class SignalGenerationEngine {
         this.priceHistory.shift();
       }
       
-      const realVolatility = this.calculateRealTimeVolatility();
-      const priceDirection = this.detectPriceDirection();
-      
-      let estimatedHigh: number;
-      let estimatedLow: number;
-      
-      if (priceDirection > 0) {
-        estimatedHigh = this.currentPrice + (realVolatility * 0.6);
-        estimatedLow = this.currentPrice - (realVolatility * 0.3);
-      } else if (priceDirection < 0) {
-        estimatedHigh = this.currentPrice + (realVolatility * 0.3);
-        estimatedLow = this.currentPrice - (realVolatility * 0.6);
-      } else {
-        estimatedHigh = this.currentPrice + (realVolatility * 0.4);
-        estimatedLow = this.currentPrice - (realVolatility * 0.4);
-      }
-      
-      this.highHistory.push(estimatedHigh);
-      this.lowHistory.push(estimatedLow);
       this.closeHistory.push(this.currentPrice);
-      
-      if (this.highHistory.length > 100) {
-        this.highHistory.shift();
-        this.lowHistory.shift();
+      if (this.closeHistory.length > 100) {
         this.closeHistory.shift();
       }
       
+      await this.fetchAndUpdateOHLCHistory();
+      
       this.update5MinCandles();
       
-      console.log(`📊 Price Update: Close=${this.currentPrice.toFixed(1)}, H≈${estimatedHigh.toFixed(1)}, L≈${estimatedLow.toFixed(1)} | Volatility: ${realVolatility.toFixed(2)} | Direction: ${priceDirection > 0 ? '↑' : priceDirection < 0 ? '↓' : '→'}`);
+      const latestHigh = this.highHistory.length > 0 ? this.highHistory[this.highHistory.length - 1] : this.currentPrice;
+      const latestLow = this.lowHistory.length > 0 ? this.lowHistory[this.lowHistory.length - 1] : this.currentPrice;
+      const realVolatility = this.calculateRealTimeVolatility();
+      const priceDirection = this.detectPriceDirection();
+      
+      console.log(`📊 Price Update: Close=${this.currentPrice.toFixed(1)}, H=${latestHigh.toFixed(1)}, L=${latestLow.toFixed(1)} | Volatility: ${realVolatility.toFixed(2)} | Direction: ${priceDirection > 0 ? '↑' : priceDirection < 0 ? '↓' : '→'} | OHLC Source: ${this.ohlcDataSource}`);
       
       return this.currentPrice;
     } catch (error) {
@@ -635,21 +723,28 @@ class SignalGenerationEngine {
       };
     }
 
-    // Synthetic Order Flow based on price action velocity and range
-    const recentPrices = this.priceHistory.slice(-5);
+    const recentPrices = this.priceHistory.slice(-10);
     const priceChange = recentPrices[recentPrices.length - 1] - recentPrices[0];
     const range = Math.max(...recentPrices) - Math.min(...recentPrices);
-    const momentum = priceChange / (range || 1); // -1 to 1
+    const momentum = priceChange / (range || 1);
 
-    // Base volume
-    let bidVolume = 1000 + (Math.random() * 200);
-    let askVolume = 1000 + (Math.random() * 200);
+    const volatilityProxy = this.calculateRealTimeVolatility();
+    const baseVolume = 1000 + (volatilityProxy * 50);
+    let bidVolume = baseVolume;
+    let askVolume = baseVolume;
 
-    // Adjust based on momentum (if price going up, bids > asks)
     if (momentum > 0.2) {
       bidVolume *= (1 + momentum);
     } else if (momentum < -0.2) {
       askVolume *= (1 + Math.abs(momentum));
+    }
+
+    if (recentPrices.length >= 5) {
+      const midRange = (Math.max(...recentPrices) + Math.min(...recentPrices)) / 2;
+      const currentPrice = recentPrices[recentPrices.length - 1];
+      const positionInRange = (currentPrice - midRange) / (range || 1);
+      bidVolume += baseVolume * 0.1 * Math.max(0, -positionInRange);
+      askVolume += baseVolume * 0.1 * Math.max(0, positionInRange);
     }
 
     const volumeImbalance = (bidVolume - askVolume) / (bidVolume + askVolume);
@@ -660,9 +755,8 @@ class SignalGenerationEngine {
     const isAggression = Math.abs(momentum) > 0.8;
     const largeOrdersDetected = isAbsorption || isAggression;
 
-    // Institutional footprint (synthetic)
-    // Higher if large orders detected and consistent direction
-    const institutionalFootprint = (Math.abs(volumeImbalance) * (largeOrdersDetected ? 2 : 1)) * 1.5;
+    const trendConsistency = this.calculateTrendStrength();
+    const institutionalFootprint = (Math.abs(volumeImbalance) * (largeOrdersDetected ? 2 : 1)) * (1 + trendConsistency);
     
     return {
       bidVolume: Math.floor(bidVolume),
@@ -1386,9 +1480,7 @@ class SignalGenerationEngine {
     const atr = this.calculateRealATR(14);
     const volumeRatio = this.calculateRealVolumeRatio();
     
-    // Weekly pivots - derived from daily for consistency if not real
-    // Just estimate weekly range as 2x daily range for synthetic purposes if needed
-    const weeklyPivot = dailyPivot; // Simplified for now to avoid random noise, or track real weekly
+    const weeklyPivot = dailyPivot;
     
     // Fractals from price history
     let fractalResistance = currentPrice;
@@ -1455,7 +1547,6 @@ class SignalGenerationEngine {
     console.log(`📊 Camarilla Pivot Points Calculated:`);    console.log(`   Daily Pivot: ${dailyPivot.toFixed(1)} (H: ${yesterdayHigh.toFixed(1)}, L: ${yesterdayLow.toFixed(1)}, C: ${yesterdayClose.toFixed(1)})`);
     console.log(`   R1: ${r1.toFixed(1)} | R2: ${r2.toFixed(1)} | R3: ${r3.toFixed(1)}`);
     console.log(`   S1: ${s1.toFixed(1)} | S2: ${s2.toFixed(1)} | S3: ${s3.toFixed(1)}`);
-    console.log(`   Weekly Pivot: ${weeklyPivot.toFixed(1)}`);
     console.log(`   Current Price: ${currentPrice.toFixed(1)}`);
     
     return {
@@ -2143,13 +2234,6 @@ class SignalGenerationEngine {
       console.log('🔴 SELL: Bearish MACD Momentum');
     }
     
-    const isNearWeeklyPivot = Math.abs(this.currentPrice - features.weeklyPivot) < 15;
-    if (isNearWeeklyPivot) {
-      buySignalStrength += 0.05;
-      sellSignalStrength += 0.05;
-      attentionScores.set('weekly_pivot', 0.05);
-      console.log('✅ Price near Weekly Pivot');
-    }
     
     const bearishDivergence = this.detectBearishDivergence(features);
     const bullishDivergence = this.detectBullishDivergence(features);
@@ -2292,8 +2376,8 @@ class SignalGenerationEngine {
       console.log(`⚠️ Weak directional conviction - Confidence reduced by 15%`);
     }
     
-    const randomVariance = (Math.random() - 0.5) * 0.06;
-    let rawConfidence = Math.max(0.55, Math.min(0.98, baseConfidence + randomVariance));
+    const dataQualityPenalty = this.priceHistory.length < 30 ? -0.02 : 0;
+    let rawConfidence = Math.max(0.55, Math.min(0.98, baseConfidence + dataQualityPenalty));
     
     const smoothedConfidence = this.smoothConfidence(rawConfidence);
     
@@ -2316,11 +2400,15 @@ class SignalGenerationEngine {
   
   private detectHTFTrend(features: MarketFeatures): 'BULLISH' | 'BEARISH' | 'NEUTRAL' {
     const priceVsPivot = this.currentPrice - features.dailyPivot;
-    const weeklyBias = this.currentPrice - features.weeklyPivot;
+    const trendStrength = this.calculateTrendStrength();
+    const emaSignal = this.priceHistory.length >= 21 ? this.calculateEMA(this.priceHistory, 9) - this.calculateEMA(this.priceHistory, 21) : 0;
     
-    if (priceVsPivot > 15 && weeklyBias > 10) {
+    const bullishScore = (priceVsPivot > 10 ? 1 : 0) + (trendStrength > 0.4 && this.detectPriceDirection() > 0 ? 1 : 0) + (emaSignal > 0 ? 0.5 : 0);
+    const bearishScore = (priceVsPivot < -10 ? 1 : 0) + (trendStrength > 0.4 && this.detectPriceDirection() < 0 ? 1 : 0) + (emaSignal < 0 ? 0.5 : 0);
+    
+    if (bullishScore >= 1.5) {
       return 'BULLISH';
-    } else if (priceVsPivot < -15 && weeklyBias < -10) {
+    } else if (bearishScore >= 1.5) {
       return 'BEARISH';
     } else {
       return 'NEUTRAL';
