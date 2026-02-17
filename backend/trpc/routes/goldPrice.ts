@@ -3,14 +3,13 @@ import * as z from "zod";
 
 let goldPriceCache: { price: number; source: string; timestamp: number } | null = null;
 let intermarketCache: { dxy: number; us10y: number; vix: number; timestamp: number } | null = null;
-const GOLD_CACHE_MS = 15000;
+const GOLD_CACHE_MS = 10000;
 const INTERMARKET_CACHE_MS = 60000;
 const RECENT_CACHE_MS = 600000;
-const STALE_CACHE_MS = 3600000;
 
 const apiFailures: Map<string, { count: number; lastFailure: number }> = new Map();
 const FAILURE_COOLDOWN_MS = 60000;
-const MAX_FAILURES_BEFORE_COOLDOWN = 8;
+const MAX_FAILURES_BEFORE_COOLDOWN = 5;
 
 function shouldSkipApi(apiName: string): boolean {
   const failure = apiFailures.get(apiName);
@@ -35,17 +34,15 @@ function recordApiSuccess(apiName: string): void {
   apiFailures.delete(apiName);
 }
 
-async function fetchWithTimeout(url: string, timeout = 6000, headers?: Record<string, string>): Promise<Response> {
+async function fetchWithTimeout(url: string, timeout = 5000, headers?: Record<string, string>): Promise<Response> {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
     const response = await fetch(url, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Accept': 'application/json,text/html,*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Cache-Control': 'no-cache',
+        'User-Agent': 'GoldSignalBot/1.0',
+        'Accept': 'application/json',
         ...headers,
       },
     });
@@ -55,6 +52,83 @@ async function fetchWithTimeout(url: string, timeout = 6000, headers?: Record<st
     clearTimeout(id);
     throw error;
   }
+}
+
+async function fetchGoldApiIo(): Promise<{ price: number; source: string } | null> {
+  if (shouldSkipApi('goldapiio')) {
+    console.log('[GOLD] Skipping GoldAPI.io (in cooldown)');
+    return null;
+  }
+
+  const apiKey = process.env.GOLDAPI_IO_KEY;
+  if (!apiKey) {
+    console.log('[GOLD] GoldAPI.io key not configured');
+    return null;
+  }
+
+  try {
+    console.log('[GOLD] Trying GoldAPI.io XAU/USD...');
+    const response = await fetchWithTimeout(
+      'https://www.goldapi.io/api/XAU/USD',
+      5000,
+      { 'x-access-token': apiKey }
+    );
+    if (response.ok) {
+      const data = await response.json();
+      const price = data?.price;
+      if (typeof price === 'number' && price > 1000 && price < 10000) {
+        console.log(`[GOLD] GoldAPI.io success: ${price} (ask=${data.ask}, bid=${data.bid})`);
+        recordApiSuccess('goldapiio');
+        return { price: parseFloat(price.toFixed(2)), source: 'goldapi.io' };
+      } else {
+        console.log(`[GOLD] GoldAPI.io invalid price:`, data);
+      }
+    } else {
+      console.log(`[GOLD] GoldAPI.io returned ${response.status}`);
+    }
+  } catch (e) {
+    console.log('[GOLD] GoldAPI.io error:', e instanceof Error ? e.message : 'Unknown');
+  }
+  recordApiFailure('goldapiio');
+  return null;
+}
+
+async function fetchMetalsDev(): Promise<{ price: number; source: string } | null> {
+  if (shouldSkipApi('metalsdev')) {
+    console.log('[GOLD] Skipping Metals.dev (in cooldown)');
+    return null;
+  }
+
+  const apiKey = process.env.METALS_DEV_KEY;
+  if (!apiKey) {
+    console.log('[GOLD] Metals.dev key not configured');
+    return null;
+  }
+
+  try {
+    console.log('[GOLD] Trying Metals.dev...');
+    const response = await fetchWithTimeout(
+      `https://api.metals.dev/v1/latest?api_key=${apiKey}&currency=USD&unit=toz`,
+      5000
+    );
+    if (response.ok) {
+      const data = await response.json();
+      const price = data?.metals?.gold;
+      if (typeof price === 'number' && price > 1000 && price < 10000) {
+        console.log(`[GOLD] Metals.dev success: ${price}`);
+        recordApiSuccess('metalsdev');
+        return { price: parseFloat(price.toFixed(2)), source: 'metals.dev' };
+      } else {
+        console.log(`[GOLD] Metals.dev invalid price:`, data?.metals);
+      }
+    } else {
+      console.log(`[GOLD] Metals.dev returned ${response.status}`);
+    }
+  } catch (e) {
+    console.log('[GOLD] Metals.dev error:', e instanceof Error ? e.message : 'Unknown');
+  }
+  recordApiFailure('metalsdev');
+  return null;
 }
 
 async function fetchFinnhubGold(): Promise<{ price: number; source: string } | null> {
@@ -73,7 +147,7 @@ async function fetchFinnhubGold(): Promise<{ price: number; source: string } | n
     console.log('[GOLD] Trying Finnhub OANDA:XAU_USD...');
     const response = await fetchWithTimeout(
       `https://finnhub.io/api/v1/quote?symbol=OANDA:XAU_USD&token=${apiKey}`,
-      8000
+      5000
     );
     if (response.ok) {
       const data = await response.json();
@@ -105,7 +179,7 @@ async function fetchSwissquoteGold(): Promise<{ price: number; source: string } 
     console.log('[GOLD] Trying Swissquote XAU/USD...');
     const response = await fetchWithTimeout(
       'https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD',
-      8000
+      5000
     );
     if (response.ok) {
       const data = await response.json();
@@ -142,7 +216,7 @@ async function fetchFXCMGold(): Promise<{ price: number; source: string } | null
     console.log('[GOLD] Trying FXCM rates...');
     const response = await fetchWithTimeout(
       'https://ratesjson.fxcm.com/DataDisplayer',
-      8000
+      5000
     );
     if (response.ok) {
       let text = await response.text();
@@ -184,7 +258,7 @@ async function fetchMetalsLive(): Promise<{ price: number; source: string } | nu
 
   try {
     console.log('[GOLD] Trying metals.live...');
-    const response = await fetchWithTimeout('https://api.metals.live/v1/spot/gold', 6000);
+    const response = await fetchWithTimeout('https://api.metals.live/v1/spot/gold', 5000);
     if (response.ok) {
       const data = await response.json();
       if (data?.[0]?.price) {
@@ -211,7 +285,7 @@ async function fetchGoldPriceOrg(): Promise<{ price: number; source: string } | 
 
   try {
     console.log('[GOLD] Trying goldprice.org...');
-    const response = await fetchWithTimeout('https://data-asg.goldprice.org/dbXRates/USD', 6000);
+    const response = await fetchWithTimeout('https://data-asg.goldprice.org/dbXRates/USD', 5000);
     if (response.ok) {
       const data = await response.json();
       if (data.items?.[0]?.xauPrice) {
@@ -238,7 +312,7 @@ async function fetchForexSpot(): Promise<{ price: number; source: string } | nul
 
   try {
     console.log('[GOLD] Trying open.er-api.com (XAU spot)...');
-    const response = await fetchWithTimeout('https://open.er-api.com/v6/latest/XAU', 6000);
+    const response = await fetchWithTimeout('https://open.er-api.com/v6/latest/XAU', 5000);
     if (response.ok) {
       const data = await response.json();
       if (data?.rates?.USD) {
@@ -287,8 +361,44 @@ export const goldPriceRouter = createTRPCRouter({
       return { price: goldPriceCache.price, source: goldPriceCache.source, timestamp: goldPriceCache.timestamp, cached: true };
     }
 
-    const [finnhubResult, swissquoteResult, fxcmResult, metalsResult, goldpriceResult, forexResult] = await Promise.allSettled([
+    console.log('[GOLD] Tier 1: Authenticated APIs (GoldAPI.io, Metals.dev, Finnhub)...');
+    const tier1Results = await Promise.allSettled([
+      fetchGoldApiIo(),
+      fetchMetalsDev(),
       fetchFinnhubGold(),
+    ]);
+
+    const tier1Prices: { price: number; source: string; name: string }[] = [];
+    const tier1Names = ['goldapiio', 'metalsdev', 'finnhub'];
+    for (let i = 0; i < tier1Results.length; i++) {
+      const r = tier1Results[i];
+      if (r.status === 'fulfilled' && r.value) {
+        tier1Prices.push({ price: r.value.price, source: r.value.source, name: tier1Names[i] });
+      }
+    }
+
+    if (tier1Prices.length >= 2) {
+      tier1Prices.sort((a, b) => a.price - b.price);
+      const median = tier1Prices[Math.floor(tier1Prices.length / 2)];
+      const filtered = tier1Prices.filter(p => Math.abs(p.price - median.price) < 15);
+      if (filtered.length >= 2) {
+        const avgPrice = parseFloat((filtered.reduce((sum, p) => sum + p.price, 0) / filtered.length).toFixed(2));
+        const sourceNames = filtered.map(p => p.name).join('+');
+        console.log(`[GOLD] Tier 1 consensus (${filtered.length} sources): ${avgPrice} (${sourceNames})`);
+        goldPriceCache = { price: avgPrice, source: `t1-consensus-${sourceNames}`, timestamp: now };
+        return { price: avgPrice, source: `t1-consensus-${sourceNames}`, timestamp: now, cached: false };
+      }
+    }
+
+    if (tier1Prices.length === 1) {
+      const best = tier1Prices[0];
+      console.log(`[GOLD] Tier 1 single source ${best.name}: ${best.price}`);
+      goldPriceCache = { price: best.price, source: best.source, timestamp: now };
+      return { price: best.price, source: best.source, timestamp: now, cached: false };
+    }
+
+    console.log('[GOLD] Tier 1 failed, trying Tier 2: Free APIs...');
+    const tier2Results = await Promise.allSettled([
       fetchSwissquoteGold(),
       fetchFXCMGold(),
       fetchMetalsLive(),
@@ -296,14 +406,8 @@ export const goldPriceRouter = createTRPCRouter({
       fetchForexSpot(),
     ]);
 
-    const results = [
-      { name: 'finnhub', result: finnhubResult },
-      { name: 'swissquote', result: swissquoteResult },
-      { name: 'fxcm', result: fxcmResult },
-      { name: 'metalslive', result: metalsResult },
-      { name: 'goldprice', result: goldpriceResult },
-      { name: 'forexspot', result: forexResult },
-    ];
+    const tier2Names = ['swissquote', 'fxcm', 'metalslive', 'goldprice', 'forexspot'];
+    const results = tier2Names.map((name, i) => ({ name, result: tier2Results[i] }));
 
     const validPrices: { price: number; source: string; name: string }[] = [];
     for (const { name, result } of results) {
@@ -351,6 +455,8 @@ export const goldPriceRouter = createTRPCRouter({
 
   healthCheck: publicProcedure.query(async () => {
     const sources = [
+      { name: 'goldapi.io', test: () => fetchGoldApiIo() },
+      { name: 'metals.dev', test: () => fetchMetalsDev() },
       { name: 'finnhub', test: () => fetchFinnhubGold() },
       { name: 'swissquote', test: () => fetchSwissquoteGold() },
       { name: 'fxcm', test: () => fetchFXCMGold() },
