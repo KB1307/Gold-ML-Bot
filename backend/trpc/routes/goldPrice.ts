@@ -57,6 +57,44 @@ async function fetchWithTimeout(url: string, timeout = 6000, headers?: Record<st
   }
 }
 
+async function fetchFinnhubGold(): Promise<{ price: number; source: string } | null> {
+  if (shouldSkipApi('finnhub')) {
+    console.log('[GOLD] Skipping Finnhub (in cooldown)');
+    return null;
+  }
+
+  const apiKey = process.env.FINNHUB_API_KEY;
+  if (!apiKey) {
+    console.log('[GOLD] Finnhub API key not configured');
+    return null;
+  }
+
+  try {
+    console.log('[GOLD] Trying Finnhub OANDA:XAU_USD...');
+    const response = await fetchWithTimeout(
+      `https://finnhub.io/api/v1/quote?symbol=OANDA:XAU_USD&token=${apiKey}`,
+      8000
+    );
+    if (response.ok) {
+      const data = await response.json();
+      const price = data?.c;
+      if (typeof price === 'number' && price > 1000 && price < 10000) {
+        console.log(`[GOLD] Finnhub success: ${price} (c=${data.c}, h=${data.h}, l=${data.l}, o=${data.o})`);
+        recordApiSuccess('finnhub');
+        return { price: parseFloat(price.toFixed(2)), source: 'finnhub-spot' };
+      } else {
+        console.log(`[GOLD] Finnhub returned invalid price: ${price}`, data);
+      }
+    } else {
+      console.log(`[GOLD] Finnhub returned ${response.status}`);
+    }
+  } catch (e) {
+    console.log('[GOLD] Finnhub error:', e instanceof Error ? e.message : 'Unknown');
+  }
+  recordApiFailure('finnhub');
+  return null;
+}
+
 async function fetchSwissquoteGold(): Promise<{ price: number; source: string } | null> {
   if (shouldSkipApi('swissquote')) {
     console.log('[GOLD] Skipping Swissquote (in cooldown)');
@@ -249,7 +287,8 @@ export const goldPriceRouter = createTRPCRouter({
       return { price: goldPriceCache.price, source: goldPriceCache.source, timestamp: goldPriceCache.timestamp, cached: true };
     }
 
-    const [swissquoteResult, fxcmResult, metalsResult, goldpriceResult, forexResult] = await Promise.allSettled([
+    const [finnhubResult, swissquoteResult, fxcmResult, metalsResult, goldpriceResult, forexResult] = await Promise.allSettled([
+      fetchFinnhubGold(),
       fetchSwissquoteGold(),
       fetchFXCMGold(),
       fetchMetalsLive(),
@@ -258,6 +297,7 @@ export const goldPriceRouter = createTRPCRouter({
     ]);
 
     const results = [
+      { name: 'finnhub', result: finnhubResult },
       { name: 'swissquote', result: swissquoteResult },
       { name: 'fxcm', result: fxcmResult },
       { name: 'metalslive', result: metalsResult },
@@ -311,6 +351,7 @@ export const goldPriceRouter = createTRPCRouter({
 
   healthCheck: publicProcedure.query(async () => {
     const sources = [
+      { name: 'finnhub', test: () => fetchFinnhubGold() },
       { name: 'swissquote', test: () => fetchSwissquoteGold() },
       { name: 'fxcm', test: () => fetchFXCMGold() },
       { name: 'metals.live', test: () => fetchMetalsLive() },

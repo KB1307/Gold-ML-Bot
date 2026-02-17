@@ -398,6 +398,28 @@ async function fetchClientGoldPriceOrg(): Promise<{ price: number; source: strin
   return null;
 }
 
+async function fetchClientFinnhub(): Promise<{ price: number; source: string } | null> {
+  const apiKey = process.env.EXPO_PUBLIC_FINNHUB_API_KEY || '';
+  if (!apiKey) return null;
+  try {
+    const response = await fetchWithClientTimeout(
+      `https://finnhub.io/api/v1/quote?symbol=OANDA:XAU_USD&token=${apiKey}`,
+      8000
+    );
+    if (response.ok) {
+      const data = await response.json();
+      const price = data?.c;
+      if (typeof price === 'number' && price > 1000 && price < 10000) {
+        console.log(`✅ Client Finnhub: ${price}`);
+        return { price: parseFloat(price.toFixed(2)), source: 'finnhub-spot' };
+      }
+    }
+  } catch (e) {
+    console.log('⚠️ Client Finnhub failed:', e instanceof Error ? e.message : 'Unknown');
+  }
+  return null;
+}
+
 async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> {
   const now = Date.now();
 
@@ -426,6 +448,7 @@ async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> 
   }
 
   const clientResults = Platform.OS !== 'web' ? await Promise.allSettled([
+    fetchClientFinnhub(),
     fetchClientSwissquote(),
     fetchClientMetalsLive(),
     fetchClientGoldPriceOrg(),
