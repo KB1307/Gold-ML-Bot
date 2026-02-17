@@ -5,11 +5,11 @@ let goldPriceCache: { price: number; source: string; timestamp: number } | null 
 let intermarketCache: { dxy: number; us10y: number; vix: number; timestamp: number } | null = null;
 const GOLD_CACHE_MS = 15000;
 const INTERMARKET_CACHE_MS = 60000;
-const RECENT_CACHE_MS = 600000; // 10 min extended cache for outages
-const STALE_CACHE_MS = 3600000; // 1 hour stale cache as last resort
+const RECENT_CACHE_MS = 600000;
+const STALE_CACHE_MS = 3600000;
 
 const apiFailures: Map<string, { count: number; lastFailure: number }> = new Map();
-const FAILURE_COOLDOWN_MS = 60000; // 60s cooldown
+const FAILURE_COOLDOWN_MS = 60000;
 const MAX_FAILURES_BEFORE_COOLDOWN = 8;
 
 function shouldSkipApi(apiName: string): boolean {
@@ -57,143 +57,178 @@ async function fetchWithTimeout(url: string, timeout = 6000, headers?: Record<st
   }
 }
 
-async function fetchYahooGold(): Promise<{ price: number; source: string } | null> {
-  if (shouldSkipApi('yahoo')) {
-    console.log('[GOLD] Skipping Yahoo (in cooldown)');
+async function fetchSwissquoteGold(): Promise<{ price: number; source: string } | null> {
+  if (shouldSkipApi('swissquote')) {
+    console.log('[GOLD] Skipping Swissquote (in cooldown)');
     return null;
   }
-  
-  const endpoints = [
-    { url: 'https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d', name: 'yahoo-q1' },
-    { url: 'https://query2.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d', name: 'yahoo-q2' },
-    { url: 'https://query1.finance.yahoo.com/v8/finance/chart/GC%3DF?interval=1m&range=1d', name: 'yahoo-q1-enc' },
-  ];
-  
-  for (const ep of endpoints) {
-    try {
-      console.log(`[GOLD] Trying ${ep.name}...`);
-      const response = await fetchWithTimeout(ep.url, 8000);
-      
-      if (!response.ok) {
-        console.log(`[GOLD] ${ep.name} returned ${response.status}`);
-        continue;
-      }
-      
-      const data = await response.json();
-      const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
-      if (price && typeof price === 'number' && price > 1000) {
-        console.log(`[GOLD] ${ep.name} success: ${price}`);
-        recordApiSuccess('yahoo');
-        return { price: parseFloat(price.toFixed(2)), source: ep.name };
-      }
-    } catch (e) {
-      console.log(`[GOLD] ${ep.name} error:`, e instanceof Error ? e.message : 'Unknown');
-      continue;
-    }
-  }
-  recordApiFailure('yahoo');
-  return null;
-}
 
-async function fetchGoldApi(): Promise<{ price: number; source: string } | null> {
-  if (shouldSkipApi('goldapi')) {
-    console.log('[GOLD] Skipping GoldAPI (in cooldown)');
-    return null;
-  }
-  
   try {
-    console.log('[GOLD] Trying goldapi.io...');
-    const response = await fetchWithTimeout('https://www.goldapi.io/api/XAU/USD', 8000, {
-      'x-access-token': 'goldapi-1n5ovsmfwx8y1b-io',
-    });
+    console.log('[GOLD] Trying Swissquote XAU/USD...');
+    const response = await fetchWithTimeout(
+      'https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD',
+      8000
+    );
     if (response.ok) {
       const data = await response.json();
-      if (data?.price && data.price > 1000) {
-        console.log(`[GOLD] goldapi.io success: ${data.price}`);
-        recordApiSuccess('goldapi');
-        return { price: parseFloat(data.price.toFixed(2)), source: 'goldapi.io' };
+      if (Array.isArray(data) && data.length > 0) {
+        const quote = data[0];
+        const bid = quote?.spreadProfilePrices?.[0]?.bid;
+        const ask = quote?.spreadProfilePrices?.[0]?.ask;
+        if (bid && ask && typeof bid === 'number' && typeof ask === 'number') {
+          const price = parseFloat(((bid + ask) / 2).toFixed(2));
+          if (price > 1000 && price < 10000) {
+            console.log(`[GOLD] Swissquote success: ${price} (bid: ${bid}, ask: ${ask})`);
+            recordApiSuccess('swissquote');
+            return { price, source: 'swissquote-spot' };
+          }
+        }
       }
     } else {
-      const text = await response.text().catch(() => '');
-      console.log(`[GOLD] goldapi.io returned ${response.status}: ${text.slice(0, 200)}`);
+      console.log(`[GOLD] Swissquote returned ${response.status}`);
     }
   } catch (e) {
-    console.log('[GOLD] goldapi.io error:', e instanceof Error ? e.message : 'Unknown');
+    console.log('[GOLD] Swissquote error:', e instanceof Error ? e.message : 'Unknown');
   }
-  recordApiFailure('goldapi');
+  recordApiFailure('swissquote');
   return null;
 }
 
-async function fetchKitco(): Promise<{ price: number; source: string } | null> {
-  if (shouldSkipApi('kitco')) {
-    console.log('[GOLD] Skipping Kitco (in cooldown)');
+async function fetchFXCMGold(): Promise<{ price: number; source: string } | null> {
+  if (shouldSkipApi('fxcm')) {
+    console.log('[GOLD] Skipping FXCM (in cooldown)');
     return null;
   }
-  
+
   try {
-    console.log('[GOLD] Trying Kitco...');
-    const response = await fetchWithTimeout('https://proxy.kitco.com/getPM?symbol=AU&currency=USD&unit=oz', 6000);
+    console.log('[GOLD] Trying FXCM rates...');
+    const response = await fetchWithTimeout(
+      'https://ratesjson.fxcm.com/DataDisplayer',
+      8000
+    );
     if (response.ok) {
-      const text = await response.text();
-      const bidMatch = text.match(/bid["':>]+\s*([\d,.]+)/i);
-      const askMatch = text.match(/ask["':>]+\s*([\d,.]+)/i);
-      if (bidMatch && askMatch) {
-        const bid = parseFloat(bidMatch[1].replace(/,/g, ''));
-        const ask = parseFloat(askMatch[1].replace(/,/g, ''));
-        const price = (bid + ask) / 2;
+      let text = await response.text();
+      text = text.replace(/^[^{]*/, '').replace(/[^}]*$/, '');
+      try {
+        const data = JSON.parse(text);
+        const rates = data?.Rates;
+        if (Array.isArray(rates)) {
+          const goldRate = rates.find((r: any) => r.Symbol === 'XAU/USD' || r.Symbol === 'XAUUSD');
+          if (goldRate) {
+            const bid = parseFloat(goldRate.Bid);
+            const ask = parseFloat(goldRate.Ask);
+            if (!isNaN(bid) && !isNaN(ask) && bid > 1000) {
+              const price = parseFloat(((bid + ask) / 2).toFixed(2));
+              console.log(`[GOLD] FXCM success: ${price} (bid: ${bid}, ask: ${ask})`);
+              recordApiSuccess('fxcm');
+              return { price, source: 'fxcm-spot' };
+            }
+          }
+        }
+      } catch {
+        console.log('[GOLD] FXCM JSON parse failed');
+      }
+    } else {
+      console.log(`[GOLD] FXCM returned ${response.status}`);
+    }
+  } catch (e) {
+    console.log('[GOLD] FXCM error:', e instanceof Error ? e.message : 'Unknown');
+  }
+  recordApiFailure('fxcm');
+  return null;
+}
+
+async function fetchMetalsLive(): Promise<{ price: number; source: string } | null> {
+  if (shouldSkipApi('metalslive')) {
+    console.log('[GOLD] Skipping metals.live (in cooldown)');
+    return null;
+  }
+
+  try {
+    console.log('[GOLD] Trying metals.live...');
+    const response = await fetchWithTimeout('https://api.metals.live/v1/spot/gold', 6000);
+    if (response.ok) {
+      const data = await response.json();
+      if (data?.[0]?.price) {
+        const price = Number(parseFloat(data[0].price.toString()).toFixed(2));
         if (price > 1000) {
-          console.log(`[GOLD] Kitco success: ${price}`);
-          recordApiSuccess('kitco');
-          return { price: parseFloat(price.toFixed(2)), source: 'kitco' };
+          console.log(`[GOLD] metals.live success: ${price}`);
+          recordApiSuccess('metalslive');
+          return { price, source: 'metals.live-spot' };
         }
       }
     }
   } catch (e) {
-    console.log('[GOLD] Kitco error:', e instanceof Error ? e.message : 'Unknown');
+    console.log('[GOLD] metals.live error:', e instanceof Error ? e.message : 'Unknown');
   }
-  recordApiFailure('kitco');
+  recordApiFailure('metalslive');
   return null;
 }
 
-async function fetchForexApi(): Promise<{ price: number; source: string } | null> {
-  if (shouldSkipApi('forexapi')) {
-    console.log('[GOLD] Skipping ForexAPI (in cooldown)');
+async function fetchGoldPriceOrg(): Promise<{ price: number; source: string } | null> {
+  if (shouldSkipApi('goldprice')) {
+    console.log('[GOLD] Skipping goldprice.org (in cooldown)');
     return null;
   }
-  
+
   try {
-    console.log('[GOLD] Trying open.er-api.com (XAU)...');
+    console.log('[GOLD] Trying goldprice.org...');
+    const response = await fetchWithTimeout('https://data-asg.goldprice.org/dbXRates/USD', 6000);
+    if (response.ok) {
+      const data = await response.json();
+      if (data.items?.[0]?.xauPrice) {
+        const price = Number(parseFloat(data.items[0].xauPrice).toFixed(2));
+        if (price > 1000) {
+          console.log(`[GOLD] goldprice.org success: ${price}`);
+          recordApiSuccess('goldprice');
+          return { price, source: 'goldprice.org-spot' };
+        }
+      }
+    }
+  } catch (e) {
+    console.log('[GOLD] goldprice.org error:', e instanceof Error ? e.message : 'Unknown');
+  }
+  recordApiFailure('goldprice');
+  return null;
+}
+
+async function fetchForexSpot(): Promise<{ price: number; source: string } | null> {
+  if (shouldSkipApi('forexspot')) {
+    console.log('[GOLD] Skipping forex spot (in cooldown)');
+    return null;
+  }
+
+  try {
+    console.log('[GOLD] Trying open.er-api.com (XAU spot)...');
     const response = await fetchWithTimeout('https://open.er-api.com/v6/latest/XAU', 6000);
     if (response.ok) {
       const data = await response.json();
       if (data?.rates?.USD) {
         const price = parseFloat((1 / data.rates.USD).toFixed(2));
         if (price > 1000 && price < 10000) {
-          console.log(`[GOLD] open.er-api success: ${price}`);
-          recordApiSuccess('forexapi');
-          return { price, source: 'open.er-api' };
+          console.log(`[GOLD] open.er-api spot success: ${price}`);
+          recordApiSuccess('forexspot');
+          return { price, source: 'forex-spot' };
         }
       }
     }
   } catch (e) {
     console.log('[GOLD] open.er-api error:', e instanceof Error ? e.message : 'Unknown');
   }
-  recordApiFailure('forexapi');
+  recordApiFailure('forexspot');
   return null;
 }
 
-// NO FALLBACK ESTIMATES - Only live market data is acceptable
-
 async function fetchYahooSymbol(symbol: string): Promise<number | null> {
   const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
-  
+
   for (const host of hosts) {
     try {
       const url = `https://${host}/v8/finance/chart/${symbol}?interval=1m&range=1d`;
       const response = await fetchWithTimeout(url, 4000);
-      
+
       if (!response.ok) continue;
-      
+
       const data = await response.json();
       if (data?.chart?.result?.[0]?.meta?.regularMarketPrice) {
         return parseFloat(data.chart.result[0].meta.regularMarketPrice);
@@ -208,113 +243,88 @@ async function fetchYahooSymbol(symbol: string): Promise<number | null> {
 export const goldPriceRouter = createTRPCRouter({
   getSpotPrice: publicProcedure.query(async () => {
     const now = Date.now();
-    console.log('[GOLD] getSpotPrice called');
-    
+    console.log('[GOLD] getSpotPrice called - using forex spot sources only');
+
     if (goldPriceCache && now - goldPriceCache.timestamp < GOLD_CACHE_MS) {
       return { price: goldPriceCache.price, source: goldPriceCache.source, timestamp: goldPriceCache.timestamp, cached: true };
     }
-    
-    const [goldApiResult, yahooResult, kitcoResult, forexResult] = await Promise.allSettled([
-      fetchGoldApi(),
-      fetchYahooGold(),
-      fetchKitco(),
-      fetchForexApi(),
+
+    const [swissquoteResult, fxcmResult, metalsResult, goldpriceResult, forexResult] = await Promise.allSettled([
+      fetchSwissquoteGold(),
+      fetchFXCMGold(),
+      fetchMetalsLive(),
+      fetchGoldPriceOrg(),
+      fetchForexSpot(),
     ]);
-    
+
     const results = [
-      { name: 'goldapi', result: goldApiResult },
-      { name: 'yahoo', result: yahooResult },
-      { name: 'kitco', result: kitcoResult },
-      { name: 'forexapi', result: forexResult },
+      { name: 'swissquote', result: swissquoteResult },
+      { name: 'fxcm', result: fxcmResult },
+      { name: 'metalslive', result: metalsResult },
+      { name: 'goldprice', result: goldpriceResult },
+      { name: 'forexspot', result: forexResult },
     ];
-    
+
+    const validPrices: { price: number; source: string; name: string }[] = [];
     for (const { name, result } of results) {
       if (result.status === 'fulfilled' && result.value) {
-        console.log(`[GOLD] Using ${name}: ${result.value.price}`);
-        goldPriceCache = { price: result.value.price, source: result.value.source, timestamp: now };
-        return { price: result.value.price, source: result.value.source, timestamp: now, cached: false };
+        validPrices.push({ price: result.value.price, source: result.value.source, name });
       }
     }
 
-    // Secondary fallbacks (less reliable)
-    if (!shouldSkipApi('goldprice')) {
-      try {
-        console.log('[GOLD] Trying goldprice.org...');
-        const response = await fetchWithTimeout('https://data-asg.goldprice.org/dbXRates/USD', 5000);
-        
-        if (response.ok) {
-          const data = await response.json();
-          if (data.items?.[0]?.xauPrice) {
-            const price = Number(parseFloat(data.items[0].xauPrice).toFixed(2));
-            if (price > 1000) {
-              console.log(`[GOLD] goldprice.org success: ${price}`);
-              recordApiSuccess('goldprice');
-              goldPriceCache = { price, source: 'goldprice.org', timestamp: now };
-              return { price, source: 'goldprice.org', timestamp: now, cached: false };
-            }
-          }
+    if (validPrices.length > 0) {
+      if (validPrices.length >= 2) {
+        validPrices.sort((a, b) => a.price - b.price);
+        const median = validPrices[Math.floor(validPrices.length / 2)];
+        const filtered = validPrices.filter(p => Math.abs(p.price - median.price) < 15);
+
+        if (filtered.length >= 2) {
+          const avgPrice = parseFloat((filtered.reduce((sum, p) => sum + p.price, 0) / filtered.length).toFixed(2));
+          const sourceNames = filtered.map(p => p.name).join('+');
+          console.log(`[GOLD] Using consensus of ${filtered.length} sources: ${avgPrice} (${sourceNames})`);
+          goldPriceCache = { price: avgPrice, source: `consensus-${sourceNames}`, timestamp: now };
+          return { price: avgPrice, source: `consensus-${sourceNames}`, timestamp: now, cached: false };
         }
-        recordApiFailure('goldprice');
-      } catch (e) {
-        console.log('[GOLD] goldprice.org error:', e instanceof Error ? e.message : 'Unknown');
-        recordApiFailure('goldprice');
       }
+
+      const best = validPrices[0];
+      console.log(`[GOLD] Using single source ${best.name}: ${best.price}`);
+      goldPriceCache = { price: best.price, source: best.source, timestamp: now };
+      return { price: best.price, source: best.source, timestamp: now, cached: false };
     }
-    
-    if (!shouldSkipApi('metalslive')) {
-      try {
-        console.log('[GOLD] Trying metals.live...');
-        const response = await fetchWithTimeout('https://api.metals.live/v1/spot/gold', 5000);
-        if (response.ok) {
-          const data = await response.json();
-          if (data?.[0]?.price) {
-            const price = Number(parseFloat(data[0].price.toString()).toFixed(2));
-            if (price > 1000) {
-              console.log(`[GOLD] metals.live success: ${price}`);
-              recordApiSuccess('metalslive');
-              goldPriceCache = { price, source: 'metals.live', timestamp: now };
-              return { price, source: 'metals.live', timestamp: now, cached: false };
-            }
-          }
-        }
-        recordApiFailure('metalslive');
-      } catch (e) {
-        console.log('[GOLD] metals.live error:', e instanceof Error ? e.message : 'Unknown');
-        recordApiFailure('metalslive');
-      }
-    }
-    
+
     if (goldPriceCache && now - goldPriceCache.timestamp < RECENT_CACHE_MS) {
       const ageS = ((now - goldPriceCache.timestamp) / 1000).toFixed(0);
       console.log(`[GOLD] Using recent cache (${ageS}s old): ${goldPriceCache.price}`);
       return { price: goldPriceCache.price, source: `recent-cache-${ageS}s`, timestamp: goldPriceCache.timestamp, cached: true };
     }
-    
+
     if (goldPriceCache) {
       const ageS = ((now - goldPriceCache.timestamp) / 1000).toFixed(0);
-      console.warn(`[GOLD] ⚠️ Using stale cache (${ageS}s old): ${goldPriceCache.price}`);
+      console.warn(`[GOLD] Using stale cache (${ageS}s old): ${goldPriceCache.price}`);
       return { price: goldPriceCache.price, source: `stale-cache-${ageS}s`, timestamp: goldPriceCache.timestamp, cached: true };
     }
-    
-    console.error('[GOLD] ❌ ALL LIVE PRICE SOURCES FAILED - No cache at all, returning last known estimate');
+
+    console.error('[GOLD] ALL SPOT PRICE SOURCES FAILED - No cache available');
     return { price: 0, source: 'unavailable', timestamp: now, cached: false };
   }),
 
-  // Health check endpoint
   healthCheck: publicProcedure.query(async () => {
     const sources = [
-      { name: 'yahoo', test: () => fetchYahooGold() },
-      { name: 'kitco', test: () => fetchKitco() },
-      { name: 'goldapi', test: () => fetchGoldApi() },
+      { name: 'swissquote', test: () => fetchSwissquoteGold() },
+      { name: 'fxcm', test: () => fetchFXCMGold() },
+      { name: 'metals.live', test: () => fetchMetalsLive() },
+      { name: 'goldprice.org', test: () => fetchGoldPriceOrg() },
+      { name: 'forex-spot', test: () => fetchForexSpot() },
     ];
-    
+
     const results = await Promise.allSettled(
       sources.map(async (s) => {
         const result = await s.test();
         return { name: s.name, working: !!result, price: result?.price };
       })
     );
-    
+
     return {
       timestamp: Date.now(),
       cache: goldPriceCache ? { price: goldPriceCache.price, age: Date.now() - goldPriceCache.timestamp } : null,
@@ -329,44 +339,43 @@ export const goldPriceRouter = createTRPCRouter({
     }))
     .query(async ({ input }) => {
       const { fromTime, toTime } = input;
-      // Convert to seconds for Yahoo API
       const period1 = Math.floor(fromTime / 1000);
-      const period2 = Math.floor(toTime / 1000) + 120; // Add 2 min buffer
+      const period2 = Math.floor(toTime / 1000) + 120;
 
       const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
-      
+
       for (const host of hosts) {
         try {
           const url = `https://${host}/v8/finance/chart/GC=F?interval=1m&period1=${period1}&period2=${period2}`;
           console.log(`[GOLD-HISTORY] Fetching ${url}`);
           const response = await fetchWithTimeout(url, 5000);
-          
+
           if (!response.ok) {
             console.log(`[GOLD-HISTORY] ${host} returned ${response.status}`);
             continue;
           }
-          
+
           const data = await response.json();
           if (!data?.chart?.result?.[0]?.timestamp) {
             console.log(`[GOLD-HISTORY] Invalid data from ${host}`);
             continue;
           }
-          
+
           const result = data.chart.result[0];
           const timestamps = result.timestamp;
           const quotes = result.indicators.quote[0];
-          
+
           const bars = [];
-          
+
           for (let i = 0; i < timestamps.length; i++) {
             const barTime = timestamps[i] * 1000;
-            
+
             if (barTime >= fromTime && barTime <= toTime) {
               const open = quotes.open[i];
               const high = quotes.high[i];
               const low = quotes.low[i];
               const close = quotes.close[i];
-              
+
               if (open !== null && high !== null && low !== null && close !== null) {
                 bars.push({
                   timestamp: barTime,
@@ -378,7 +387,7 @@ export const goldPriceRouter = createTRPCRouter({
               }
             }
           }
-          
+
           console.log(`[GOLD-HISTORY] Success: fetched ${bars.length} bars`);
           return bars;
         } catch (e) {
@@ -386,40 +395,40 @@ export const goldPriceRouter = createTRPCRouter({
           continue;
         }
       }
-      
+
       return [];
     }),
 
   getIntermarketData: publicProcedure.query(async () => {
     const now = Date.now();
     console.log('[INTERMARKET] getIntermarketData called');
-    
+
     if (intermarketCache && now - intermarketCache.timestamp < INTERMARKET_CACHE_MS) {
       console.log('[INTERMARKET] Returning cached data');
-      return { 
-        dxy: intermarketCache.dxy, 
-        us10y: intermarketCache.us10y, 
-        vix: intermarketCache.vix, 
+      return {
+        dxy: intermarketCache.dxy,
+        us10y: intermarketCache.us10y,
+        vix: intermarketCache.vix,
         timestamp: intermarketCache.timestamp,
         cached: true
       };
     }
-    
+
     console.log('[INTERMARKET] Fetching fresh data from Yahoo...');
     const [dxyResult, us10yResult, vixResult] = await Promise.allSettled([
       fetchYahooSymbol('DX=F'),
       fetchYahooSymbol('%5ETNX'),
       fetchYahooSymbol('%5EVIX'),
     ]);
-    
+
     const dxy = dxyResult.status === 'fulfilled' && dxyResult.value ? dxyResult.value : (intermarketCache?.dxy || 103.5);
     const us10y = us10yResult.status === 'fulfilled' && us10yResult.value ? us10yResult.value : (intermarketCache?.us10y || 4.2);
     const vix = vixResult.status === 'fulfilled' && vixResult.value ? vixResult.value : (intermarketCache?.vix || 18);
-    
+
     console.log(`[INTERMARKET] Results - DXY: ${dxy}, US10Y: ${us10y}, VIX: ${vix}`);
-    
+
     intermarketCache = { dxy, us10y, vix, timestamp: now };
-    
+
     return { dxy, us10y, vix, timestamp: now, cached: false };
   }),
 });
