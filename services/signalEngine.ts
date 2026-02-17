@@ -278,12 +278,10 @@ async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> 
     return { price: cachedGoldPrice, source: lastPriceSource };
   }
 
-  // Primary: Backend tRPC
   try {
     const result = await trpcClient.goldPrice.getSpotPrice.query();
     if (result.price > 0) {
-      // Check if it's a live source or cached
-      const isLive = !result.source.includes('cache') && !result.source.includes('estimate');
+      const isLive = !result.source.includes('cache') && !result.source.includes('estimate') && !result.source.includes('stale');
       const displaySource = isLive ? `🟢 ${result.source}` : `🟡 ${result.source}`;
       console.log(`✅ Gold price: ${result.price} (${result.source})`);
       cachedGoldPrice = result.price;
@@ -294,10 +292,9 @@ async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> 
       console.log('⚠️ Backend returned zero price');
     }
   } catch (error) {
-    console.log('⚠️ Backend gold price fetch failed:', error instanceof Error ? error.message : 'Unknown');
+    console.log('⚠️ Backend fetch failed:', error instanceof Error ? error.message : 'Unknown');
   }
 
-  // Fallback: Direct Yahoo Finance fetch (for native apps without CORS)
   try {
     const response = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d', {
       headers: { 'User-Agent': 'Mozilla/5.0' }
@@ -314,20 +311,42 @@ async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> 
       }
     }
   } catch {
-    // Expected to fail on web due to CORS
   }
 
-  // Return cached if available (only if recent - within 2 minutes)
-  if (cachedGoldPrice !== null && now - lastFetchTime < 120000) {
+  try {
+    const response = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT`);
+    if (response.ok) {
+      const data = await response.json();
+      if (data?.price) {
+        const price = Number(parseFloat(data.price).toFixed(2));
+        if (price > 1000) {
+          console.log(`✅ Direct Binance gold price: ${price}`);
+          cachedGoldPrice = price;
+          lastFetchTime = now;
+          lastPriceSource = '🟢 binance-direct';
+          return { price, source: '🟢 binance-direct' };
+        }
+      }
+    }
+  } catch {
+  }
+
+  if (cachedGoldPrice !== null && now - lastFetchTime < 300000) {
     const ageSeconds = ((now - lastFetchTime) / 1000).toFixed(0);
-    console.log(`⚠️ Using recent cached price (${ageSeconds}s old): ${cachedGoldPrice}`);
+    console.log(`⚠️ Using cached price (${ageSeconds}s old): ${cachedGoldPrice}`);
     lastPriceSource = `🟡 cache (${ageSeconds}s)`;
     return { price: cachedGoldPrice, source: lastPriceSource };
   }
 
-  // NO FALLBACK - Throw error so the app knows live data is unavailable
+  if (cachedGoldPrice !== null) {
+    const ageSeconds = ((now - lastFetchTime) / 1000).toFixed(0);
+    console.warn(`⚠️ Using stale cached price (${ageSeconds}s old): ${cachedGoldPrice}`);
+    lastPriceSource = `🟠 stale (${ageSeconds}s)`;
+    return { price: cachedGoldPrice, source: lastPriceSource };
+  }
+
   lastPriceSource = '🔴 error';
-  console.error('❌ LIVE PRICE UNAVAILABLE: All sources failed and no recent cache');
+  console.error('❌ LIVE PRICE UNAVAILABLE: All sources failed and no cache');
   throw new Error('LIVE_PRICE_UNAVAILABLE: Cannot fetch live gold price');
 }
 
