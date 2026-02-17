@@ -9,7 +9,7 @@ export default function LoginScreen() {
 
   const handleLogin = async () => {
     await login("demo_user");
-    router.replace("/(tabs)" as any);
+    router.replace("/(tabs)/dashboard" as any);
   };
 
   return (
