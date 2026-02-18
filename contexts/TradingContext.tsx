@@ -754,10 +754,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         exitPrice = signal.entryPrice;
       }
 
+      const contractSize = 100;
       if (signal.type === "BUY") {
-        pnl = (exitPrice - signal.entryPrice) * settings.basePositionSize;
+        pnl = (exitPrice - signal.entryPrice) * settings.basePositionSize * contractSize;
       } else {
-        pnl = (signal.entryPrice - exitPrice) * settings.basePositionSize;
+        pnl = (signal.entryPrice - exitPrice) * settings.basePositionSize * contractSize;
       }
 
       if (signal.status === "ALL_TARGETS_HIT" || pnl > 0) {
@@ -800,10 +801,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         exitPriceForDD = signal.entryPrice;
       }
       
+      const contractSizeDD = 100;
       if (signal.type === "BUY") {
-        pnl = (exitPriceForDD - signal.entryPrice) * settings.basePositionSize;
+        pnl = (exitPriceForDD - signal.entryPrice) * settings.basePositionSize * contractSizeDD;
       } else {
-        pnl = (signal.entryPrice - exitPriceForDD) * settings.basePositionSize;
+        pnl = (signal.entryPrice - exitPriceForDD) * settings.basePositionSize * contractSizeDD;
       }
 
       runningBalance += pnl;
