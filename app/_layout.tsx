@@ -4,6 +4,7 @@ import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { TradingProvider, useTrading } from "@/contexts/TradingContext";
+import { SubscriptionProvider } from "@/contexts/SubscriptionContext";
 import { View, ActivityIndicator, Text, StyleSheet, LogBox, Platform } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { trpc, trpcClient } from "@/lib/trpc";
@@ -56,6 +57,7 @@ const AppNavigation = React.memo(() => {
     <Stack screenOptions={{ headerBackTitle: "Back" }}>
       <Stack.Screen name="index" options={{ headerShown: false }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      <Stack.Screen name="paywall" options={{ presentation: "modal", headerShown: false }} />
       <Stack.Screen name="+not-found" />
     </Stack>
   );
@@ -83,11 +85,13 @@ export default function RootLayout() {
   return (
     <trpc.Provider client={trpcClient} queryClient={queryClient}>
       <QueryClientProvider client={queryClient}>
-        <TradingProvider>
-          <GestureHandlerRootView style={{ flex: 1 }}>
-            <RootLayoutNav />
-          </GestureHandlerRootView>
-        </TradingProvider>
+        <SubscriptionProvider>
+          <TradingProvider>
+            <GestureHandlerRootView style={{ flex: 1 }}>
+              <RootLayoutNav />
+            </GestureHandlerRootView>
+          </TradingProvider>
+        </SubscriptionProvider>
       </QueryClientProvider>
     </trpc.Provider>
   );

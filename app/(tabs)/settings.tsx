@@ -1,13 +1,15 @@
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Platform, Switch, Alert } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { Settings as SettingsIcon, Target, Shield, TrendingUp, LogOut, Save, Trash2, Activity, AlertTriangle, RefreshCw, Bell, Smartphone } from "lucide-react-native";
+import { Settings as SettingsIcon, Target, Shield, TrendingUp, LogOut, Save, Trash2, Activity, AlertTriangle, RefreshCw, Bell, Smartphone, Crown } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
+import { useSubscription } from "@/contexts/SubscriptionContext";
 import { useState, useEffect } from "react";
 import { Stack, useRouter } from "expo-router";
 import { getBackgroundTaskStatus } from "@/services/backgroundTaskService";
 
 export default function SettingsScreen() {
   const { settings, updateSettings, logout, clearHistory, performanceMetrics, triggerManualRetrain, backgroundTaskActive } = useTrading();
+  const { isPro } = useSubscription();
   const router = useRouter();
   const [isRetraining, setIsRetraining] = useState<boolean>(false);
   const [bgTaskStatus, setBgTaskStatus] = useState<{ isRegistered: boolean; isAvailable: boolean; } | null>(null);
@@ -139,6 +141,39 @@ export default function SettingsScreen() {
                 <Text style={styles.headerSubtitle}>Configure Signal Parameters</Text>
               </View>
             </View>
+
+            {!isPro && (
+              <TouchableOpacity
+                style={styles.proCard}
+                onPress={() => router.push("/paywall" as any)}
+                activeOpacity={0.8}
+              >
+                <LinearGradient
+                  colors={["rgba(255,215,0,0.15)", "rgba(255,165,0,0.08)"]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.proCardGradient}
+                >
+                  <View style={styles.proCardLeft}>
+                    <Crown size={24} color="#FFD700" />
+                    <View>
+                      <Text style={styles.proCardTitle}>Upgrade to Pro</Text>
+                      <Text style={styles.proCardSubtitle}>Unlock all premium features</Text>
+                    </View>
+                  </View>
+                  <View style={styles.proCardArrow}>
+                    <Text style={styles.proCardArrowText}>{"\u203A"}</Text>
+                  </View>
+                </LinearGradient>
+              </TouchableOpacity>
+            )}
+
+            {isPro && (
+              <View style={styles.proActiveBadge}>
+                <Crown size={16} color="#FFD700" />
+                <Text style={styles.proActiveText}>Bullrun Pro Active</Text>
+              </View>
+            )}
 
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
@@ -927,5 +962,64 @@ const styles = StyleSheet.create({
   } as const,
   techInfoValueSuccess: {
     color: "#22c55e",
+  },
+  proCard: {
+    marginBottom: 28,
+    borderRadius: 16,
+    overflow: "hidden" as const,
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.25)",
+  },
+  proCardGradient: {
+    flexDirection: "row" as const,
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: 18,
+  },
+  proCardLeft: {
+    flexDirection: "row" as const,
+    alignItems: "center",
+    gap: 14,
+  },
+  proCardTitle: {
+    fontSize: 16,
+    fontWeight: "700" as const,
+    color: "#FFD700",
+    marginBottom: 2,
+  },
+  proCardSubtitle: {
+    fontSize: 12,
+    color: "#999",
+  },
+  proCardArrow: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,215,0,0.15)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  proCardArrowText: {
+    fontSize: 20,
+    color: "#FFD700",
+    fontWeight: "600" as const,
+    marginTop: -2,
+  },
+  proActiveBadge: {
+    flexDirection: "row" as const,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginBottom: 28,
+    paddingVertical: 12,
+    backgroundColor: "rgba(255,215,0,0.08)",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.2)",
+  },
+  proActiveText: {
+    fontSize: 14,
+    fontWeight: "700" as const,
+    color: "#FFD700",
   },
 });
