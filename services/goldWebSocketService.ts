@@ -228,9 +228,11 @@ function connect(): void {
       const data = JSON.parse(typeof event.data === 'string' ? event.data : '');
 
       if (data.event === 'price' && data.symbol === 'XAU/USD') {
-        const livePrice = parseFloat(parseFloat(data.price).toFixed(2));
+        const parsedPrice = typeof data.price === 'number'
+          ? data.price
+          : parseFloat(String(data.price ?? ''));
 
-        if (isNaN(livePrice) || livePrice <= 1000 || livePrice > 10000) {
+        if (isNaN(parsedPrice) || parsedPrice <= 1000 || parsedPrice > 10000) {
           console.warn(`⚠️ [GoldWS] Invalid price tick: ${data.price}`);
           return;
         }
@@ -239,10 +241,10 @@ function connect(): void {
 
         killRestFallback();
 
-        notifyPrice(livePrice, '🟢 twelvedata-ws');
+        notifyPrice(parsedPrice, '🟢 twelvedata-ws');
 
         if (state.lastTickTime % 10000 < 2000) {
-          console.log(`📈 [GoldWS] XAU/USD: $${livePrice.toFixed(2)}`);
+          console.log(`📈 [GoldWS] XAU/USD: ${parsedPrice.toFixed(3)}`);
         }
       } else if (data.event === 'subscribe-status') {
         console.log(`📡 [GoldWS] Subscription status: ${data.status}`);

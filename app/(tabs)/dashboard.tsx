@@ -268,7 +268,7 @@ export default function DashboardScreen() {
                 <Text style={styles.headerSubtitle}>Gold Trading Signals</Text>
               </View>
               <View style={styles.priceContainer}>
-                <Text style={styles.currentPrice}>{currentPrice > 0 ? `${currentPrice.toFixed(1)}` : '---'}</Text>
+                <Text style={styles.currentPrice}>{currentPrice > 0 ? `${currentPrice.toFixed(2)}` : '---'}</Text>
                 <View style={styles.statusBubble}>
                   <View style={styles.statusRow}>
                     <View style={[
