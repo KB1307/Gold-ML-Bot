@@ -2,9 +2,10 @@ import createContextHook from "@nkzw/create-context-hook";
 import { useState, useEffect, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { TradingSignal, SignalStatus, Settings, MarketOutlook, PerformanceMetrics, PositionSizing, DailyOHLC } from "@/types/trading";
-import { signalEngine } from "@/services/signalEngine";
+import { signalEngine, setExternalPrice } from "@/services/signalEngine";
 import { Platform } from "react-native";
 import { trpcClient } from "@/lib/trpc";
+import { goldWebSocketService } from "@/services/goldWebSocketService";
 import { 
   registerBackgroundTask, 
   setupNotificationChannel, 
@@ -103,88 +104,65 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   useEffect(() => {
     let isMounted = true;
-    let isUpdating = false;
-    let lastUpdateStart = 0;
 
-    const updatePrice = async () => {
+    console.log('🔌 Starting WebSocket price feed...');
+
+    const unsubPrice = goldWebSocketService.onPrice((price: number, source: string) => {
       if (!isMounted) return;
-      
-      if (isUpdating) {
-        const stuckDuration = Date.now() - lastUpdateStart;
-        if (stuckDuration > 15000) {
-          console.warn(`⚠️ Price update was stuck for ${(stuckDuration/1000).toFixed(1)}s - forcing reset`);
-          isUpdating = false;
-        } else {
-          return;
+
+      setExternalPrice(price, source);
+
+      setCurrentPrice(price);
+      setPriceSource(source);
+      setLivePriceError(null);
+
+      const now = Date.now();
+      setPriceHistory(prev => {
+        const newHistory = [...prev, { timestamp: now, price }];
+        const maxPoints = 60;
+        if (newHistory.length > maxPoints) {
+          return newHistory.slice(newHistory.length - maxPoints);
         }
+        return newHistory;
+      });
+
+      signalEngine.updateDailyOHLC(price).then(updatedOHLC => {
+        if (!isMounted || !updatedOHLC) return;
+        setDailyOHLCHistory(prev => {
+          const existingIndex = prev.findIndex(d => d.date === updatedOHLC.date);
+          if (existingIndex >= 0) {
+            const updated = [...prev];
+            updated[existingIndex] = updatedOHLC;
+            return updated;
+          }
+          const newHistory = [...prev, updatedOHLC];
+          if (newHistory.length > 30) {
+            return newHistory.slice(-30);
+          }
+          return newHistory;
+        });
+      }).catch(err => {
+        console.warn('⚠️ Daily OHLC update failed (non-blocking):', err instanceof Error ? err.message : 'Unknown');
+      });
+    });
+
+    const unsubStatus = goldWebSocketService.onStatus((status) => {
+      if (!isMounted) return;
+      console.log(`📡 WebSocket status: ${status}`);
+      if (status === 'fallback') {
+        setPriceSource('🟡 REST fallback');
+      } else if (status === 'disconnected' || status === 'reconnecting') {
+        setPriceSource(`🔄 ${status}...`);
       }
-      
-      isUpdating = true;
-      lastUpdateStart = Date.now();
-      try {
-        await signalEngine.updateCurrentPrice();
-        const price = signalEngine.getCurrentPrice();
-        const source = signalEngine.getPriceSource();
-        
-        if (!isMounted) return;
+    });
 
-        if (price > 0) {
-          setCurrentPrice(price);
-          setPriceSource(source);
-          setLivePriceError(null);
-          
-          const now = Date.now();
-          setPriceHistory(prev => {
-            const newHistory = [...prev, { timestamp: now, price }];
-            const maxPoints = 60;
-            if (newHistory.length > maxPoints) {
-              return newHistory.slice(newHistory.length - maxPoints);
-            }
-            return newHistory;
-          });
-
-          signalEngine.updateDailyOHLC(price).then(updatedOHLC => {
-            if (!isMounted || !updatedOHLC) return;
-            setDailyOHLCHistory(prev => {
-              const existingIndex = prev.findIndex(d => d.date === updatedOHLC.date);
-              if (existingIndex >= 0) {
-                const updated = [...prev];
-                updated[existingIndex] = updatedOHLC;
-                return updated;
-              }
-              const newHistory = [...prev, updatedOHLC];
-              if (newHistory.length > 30) {
-                return newHistory.slice(-30);
-              }
-              return newHistory;
-            });
-          }).catch(err => {
-            console.warn('⚠️ Daily OHLC update failed (non-blocking):', err instanceof Error ? err.message : 'Unknown');
-          });
-        } else {
-          setPriceSource(source);
-          console.log('⏳ Waiting for first valid price...');
-        }
-      } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-        console.error('❌ Failed to update price:', errorMsg);
-        if (isMounted) {
-          setPriceSource('retrying...');
-        }
-      } finally {
-        isUpdating = false;
-      }
-    };
-
-    const priceInterval = setInterval(() => {
-      updatePrice();
-    }, 10000);
-
-    updatePrice();
+    goldWebSocketService.start();
 
     return () => {
       isMounted = false;
-      clearInterval(priceInterval);
+      unsubPrice();
+      unsubStatus();
+      goldWebSocketService.stop();
     };
   }, []);
 

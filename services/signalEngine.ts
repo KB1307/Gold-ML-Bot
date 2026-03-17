@@ -138,7 +138,7 @@ let cachedGoldPrice: number | null = null;
 let lastFetchTime: number = 0;
 let lastPriceSource: string = 'connecting...';
 let lastKnownGoodPrice: number = 0;
-let consecutiveFailures: number = 0;
+let _consecutiveFailures: number = 0;
 let cachedDXY: number | null = null;
 let cachedUS10Y: number | null = null;
 let cachedVIX: number | null = null;
@@ -320,7 +320,7 @@ function markPriceSuccess(price: number, source: string, now: number): { price: 
   lastFetchTime = now;
   lastPriceSource = source;
   lastKnownGoodPrice = price;
-  consecutiveFailures = 0;
+  _consecutiveFailures = 0;
   return { price, source };
 }
 
@@ -608,7 +608,7 @@ async function fetchLiveGoldPrice(): Promise<{ price: number; source: string }> 
     return markPriceSuccess(best.price, `🟢 ${best.source}`, now);
   }
 
-  consecutiveFailures++;
+  _consecutiveFailures++;
 
   if (cachedGoldPrice !== null && now - lastFetchTime < 600000) {
     const ageSeconds = ((now - lastFetchTime) / 1000).toFixed(0);
@@ -906,6 +906,32 @@ class SignalGenerationEngine {
   
   getPriceSource(): string {
     return lastPriceSource;
+  }
+
+  pushExternalPrice(price: number, source: string): void {
+    if (price <= 1000 || price > 10000 || isNaN(price)) {
+      console.warn(`⚠️ pushExternalPrice: Invalid price ${price}, ignoring`);
+      return;
+    }
+
+    this.currentPrice = price;
+    lastPriceSource = source;
+
+    this.priceHistory.push(price);
+    if (this.priceHistory.length > 100) {
+      this.priceHistory.shift();
+    }
+
+    this.closeHistory.push(price);
+    if (this.closeHistory.length > 100) {
+      this.closeHistory.shift();
+    }
+
+    this.update5MinCandles();
+
+    this.fetchAndUpdateOHLCHistory().catch(err => {
+      console.warn('⚠️ Non-blocking OHLC fetch failed:', err instanceof Error ? err.message : 'Unknown');
+    });
   }
   
   private calculateFibonacciLevels(high: number, low: number): FibonacciLevel[] {
@@ -3873,7 +3899,7 @@ class SignalGenerationEngine {
   private checkPriceProximity(
     activeSignals: TradingSignal[],
     proposedType: SignalType,
-    dynamicCooldown: number
+    _dynamicCooldown: number
   ): { blocked: boolean; reason?: string; tip?: string } {
     const proposedEntryPrice = this.currentPrice;
     const maxSignalAge = MAX_RECENT_SIGNAL_TIME_MINUTES * 60 * 1000;
@@ -4241,3 +4267,22 @@ class SignalGenerationEngine {
 }
 
 export const signalEngine = new SignalGenerationEngine();
+
+export async function fetchLiveGoldPriceFallback(): Promise<{ price: number; source: string }> {
+  return fetchLiveGoldPrice();
+}
+
+export function setExternalPrice(price: number, source: string): void {
+  if (price <= 1000 || price > 10000 || isNaN(price)) {
+    console.warn(`⚠️ setExternalPrice: Invalid price ${price}, ignoring`);
+    return;
+  }
+
+  cachedGoldPrice = price;
+  lastFetchTime = Date.now();
+  lastPriceSource = source;
+  lastKnownGoodPrice = price;
+  _consecutiveFailures = 0;
+
+  signalEngine.pushExternalPrice(price, source);
+}
