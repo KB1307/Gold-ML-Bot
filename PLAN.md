@@ -35,8 +35,10 @@ Switch the gold price data source from REST API polling (every 10 seconds) to a 
 
 ### **Files Modified**
 
-- **New service file** for WebSocket connection management (connect, subscribe, heartbeat, reconnect, watchdog)
-- **Price engine integration** updated to receive prices from WebSocket instead of REST polling
-- **Dashboard context** updated to use WebSocket-driven price updates with REST cold-standby fallback
-- **Environment variable** `EXPO_PUBLIC_TWELVEDATA_API_KEY` used for the WebSocket connection string
+- [x] **New service file** for WebSocket connection management (connect, subscribe, heartbeat, reconnect, watchdog)
+- [x] **Price engine integration** updated to receive prices from WebSocket instead of REST polling
+- [x] **Dashboard context** updated to use WebSocket-driven price updates with REST cold-standby fallback
+- [x] **Environment variable** `EXPO_PUBLIC_TWELVEDATA_API_KEY` used for the WebSocket connection string
+- [x] **Root layout web boot guard** added to avoid duplicate provider/render hydration issues in the web preview
+- [x] **TradingView chart wrapper** stabilized to avoid DOM teardown errors on web while keeping the same chart source
 

@@ -1,3 +1,5 @@
+import { fetchLiveGoldPriceFallback } from "./signalEngine";
+
 type PriceCallback = (price: number, source: string) => void;
 type StatusCallback = (status: 'connected' | 'disconnected' | 'reconnecting' | 'fallback') => void;
 
@@ -39,6 +41,21 @@ const state: WebSocketServiceState = {
   intentionallyClosed: false,
   lastPrice: 0,
 };
+
+function getTwelveDataApiKey(): string | null {
+  const publicApiKey = process.env.EXPO_PUBLIC_TWELVEDATA_API_KEY?.trim();
+  const fallbackApiKey = process.env.TWELVEDATA_API_KEY?.trim();
+  const apiKey = publicApiKey || fallbackApiKey || null;
+
+  if (!apiKey) {
+    console.error('❌ [GoldWS] TwelveData API key missing (checked EXPO_PUBLIC_TWELVEDATA_API_KEY and TWELVEDATA_API_KEY) — falling back to REST');
+    return null;
+  }
+
+  const keySource = publicApiKey ? 'EXPO_PUBLIC_TWELVEDATA_API_KEY' : 'TWELVEDATA_API_KEY';
+  console.log(`🔑 [GoldWS] Using TwelveData key from ${keySource}`);
+  return apiKey;
+}
 
 function notifyPrice(price: number, source: string): void {
   state.lastPrice = price;
@@ -100,10 +117,10 @@ function activateRestFallback(): void {
   console.log('⚠️ [GoldWS] WebSocket timeout — activating REST cold-standby fallback (every 60s)');
   notifyStatus('fallback');
 
-  fetchRestFallbackPrice();
+  void fetchRestFallbackPrice();
 
   state.restFallbackTimer = setInterval(() => {
-    fetchRestFallbackPrice();
+    void fetchRestFallbackPrice();
   }, REST_FALLBACK_INTERVAL_MS);
 }
 
@@ -111,7 +128,6 @@ async function fetchRestFallbackPrice(): Promise<void> {
   try {
     console.log('🔄 [GoldWS] REST fallback fetch...');
 
-    const { fetchLiveGoldPriceFallback } = await import('./signalEngine');
     const result = await fetchLiveGoldPriceFallback();
 
     if (result.price > 0) {
@@ -151,9 +167,8 @@ function connect(): void {
     return;
   }
 
-  const apiKey = process.env.EXPO_PUBLIC_TWELVEDATA_API_KEY;
+  const apiKey = getTwelveDataApiKey();
   if (!apiKey) {
-    console.error('❌ [GoldWS] EXPO_PUBLIC_TWELVEDATA_API_KEY not set — falling back to REST');
     activateRestFallback();
     return;
   }
@@ -189,6 +204,7 @@ function connect(): void {
     console.log('✅ [GoldWS] WebSocket connected');
     state.isConnected = true;
     state.reconnectAttempts = 0;
+    state.lastTickTime = Date.now();
     notifyStatus('connected');
 
     const subscribeMsg = JSON.stringify({

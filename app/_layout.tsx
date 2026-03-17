@@ -1,15 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { TradingProvider, useTrading } from "@/contexts/TradingContext";
 import { SubscriptionProvider } from "@/contexts/SubscriptionContext";
 import { View, ActivityIndicator, Text, StyleSheet, LogBox, Platform } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { trpc, trpcClient } from "@/lib/trpc";
 
-SplashScreen.preventAutoHideAsync();
+void SplashScreen.preventAutoHideAsync();
 
 if (Platform.OS === 'web') {
   LogBox.ignoreLogs([
@@ -75,25 +74,53 @@ const RootLayoutNav = React.memo(() => {
 RootLayoutNav.displayName = 'RootLayoutNav';
 
 export default function RootLayout() {
+  const [isClientReady, setIsClientReady] = useState<boolean>(Platform.OS !== 'web');
+
   useEffect(() => {
     const timer = setTimeout(() => {
-      SplashScreen.hideAsync();
+      void SplashScreen.hideAsync();
     }, 100);
-    return () => clearTimeout(timer);
+
+    if (Platform.OS !== 'web') {
+      return () => clearTimeout(timer);
+    }
+
+    const frame = requestAnimationFrame(() => {
+      setIsClientReady(true);
+    });
+
+    return () => {
+      clearTimeout(timer);
+      cancelAnimationFrame(frame);
+    };
   }, []);
 
+  if (!isClientReady) {
+    return (
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <View style={styles.bootContainer} testID="root-layout-boot-screen">
+          <LinearGradient
+            colors={["#050505", "#111827", "#050505"]}
+            style={styles.bootGradient}
+          >
+            <ActivityIndicator size="large" color="#FFD700" />
+            <Text style={styles.loadingText}>Preparing live trading workspace...</Text>
+          </LinearGradient>
+        </View>
+      </GestureHandlerRootView>
+    );
+  }
+
   return (
-    <trpc.Provider client={trpcClient} queryClient={queryClient}>
-      <QueryClientProvider client={queryClient}>
-        <SubscriptionProvider>
-          <TradingProvider>
-            <GestureHandlerRootView style={{ flex: 1 }}>
-              <RootLayoutNav />
-            </GestureHandlerRootView>
-          </TradingProvider>
-        </SubscriptionProvider>
-      </QueryClientProvider>
-    </trpc.Provider>
+    <QueryClientProvider client={queryClient}>
+      <SubscriptionProvider>
+        <TradingProvider>
+          <GestureHandlerRootView style={{ flex: 1 }}>
+            <RootLayoutNav />
+          </GestureHandlerRootView>
+        </TradingProvider>
+      </SubscriptionProvider>
+    </QueryClientProvider>
   );
 }
 
@@ -113,5 +140,15 @@ const styles = StyleSheet.create({
     color: "#FFD700",
     fontWeight: "600" as const,
     marginTop: 12,
+  },
+  bootContainer: {
+    flex: 1,
+    backgroundColor: "#050505",
+  },
+  bootGradient: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 16,
   },
 });

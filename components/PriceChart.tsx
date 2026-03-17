@@ -1,15 +1,8 @@
-import React, { useRef, useState, useEffect } from "react";
-import { View, StyleSheet, Platform, ActivityIndicator, Text } from "react-native";
+import React, { useCallback, useMemo, useRef, useState } from "react";
+import { View, StyleSheet, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
 const CHART_HEIGHT = 350;
-
-// Module-level singleton for web - completely outside React lifecycle
-let globalIframeElement: HTMLIFrameElement | null = null;
-let iframeFullyLoaded = false;
-let iframeInitialized = false;
-let mountedInstanceCount = 0;
-let hideDebounceTimeout: ReturnType<typeof setTimeout> | null = null;
 
 interface PriceChartProps {
   onPriceUpdate?: (price: number) => void;
@@ -57,348 +50,160 @@ const tradingViewHTML = `
 </html>
 `;
 
-// Track which container is currently showing the chart
-let activeContainerId: string | null = null;
-
-// Initialize iframe once globally - append to body and never move it
-function initializeGlobalIframe(): void {
-  if (iframeInitialized) return;
-  if (typeof document === 'undefined') return;
-  
-  iframeInitialized = true;
-  console.log('[WebChart] Initializing global iframe (once)');
-  
-  const iframe = document.createElement('iframe');
-  iframe.srcdoc = tradingViewHTML;
-  iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;background:#0F0F0F;pointer-events:none;opacity:0;';
-  iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms');
-  iframe.title = 'TradingView Chart';
-  iframe.id = 'tradingview-global-iframe';
-  
-  iframe.onload = () => {
-    console.log('[WebChart] Global iframe loaded (final)');
-    iframeFullyLoaded = true;
-  };
-  
-  globalIframeElement = iframe;
-  document.body.appendChild(iframe);
-}
-
-// Position the iframe over a container without moving it in DOM
-function positionIframeOverContainer(container: HTMLElement, containerId: string): void {
-  if (!globalIframeElement) return;
-  
-  activeContainerId = containerId;
-  const rect = container.getBoundingClientRect();
-  globalIframeElement.style.cssText = `
-    position:fixed;
-    top:${rect.top}px;
-    left:${rect.left}px;
-    width:${rect.width}px;
-    height:${rect.height}px;
-    border:none;
-    background:#0F0F0F;
-    pointer-events:auto;
-    opacity:1;
-    z-index:1;
-  `;
-}
-
-// Hide the iframe (move offscreen)
-function hideIframe(): void {
-  if (!globalIframeElement) return;
-  globalIframeElement.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;opacity:0;pointer-events:none;';
-}
-
-// Generate unique ID for each WebChart instance
-let instanceCounter = 0;
-
-const WebChart = React.memo(({ isActive = true }: { isActive?: boolean }) => {
-  const [isLoading, setIsLoading] = useState(!iframeFullyLoaded);
-  const containerRef = useRef<View>(null);
-  const mountedRef = useRef(true);
-  const lastPositionRef = useRef<string>('');
-  const rafRef = useRef<number | null>(null);
-  const instanceIdRef = useRef<string>(`webchart-${++instanceCounter}`);
-  const isActiveRef = useRef(isActive);
-  
-  useEffect(() => {
-    const currentId = instanceIdRef.current;
-    isActiveRef.current = isActive;
-    if (!isActive && activeContainerId === currentId) {
-      hideIframe();
-      activeContainerId = null;
-    }
-  }, [isActive]);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    
-    if (Platform.OS !== 'web') return;
-    
-    mountedInstanceCount++;
-    if (hideDebounceTimeout) {
-      clearTimeout(hideDebounceTimeout);
-      hideDebounceTimeout = null;
-    }
-    
-    initializeGlobalIframe();
-    
-    const currentInstanceId = instanceIdRef.current;
-    
-    const checkVisibilityAndPosition = () => {
-      if (!mountedRef.current || !isActiveRef.current) {
-        if (activeContainerId === currentInstanceId) {
-          hideIframe();
-          activeContainerId = null;
-        }
-        return;
-      }
-      
-      const domNode = containerRef.current as unknown as HTMLElement;
-      if (!domNode || !globalIframeElement) return;
-      
-      const rect = domNode.getBoundingClientRect();
-      
-      const isVisible = rect.width > 0 && rect.height > 0 && 
-                        rect.top < window.innerHeight && rect.bottom > 0 &&
-                        rect.left < window.innerWidth && rect.right > 0;
-      
-      const isInDOM = domNode.offsetParent !== null || domNode.style.position === 'fixed';
-      
-      if (!isVisible || !isInDOM) {
-        if (activeContainerId === currentInstanceId) {
-          hideIframe();
-          activeContainerId = null;
-        }
-        return;
-      }
-      
-      const posKey = `${rect.top.toFixed(0)},${rect.left.toFixed(0)},${rect.width.toFixed(0)},${rect.height.toFixed(0)}`;
-      
-      if (posKey !== lastPositionRef.current || activeContainerId !== currentInstanceId) {
-        lastPositionRef.current = posKey;
-        positionIframeOverContainer(domNode, currentInstanceId);
-      }
-      
-      if (iframeFullyLoaded && isLoading) {
-        setIsLoading(false);
-      }
-    };
-    
-    const initialTimeout = setTimeout(checkVisibilityAndPosition, 100);
-    
-    let scrollTimeout: ReturnType<typeof setTimeout> | null = null;
-    const handleScrollResize = () => {
-      if (scrollTimeout) clearTimeout(scrollTimeout);
-      scrollTimeout = setTimeout(() => {
-        if (rafRef.current) cancelAnimationFrame(rafRef.current);
-        rafRef.current = requestAnimationFrame(checkVisibilityAndPosition);
-      }, 16);
-    };
-    
-    window.addEventListener('scroll', handleScrollResize, true);
-    window.addEventListener('resize', handleScrollResize);
-    
-    // Poll less frequently to prevent flickering
-    const visibilityInterval = setInterval(checkVisibilityAndPosition, 1000);
-    
-    const loadCheckInterval = setInterval(() => {
-      if (iframeFullyLoaded && mountedRef.current) {
-        setIsLoading(false);
-        clearInterval(loadCheckInterval);
-      }
-    }, 200);
-    
-    return () => {
-      mountedRef.current = false;
-      clearTimeout(initialTimeout);
-      if (scrollTimeout) clearTimeout(scrollTimeout);
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      clearInterval(loadCheckInterval);
-      clearInterval(visibilityInterval);
-      window.removeEventListener('scroll', handleScrollResize, true);
-      window.removeEventListener('resize', handleScrollResize);
-      
-      mountedInstanceCount--;
-      if (activeContainerId === currentInstanceId) {
-        hideIframe();
-        activeContainerId = null;
-      }
-      if (mountedInstanceCount === 0) {
-        hideDebounceTimeout = setTimeout(() => {
-          if (mountedInstanceCount === 0) {
-            hideIframe();
-            activeContainerId = null;
-          }
-        }, 150);
-      }
-    };
-  }, [isLoading]);
-
-  return (
-    <View style={styles.container} testID="web-chart-container">
-      {isLoading && (
-        <View style={styles.loadingOverlay}>
-          <ActivityIndicator size="large" color="#FFD700" />
-          <Text style={styles.loadingText}>Loading Chart...</Text>
-        </View>
-      )}
-      <View 
-        ref={containerRef}
-        style={styles.webChartInner}
-      />
-    </View>
-  );
-}, (prevProps, nextProps) => prevProps.isActive === nextProps.isActive);
-
-WebChart.displayName = 'WebChart';
-
-const NativeChart = React.memo(({ onPriceUpdate }: PriceChartProps) => {
+const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartProps) => {
   const webViewRef = useRef<WebView>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [hasError, setHasError] = useState(false);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [hasError, setHasError] = useState<boolean>(false);
+
+  const webSource = useMemo(() => ({ html: tradingViewHTML }), []);
+
+  const handleLoadStart = useCallback(() => {
+    console.log("[PriceChart] WebView loading started");
+    setIsLoading(true);
+    setHasError(false);
+  }, []);
+
+  const handleLoadEnd = useCallback(() => {
+    console.log("[PriceChart] WebView loading ended");
+    setIsLoading(false);
+  }, []);
+
+  const handleError = useCallback((syntheticEvent: { nativeEvent: unknown }) => {
+    console.error("[PriceChart] WebView error:", syntheticEvent.nativeEvent);
+    setHasError(true);
+    setIsLoading(false);
+  }, []);
+
+  const handleHttpError = useCallback((syntheticEvent: { nativeEvent: { statusCode: number } }) => {
+    console.error("[PriceChart] HTTP error:", syntheticEvent.nativeEvent.statusCode);
+  }, []);
+
+  const handleMessage = useCallback((event: { nativeEvent: { data: string } }) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data) as { type?: string; value?: number };
+
+      if (data.type === "chartReady") {
+        setIsLoading(false);
+      }
+
+      if (data.type === "chartError") {
+        setHasError(true);
+      }
+
+      if (data.type === "price" && typeof data.value === "number") {
+        onPriceUpdate?.(data.value);
+      }
+    } catch (error) {
+      console.warn("[PriceChart] Ignoring non-JSON WebView message", error);
+    }
+  }, [onPriceUpdate]);
 
   return (
-    <View style={styles.container}>
-      {isLoading && (
-        <View style={styles.loadingOverlay}>
+    <View style={styles.container} testID="price-chart-container">
+      {isLoading ? (
+        <View style={styles.loadingOverlay} pointerEvents="none">
           <ActivityIndicator size="large" color="#FFD700" />
           <Text style={styles.loadingText}>Loading Chart...</Text>
         </View>
-      )}
-      {hasError && (
-        <View style={styles.errorContainer}>
+      ) : null}
+
+      {hasError ? (
+        <View style={styles.errorContainer} pointerEvents="none">
           <Text style={styles.errorText}>Failed to load chart</Text>
           <Text style={styles.errorSubtext}>Please check your connection</Text>
         </View>
+      ) : null}
+
+      {isActive ? (
+        <WebView
+          ref={webViewRef}
+          source={webSource}
+          style={[styles.webview, isLoading ? styles.hidden : null]}
+          javaScriptEnabled={true}
+          domStorageEnabled={true}
+          startInLoadingState={false}
+          scalesPageToFit={true}
+          allowsInlineMediaPlayback={true}
+          mediaPlaybackRequiresUserAction={false}
+          mixedContentMode="always"
+          originWhitelist={["*"]}
+          onLoadStart={handleLoadStart}
+          onLoadEnd={handleLoadEnd}
+          onError={handleError}
+          onHttpError={handleHttpError}
+          onMessage={handleMessage}
+          testID="tradingview-chart"
+        />
+      ) : (
+        <View style={styles.inactiveState} testID="price-chart-inactive" />
       )}
-      <WebView
-        ref={webViewRef}
-        source={{ html: tradingViewHTML }}
-        style={[styles.webview, isLoading && styles.hidden]}
-        javaScriptEnabled={true}
-        domStorageEnabled={true}
-        startInLoadingState={false}
-        scalesPageToFit={true}
-        allowsInlineMediaPlayback={true}
-        mediaPlaybackRequiresUserAction={false}
-        mixedContentMode="always"
-        originWhitelist={['*']}
-        onLoadStart={() => {
-          console.log('[PriceChart] WebView loading started');
-          setIsLoading(true);
-          setHasError(false);
-        }}
-        onLoadEnd={() => {
-          console.log('[PriceChart] WebView loading ended');
-          setIsLoading(false);
-        }}
-        onError={(syntheticEvent) => {
-          const { nativeEvent } = syntheticEvent;
-          console.error('[PriceChart] WebView error:', nativeEvent);
-          setHasError(true);
-          setIsLoading(false);
-        }}
-        onHttpError={(syntheticEvent) => {
-          const { nativeEvent } = syntheticEvent;
-          console.error('[PriceChart] HTTP error:', nativeEvent.statusCode);
-        }}
-        onMessage={(event) => {
-          try {
-            const data = JSON.parse(event.nativeEvent.data);
-            if (data.type === 'chartReady') {
-              setIsLoading(false);
-            }
-            if (data.type === 'chartError') {
-              setHasError(true);
-            }
-            if (data.type === 'price' && data.value && onPriceUpdate) {
-              onPriceUpdate(data.value);
-            }
-          } catch {
-            // Ignore parse errors
-          }
-        }}
-        testID="tradingview-chart"
-      />
     </View>
   );
-});
+}, (prevProps, nextProps) => prevProps.isActive === nextProps.isActive && prevProps.onPriceUpdate === nextProps.onPriceUpdate);
 
-NativeChart.displayName = 'NativeChart';
-
-const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartProps) => {
-  if (Platform.OS === 'web') {
-    return <WebChart isActive={isActive} />;
-  }
-  return <NativeChart onPriceUpdate={onPriceUpdate} />;
-}, (prevProps, nextProps) => prevProps.isActive === nextProps.isActive);
-
-PriceChart.displayName = 'PriceChart';
+PriceChart.displayName = "PriceChart";
 
 export default PriceChart;
 
 const styles = StyleSheet.create({
   container: {
-    width: '100%',
+    width: "100%",
     height: CHART_HEIGHT,
-    backgroundColor: '#0F0F0F',
+    backgroundColor: "#0F0F0F",
     borderRadius: 8,
-    overflow: 'hidden',
-  },
-  webChartInner: {
-    flex: 1,
-    width: '100%',
-    height: '100%',
+    overflow: "hidden",
   },
   webview: {
     flex: 1,
-    backgroundColor: '#0F0F0F',
+    backgroundColor: "#0F0F0F",
     opacity: 1,
   },
   hidden: {
     opacity: 0,
   },
   loadingOverlay: {
-    position: 'absolute',
+    position: "absolute",
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: '#0F0F0F',
-    justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: "#0F0F0F",
+    justifyContent: "center",
+    alignItems: "center",
     zIndex: 10,
   },
   loadingText: {
-    color: '#999',
+    color: "#999",
     fontSize: 12,
     marginTop: 12,
   },
   errorContainer: {
-    position: 'absolute',
+    position: "absolute",
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: '#0F0F0F',
-    justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: "#0F0F0F",
+    justifyContent: "center",
+    alignItems: "center",
     zIndex: 10,
   },
   errorText: {
-    color: '#ef4444',
+    color: "#ef4444",
     fontSize: 14,
-    fontWeight: '600' as const,
-    width: '100%',
-    textAlign: 'center',
+    fontWeight: "600" as const,
+    width: "100%",
+    textAlign: "center",
   },
   errorSubtext: {
-    color: '#666',
+    color: "#666",
     fontSize: 12,
     marginTop: 4,
-    width: '100%',
-    textAlign: 'center',
+    width: "100%",
+    textAlign: "center",
+  },
+  inactiveState: {
+    flex: 1,
+    backgroundColor: "#0F0F0F",
   },
 });
