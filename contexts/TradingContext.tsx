@@ -91,6 +91,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [positionSizing, setPositionSizing] = useState<PositionSizing | null>(null);
   const [accountBalance, setAccountBalance] = useState<number>(100);
   const [currentPrice, setCurrentPrice] = useState<number>(0);
+  const [currentPriceUpdatedAt, setCurrentPriceUpdatedAt] = useState<number>(0);
   const [guidePrice, setGuidePrice] = useState<number>(0);
   const [priceHistory, setPriceHistory] = useState<PriceDataPoint[]>([]);
   const [dailyOHLCHistory, setDailyOHLCHistory] = useState<DailyOHLC[]>([]);
@@ -147,6 +148,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     setLivePriceError(null);
 
     const now = Date.now();
+    setCurrentPriceUpdatedAt(now);
     setPriceHistory(prev => {
       const newHistory = [...prev, { timestamp: now, price }];
       const maxPoints = 60;
@@ -959,10 +961,52 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
     if (enginePrice > 0) {
       setCurrentPrice(enginePrice);
+      setCurrentPriceUpdatedAt(Date.now());
       setPriceSource(engineSource);
       setLivePriceError(null);
     }
   }, []);
+
+  const signalTrackingSnapshot = useMemo(() => {
+    const now = Date.now();
+    const chartAgeMs = currentPriceUpdatedAt > 0 ? now - currentPriceUpdatedAt : Number.POSITIVE_INFINITY;
+    const guideAgeMs = guidePriceUpdatedAt > 0 ? now - guidePriceUpdatedAt : Number.POSITIVE_INFINITY;
+    const hasFreshChartPrice = currentPrice > 0 && chartAgeMs < CHART_PRICE_PRIORITY_WINDOW_MS;
+    const hasFreshGuidePrice = guidePrice > 0 && guideAgeMs < CHART_PRICE_PRIORITY_WINDOW_MS;
+
+    if (hasFreshChartPrice) {
+      return {
+        price: currentPrice,
+        source: priceSource || '🟢 tradingview-chart',
+        updatedAt: currentPriceUpdatedAt,
+      };
+    }
+
+    if (hasFreshGuidePrice) {
+      return {
+        price: guidePrice,
+        source: guidePriceSource || '🟢 twelvedata live',
+        updatedAt: guidePriceUpdatedAt,
+      };
+    }
+
+    const enginePrice = signalEngine.getCurrentPrice();
+    const engineSource = signalEngine.getPriceSource();
+
+    if (enginePrice > 0) {
+      return {
+        price: enginePrice,
+        source: engineSource || '🟡 engine-cache',
+        updatedAt: currentPriceUpdatedAt,
+      };
+    }
+
+    return {
+      price: 0,
+      source: '🔴 no live price',
+      updatedAt: 0,
+    };
+  }, [currentPrice, currentPriceUpdatedAt, guidePrice, guidePriceSource, guidePriceUpdatedAt, priceSource]);
 
   const checkAndGenerateSignal = useCallback(async () => {
     const timeSinceLaunch = Date.now() - appLaunchTime;
@@ -1091,7 +1135,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   }, [settings, accountBalance, signalHistory, appLaunchTime, syncSignalPriceFromEngine]);
 
   const updateAllSignalsStatus = useCallback(() => {
-    const price = signalEngine.getCurrentPrice();
+    const price = signalTrackingSnapshot.price;
+    const signalPriceSource = signalTrackingSnapshot.source;
     const now = Date.now();
     const twoHoursInMs = 2 * 60 * 60 * 1000;
     const GRACE_PERIOD_MS = 5000;
@@ -1101,7 +1146,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       return;
     }
     
-    console.log(`🔄 [${Platform.OS}] Checking signal status updates - Current Price: ${price.toFixed(1)}`);
+    console.log(`🔄 [${Platform.OS}] Checking signal status updates - Tracking Price: ${price.toFixed(1)} from ${signalPriceSource}`);
 
     setSignalHistory((prevHistory) => {
       let updated = false;
@@ -1299,13 +1344,25 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       return updated ? updatedHistory : prevHistory;
     });
-  }, [signalUpdateTrigger, setSignalUpdateTrigger]);
-
-
+  }, [signalTrackingSnapshot, signalUpdateTrigger, setSignalUpdateTrigger]);
 
   useEffect(() => {
     updateAllSignalsStatus();
-  }, [currentPrice, updateAllSignalsStatus]);
+  }, [signalTrackingSnapshot.price, signalTrackingSnapshot.updatedAt, updateAllSignalsStatus]);
+
+  useEffect(() => {
+    if (isLoading) {
+      return;
+    }
+
+    const signalMonitorInterval = setInterval(() => {
+      updateAllSignalsStatus();
+    }, 5000);
+
+    return () => {
+      clearInterval(signalMonitorInterval);
+    };
+  }, [isLoading, updateAllSignalsStatus]);
 
   useEffect(() => {
     if (!isLoggedIn) {
@@ -1424,6 +1481,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     positionSizing,
     accountBalance,
     currentPrice,
+    signalTrackingPrice: signalTrackingSnapshot.price,
+    signalTrackingSource: signalTrackingSnapshot.source,
+    signalTrackingUpdatedAt: signalTrackingSnapshot.updatedAt,
     guidePrice,
     priceHistory,
     dailyOHLCHistory,
@@ -1467,6 +1527,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     refreshData,
     settings,
     signalHistory,
+    signalTrackingSnapshot.price,
+    signalTrackingSnapshot.source,
+    signalTrackingSnapshot.updatedAt,
     signalUpdateTrigger,
     triggerManualRetrain,
     updateSettings,

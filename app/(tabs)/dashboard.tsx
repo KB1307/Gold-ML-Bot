@@ -181,7 +181,8 @@ export default function DashboardScreen() {
     marketOutlook,
     performanceMetrics,
     positionSizing,
-    currentPrice,
+    signalTrackingPrice,
+    signalTrackingSource,
     guidePrice,
     guidePriceSource,
     livePriceError,
@@ -211,35 +212,36 @@ export default function DashboardScreen() {
     const sl = currentSignal.sl;
     
     if (currentSignal.type === "BUY") {
-      if (currentPrice >= target) return 100;
-      if (currentPrice <= sl) return 0;
+      if (signalTrackingPrice >= target) return 100;
+      if (signalTrackingPrice <= sl) return 0;
       
       const totalRange = target - sl;
-      const progressFromSL = currentPrice - sl;
+      const progressFromSL = signalTrackingPrice - sl;
       const percentage = (progressFromSL / totalRange) * 100;
       
       return Math.min(100, Math.max(0, percentage));
     } else {
-      if (currentPrice <= target) return 100;
-      if (currentPrice >= sl) return 0;
+      if (signalTrackingPrice <= target) return 100;
+      if (signalTrackingPrice >= sl) return 0;
       
       const totalRange = sl - target;
-      const progressFromSL = sl - currentPrice;
+      const progressFromSL = sl - signalTrackingPrice;
       const percentage = (progressFromSL / totalRange) * 100;
       
       return Math.min(100, Math.max(0, percentage));
     }
-  }, [currentSignal, currentPrice]);
+  }, [currentSignal, signalTrackingPrice]);
 
   const pnl = useMemo(() => {
     if (!currentSignal) return 0;
     
+    const trackedPrice = signalTrackingPrice > 0 ? signalTrackingPrice : currentSignal.entryPrice;
     const diff = currentSignal.type === "BUY" 
-      ? currentPrice - currentSignal.entryPrice 
-      : currentSignal.entryPrice - currentPrice;
+      ? trackedPrice - currentSignal.entryPrice 
+      : currentSignal.entryPrice - trackedPrice;
     
     return diff;
-  }, [currentSignal, currentPrice]);
+  }, [currentSignal, signalTrackingPrice]);
 
   const progress = getProgressPercentage();
 
@@ -257,6 +259,14 @@ export default function DashboardScreen() {
   ), []);
 
   const marketPrice = guidePrice;
+
+  useEffect(() => {
+    if (!currentSignal) {
+      return;
+    }
+
+    console.log(`📍 Dashboard signal tracking price: ${signalTrackingPrice.toFixed(2)} from ${signalTrackingSource}`);
+  }, [currentSignal, signalTrackingPrice, signalTrackingSource]);
   const marketPriceSource = guidePriceSource || 'connecting...';
   const marketPriceSourceLabel = marketPriceSource.replace(/🟢 |🟡 |🔴 |🔄 /g, '');
 
