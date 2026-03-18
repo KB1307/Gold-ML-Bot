@@ -1,17 +1,17 @@
-# Prioritize TradingView Chart Price for XAU/USD Signal Generation
+# Keep TradingView Chart Price as the Signal Driver for XAU/USD
 
 ## Overview
 
-Make the TradingView chart price the primary live input for signal generation while the dashboard chart is active. TwelveData WebSocket remains the standby feed, and REST stays as the last-resort fallback only when no fresh live price is available.
+Make the TradingView chart price the primary live input for signal generation and live signal monitoring. TwelveData WebSocket remains available strictly as a user-facing guide price, while direct fetch and REST recovery paths stay available only when the engine needs a non-WebSocket refresh.
 
 ---
 
 ### **Features**
 
-- **TradingView chart-first pricing**: signal generation and live signal monitoring use the chart-fed price when the chart is actively publishing updates
-- **WebSocket standby mode**: TwelveData still runs in the background and fills gaps whenever the chart feed goes stale or is unavailable
-- **REST emergency fallback**: REST fetches remain available for bootstrap or recovery, but they no longer lead normal foreground signal generation
-- **Fresh-price preference inside the engine**: the signal engine now prefers recent external live prices before making any direct fetch
+- **TradingView chart-first pricing**: signal generation and active signal monitoring use the chart-fed price path when chart updates are available
+- **TwelveData guide-only feed**: TwelveData remains visible to the user as a fast secondary indicator, but it does not drive signal generation
+- **REST/direct recovery path**: direct price refresh paths remain available for bootstrap and recovery when the engine needs a non-chart update
+- **Fresh-price preference inside the engine**: the signal engine still prefers fresh external prices before making any direct fetch
 - **Signal generation cadence unchanged**: the existing ML logic, confidence checks, cooldowns, and 30-second generation cadence remain intact
 - **TradingView chart implementation preserved**: the existing chart stays in place, with only a lightweight price bridge added around it
 
@@ -19,11 +19,11 @@ Make the TradingView chart price the primary live input for signal generation wh
 
 ### **How It Works (Behind the Scenes)**
 
-1. **TradingView price bridge** extracts live price updates from the embedded chart wrapper and forwards them into the app state
-2. **Dashboard context prioritization** accepts chart prices first and ignores slower TwelveData ticks while the chart feed is fresh
-3. **Signal engine freshness check** uses the latest cached external price before falling back to any direct fetch path
-4. **WebSocket failover** continues supplying prices when the chart is not active or stops producing fresh updates
-5. **REST bootstrap/recovery** only runs when no fresh live price exists, preventing slow polling from hijacking foreground signals
+1. **TradingView price bridge** extracts live price updates from the embedded chart wrapper and forwards them into the signal path
+2. **Dashboard context split** keeps chart price on the signal-driving path while storing TwelveData separately as a guide-only display value
+3. **Signal engine freshness check** uses the latest chart-fed external price before falling back to any direct fetch path
+4. **TwelveData indicator stream** continues updating the dashboard guide price without influencing signal generation
+5. **REST bootstrap/recovery** only runs when the engine has no fresh signal-driving live price, preventing slower guide feeds from hijacking foreground signals
 
 ---
 
@@ -35,7 +35,7 @@ Make the TradingView chart price the primary live input for signal generation wh
 
 - [x] **TradingView chart wrapper** updated to forward chart-derived live price updates without replacing the chart itself
 - [x] **Dashboard chart integration** updated so chart prices feed the shared trading context directly
-- [x] **Dashboard context** updated to prioritize chart prices over TwelveData while the chart feed is fresh
-- [x] **Signal engine** updated to prefer fresh external live prices instead of forcing slow direct refreshes during normal signal generation
-- [x] **WebSocket service path** retained as standby/failover instead of being the primary foreground signal source
-- [x] **REST fallback path** retained for bootstrap and recovery only
+- [x] **Dashboard context** updated to keep TwelveData on a separate guide-only display path
+- [x] **Signal engine** updated to keep preferring fresh signal-driving live prices instead of forcing slow direct refreshes during normal signal generation
+- [x] **WebSocket service path** retained for guide pricing and recovery visibility rather than foreground signal generation
+- [x] **REST/direct recovery path** retained for bootstrap and recovery only

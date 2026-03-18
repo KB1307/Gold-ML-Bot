@@ -91,12 +91,15 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [positionSizing, setPositionSizing] = useState<PositionSizing | null>(null);
   const [accountBalance, setAccountBalance] = useState<number>(100);
   const [currentPrice, setCurrentPrice] = useState<number>(0);
+  const [guidePrice, setGuidePrice] = useState<number>(0);
   const [priceHistory, setPriceHistory] = useState<PriceDataPoint[]>([]);
   const [dailyOHLCHistory, setDailyOHLCHistory] = useState<DailyOHLC[]>([]);
   const [signalUpdateTrigger, setSignalUpdateTrigger] = useState<number>(0);
   const [appLaunchTime] = useState<number>(Date.now());
   const [backgroundTaskActive, setBackgroundTaskActive] = useState<boolean>(false);
   const [priceSource, setPriceSource] = useState<string>('connecting...');
+  const [guidePriceSource, setGuidePriceSource] = useState<string>('connecting...');
+  const [guidePriceUpdatedAt, setGuidePriceUpdatedAt] = useState<number>(0);
   const [livePriceError, setLivePriceError] = useState<string | null>(null);
   const chartPriceHeartbeatRef = useRef<number>(0);
 
@@ -173,6 +176,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     });
   }, []);
 
+  const commitGuidePrice = useCallback((price: number, source: string) => {
+    setGuidePrice(price);
+    setGuidePriceSource(source);
+    setGuidePriceUpdatedAt(Date.now());
+  }, []);
+
   const applyLivePrice = useCallback((price: number, source: string, origin: "chart" | "feed") => {
     if (price <= 1000 || price > 10000 || Number.isNaN(price)) {
       console.warn(`⚠️ Ignoring invalid ${origin} price: ${price}`);
@@ -203,27 +212,22 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   useEffect(() => {
     let isMounted = true;
 
-    console.log('🔌 Starting WebSocket price feed...');
+    console.log('🔌 Starting TwelveData guide price feed...');
 
     const unsubPrice = goldWebSocketService.onPrice((price: number, source: string) => {
       if (!isMounted) return;
-      applyLivePrice(price, source, "feed");
+      commitGuidePrice(price, source);
     });
 
     const unsubStatus = goldWebSocketService.onStatus((status) => {
       if (!isMounted) return;
 
-      const chartFeedIsFresh = chartPriceHeartbeatRef.current > 0 && (Date.now() - chartPriceHeartbeatRef.current) < CHART_PRICE_PRIORITY_WINDOW_MS;
-      console.log(`📡 WebSocket status: ${status} | chartFeedFresh=${chartFeedIsFresh}`);
-
-      if (chartFeedIsFresh) {
-        return;
-      }
+      console.log(`📡 TwelveData guide feed status: ${status}`);
 
       if (status === 'fallback') {
-        setPriceSource('🟡 REST fallback');
+        setGuidePriceSource('🟡 guide fallback');
       } else if (status === 'disconnected' || status === 'reconnecting') {
-        setPriceSource(`🔄 ${status}...`);
+        setGuidePriceSource(`🔄 ${status}...`);
       }
     });
 
@@ -235,7 +239,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       unsubStatus();
       goldWebSocketService.stop();
     };
-  }, [applyLivePrice]);
+  }, [commitGuidePrice]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -938,6 +942,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
 
 
+  const syncSignalPriceFromEngine = useCallback((nextPrice?: number) => {
+    const enginePrice = nextPrice ?? signalEngine.getCurrentPrice();
+    const engineSource = signalEngine.getPriceSource();
+
+    if (enginePrice > 0) {
+      setCurrentPrice(enginePrice);
+      setPriceSource(engineSource);
+      setLivePriceError(null);
+    }
+  }, []);
+
   const checkAndGenerateSignal = useCallback(async () => {
     const timeSinceLaunch = Date.now() - appLaunchTime;
     const LAUNCH_COOLDOWN_MS = 5000;
@@ -1013,6 +1028,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log(`   Account Balance: ${accountBalance}`);
       
       const signal = await signalEngine.generateSignal(settings, accountBalance, signalHistory);
+      syncSignalPriceFromEngine();
       
       if (signal) {
         setSignalHistory((prev) => {
@@ -1061,7 +1077,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.error("Error:", error);
       console.error("Stack:", error instanceof Error ? error.stack : 'No stack trace');
     }
-  }, [settings, accountBalance, signalHistory, appLaunchTime]);
+  }, [settings, accountBalance, signalHistory, appLaunchTime, syncSignalPriceFromEngine]);
 
   const updateAllSignalsStatus = useCallback(() => {
     const price = signalEngine.getCurrentPrice();
@@ -1369,11 +1385,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     }
 
     if (price > 0) {
-      setCurrentPrice(price);
+      syncSignalPriceFromEngine(price);
     }
 
     console.log(`Data refreshed successfully | price=${price.toFixed(2)} | source=${signalEngine.getPriceSource()}`);
-  }, []);
+  }, [syncSignalPriceFromEngine]);
 
   const triggerManualRetrain = useCallback(async (reason?: string) => {
     const result = await signalEngine.manualRetrain(reason || 'User Triggered');
@@ -1397,10 +1413,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     positionSizing,
     accountBalance,
     currentPrice,
+    guidePrice,
     priceHistory,
     dailyOHLCHistory,
     signalUpdateTrigger,
     priceSource,
+    guidePriceSource,
+    guidePriceUpdatedAt,
     livePriceError,
     ingestChartPrice,
     login,
@@ -1419,6 +1438,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     currentPrice,
     dailyOHLCHistory,
     deleteSignalFromHistory,
+    guidePrice,
+    guidePriceSource,
+    guidePriceUpdatedAt,
     isLoading,
     isLoggedIn,
     ingestChartPrice,

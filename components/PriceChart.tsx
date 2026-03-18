@@ -142,11 +142,7 @@ function buildTradingViewHTML(instanceId: string): string {
           var now = Date.now();
           var priceDiff = Math.abs(roundedPrice - lastForwardedPrice);
 
-          if (lastForwardedPrice > 0 && priceDiff < 0.01 && (now - lastForwardedAt) < 1200) {
-            return;
-          }
-
-          if (lastForwardedPrice > 0 && (now - lastForwardedAt) < 400 && priceDiff < 0.05) {
+          if (lastForwardedPrice > 0 && priceDiff === 0 && (now - lastForwardedAt) < 250) {
             return;
           }
 
