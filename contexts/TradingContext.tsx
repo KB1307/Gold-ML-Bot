@@ -224,10 +224,21 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       console.log(`📡 TwelveData guide feed status: ${status}`);
 
-      if (status === 'fallback') {
+      if (status === 'connected') {
+        const lastGuidePrice = goldWebSocketService.getLastPrice();
+        const lastGuidePriceSource = goldWebSocketService.getLastPriceSource();
+
+        if (lastGuidePrice > 0) {
+          commitGuidePrice(lastGuidePrice, lastGuidePriceSource);
+        } else {
+          setGuidePriceSource('🟢 twelvedata live');
+        }
+      } else if (status === 'fallback') {
         setGuidePriceSource('🟡 guide fallback');
-      } else if (status === 'disconnected' || status === 'reconnecting') {
-        setGuidePriceSource(`🔄 ${status}...`);
+      } else if (status === 'disconnected') {
+        setGuidePriceSource('🔴 disconnected');
+      } else if (status === 'reconnecting') {
+        setGuidePriceSource('🔄 reconnecting...');
       }
     });
 

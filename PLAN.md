@@ -2,7 +2,7 @@
 
 ## Overview
 
-Make the TradingView chart price the primary live input for signal generation and live signal monitoring. TwelveData WebSocket remains available strictly as a secondary guide feed in app state, while direct fetch and REST recovery paths stay available only when the engine needs a non-WebSocket refresh.
+Make the TradingView chart price the primary live input for signal generation and live signal monitoring. TwelveData WebSocket remains available as a separate live market-price feed for the dashboard bubble, while direct fetch and REST recovery paths stay available only when the engine needs a non-WebSocket refresh.
 
 ---
 
@@ -20,9 +20,9 @@ Make the TradingView chart price the primary live input for signal generation an
 ### **How It Works (Behind the Scenes)**
 
 1. **TradingView price bridge** extracts live price updates from the embedded chart wrapper and forwards them into the signal path
-2. **Dashboard context split** keeps chart price on the signal-driving path while storing TwelveData separately as a guide-only display value
+2. **Dashboard context split** keeps chart price on the signal-driving path while storing TwelveData separately for the dashboard market-price display
 3. **Signal engine freshness check** uses the latest chart-fed external price before falling back to any direct fetch path
-4. **TwelveData indicator stream** continues updating the separate guide-price path without influencing signal generation or requiring a dedicated dashboard bubble
+4. **TwelveData indicator stream** continues updating the separate guide-price path and powers the dashboard market price bubble without influencing signal generation
 5. **REST bootstrap/recovery** only runs when the engine has no fresh signal-driving live price, preventing slower guide feeds from hijacking foreground signals
 
 ---
@@ -35,7 +35,7 @@ Make the TradingView chart price the primary live input for signal generation an
 
 - [x] **TradingView chart wrapper** updated to forward chart-derived live price updates without replacing the chart itself
 - [x] **Dashboard chart integration** updated so chart prices feed the shared trading context directly
-- [x] **Dashboard context** updated to keep TwelveData on a separate guide-only path without letting it drive the main dashboard price label
+- [x] **Dashboard context** updated to keep TwelveData on a separate live-display path so it powers the dashboard market price label without affecting signal generation
 - [x] **Signal engine** updated to keep preferring fresh signal-driving live prices instead of forcing slow direct refreshes during normal signal generation
 - [x] **WebSocket service path** retained for guide pricing and recovery support rather than foreground signal generation
 - [x] **REST/direct recovery path** retained for bootstrap and recovery only

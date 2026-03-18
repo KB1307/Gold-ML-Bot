@@ -17,14 +17,18 @@ interface WebSocketServiceState {
   reconnectAttempts: number;
   intentionallyClosed: boolean;
   lastPrice: number;
+  lastPriceSource: string;
+  currentStatus: 'connected' | 'disconnected' | 'reconnecting' | 'fallback';
   connectionId: number;
+  lastBootstrapFetchAt: number;
 }
 
 const HEARTBEAT_INTERVAL_MS = 10000;
 const WATCHDOG_INTERVAL_MS = 5000;
 const WATCHDOG_TIMEOUT_MS = 30000;
 const RECONNECT_DELAY_MS = 5000;
-const REST_FALLBACK_INTERVAL_MS = 60000;
+const REST_FALLBACK_INTERVAL_MS = 15000;
+const TWELVEDATA_BOOTSTRAP_INTERVAL_MS = 5000;
 const MAX_RECONNECT_ATTEMPTS = 50;
 
 const state: WebSocketServiceState = {
@@ -41,7 +45,10 @@ const state: WebSocketServiceState = {
   reconnectAttempts: 0,
   intentionallyClosed: false,
   lastPrice: 0,
+  lastPriceSource: 'connecting...',
+  currentStatus: 'disconnected',
   connectionId: 0,
+  lastBootstrapFetchAt: 0,
 };
 
 function getTwelveDataApiKey(): string | null {
@@ -61,6 +68,7 @@ function getTwelveDataApiKey(): string | null {
 
 function notifyPrice(price: number, source: string): void {
   state.lastPrice = price;
+  state.lastPriceSource = source;
   state.priceCallbacks.forEach(cb => {
     try {
       cb(price, source);
@@ -71,6 +79,7 @@ function notifyPrice(price: number, source: string): void {
 }
 
 function notifyStatus(status: 'connected' | 'disconnected' | 'reconnecting' | 'fallback'): void {
+  state.currentStatus = status;
   state.statusCallbacks.forEach(cb => {
     try {
       cb(status);
@@ -158,7 +167,7 @@ function activateRestFallback(): void {
   if (state.isRestFallbackActive) return;
 
   state.isRestFallbackActive = true;
-  console.log('⚠️ [GoldWS] WebSocket timeout — activating REST cold-standby fallback (every 60s)');
+  console.log(`⚠️ [GoldWS] WebSocket timeout — activating REST cold-standby fallback (every ${(REST_FALLBACK_INTERVAL_MS / 1000).toFixed(0)}s)`);
   notifyStatus('fallback');
 
   void fetchRestFallbackPrice();
@@ -166,6 +175,45 @@ function activateRestFallback(): void {
   state.restFallbackTimer = setInterval(() => {
     void fetchRestFallbackPrice();
   }, REST_FALLBACK_INTERVAL_MS);
+}
+
+async function fetchTwelveDataBootstrapPrice(apiKey: string, reason: string): Promise<void> {
+  const now = Date.now();
+  if ((now - state.lastBootstrapFetchAt) < TWELVEDATA_BOOTSTRAP_INTERVAL_MS) {
+    return;
+  }
+
+  state.lastBootstrapFetchAt = now;
+
+  try {
+    console.log(`🟢 [GoldWS] TwelveData REST bootstrap (${reason})...`);
+    const response = await fetch(`https://api.twelvedata.com/price?symbol=XAU/USD&apikey=${encodeURIComponent(apiKey)}`, {
+      headers: {
+        Accept: 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      console.warn(`⚠️ [GoldWS] TwelveData REST bootstrap failed with ${response.status}`);
+      return;
+    }
+
+    const data = await response.json() as { price?: number | string; status?: string; message?: string };
+    const parsedPrice = typeof data.price === 'number'
+      ? data.price
+      : parseFloat(String(data.price ?? ''));
+
+    if (Number.isNaN(parsedPrice) || parsedPrice <= 1000 || parsedPrice > 10000) {
+      console.warn('⚠️ [GoldWS] TwelveData REST bootstrap returned invalid price', data);
+      return;
+    }
+
+    const roundedPrice = Number(parsedPrice.toFixed(2));
+    console.log(`✅ [GoldWS] TwelveData REST bootstrap price: ${roundedPrice.toFixed(2)} (${reason})`);
+    notifyPrice(roundedPrice, '🟢 twelvedata live');
+  } catch (err) {
+    console.warn(`⚠️ [GoldWS] TwelveData REST bootstrap error (${reason}):`, err);
+  }
 }
 
 async function fetchRestFallbackPrice(): Promise<void> {
@@ -237,6 +285,7 @@ function connect(): void {
   state.connectionId = connectionId;
   console.log(`🔌 [GoldWS] Connecting to TwelveData WebSocket (connection ${connectionId})...`);
   notifyStatus('reconnecting');
+  void fetchTwelveDataBootstrapPrice(apiKey, `connection-${connectionId}`);
 
   try {
     state.ws = new WebSocket(wsUrl);
@@ -299,7 +348,7 @@ function connect(): void {
 
         killRestFallback();
 
-        notifyPrice(parsedPrice, '🟢 twelvedata-ws');
+        notifyPrice(Number(parsedPrice.toFixed(2)), '🟢 twelvedata live');
 
         if (state.lastTickTime % 10000 < 2000) {
           console.log(`📈 [GoldWS] XAU/USD: ${parsedPrice.toFixed(3)}`);
@@ -418,6 +467,15 @@ export const goldWebSocketService = {
 
   onPrice(callback: PriceCallback): () => void {
     state.priceCallbacks.add(callback);
+
+    if (state.lastPrice > 0) {
+      try {
+        callback(state.lastPrice, state.lastPriceSource);
+      } catch (err) {
+        console.error('❌ [GoldWS] Immediate price callback error:', err);
+      }
+    }
+
     return () => {
       state.priceCallbacks.delete(callback);
     };
@@ -425,6 +483,13 @@ export const goldWebSocketService = {
 
   onStatus(callback: StatusCallback): () => void {
     state.statusCallbacks.add(callback);
+
+    try {
+      callback(state.currentStatus);
+    } catch (err) {
+      console.error('❌ [GoldWS] Immediate status callback error:', err);
+    }
+
     return () => {
       state.statusCallbacks.delete(callback);
     };
@@ -440,6 +505,14 @@ export const goldWebSocketService = {
 
   getLastPrice(): number {
     return state.lastPrice;
+  },
+
+  getLastPriceSource(): string {
+    return state.lastPriceSource;
+  },
+
+  getStatus(): 'connected' | 'disconnected' | 'reconnecting' | 'fallback' {
+    return state.currentStatus;
   },
 
   getLastTickTime(): number {

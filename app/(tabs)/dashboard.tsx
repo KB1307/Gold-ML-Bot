@@ -182,7 +182,8 @@ export default function DashboardScreen() {
     performanceMetrics,
     positionSizing,
     currentPrice,
-    priceSource,
+    guidePrice,
+    guidePriceSource,
     livePriceError,
     refreshData,
     signalUpdateTrigger,
@@ -255,6 +256,10 @@ export default function DashboardScreen() {
     <DashboardChart />
   ), []);
 
+  const marketPrice = guidePrice;
+  const marketPriceSource = guidePriceSource || 'connecting...';
+  const marketPriceSourceLabel = marketPriceSource.replace(/🟢 |🟡 |🔴 |🔄 /g, '');
+
   return (
     <>
       <Stack.Screen options={{ 
@@ -278,23 +283,23 @@ export default function DashboardScreen() {
                 <Text style={styles.headerSubtitle}>Gold Trading Signals</Text>
               </View>
               <View style={styles.priceContainer}>
-                <Text style={styles.signalPriceLabel}>Market price</Text>
-                <Text style={styles.currentPrice}>{currentPrice > 0 ? `${currentPrice.toFixed(2)}` : '---'}</Text>
-                <View style={styles.statusBubble}>
+                <Text style={styles.signalPriceLabel} testID="dashboard-market-price-label">Market price</Text>
+                <Text style={styles.currentPrice} testID="dashboard-market-price-value">{marketPrice > 0 ? `${marketPrice.toFixed(2)}` : '---'}</Text>
+                <View style={styles.statusBubble} testID="dashboard-market-price-status">
                   <View style={styles.statusRow}>
                     <View style={[
                       styles.statusDot,
-                      priceSource?.includes('🟢') && styles.statusDotLive,
-                      priceSource?.includes('🟡') && styles.statusDotCached,
-                      (priceSource?.includes('🔴') || currentPrice <= 0) && styles.statusDotError,
+                      marketPriceSource?.includes('🟢') && styles.statusDotLive,
+                      marketPriceSource?.includes('🟡') && styles.statusDotCached,
+                      marketPriceSource?.includes('🔴') && styles.statusDotError,
                     ]} />
                     <Text style={[
                       styles.statusSourceText,
-                      priceSource?.includes('🟢') && styles.priceSourceLive,
-                      priceSource?.includes('🟡') && styles.priceSourceCached,
-                      (priceSource?.includes('🔴') || currentPrice <= 0) && styles.priceSourceError,
-                    ]}>
-                      {currentPrice <= 0 ? 'connecting...' : (priceSource || 'connecting...').replace(/🟢 |🟡 |🔴 |🔄 /g, '')}
+                      marketPriceSource?.includes('🟢') && styles.priceSourceLive,
+                      marketPriceSource?.includes('🟡') && styles.priceSourceCached,
+                      marketPriceSource?.includes('🔴') && styles.priceSourceError,
+                    ]} testID="dashboard-market-price-source">
+                      {marketPriceSourceLabel}
                     </Text>
                   </View>
                   <View style={styles.statusDivider} />
