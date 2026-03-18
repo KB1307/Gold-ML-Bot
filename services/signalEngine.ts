@@ -154,6 +154,7 @@ const CONFIDENCE_SMOOTHING_WINDOW = 5;
 const LATENCY_WARNING_THRESHOLD_MS = 100;
 const FEATURE_CORRELATION_CHECK_INTERVAL = 30 * 24 * 60 * 60 * 1000;
 const INTERMARKET_CACHE_DURATION = 10000;
+const EXTERNAL_PRICE_MAX_AGE_MS = 15000;
 
 const HYPOTHETICAL_TRADE_HISTORY_LIMIT = 100;
 const MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL = 15;
@@ -752,41 +753,58 @@ class SignalGenerationEngine {
     this.ohlcDataSource = 'estimated';
   }
   
+  private syncCurrentPrice(price: number, source: string): void {
+    this.currentPrice = price;
+    lastPriceSource = source;
+
+    this.priceHistory.push(price);
+    if (this.priceHistory.length > 100) {
+      this.priceHistory.shift();
+    }
+
+    this.closeHistory.push(price);
+    if (this.closeHistory.length > 100) {
+      this.closeHistory.shift();
+    }
+
+    this.fetchAndUpdateOHLCHistory().catch(err => {
+      console.warn('⚠️ Non-blocking OHLC fetch failed:', err instanceof Error ? err.message : 'Unknown');
+    });
+
+    this.update5MinCandles();
+  }
+
   async updateCurrentPrice(): Promise<number> {
     try {
-      const result = await fetchLiveGoldPrice();
-      
-      if (result.price > 0) {
-        this.currentPrice = result.price;
-        console.log(`📊 Price set to ${this.currentPrice.toFixed(2)} from ${result.source}`);
+      const now = Date.now();
+      const hasFreshExternalPrice = cachedGoldPrice !== null && (now - lastFetchTime) < EXTERNAL_PRICE_MAX_AGE_MS;
+
+      if (hasFreshExternalPrice && cachedGoldPrice !== null) {
+        this.syncCurrentPrice(cachedGoldPrice, lastPriceSource);
+        console.log(`📊 Using live external price ${this.currentPrice.toFixed(2)} from ${lastPriceSource}`);
       } else {
-        console.warn(`⚠️ Invalid price received (${result.price}), keeping previous price: ${this.currentPrice}`);
-        return this.currentPrice;
+        const result = await fetchLiveGoldPrice();
+
+        if (result.price > 0) {
+          cachedGoldPrice = result.price;
+          lastFetchTime = Date.now();
+          lastKnownGoodPrice = result.price;
+          _consecutiveFailures = 0;
+          this.syncCurrentPrice(result.price, result.source);
+          console.log(`📊 Price set to ${this.currentPrice.toFixed(2)} from ${result.source}`);
+        } else {
+          console.warn(`⚠️ Invalid price received (${result.price}), keeping previous price: ${this.currentPrice}`);
+          return this.currentPrice;
+        }
       }
-      
-      this.priceHistory.push(this.currentPrice);
-      if (this.priceHistory.length > 100) {
-        this.priceHistory.shift();
-      }
-      
-      this.closeHistory.push(this.currentPrice);
-      if (this.closeHistory.length > 100) {
-        this.closeHistory.shift();
-      }
-      
-      this.fetchAndUpdateOHLCHistory().catch(err => {
-        console.warn('⚠️ Non-blocking OHLC fetch failed:', err instanceof Error ? err.message : 'Unknown');
-      });
-      
-      this.update5MinCandles();
-      
+
       const latestHigh = this.highHistory.length > 0 ? this.highHistory[this.highHistory.length - 1] : this.currentPrice;
       const latestLow = this.lowHistory.length > 0 ? this.lowHistory[this.lowHistory.length - 1] : this.currentPrice;
       const realVolatility = this.calculateRealTimeVolatility();
       const priceDirection = this.detectPriceDirection();
-      
+
       console.log(`📊 Price Detail: Close=${this.currentPrice.toFixed(1)}, H=${latestHigh.toFixed(1)}, L=${latestLow.toFixed(1)} | Vol: ${realVolatility.toFixed(2)} | Dir: ${priceDirection > 0 ? '↑' : priceDirection < 0 ? '↓' : '→'} | OHLC: ${this.ohlcDataSource}`);
-      
+
       return this.currentPrice;
     } catch (error) {
       console.error('❌ Failed to update current price:', error instanceof Error ? error.message : 'Unknown');
@@ -914,24 +932,7 @@ class SignalGenerationEngine {
       return;
     }
 
-    this.currentPrice = price;
-    lastPriceSource = source;
-
-    this.priceHistory.push(price);
-    if (this.priceHistory.length > 100) {
-      this.priceHistory.shift();
-    }
-
-    this.closeHistory.push(price);
-    if (this.closeHistory.length > 100) {
-      this.closeHistory.shift();
-    }
-
-    this.update5MinCandles();
-
-    this.fetchAndUpdateOHLCHistory().catch(err => {
-      console.warn('⚠️ Non-blocking OHLC fetch failed:', err instanceof Error ? err.message : 'Unknown');
-    });
+    this.syncCurrentPrice(price, source);
   }
   
   private calculateFibonacciLevels(high: number, low: number): FibonacciLevel[] {
@@ -3377,7 +3378,12 @@ class SignalGenerationEngine {
       }
     }
     
-    await this.updateCurrentPrice();
+    const livePriceAgeMs = Date.now() - lastFetchTime;
+    if (this.currentPrice > 0 && livePriceAgeMs < EXTERNAL_PRICE_MAX_AGE_MS) {
+      console.log(`📡 Signal generation using live chart/feed price ${this.currentPrice.toFixed(2)} from ${lastPriceSource} (${livePriceAgeMs}ms old)`);
+    } else {
+      await this.updateCurrentPrice();
+    }
     
     if (this.currentPrice <= 0) {
       console.log('❌ REJECTED: No valid price available yet - cannot generate signal');

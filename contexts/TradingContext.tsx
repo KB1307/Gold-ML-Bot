@@ -1,5 +1,5 @@
 import createContextHook from "@nkzw/create-context-hook";
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { TradingSignal, SignalStatus, Settings, MarketOutlook, PerformanceMetrics, PositionSizing, DailyOHLC } from "@/types/trading";
 import { signalEngine, setExternalPrice } from "@/services/signalEngine";
@@ -46,6 +46,8 @@ interface PriceDataPoint {
   timestamp: number;
   price: number;
 }
+
+const CHART_PRICE_PRIORITY_WINDOW_MS = 15000;
 
 function areMarketSessionsEqual(left: MarketOutlook["sessions"], right: MarketOutlook["sessions"]): boolean {
   if (left.length !== right.length) {
@@ -96,6 +98,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [backgroundTaskActive, setBackgroundTaskActive] = useState<boolean>(false);
   const [priceSource, setPriceSource] = useState<string>('connecting...');
   const [livePriceError, setLivePriceError] = useState<string | null>(null);
+  const chartPriceHeartbeatRef = useRef<number>(0);
 
   useEffect(() => {
     const init = async () => {
@@ -134,6 +137,69 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const commitLivePrice = useCallback((price: number, source: string) => {
+    setExternalPrice(price, source);
+    setCurrentPrice(price);
+    setPriceSource(source);
+    setLivePriceError(null);
+
+    const now = Date.now();
+    setPriceHistory(prev => {
+      const newHistory = [...prev, { timestamp: now, price }];
+      const maxPoints = 60;
+      if (newHistory.length > maxPoints) {
+        return newHistory.slice(newHistory.length - maxPoints);
+      }
+      return newHistory;
+    });
+
+    signalEngine.updateDailyOHLC(price).then(updatedOHLC => {
+      if (!updatedOHLC) return;
+      setDailyOHLCHistory(prev => {
+        const existingIndex = prev.findIndex(d => d.date === updatedOHLC.date);
+        if (existingIndex >= 0) {
+          const updated = [...prev];
+          updated[existingIndex] = updatedOHLC;
+          return updated;
+        }
+        const newHistory = [...prev, updatedOHLC];
+        if (newHistory.length > 30) {
+          return newHistory.slice(-30);
+        }
+        return newHistory;
+      });
+    }).catch(err => {
+      console.warn('⚠️ Daily OHLC update failed (non-blocking):', err instanceof Error ? err.message : 'Unknown');
+    });
+  }, []);
+
+  const applyLivePrice = useCallback((price: number, source: string, origin: "chart" | "feed") => {
+    if (price <= 1000 || price > 10000 || Number.isNaN(price)) {
+      console.warn(`⚠️ Ignoring invalid ${origin} price: ${price}`);
+      return;
+    }
+
+    const now = Date.now();
+    const isChartFeedFresh = chartPriceHeartbeatRef.current > 0 && (now - chartPriceHeartbeatRef.current) < CHART_PRICE_PRIORITY_WINDOW_MS;
+
+    if (origin === "chart") {
+      chartPriceHeartbeatRef.current = now;
+      commitLivePrice(price, source);
+      return;
+    }
+
+    if (isChartFeedFresh) {
+      console.log(`ℹ️ Ignoring ${source} tick because TradingView chart price is active`);
+      return;
+    }
+
+    commitLivePrice(price, source);
+  }, [commitLivePrice]);
+
+  const ingestChartPrice = useCallback((price: number) => {
+    applyLivePrice(price, '🟢 tradingview-chart', "chart");
+  }, [applyLivePrice]);
+
   useEffect(() => {
     let isMounted = true;
 
@@ -141,46 +207,19 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
     const unsubPrice = goldWebSocketService.onPrice((price: number, source: string) => {
       if (!isMounted) return;
-
-      setExternalPrice(price, source);
-
-      setCurrentPrice(price);
-      setPriceSource(source);
-      setLivePriceError(null);
-
-      const now = Date.now();
-      setPriceHistory(prev => {
-        const newHistory = [...prev, { timestamp: now, price }];
-        const maxPoints = 60;
-        if (newHistory.length > maxPoints) {
-          return newHistory.slice(newHistory.length - maxPoints);
-        }
-        return newHistory;
-      });
-
-      signalEngine.updateDailyOHLC(price).then(updatedOHLC => {
-        if (!isMounted || !updatedOHLC) return;
-        setDailyOHLCHistory(prev => {
-          const existingIndex = prev.findIndex(d => d.date === updatedOHLC.date);
-          if (existingIndex >= 0) {
-            const updated = [...prev];
-            updated[existingIndex] = updatedOHLC;
-            return updated;
-          }
-          const newHistory = [...prev, updatedOHLC];
-          if (newHistory.length > 30) {
-            return newHistory.slice(-30);
-          }
-          return newHistory;
-        });
-      }).catch(err => {
-        console.warn('⚠️ Daily OHLC update failed (non-blocking):', err instanceof Error ? err.message : 'Unknown');
-      });
+      applyLivePrice(price, source, "feed");
     });
 
     const unsubStatus = goldWebSocketService.onStatus((status) => {
       if (!isMounted) return;
-      console.log(`📡 WebSocket status: ${status}`);
+
+      const chartFeedIsFresh = chartPriceHeartbeatRef.current > 0 && (Date.now() - chartPriceHeartbeatRef.current) < CHART_PRICE_PRIORITY_WINDOW_MS;
+      console.log(`📡 WebSocket status: ${status} | chartFeedFresh=${chartFeedIsFresh}`);
+
+      if (chartFeedIsFresh) {
+        return;
+      }
+
       if (status === 'fallback') {
         setPriceSource('🟡 REST fallback');
       } else if (status === 'disconnected' || status === 'reconnecting') {
@@ -196,7 +235,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       unsubStatus();
       goldWebSocketService.stop();
     };
-  }, []);
+  }, [applyLivePrice]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -1323,10 +1362,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   const refreshData = useCallback(async () => {
     await updateMarketOutlook();
-    await signalEngine.updateCurrentPrice();
-    const price = signalEngine.getCurrentPrice();
-    setCurrentPrice(price);
-    console.log('Data refreshed successfully');
+
+    let price = signalEngine.getCurrentPrice();
+    if (price <= 0) {
+      price = await signalEngine.updateCurrentPrice();
+    }
+
+    if (price > 0) {
+      setCurrentPrice(price);
+    }
+
+    console.log(`Data refreshed successfully | price=${price.toFixed(2)} | source=${signalEngine.getPriceSource()}`);
   }, []);
 
   const triggerManualRetrain = useCallback(async (reason?: string) => {
@@ -1356,6 +1402,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     signalUpdateTrigger,
     priceSource,
     livePriceError,
+    ingestChartPrice,
     login,
     logout,
     clearHistory,
@@ -1374,6 +1421,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     deleteSignalFromHistory,
     isLoading,
     isLoggedIn,
+    ingestChartPrice,
     livePriceError,
     login,
     logout,

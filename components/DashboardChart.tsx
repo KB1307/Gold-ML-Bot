@@ -1,12 +1,15 @@
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import PriceChart from '@/components/PriceChart';
+import { useTrading } from '@/contexts/TradingContext';
 
 const DashboardChart = React.memo(() => {
+  const { ingestChartPrice } = useTrading();
+
   return (
     <View style={styles.chartCard} testID="dashboard-chart-card">
       <View style={styles.chartContainer} testID="dashboard-chart-container">
-        <PriceChart isActive={true} />
+        <PriceChart isActive={true} onPriceUpdate={ingestChartPrice} />
       </View>
     </View>
   );

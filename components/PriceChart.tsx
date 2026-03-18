@@ -15,6 +15,7 @@ interface ChartBridgeMessage {
   type?: "chartReady" | "chartError" | "price" | "chartBootstrap";
   value?: number;
   message?: string;
+  source?: string;
 }
 
 function buildTradingViewHTML(instanceId: string): string {
@@ -36,6 +37,9 @@ function buildTradingViewHTML(instanceId: string): string {
     <script>
       (function () {
         var chartInstanceId = ${JSON.stringify(instanceId)};
+        var widgetFrameId = 'tv-widget-' + chartInstanceId;
+        var lastForwardedPrice = 0;
+        var lastForwardedAt = 0;
 
         function bridge(payload) {
           try {
@@ -52,6 +56,124 @@ function buildTradingViewHTML(instanceId: string): string {
           }
         }
 
+        function normalizeMessageData(rawValue) {
+          if (!rawValue) {
+            return null;
+          }
+
+          if (typeof rawValue === 'string') {
+            try {
+              return JSON.parse(rawValue);
+            } catch (error) {
+              return rawValue;
+            }
+          }
+
+          return rawValue;
+        }
+
+        function toValidGoldPrice(value) {
+          var parsedValue = typeof value === 'number' ? value : parseFloat(String(value || ''));
+
+          if (!isFinite(parsedValue) || parsedValue <= 1000 || parsedValue >= 10000) {
+            return null;
+          }
+
+          return parsedValue;
+        }
+
+        function collectCandidatePrices(value, parentKey, results) {
+          if (value === null || value === undefined) {
+            return;
+          }
+
+          if (typeof value === 'number' || typeof value === 'string') {
+            var candidateValue = toValidGoldPrice(value);
+            if (candidateValue !== null) {
+              results.push({ key: String(parentKey || ''), value: candidateValue });
+            }
+            return;
+          }
+
+          if (Array.isArray(value)) {
+            for (var arrayIndex = 0; arrayIndex < value.length; arrayIndex += 1) {
+              collectCandidatePrices(value[arrayIndex], parentKey, results);
+            }
+            return;
+          }
+
+          if (typeof value === 'object') {
+            for (var key in value) {
+              if (!Object.prototype.hasOwnProperty.call(value, key)) {
+                continue;
+              }
+              collectCandidatePrices(value[key], key, results);
+            }
+          }
+        }
+
+        function pickBestPrice(payload) {
+          var candidates = [];
+          collectCandidatePrices(payload, '', candidates);
+
+          if (!candidates.length) {
+            return null;
+          }
+
+          var priorities = ['lp', 'last_price', 'lastPrice', 'last', 'price', 'close', 'bid', 'ask', 'value'];
+          candidates.sort(function (left, right) {
+            var leftPriority = priorities.indexOf(left.key);
+            var rightPriority = priorities.indexOf(right.key);
+            var normalizedLeftPriority = leftPriority === -1 ? 999 : leftPriority;
+            var normalizedRightPriority = rightPriority === -1 ? 999 : rightPriority;
+            return normalizedLeftPriority - normalizedRightPriority;
+          });
+
+          return candidates[0] ? candidates[0].value : null;
+        }
+
+        function forwardPrice(value, source) {
+          var parsedPrice = toValidGoldPrice(value);
+          if (parsedPrice === null) {
+            return;
+          }
+
+          var roundedPrice = Math.round(parsedPrice * 100) / 100;
+          var now = Date.now();
+          var priceDiff = Math.abs(roundedPrice - lastForwardedPrice);
+
+          if (lastForwardedPrice > 0 && priceDiff < 0.01 && (now - lastForwardedAt) < 1200) {
+            return;
+          }
+
+          if (lastForwardedPrice > 0 && (now - lastForwardedAt) < 400 && priceDiff < 0.05) {
+            return;
+          }
+
+          lastForwardedPrice = roundedPrice;
+          lastForwardedAt = now;
+          bridge({ type: 'price', value: roundedPrice, source: source || 'tradingview-chart' });
+        }
+
+        window.addEventListener('message', function (event) {
+          var payload = normalizeMessageData(event.data);
+          if (!payload) {
+            return;
+          }
+
+          if (typeof payload === 'object' && payload.provider === 'TradingView' && payload.name === 'widgetReady') {
+            if (!payload.frameElementId || payload.frameElementId === widgetFrameId) {
+              bridge({ type: 'chartReady' });
+            }
+            return;
+          }
+
+          var detectedPrice = pickBestPrice(payload);
+          if (detectedPrice !== null) {
+            forwardPrice(detectedPrice, 'tradingview-chart');
+          }
+        }, false);
+
         window.onerror = function (message) {
           bridge({ type: 'chartError', message: String(message || 'TradingView failed to render') });
           return false;
@@ -64,6 +186,7 @@ function buildTradingViewHTML(instanceId: string): string {
           }
 
           new window.TradingView.widget({
+            id: widgetFrameId,
             autosize: true,
             symbol: 'CAPITALCOM:GOLD',
             interval: '5',
@@ -86,7 +209,7 @@ function buildTradingViewHTML(instanceId: string): string {
 
           window.setTimeout(function () {
             bridge({ type: 'chartReady' });
-          }, 1800);
+          }, 2200);
         }
 
         var script = document.createElement('script');
@@ -161,7 +284,7 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
     return () => {
       clearTimeout(timeout);
     };
-  }, [isActive, htmlSource]);
+  }, [isActive]);
 
   useEffect(() => {
     if (Platform.OS !== "web") {
@@ -181,8 +304,7 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
       try {
         const payload = JSON.parse(event.data) as ChartBridgeMessage;
         handleBridgePayload(payload);
-      } catch (error) {
-        console.warn("[PriceChart] Ignoring non-JSON window message", error);
+      } catch {
       }
     };
 
@@ -217,8 +339,7 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
     try {
       const payload = JSON.parse(event.nativeEvent.data) as ChartBridgeMessage;
       handleBridgePayload(payload);
-    } catch (error) {
-      console.warn("[PriceChart] Ignoring non-JSON WebView message", error);
+    } catch {
     }
   }, [handleBridgePayload]);
 
