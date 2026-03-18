@@ -17,6 +17,7 @@ interface WebSocketServiceState {
   reconnectAttempts: number;
   intentionallyClosed: boolean;
   lastPrice: number;
+  connectionId: number;
 }
 
 const HEARTBEAT_INTERVAL_MS = 10000;
@@ -40,6 +41,7 @@ const state: WebSocketServiceState = {
   reconnectAttempts: 0,
   intentionallyClosed: false,
   lastPrice: 0,
+  connectionId: 0,
 };
 
 function getTwelveDataApiKey(): string | null {
@@ -78,16 +80,58 @@ function notifyStatus(status: 'connected' | 'disconnected' | 'reconnecting' | 'f
   });
 }
 
+function getReadyStateLabel(readyState: number | undefined): string {
+  switch (readyState) {
+    case WebSocket.CONNECTING:
+      return 'CONNECTING';
+    case WebSocket.OPEN:
+      return 'OPEN';
+    case WebSocket.CLOSING:
+      return 'CLOSING';
+    case WebSocket.CLOSED:
+      return 'CLOSED';
+    default:
+      return 'UNKNOWN';
+  }
+}
+
+function getEventDiagnostics(event: Event | CloseEvent | MessageEvent | undefined, socket: WebSocket | null, connectionId: number): Record<string, unknown> {
+  const target = socket ?? (event?.target instanceof WebSocket ? event.target : null);
+  const diagnostics: Record<string, unknown> = {
+    connectionId,
+    eventType: event?.type ?? 'unknown',
+    readyState: target ? getReadyStateLabel(target.readyState) : 'UNKNOWN',
+    url: target?.url ?? 'unknown',
+    online: typeof navigator !== 'undefined' ? navigator.onLine : 'unknown',
+    timestamp: new Date().toISOString(),
+  };
+
+  if (event && 'code' in event) {
+    diagnostics.code = event.code;
+    diagnostics.reason = event.reason || 'none';
+    diagnostics.wasClean = event.wasClean;
+  }
+
+  if (event && 'data' in event && typeof event.data === 'string') {
+    diagnostics.data = event.data.slice(0, 200);
+  }
+
+  return diagnostics;
+}
+
 function startHeartbeat(): void {
   stopHeartbeat();
   state.heartbeatTimer = setInterval(() => {
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-      try {
-        state.ws.send(JSON.stringify({ action: 'heartbeat' }));
-        console.log('💓 [GoldWS] Heartbeat sent');
-      } catch (err) {
-        console.warn('⚠️ [GoldWS] Heartbeat send failed:', err);
-      }
+    const socket = state.ws;
+    const readyState = socket?.readyState;
+    const silenceDuration = state.lastTickTime > 0 ? Date.now() - state.lastTickTime : 0;
+
+    console.log(`💓 [GoldWS] Heartbeat check | state=${getReadyStateLabel(readyState)} | silence=${(silenceDuration / 1000).toFixed(1)}s`);
+
+    if (!socket || (readyState !== WebSocket.OPEN && readyState !== WebSocket.CONNECTING)) {
+      console.warn('⚠️ [GoldWS] Heartbeat detected inactive socket — forcing reconnect');
+      activateRestFallback();
+      scheduleReconnect();
     }
   }, HEARTBEAT_INTERVAL_MS);
 }
@@ -189,7 +233,9 @@ function connect(): void {
   }
 
   const wsUrl = `wss://ws.twelvedata.com/v1/quotes/price?apikey=${apiKey}`;
-  console.log('🔌 [GoldWS] Connecting to TwelveData WebSocket...');
+  const connectionId = state.connectionId + 1;
+  state.connectionId = connectionId;
+  console.log(`🔌 [GoldWS] Connecting to TwelveData WebSocket (connection ${connectionId})...`);
   notifyStatus('reconnecting');
 
   try {
@@ -200,8 +246,15 @@ function connect(): void {
     return;
   }
 
-  state.ws.onopen = () => {
-    console.log('✅ [GoldWS] WebSocket connected');
+  const socket = state.ws;
+
+  socket.onopen = () => {
+    if (state.ws !== socket) {
+      console.log(`ℹ️ [GoldWS] Ignoring stale onopen for connection ${connectionId}`);
+      return;
+    }
+
+    console.log(`✅ [GoldWS] WebSocket connected (connection ${connectionId})`);
     state.isConnected = true;
     state.reconnectAttempts = 0;
     state.lastTickTime = Date.now();
@@ -213,8 +266,8 @@ function connect(): void {
     });
 
     try {
-      state.ws?.send(subscribeMsg);
-      console.log('📡 [GoldWS] Subscribed to XAU/USD');
+      socket.send(subscribeMsg);
+      console.log(`📡 [GoldWS] Subscribed to XAU/USD (connection ${connectionId})`);
     } catch (err) {
       console.error('❌ [GoldWS] Subscribe send failed:', err);
     }
@@ -223,9 +276,14 @@ function connect(): void {
     startWatchdog();
   };
 
-  state.ws.onmessage = (event: MessageEvent) => {
+  socket.onmessage = (event: MessageEvent) => {
+    if (state.ws !== socket) {
+      return;
+    }
+
     try {
-      const data = JSON.parse(typeof event.data === 'string' ? event.data : '');
+      const rawData = typeof event.data === 'string' ? event.data : String(event.data ?? '');
+      const data = JSON.parse(rawData);
 
       if (data.event === 'price' && data.symbol === 'XAU/USD') {
         const parsedPrice = typeof data.price === 'number'
@@ -261,18 +319,32 @@ function connect(): void {
     }
   };
 
-  state.ws.onerror = (event: Event) => {
-    console.error('❌ [GoldWS] WebSocket error:', event);
+  socket.onerror = (event: Event) => {
+    if (state.ws !== socket) {
+      return;
+    }
+
+    const diagnostics = getEventDiagnostics(event, socket, connectionId);
+    console.warn('⚠️ [GoldWS] WebSocket transport issue detected; waiting for close event', diagnostics);
     state.isConnected = false;
+    notifyStatus('disconnected');
   };
 
-  state.ws.onclose = (event: CloseEvent) => {
-    console.log(`🔌 [GoldWS] WebSocket closed (code: ${event.code}, reason: ${event.reason || 'none'})`);
+  socket.onclose = (event: CloseEvent) => {
+    if (state.ws !== socket) {
+      return;
+    }
+
+    const diagnostics = getEventDiagnostics(event, socket, connectionId);
+    console.log('🔌 [GoldWS] WebSocket closed', diagnostics);
     state.isConnected = false;
+    state.ws = null;
     stopHeartbeat();
+    stopWatchdog();
     notifyStatus('disconnected');
 
     if (!state.intentionallyClosed) {
+      activateRestFallback();
       scheduleReconnect();
     }
   };
@@ -301,6 +373,11 @@ function scheduleReconnect(): void {
 
 export const goldWebSocketService = {
   start(): void {
+    if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) {
+      console.log('ℹ️ [GoldWS] WebSocket service already active, skipping duplicate start');
+      return;
+    }
+
     state.intentionallyClosed = false;
     state.reconnectAttempts = 0;
     connect();
@@ -332,6 +409,8 @@ export const goldWebSocketService = {
       }
       state.ws = null;
     }
+
+    state.lastTickTime = 0;
 
     state.isConnected = false;
     notifyStatus('disconnected');

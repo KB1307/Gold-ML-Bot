@@ -10,7 +10,7 @@ Switch the gold price data source from REST API polling (every 10 seconds) to a 
 
 - **Live WebSocket price feed**: The app connects to TwelveData's WebSocket and receives XAU/USD price ticks in real-time (~1 second frequency)
 - **Automatic reconnection**: If the WebSocket drops, it automatically reconnects after 5 seconds
-- **Heartbeat keep-alive**: A ping is sent every 10 seconds to prevent the connection from going stale
+- **Heartbeat health check**: A 10-second heartbeat monitor verifies socket health and forces reconnect/fallback when the transport becomes inactive
 - **Cold-standby REST fallback**: If no WebSocket message arrives for 30 seconds, the existing REST polling activates at a low frequency (once per 60 seconds) as a placeholder
 - **Instant recovery**: When the WebSocket reconnects and delivers its first tick, REST polling is immediately killed to prevent duplicate data
 - **Price source indicator**: The dashboard shows "🟢 twelvedata-ws" when live, or the REST source name when in fallback mode
@@ -21,7 +21,7 @@ Switch the gold price data source from REST API polling (every 10 seconds) to a 
 
 ### **How It Works (Behind the Scenes)**
 
-1. **New WebSocket service** created that manages the TwelveData connection lifecycle (connect, subscribe to XAU/USD, heartbeat, reconnect)
+1. **New WebSocket service** created that manages the TwelveData connection lifecycle (connect, subscribe to XAU/USD, heartbeat health checks, reconnect)
 2. **Price update loop replaced**: The current 10-second REST polling interval in the dashboard is replaced by the WebSocket's `onmessage` handler pushing prices directly into the signal engine
 3. **Watchdog timer**: A 30-second watchdog monitors WebSocket health — if no tick arrives, REST fallback activates; once WebSocket recovers, REST is killed
 4. **Existing REST fetch functions** are kept intact but demoted to "failover-only" duty — they only activate when the WebSocket is confirmed down
