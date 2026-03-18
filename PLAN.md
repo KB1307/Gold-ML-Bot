@@ -42,3 +42,4 @@ Make the TradingView chart price the primary live input for signal generation an
 - [x] **WebSocket service path** retained for guide pricing and recovery support rather than foreground signal generation
 - [x] **REST/direct recovery path** retained for bootstrap and recovery only
 - [x] **Historical signal reconciliation** added so open signals are re-evaluated against 1-minute price history from creation to now and terminal exits persist exitPrice correctly
+- [x] **Sandbox signal simulation runner** added so the signal engine can be exercised in isolation over an accelerated 24-hour replay
