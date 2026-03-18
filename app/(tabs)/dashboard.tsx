@@ -182,10 +182,7 @@ export default function DashboardScreen() {
     performanceMetrics,
     positionSizing,
     currentPrice,
-    guidePrice,
     priceSource,
-    guidePriceSource,
-    guidePriceUpdatedAt,
     livePriceError,
     refreshData,
     signalUpdateTrigger,
@@ -243,19 +240,6 @@ export default function DashboardScreen() {
     return diff;
   }, [currentSignal, currentPrice]);
 
-  const guideAgeLabel = useMemo(() => {
-    if (guidePriceUpdatedAt <= 0) {
-      return 'waiting for guide feed';
-    }
-
-    const ageSeconds = Math.max(0, Math.floor((Date.now() - guidePriceUpdatedAt) / 1000));
-    if (ageSeconds === 0) {
-      return 'just now';
-    }
-
-    return `${ageSeconds}s ago`;
-  }, [guidePriceUpdatedAt]);
-
   const progress = getProgressPercentage();
 
   const refreshControl = useMemo(() => (
@@ -294,7 +278,7 @@ export default function DashboardScreen() {
                 <Text style={styles.headerSubtitle}>Gold Trading Signals</Text>
               </View>
               <View style={styles.priceContainer}>
-                <Text style={styles.signalPriceLabel}>Signal price</Text>
+                <Text style={styles.signalPriceLabel}>Market price</Text>
                 <Text style={styles.currentPrice}>{currentPrice > 0 ? `${currentPrice.toFixed(2)}` : '---'}</Text>
                 <View style={styles.statusBubble}>
                   <View style={styles.statusRow}>
@@ -323,15 +307,6 @@ export default function DashboardScreen() {
                       {marketOutlook?.isMarketOpen ? marketOutlook.currentSession : "CLOSED"}
                     </Text>
                   </View>
-                </View>
-                <View style={styles.guidePriceCard}>
-                  <Text style={styles.guidePriceLabel}>TwelveData guide</Text>
-                  <Text style={styles.guidePriceValue}>{guidePrice > 0 ? `${guidePrice.toFixed(2)}` : '---'}</Text>
-                  <Text style={styles.guidePriceMeta}>
-                    {guidePrice <= 0
-                      ? 'connecting...'
-                      : `${(guidePriceSource || 'connecting...').replace(/🟢 |🟡 |🔴 |🔄 /g, '')} • ${guideAgeLabel}`}
-                  </Text>
                 </View>
               </View>
             </View>
@@ -911,33 +886,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255, 255, 255, 0.1)",
     gap: 0,
-  },
-  guidePriceCard: {
-    minWidth: 170,
-    backgroundColor: "rgba(255, 215, 0, 0.08)",
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderWidth: 1,
-    borderColor: "rgba(255, 215, 0, 0.18)",
-  },
-  guidePriceLabel: {
-    fontSize: 10,
-    fontWeight: "600",
-    color: "#b6a15b",
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-    marginBottom: 4,
-  } as const,
-  guidePriceValue: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#f4d36b",
-    marginBottom: 2,
-  } as const,
-  guidePriceMeta: {
-    fontSize: 11,
-    color: "#d1c089",
   },
   statusRow: {
     flexDirection: "row",
