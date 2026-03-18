@@ -48,6 +48,8 @@ interface PriceDataPoint {
 }
 
 const CHART_PRICE_PRIORITY_WINDOW_MS = 15000;
+const HISTORICAL_RECONCILIATION_INTERVAL_MS = 30000;
+const TERMINAL_SIGNAL_STATUSES: SignalStatus[] = ["CLOSED", "SL_HIT", "ALL_TARGETS_HIT", "PARTIAL_WIN_SL_HIT"];
 
 function areMarketSessionsEqual(left: MarketOutlook["sessions"], right: MarketOutlook["sessions"]): boolean {
   if (left.length !== right.length) {
@@ -103,6 +105,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [guidePriceUpdatedAt, setGuidePriceUpdatedAt] = useState<number>(0);
   const [livePriceError, setLivePriceError] = useState<string | null>(null);
   const chartPriceHeartbeatRef = useRef<number>(0);
+  const historicalReconciliationInFlightRef = useRef<boolean>(false);
+  const signalHistoryRef = useRef<TradingSignal[]>([]);
+  const historicalFallbackPriceRef = useRef<number>(0);
 
   useEffect(() => {
     const init = async () => {
@@ -264,7 +269,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     return () => clearInterval(interval);
   }, []);
 
-  const fetchPriceHistory = async (fromTime: number, toTime: number): Promise<{timestamp: number, open: number, high: number, low: number, close: number}[]> => {
+  const fetchPriceHistory = useCallback(async (fromTime: number, toTime: number): Promise<{timestamp: number, open: number, high: number, low: number, close: number}[]> => {
     try {
       console.log(`📊 Fetching historical 1-MINUTE OHLCV data (via tRPC)...`);
       console.log(`   From: ${new Date(fromTime).toISOString()}`);
@@ -290,9 +295,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.error('❌ Error fetching price history:', error);
       return [];
     }
-  };
+  }, []);
 
-  const analyzeSignalWithHistoricalData = async (
+  const analyzeSignalWithHistoricalData = useCallback(async (
     signal: TradingSignal,
     historicalBars: {timestamp: number, open: number, high: number, low: number, close: number}[]
   ): Promise<{newStatus: SignalStatus, targetsHit: number, exitPrice: number, outcomeResult: 'WIN' | 'LOSS' | null, breakevenReached?: boolean, breakevenTime?: string}> => {
@@ -471,21 +476,21 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       breakevenReached,
       breakevenTime,
     };
-  };
+  }, []);
 
-  const catchUpAndEvaluateSignals = async (history: TradingSignal[]) => {
+  const catchUpAndEvaluateSignals = useCallback(async (history: TradingSignal[], fallbackPrice?: number) => {
     console.log('\n' + '='.repeat(80));
     console.log('🔄 SIGNAL CATCH-UP EVALUATION INITIATED');
     console.log('='.repeat(80));
     console.log('   Checking for stale ACTIVE signals that need evaluation...');
     
     const now = Date.now();
-    const currentPrice = signalEngine.getCurrentPrice();
+    const currentFallbackPrice = fallbackPrice ?? signalEngine.getCurrentPrice();
+    const currentPrice = currentFallbackPrice;
     const twoHoursInMs = 2 * 60 * 60 * 1000;
     
-    if (currentPrice <= 0) {
-      console.log('⏳ Skipping catch-up evaluation - no valid price yet');
-      return history;
+    if (currentFallbackPrice <= 0) {
+      console.log('⚠️ Catch-up evaluation running without live fallback price - historical bars only');
     }
     
     let updatedHistory = [...history];
@@ -513,13 +518,14 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           ...signal,
           status: "CLOSED" as const,
           exitTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+          exitPrice: currentFallbackPrice > 0 ? currentFallbackPrice : signal.entryPrice,
         };
         hasChanges = true;
         
         await signalEngine.recordTradeOutcome(
           signal.id,
           signal.entryPrice,
-          currentPrice,
+          currentFallbackPrice > 0 ? currentFallbackPrice : signal.entryPrice,
           'LOSS',
           {} as any,
           undefined,
@@ -535,6 +541,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       
       if (historicalBars.length === 0) {
         console.log(`   ⚠️ No historical data available - using current price fallback`);
+
+        if (currentFallbackPrice <= 0) {
+          console.log(`   ⏳ No fallback live price available - leaving signal unchanged until next reconciliation`);
+          continue;
+        }
         
         let newStatus: SignalStatus = signal.status as SignalStatus;
         let targetsHit = signal.targetsHit;
@@ -607,6 +618,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             exitTime: (newStatus === "SL_HIT" || newStatus === "ALL_TARGETS_HIT") 
               ? exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
               : signal.exitTime,
+            exitPrice: (newStatus === "SL_HIT" || newStatus === "ALL_TARGETS_HIT")
+              ? exitPrice
+              : signal.exitPrice,
           };
           
           if (shouldRecord) {
@@ -642,6 +656,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             exitTime: (analysis.newStatus === "SL_HIT" || analysis.newStatus === "ALL_TARGETS_HIT") 
               ? exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
               : signal.exitTime,
+            exitPrice: (analysis.newStatus === "SL_HIT" || analysis.newStatus === "ALL_TARGETS_HIT")
+              ? analysis.exitPrice
+              : signal.exitPrice,
           };
           
           if (analysis.outcomeResult) {
@@ -674,7 +691,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     console.log('='.repeat(80) + '\n');
     
     return updatedHistory;
-  };
+  }, [analyzeSignalWithHistoricalData, fetchPriceHistory]);
 
   const loadPersistedData = async () => {
     try {
@@ -1007,6 +1024,14 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       updatedAt: 0,
     };
   }, [currentPrice, currentPriceUpdatedAt, guidePrice, guidePriceSource, guidePriceUpdatedAt, priceSource]);
+
+  useEffect(() => {
+    signalHistoryRef.current = signalHistory;
+  }, [signalHistory]);
+
+  useEffect(() => {
+    historicalFallbackPriceRef.current = signalTrackingSnapshot.price;
+  }, [signalTrackingSnapshot.price]);
 
   const checkAndGenerateSignal = useCallback(async () => {
     const timeSinceLaunch = Date.now() - appLaunchTime;
@@ -1363,6 +1388,67 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       clearInterval(signalMonitorInterval);
     };
   }, [isLoading, updateAllSignalsStatus]);
+
+  useEffect(() => {
+    if (isLoading) {
+      return;
+    }
+
+    let isMounted = true;
+
+    const runHistoricalReconciliation = async (reason: string) => {
+      if (historicalReconciliationInFlightRef.current) {
+        console.log(`⏳ Historical reconciliation already running - skipping ${reason}`);
+        return;
+      }
+
+      const currentHistory = signalHistoryRef.current;
+      const openSignals = currentHistory.filter(signal => !TERMINAL_SIGNAL_STATUSES.includes(signal.status));
+
+      if (openSignals.length === 0) {
+        return;
+      }
+
+      historicalReconciliationInFlightRef.current = true;
+      console.log(`🧭 Historical reconciliation triggered (${reason}) for ${openSignals.length} open signal(s)`);
+
+      try {
+        const reconciledHistory = await catchUpAndEvaluateSignals(currentHistory, historicalFallbackPriceRef.current);
+
+        if (!isMounted) {
+          return;
+        }
+
+        const previousSerialized = JSON.stringify(currentHistory);
+        const nextSerialized = JSON.stringify(reconciledHistory);
+
+        if (previousSerialized !== nextSerialized) {
+          signalHistoryRef.current = reconciledHistory;
+          setSignalHistory(reconciledHistory);
+          await AsyncStorage.setItem("signal_history", JSON.stringify(reconciledHistory));
+          setSignalUpdateTrigger(prev => prev + 1);
+          console.log('✅ Historical reconciliation applied missed TP/SL updates');
+        } else {
+          console.log('✅ Historical reconciliation found no missed TP/SL events');
+        }
+      } catch (error) {
+        console.error('❌ Historical reconciliation failed:', error);
+      } finally {
+        historicalReconciliationInFlightRef.current = false;
+      }
+    };
+
+    void runHistoricalReconciliation('startup');
+
+    const historicalReconciliationInterval = setInterval(() => {
+      void runHistoricalReconciliation('interval');
+    }, HISTORICAL_RECONCILIATION_INTERVAL_MS);
+
+    return () => {
+      isMounted = false;
+      clearInterval(historicalReconciliationInterval);
+    };
+  }, [catchUpAndEvaluateSignals, isLoading]);
 
   useEffect(() => {
     if (!isLoggedIn) {

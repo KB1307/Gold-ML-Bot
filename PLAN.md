@@ -14,6 +14,7 @@ Make the TradingView chart price the primary live input for signal generation an
 - **Fresh-price preference inside the engine**: the signal engine still prefers fresh external prices before making any direct fetch
 - **Signal generation cadence unchanged**: the existing ML logic, confidence checks, cooldowns, and 30-second generation cadence remain intact
 - **TradingView chart implementation preserved**: the existing chart stays in place, with only a lightweight price bridge added around it
+- **Historical signal reconciliation**: open signals periodically re-check 1-minute price history from signal creation to now so missed TP/SL touches are recovered after pauses or stalls
 
 ---
 
@@ -24,6 +25,7 @@ Make the TradingView chart price the primary live input for signal generation an
 3. **Signal engine freshness check** uses the latest chart-fed external price before falling back to any direct fetch path
 4. **TwelveData indicator stream** continues updating the separate guide-price path and powers the dashboard market price bubble without influencing signal generation
 5. **REST bootstrap/recovery** only runs when the engine has no fresh signal-driving live price, preventing slower guide feeds from hijacking foreground signals
+6. **Historical reconciliation pass** replays 1-minute bars from signal creation through the present for every open signal so missed TP/SL hits are corrected even if live monitoring pauses
 
 ---
 
@@ -39,3 +41,4 @@ Make the TradingView chart price the primary live input for signal generation an
 - [x] **Signal engine** updated to keep preferring fresh signal-driving live prices instead of forcing slow direct refreshes during normal signal generation
 - [x] **WebSocket service path** retained for guide pricing and recovery support rather than foreground signal generation
 - [x] **REST/direct recovery path** retained for bootstrap and recovery only
+- [x] **Historical signal reconciliation** added so open signals are re-evaluated against 1-minute price history from creation to now and terminal exits persist exitPrice correctly
