@@ -1,5 +1,5 @@
 import createContextHook from "@nkzw/create-context-hook";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { TradingSignal, SignalStatus, Settings, MarketOutlook, PerformanceMetrics, PositionSizing, DailyOHLC } from "@/types/trading";
 import { signalEngine, setExternalPrice } from "@/services/signalEngine";
@@ -45,6 +45,38 @@ const DEFAULT_METRICS: PerformanceMetrics = {
 interface PriceDataPoint {
   timestamp: number;
   price: number;
+}
+
+function areMarketSessionsEqual(left: MarketOutlook["sessions"], right: MarketOutlook["sessions"]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((session, index) => {
+    const rightSession = right[index];
+    return session.name === rightSession?.name && session.isActive === rightSession?.isActive;
+  });
+}
+
+function areMarketOutlooksEqual(previousValue: MarketOutlook | null, nextValue: MarketOutlook): boolean {
+  if (!previousValue) {
+    return false;
+  }
+
+  return (
+    previousValue.isMarketOpen === nextValue.isMarketOpen &&
+    previousValue.currentSession === nextValue.currentSession &&
+    previousValue.trend === nextValue.trend &&
+    previousValue.volatility === nextValue.volatility &&
+    previousValue.dailyPivot === nextValue.dailyPivot &&
+    previousValue.r1 === nextValue.r1 &&
+    previousValue.r2 === nextValue.r2 &&
+    previousValue.r3 === nextValue.r3 &&
+    previousValue.s1 === nextValue.s1 &&
+    previousValue.s2 === nextValue.s2 &&
+    previousValue.s3 === nextValue.s3 &&
+    areMarketSessionsEqual(previousValue.sessions, nextValue.sessions)
+  );
 }
 
 export const [TradingProvider, useTrading] = createContextHook(() => {
@@ -98,7 +130,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         setIsLoading(false);
       }
     };
-    init();
+    void init();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -168,10 +200,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   useEffect(() => {
     const interval = setInterval(() => {
-      updateMarketOutlook();
+      void updateMarketOutlook();
     }, 5000);
 
-    updateMarketOutlook();
+    void updateMarketOutlook();
 
     return () => clearInterval(interval);
   }, []);
@@ -682,7 +714,15 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   const updateMarketOutlook = async () => {
     const outlook = await signalEngine.getMarketOutlook();
-    setMarketOutlook(outlook);
+
+    setMarketOutlook((previousValue) => {
+      if (areMarketOutlooksEqual(previousValue, outlook)) {
+        return previousValue;
+      }
+
+      console.log('📊 Market outlook changed — updating dashboard state');
+      return outlook;
+    });
   };
 
   const calculatePerformanceMetrics = useCallback((history: TradingSignal[]) => {
@@ -835,7 +875,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   useEffect(() => {
     const metrics = calculatePerformanceMetrics(signalHistory);
     setPerformanceMetrics(metrics);
-    AsyncStorage.setItem("performance_metrics", JSON.stringify(metrics));
+    void AsyncStorage.setItem("performance_metrics", JSON.stringify(metrics));
   }, [signalHistory, calculatePerformanceMetrics]);
 
   const closeSignal = useCallback((signalId: string) => {
@@ -852,7 +892,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         }
         return signal;
       });
-      AsyncStorage.setItem("signal_history", JSON.stringify(updated));
+      void AsyncStorage.setItem("signal_history", JSON.stringify(updated));
       return updated;
     });
   }, []);
@@ -1218,18 +1258,19 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     
     const signalInterval = setInterval(() => {
       console.log('⏰ 30s interval - checking for signal generation...');
-      checkAndGenerateSignal();
+      void checkAndGenerateSignal();
     }, 30000);
 
     console.log('🚀 Scheduling initial signal generation check (after 5s cooldown)...');
-    setTimeout(() => {
+    const initialSignalCheckTimeout = setTimeout(() => {
       console.log('✅ Launch cooldown complete - starting signal generation');
-      checkAndGenerateSignal();
+      void checkAndGenerateSignal();
     }, 5000);
 
     return () => {
       console.log('🛑 Signal generation system deactivated');
       clearInterval(signalInterval);
+      clearTimeout(initialSignalCheckTimeout);
     };
   }, [isLoggedIn, isLoading, checkAndGenerateSignal, signalHistory.length]);
 
@@ -1271,7 +1312,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const deleteSignalFromHistory = useCallback(async (signalId: string) => {
     setSignalHistory((prev) => {
       const updated = prev.filter((s) => s.id !== signalId);
-      AsyncStorage.setItem("signal_history", JSON.stringify(updated));
+      void AsyncStorage.setItem("signal_history", JSON.stringify(updated));
       return updated;
     });
   }, []);
@@ -1300,7 +1341,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     return result;
   }, [signalHistory, calculatePerformanceMetrics]);
 
-  return {
+  return useMemo(() => ({
     isLoggedIn,
     isLoading,
     signalHistory,
@@ -1324,5 +1365,29 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     refreshData,
     triggerManualRetrain,
     backgroundTaskActive,
-  };
+  }), [
+    accountBalance,
+    backgroundTaskActive,
+    clearHistory,
+    currentPrice,
+    dailyOHLCHistory,
+    deleteSignalFromHistory,
+    isLoading,
+    isLoggedIn,
+    livePriceError,
+    login,
+    logout,
+    manualCloseSignal,
+    marketOutlook,
+    performanceMetrics,
+    positionSizing,
+    priceHistory,
+    priceSource,
+    refreshData,
+    settings,
+    signalHistory,
+    signalUpdateTrigger,
+    triggerManualRetrain,
+    updateSettings,
+  ]);
 });
