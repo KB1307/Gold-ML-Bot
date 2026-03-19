@@ -211,6 +211,8 @@ const LATENCY_WARNING_THRESHOLD_MS = 100;
 const FEATURE_CORRELATION_CHECK_INTERVAL = 30 * 24 * 60 * 60 * 1000;
 const INTERMARKET_CACHE_DURATION = 10000;
 const EXTERNAL_PRICE_MAX_AGE_MS = 15000;
+const MIN_PRICE_HISTORY_SAMPLE_INTERVAL_MS = 5000;
+const MIN_PRICE_HISTORY_CHANGE = 0.03;
 
 const HYPOTHETICAL_TRADE_HISTORY_LIMIT = 100;
 const MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL = 15;
@@ -703,6 +705,7 @@ class SignalGenerationEngine {
   private highHistory: number[] = [];
   private lowHistory: number[] = [];
   private closeHistory: number[] = [];
+  private lastPriceHistorySampleAt: number = 0;
   private volumeHistory: number[] = [];
   private tradeOutcomes: TradeOutcome[] = [];
   private modelWeights: Map<string, number> = new Map();
@@ -815,17 +818,28 @@ class SignalGenerationEngine {
   }
   
   private syncCurrentPrice(price: number, source: string): void {
+    const now = Date.now();
+    const previousPrice = this.currentPrice;
+    const priceChangedMeaningfully = previousPrice <= 0 || Math.abs(price - previousPrice) >= MIN_PRICE_HISTORY_CHANGE;
+    const shouldSampleHistory = priceChangedMeaningfully || (now - this.lastPriceHistorySampleAt) >= MIN_PRICE_HISTORY_SAMPLE_INTERVAL_MS;
+
     this.currentPrice = price;
     lastPriceSource = source;
 
-    this.priceHistory.push(price);
-    if (this.priceHistory.length > 100) {
-      this.priceHistory.shift();
-    }
+    if (shouldSampleHistory) {
+      this.lastPriceHistorySampleAt = now;
 
-    this.closeHistory.push(price);
-    if (this.closeHistory.length > 100) {
-      this.closeHistory.shift();
+      this.priceHistory.push(price);
+      if (this.priceHistory.length > 100) {
+        this.priceHistory.shift();
+      }
+
+      this.closeHistory.push(price);
+      if (this.closeHistory.length > 100) {
+        this.closeHistory.shift();
+      }
+    } else {
+      console.log(`ℹ️ Suppressing duplicate live tick ${price.toFixed(2)} from ${source} to preserve signal history quality`);
     }
 
     this.fetchAndUpdateOHLCHistory().catch(err => {

@@ -48,6 +48,8 @@ interface PriceDataPoint {
 }
 
 const CHART_PRICE_PRIORITY_WINDOW_MS = 15000;
+const CHART_STALL_FAILOVER_MS = 20000;
+const MIN_MEANINGFUL_PRICE_CHANGE = 0.03;
 const HISTORICAL_RECONCILIATION_INTERVAL_MS = 30000;
 const TERMINAL_SIGNAL_STATUSES: SignalStatus[] = ["CLOSED", "SL_HIT", "ALL_TARGETS_HIT", "PARTIAL_WIN_SL_HIT"];
 
@@ -105,6 +107,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [guidePriceUpdatedAt, setGuidePriceUpdatedAt] = useState<number>(0);
   const [livePriceError, setLivePriceError] = useState<string | null>(null);
   const chartPriceHeartbeatRef = useRef<number>(0);
+  const lastChartPriceRef = useRef<number>(0);
+  const chartPriceLastMeaningfulMoveRef = useRef<number>(0);
   const historicalReconciliationInFlightRef = useRef<boolean>(false);
   const signalHistoryRef = useRef<TradingSignal[]>([]);
   const historicalFallbackPriceRef = useRef<number>(0);
@@ -197,15 +201,28 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
     const now = Date.now();
     const isChartFeedFresh = chartPriceHeartbeatRef.current > 0 && (now - chartPriceHeartbeatRef.current) < CHART_PRICE_PRIORITY_WINDOW_MS;
+    const chartFeedLooksStalled = chartPriceLastMeaningfulMoveRef.current > 0 && (now - chartPriceLastMeaningfulMoveRef.current) >= CHART_STALL_FAILOVER_MS;
 
     if (origin === "chart") {
       chartPriceHeartbeatRef.current = now;
+
+      if (lastChartPriceRef.current <= 0 || Math.abs(price - lastChartPriceRef.current) >= MIN_MEANINGFUL_PRICE_CHANGE) {
+        chartPriceLastMeaningfulMoveRef.current = now;
+      }
+
+      lastChartPriceRef.current = price;
       commitLivePrice(price, source);
       return;
     }
 
-    if (isChartFeedFresh) {
+    if (isChartFeedFresh && !chartFeedLooksStalled) {
       console.log(`ℹ️ Ignoring ${source} tick because TradingView chart price is active`);
+      return;
+    }
+
+    if (isChartFeedFresh && chartFeedLooksStalled) {
+      console.warn(`⚠️ Promoting ${source} tick because TradingView chart price appears stalled`);
+      commitLivePrice(price, `${source} • chart-failover`);
       return;
     }
 
@@ -987,15 +1004,27 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const signalTrackingSnapshot = useMemo(() => {
     const now = Date.now();
     const chartAgeMs = currentPriceUpdatedAt > 0 ? now - currentPriceUpdatedAt : Number.POSITIVE_INFINITY;
+    const chartMovementAgeMs = chartPriceLastMeaningfulMoveRef.current > 0
+      ? now - chartPriceLastMeaningfulMoveRef.current
+      : Number.POSITIVE_INFINITY;
     const guideAgeMs = guidePriceUpdatedAt > 0 ? now - guidePriceUpdatedAt : Number.POSITIVE_INFINITY;
     const hasFreshChartPrice = currentPrice > 0 && chartAgeMs < CHART_PRICE_PRIORITY_WINDOW_MS;
     const hasFreshGuidePrice = guidePrice > 0 && guideAgeMs < CHART_PRICE_PRIORITY_WINDOW_MS;
+    const chartFeedLooksStalled = hasFreshChartPrice && chartMovementAgeMs >= CHART_STALL_FAILOVER_MS;
 
-    if (hasFreshChartPrice) {
+    if (hasFreshChartPrice && !chartFeedLooksStalled) {
       return {
         price: currentPrice,
         source: priceSource || '🟢 tradingview-chart',
         updatedAt: currentPriceUpdatedAt,
+      };
+    }
+
+    if (chartFeedLooksStalled && hasFreshGuidePrice) {
+      return {
+        price: guidePrice,
+        source: `${guidePriceSource || '🟢 twelvedata live'} • chart-failover`,
+        updatedAt: guidePriceUpdatedAt,
       };
     }
 
@@ -1042,6 +1071,18 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log(`🛡️ LAUNCH COOLDOWN: Preventing signal generation for ${remainingCooldown}s after app start`);
       console.log(`   This prevents duplicate signals during initialization`);
       return;
+    }
+
+    if (signalTrackingSnapshot.price > 0) {
+      if (signalTrackingSnapshot.source.includes('chart-failover')) {
+        console.warn(`⚠️ Signal generation running on chart failover price ${signalTrackingSnapshot.price.toFixed(2)} from ${signalTrackingSnapshot.source}`);
+      }
+
+      setExternalPrice(signalTrackingSnapshot.price, signalTrackingSnapshot.source);
+      syncSignalPriceFromEngine(signalTrackingSnapshot.price);
+    } else {
+      const refreshedEnginePrice = await signalEngine.updateCurrentPrice();
+      syncSignalPriceFromEngine(refreshedEnginePrice);
     }
     
     const outlook = await signalEngine.getMarketOutlook();
@@ -1157,7 +1198,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.error("Error:", error);
       console.error("Stack:", error instanceof Error ? error.stack : 'No stack trace');
     }
-  }, [settings, accountBalance, signalHistory, appLaunchTime, syncSignalPriceFromEngine]);
+  }, [settings, accountBalance, signalHistory, appLaunchTime, signalTrackingSnapshot, syncSignalPriceFromEngine]);
 
   const updateAllSignalsStatus = useCallback(() => {
     const price = signalTrackingSnapshot.price;
