@@ -43,3 +43,7 @@ Make the TradingView chart price the primary live input for signal generation an
 - [x] **REST/direct recovery path** retained for bootstrap and recovery only
 - [x] **Historical signal reconciliation** added so open signals are re-evaluated against 1-minute price history from creation to now and terminal exits persist exitPrice correctly
 - [x] **Sandbox signal simulation runner** added so the signal engine can be exercised in isolation over an accelerated 24-hour replay
+- [x] **Signal conviction tuning** relaxed the engine’s hard rejection thresholds so valid setups are no longer starved by overly strict strength/confidence gates
+- [x] **Structural runway tuning** updated the primary-trend barrier check so trades are filtered by realistic TP3 clearance instead of an overly aggressive 3x TP2 runway requirement
+- [x] **Low-timeframe trend sensitivity** now adapts to live volatility instead of requiring an unrealistically large fixed momentum move before trend alignment is recognized
+- [x] **Sandbox verification** confirmed the engine now generates signals again over the accelerated 24-hour replay

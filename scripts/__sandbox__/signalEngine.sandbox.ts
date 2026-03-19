@@ -219,6 +219,11 @@ const MAX_RECENT_SIGNAL_TIME_MINUTES = 5;
 const POST_TP1_COOLDOWN_MS = 5 * 60 * 1000;
 const DRIFT_CHECK_INTERVAL = 24 * 60 * 60 * 1000;
 const FEATURE_DRIFT_STORAGE_KEY = 'feature_drift_history_v1';
+const MIN_SIGNAL_CONVICTION_THRESHOLD = 0.62;
+const MIN_SIGNAL_STRENGTH_DIFFERENCE = 0.12;
+const ABSOLUTE_MIN_SIGNAL_CONFIDENCE = 0.72;
+const SIGNAL_STARVATION_RELIEF_ATTEMPTS = 10;
+const SIGNAL_STARVATION_RELIEF_CONFIDENCE = 0.78;
 
 const TIME_WEIGHTS = {
   LOW_LIQUIDITY: 0.5,
@@ -2592,18 +2597,15 @@ class SignalGenerationEngine {
     console.log(`   SELL Strength: ${sellSignalStrength.toFixed(3)}`);
     console.log('='.repeat(60) + '\n');
     
-    const MINIMUM_CONVICTION_THRESHOLD = 0.80; // Increased for high accuracy
-    const MINIMUM_STRENGTH_DIFFERENCE = 0.20; // Increased for clearer direction
-    
     const winningStrength = Math.max(buySignalStrength, sellSignalStrength);
     const strengthDifference = Math.abs(buySignalStrength - sellSignalStrength);
     
     console.log('\n🔍 BIDIRECTIONAL CONFLICT PREVENTION:');
-    console.log(`   Winning Strength: ${winningStrength.toFixed(3)} (Min: ${MINIMUM_CONVICTION_THRESHOLD})`);
-    console.log(`   Strength Difference: ${strengthDifference.toFixed(3)} (Min: ${MINIMUM_STRENGTH_DIFFERENCE})`);
+    console.log(`   Winning Strength: ${winningStrength.toFixed(3)} (Min: ${MIN_SIGNAL_CONVICTION_THRESHOLD})`);
+    console.log(`   Strength Difference: ${strengthDifference.toFixed(3)} (Min: ${MIN_SIGNAL_STRENGTH_DIFFERENCE})`);
     
-    if (winningStrength < MINIMUM_CONVICTION_THRESHOLD) {
-      console.log(`\n❌ REJECTED: Winning strength ${winningStrength.toFixed(3)} below conviction threshold ${MINIMUM_CONVICTION_THRESHOLD}`);
+    if (winningStrength < MIN_SIGNAL_CONVICTION_THRESHOLD) {
+      console.log(`\n❌ REJECTED: Winning strength ${winningStrength.toFixed(3)} below conviction threshold ${MIN_SIGNAL_CONVICTION_THRESHOLD}`);
       console.log('   Market shows no clear directional bias');
       console.log('   Status: NEUTRAL / STAND DOWN');
       console.log('='.repeat(60) + '\n');
@@ -2617,8 +2619,8 @@ class SignalGenerationEngine {
       };
     }
     
-    if (strengthDifference < MINIMUM_STRENGTH_DIFFERENCE) {
-      console.log(`\n❌ REJECTED: Strength difference ${strengthDifference.toFixed(3)} too small (< ${MINIMUM_STRENGTH_DIFFERENCE})`);
+    if (strengthDifference < MIN_SIGNAL_STRENGTH_DIFFERENCE) {
+      console.log(`\n❌ REJECTED: Strength difference ${strengthDifference.toFixed(3)} too small (< ${MIN_SIGNAL_STRENGTH_DIFFERENCE})`);
       console.log(`   BUY: ${buySignalStrength.toFixed(3)} vs SELL: ${sellSignalStrength.toFixed(3)}`);
       console.log('   Market indecision detected - prevents conflicting signals');
       console.log('   Status: NEUTRAL / STAND DOWN');
@@ -2722,10 +2724,14 @@ class SignalGenerationEngine {
     const currentPrice = this.currentPrice;
     
     const momentum = currentPrice - avg;
+    const volatility = this.calculateRealTimeVolatility();
+    const momentumThreshold = Math.max(0.8, Math.min(2.5, volatility * 0.9));
     
-    if (momentum > 5) {
+    console.log(`📈 LTF Momentum: ${momentum.toFixed(2)} vs threshold ${momentumThreshold.toFixed(2)} (volatility: ${volatility.toFixed(2)})`);
+    
+    if (momentum > momentumThreshold) {
       return 'BULLISH';
-    } else if (momentum < -5) {
+    } else if (momentum < -momentumThreshold) {
       return 'BEARISH';
     } else {
       return 'NEUTRAL';
@@ -3504,6 +3510,7 @@ class SignalGenerationEngine {
     }
     
     let effectiveMinConfidence = settings.minConfidence;
+    const starvationReliefActive = this.successfulSignalsGenerated === 0 && this.signalGenerationAttempts >= SIGNAL_STARVATION_RELIEF_ATTEMPTS;
     
     if (this.driftAlertLevel === 'HIGH') {
       effectiveMinConfidence = Math.max(settings.minConfidence, 0.80);
@@ -3512,6 +3519,16 @@ class SignalGenerationEngine {
       console.log(`   Elevated Threshold: ${(effectiveMinConfidence * 100).toFixed(0)}%`);
       console.log(`   Reason: Protecting capital during market regime shift`);
       console.log(`   Duration: Until next model retrain (48h max)\n`);
+    }
+
+    if (starvationReliefActive) {
+      const relievedThreshold = Math.min(effectiveMinConfidence, SIGNAL_STARVATION_RELIEF_CONFIDENCE);
+      if (relievedThreshold !== effectiveMinConfidence) {
+        console.log(`🟢 SIGNAL STARVATION RELIEF ACTIVE: ${this.signalGenerationAttempts} attempts with no signals`);
+        console.log(`   Confidence threshold relaxed from ${(effectiveMinConfidence * 100).toFixed(0)}% to ${(relievedThreshold * 100).toFixed(0)}%`);
+        console.log(`   Structural validation, cooldowns, and macro-event suppression remain enforced`);
+        effectiveMinConfidence = relievedThreshold;
+      }
     }
     
     if (analysis.confidence < effectiveMinConfidence) {
@@ -3524,9 +3541,13 @@ class SignalGenerationEngine {
       return null;
     }
     
-    if (analysis.confidence < 0.85) {
-      console.log(`❌ REJECTED: Confidence ${(analysis.confidence * 100).toFixed(1)}% below absolute minimum (85%) for high accuracy mode`);
-      console.log(`   Requirement: >85% accuracy (Fibonacci + Session Sweeps active)`);
+    const absoluteConfidenceFloor = starvationReliefActive
+      ? ABSOLUTE_MIN_SIGNAL_CONFIDENCE
+      : Math.max(ABSOLUTE_MIN_SIGNAL_CONFIDENCE, effectiveMinConfidence - 0.03);
+
+    if (analysis.confidence < absoluteConfidenceFloor) {
+      console.log(`❌ REJECTED: Confidence ${(analysis.confidence * 100).toFixed(1)}% below engine floor ${(absoluteConfidenceFloor * 100).toFixed(0)}%`);
+      console.log(`   Engine floor keeps low-quality setups out even if user threshold is lower`);
       console.log(`${'='.repeat(80)}\n`);
       return null;
     }
@@ -3836,12 +3857,13 @@ class SignalGenerationEngine {
       console.log('\n🎯 PRIMARY TREND FILTER: Checking Runway to Barriers');
 
       const tp2Distance = settings.tp2Pips;
-      const requiredRunway = tp2Distance * 3.0;
+      const tp3Distance = settings.tp3Pips;
+      const requiredRunway = Math.max(tp3Distance * 1.05, settings.slPips * 0.9);
       const tp2Target = signalType === 'BUY' ? currentPrice + (tp2Distance * pipValue) : currentPrice - (tp2Distance * pipValue);
 
       console.log(`   Fixed SL Risk: ${settings.slPips} pips`);
       console.log(`   TP2 Target: ${tp2Target.toFixed(1)} (${tp2Distance} pips away)`);
-      console.log(`   Required Runway: ${requiredRunway.toFixed(0)} pips (3.0x R:R minimum)`);
+      console.log(`   Required Runway: ${requiredRunway.toFixed(0)} pips (TP3 clearance + SL protection)`);
 
       let nearestBarrierDistance = Infinity;
       let barrierType = 'None';
