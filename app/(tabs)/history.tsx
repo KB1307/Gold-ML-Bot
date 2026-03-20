@@ -16,7 +16,7 @@ export default function HistoryScreen() {
   const handleDelete = (signalId: string) => {
     if (Platform.OS === "web") {
       if (confirm("Delete this signal from history? This will not affect the learning engine.")) {
-        deleteSignalFromHistory(signalId);
+        void deleteSignalFromHistory(signalId);
       }
     } else {
       Alert.alert(
@@ -24,7 +24,7 @@ export default function HistoryScreen() {
         "Remove this signal from history? This will not affect the learning engine.",
         [
           { text: "Cancel", style: "cancel" },
-          { text: "Delete", style: "destructive", onPress: () => deleteSignalFromHistory(signalId) },
+          { text: "Delete", style: "destructive", onPress: () => { void deleteSignalFromHistory(signalId); } },
         ]
       );
     }
@@ -34,6 +34,7 @@ export default function HistoryScreen() {
     switch (status) {
       case "ALL_TARGETS_HIT":
       case "TP3_HIT":
+      case "PARTIAL_WIN_SL_HIT":
         return "#22c55e";
       case "TP2_HIT":
       case "TP1_HIT":
@@ -54,6 +55,7 @@ export default function HistoryScreen() {
 
   const getStatusLabel = (status: TradingSignal["status"], targetsHit: number) => {
     if (status === "SL_HIT") return "Stop Loss Hit";
+    if (status === "PARTIAL_WIN_SL_HIT") return "TP1 + TP2 Banked • Runner Breakeven";
     if (status === "ALL_TARGETS_HIT" || targetsHit === 3) return "All Targets Acquired";
     if (status === "CLOSED") {
       if (targetsHit === 3) return "All Targets Acquired";
@@ -186,13 +188,14 @@ export default function HistoryScreen() {
 
                       <View style={[
                         styles.slRow,
-                        signal.status === "SL_HIT" && { backgroundColor: "rgba(239, 68, 68, 0.15)", borderColor: "rgba(239, 68, 68, 0.3)" }
+                        signal.status === "SL_HIT" && { backgroundColor: "rgba(239, 68, 68, 0.15)", borderColor: "rgba(239, 68, 68, 0.3)" },
+                        signal.status === "PARTIAL_WIN_SL_HIT" && { backgroundColor: "rgba(34, 197, 94, 0.12)", borderColor: "rgba(34, 197, 94, 0.28)" }
                       ]}>
-                        <Text style={styles.slLabel}>Stop Loss</Text>
+                        <Text style={styles.slLabel}>{signal.status === "PARTIAL_WIN_SL_HIT" ? "Protected Exit" : "Stop Loss"}</Text>
                         <Text style={[
                           styles.slValue,
-                          { color: signal.status === "SL_HIT" ? "#ef4444" : "#999" }
-                        ]}>${signal.sl.toFixed(1)}</Text>
+                          { color: signal.status === "SL_HIT" ? "#ef4444" : signal.status === "PARTIAL_WIN_SL_HIT" ? "#22c55e" : "#999" }
+                        ]}>{signal.status === "PARTIAL_WIN_SL_HIT" ? `${(signal.exitPrice ?? signal.entryPrice).toFixed(1)}` : `${signal.sl.toFixed(1)}`}</Text>
                       </View>
 
                       {signal.breakevenReached && signal.breakevenTime && (

@@ -50,4 +50,6 @@ Make the TradingView chart price the primary live input for signal generation an
 - [x] **Low-timeframe trend sensitivity** now adapts to live volatility instead of requiring an unrealistically large fixed momentum move before trend alignment is recognized
 - [x] **Chart-stall failover** now promotes a fresher live guide tick when the TradingView bridge stops meaningfully moving, preventing foreground signal generation from freezing on stale chart echoes
 - [x] **Duplicate live tick suppression** now prevents repeated identical price samples from saturating engine history and flattening momentum detection
+- [x] **TP2 breakeven protection** now closes signals as protected partial wins instead of losses when two targets were banked before the runner reversed
+- [x] **TwelveData recovery cadence** now detects stale guide-price streams faster and refreshes the market-price bubble more aggressively during dropouts
 - [x] **Sandbox verification** confirmed the engine now generates signals again over the accelerated 24-hour replay
