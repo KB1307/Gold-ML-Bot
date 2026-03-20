@@ -250,7 +250,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   useEffect(() => {
     let isMounted = true;
 
-    console.log('🔌 Starting TwelveData guide price feed...');
+    console.log('🔌 Starting Tiingo guide price feed...');
 
     const unsubPrice = goldWebSocketService.onPrice((price: number, source: string) => {
       if (!isMounted) return;
@@ -260,7 +260,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const unsubStatus = goldWebSocketService.onStatus((status) => {
       if (!isMounted) return;
 
-      console.log(`📡 TwelveData guide feed status: ${status}`);
+      console.log(`📡 Tiingo guide feed status: ${status}`);
 
       if (status === 'connected') {
         const lastGuidePrice = goldWebSocketService.getLastPrice();
@@ -269,7 +269,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         if (lastGuidePrice > 0) {
           commitGuidePrice(lastGuidePrice, lastGuidePriceSource);
         } else {
-          setGuidePriceSource('🟢 twelvedata live');
+          setGuidePriceSource('🟢 tiingo live');
         }
       } else if (status === 'fallback') {
         setGuidePriceSource('🟡 guide fallback');
@@ -1105,7 +1105,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     if (chartFeedLooksStalled && hasFreshGuidePrice) {
       return {
         price: guidePrice,
-        source: `${guidePriceSource || '🟢 twelvedata live'} • chart-failover`,
+        source: `${guidePriceSource || '🟢 tiingo live'} • chart-failover`,
         updatedAt: guidePriceUpdatedAt,
       };
     }
@@ -1113,7 +1113,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     if (hasFreshGuidePrice) {
       return {
         price: guidePrice,
-        source: guidePriceSource || '🟢 twelvedata live',
+        source: guidePriceSource || '🟢 tiingo live',
         updatedAt: guidePriceUpdatedAt,
       };
     }
