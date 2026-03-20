@@ -52,7 +52,7 @@ Make the TradingView chart price the primary live input for signal generation an
 - [x] **Duplicate live tick suppression** now prevents repeated identical price samples from saturating engine history and flattening momentum detection
 - [x] **TP2 breakeven protection** now closes signals as protected partial wins instead of losses when two targets were banked before the runner reversed
 - [x] **Finnhub real-time guide feed** now uses Finnhub OANDA:XAU_USD websocket pricing with Finnhub REST bootstrap and 60-second fallback recovery for the market-price bubble
-- [x] **Finnhub websocket stability hardening** now prevents reconnect thrash by deduping reconnect scheduling, recycling silent sockets after 20 seconds, and enforcing clean reconnects so zombie connections cannot linger
+- [x] **Finnhub websocket stability hardening** now prevents reconnect thrash by deduping reconnect scheduling, using heartbeat-based liveness instead of trade-silence watchdogs, sending 20-second manual pings, and enforcing clean reconnects so zombie connections cannot linger
 - [x] **Web-safe Finnhub REST proxy recovery** now routes bootstrap and fallback REST quotes through the backend on web so browser CORS/network restrictions no longer break guide-price recovery
 - [x] **TradingView render isolation** now routes chart ticks through a standalone bridge so dashboard state updates no longer force chart-container rerenders/remounts
 - [x] **Persistent TradingView iframe mounting** now creates the web chart iframe once and keeps it mounted across dashboard updates so the chart stays rendered instead of reloading every few seconds

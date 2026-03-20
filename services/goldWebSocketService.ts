@@ -37,6 +37,8 @@ interface WebSocketServiceState {
   reconnectTimerReason: string | null;
   reconnectTimerDelayMs: number | null;
   watchdogTimer: ReturnType<typeof setInterval> | null;
+  connectionAliveTimer: ReturnType<typeof setTimeout> | null;
+  heartbeatPingTimer: ReturnType<typeof setInterval> | null;
   restFallbackTimer: ReturnType<typeof setInterval> | null;
   isRestFallbackActive: boolean;
   priceCallbacks: Set<PriceCallback>;
@@ -54,8 +56,9 @@ interface WebSocketServiceState {
 }
 
 const WATCHDOG_INTERVAL_MS = 1000;
-const WATCHDOG_STALE_TIMEOUT_MS = 20000;
 const CONNECT_TIMEOUT_MS = 15000;
+const CONNECTION_ALIVE_TIMEOUT_MS = 60000;
+const HEARTBEAT_PING_INTERVAL_MS = 20000;
 const RECONNECT_DELAY_MS = 5000;
 const REST_FALLBACK_INTERVAL_MS = 60000;
 const REST_BOOTSTRAP_INTERVAL_MS = 1000;
@@ -74,6 +77,8 @@ const state: WebSocketServiceState = {
   reconnectTimerReason: null,
   reconnectTimerDelayMs: null,
   watchdogTimer: null,
+  connectionAliveTimer: null,
+  heartbeatPingTimer: null,
   restFallbackTimer: null,
   isRestFallbackActive: false,
   priceCallbacks: new Set(),
@@ -331,6 +336,78 @@ function stopWatchdog(): void {
   }
 }
 
+function stopConnectionAliveTimer(): void {
+  if (state.connectionAliveTimer) {
+    clearTimeout(state.connectionAliveTimer);
+    state.connectionAliveTimer = null;
+  }
+}
+
+function stopHeartbeatPing(): void {
+  if (state.heartbeatPingTimer) {
+    clearInterval(state.heartbeatPingTimer);
+    state.heartbeatPingTimer = null;
+  }
+}
+
+function resetConnectionAliveTimer(connectionId: number, reason: string): void {
+  stopConnectionAliveTimer();
+
+  if (state.intentionallyClosed) {
+    return;
+  }
+
+  state.connectionAliveTimer = setTimeout(() => {
+    if (state.intentionallyClosed) {
+      return;
+    }
+
+    const socket = state.ws;
+    if (!socket) {
+      console.warn(`⚠️ [GoldWS] Connection alive timer expired without an active socket (connection ${connectionId})`);
+      return;
+    }
+
+    if (socket.readyState !== WebSocket.OPEN) {
+      console.warn(`⚠️ [GoldWS] Connection alive timer expired while socket state=${getReadyStateLabel(socket.readyState)} (connection ${connectionId})`);
+      return;
+    }
+
+    const silenceDurationMs = state.lastMessageTime > 0
+      ? Date.now() - state.lastMessageTime
+      : CONNECTION_ALIVE_TIMEOUT_MS;
+
+    console.warn(`⚠️ [GoldWS] No Finnhub heartbeat/control/trade message for ${(silenceDurationMs / 1000).toFixed(1)}s — recycling socket`);
+    requestSocketRecycle('heartbeat-timeout', RECONNECT_DELAY_MS);
+  }, CONNECTION_ALIVE_TIMEOUT_MS);
+
+  console.log(`💓 [GoldWS] Connection alive timer reset (${reason}) for connection ${connectionId}`);
+}
+
+function startHeartbeatPing(socket: WebSocket, connectionId: number): void {
+  stopHeartbeatPing();
+
+  state.heartbeatPingTimer = setInterval(() => {
+    if (state.intentionallyClosed || state.ws !== socket) {
+      return;
+    }
+
+    if (socket.readyState !== WebSocket.OPEN) {
+      console.log(`ℹ️ [GoldWS] Skipping Finnhub ping because socket state=${getReadyStateLabel(socket.readyState)} (connection ${connectionId})`);
+      return;
+    }
+
+    try {
+      socket.send(JSON.stringify({ type: 'ping' }));
+      resetConnectionAliveTimer(connectionId, 'ping-sent');
+      console.log(`🏓 [GoldWS] Sent Finnhub ping (connection ${connectionId})`);
+    } catch (error) {
+      console.warn(`⚠️ [GoldWS] Finnhub ping send failed (connection ${connectionId})`, error);
+      requestSocketRecycle('heartbeat-ping-failed', RECONNECT_DELAY_MS);
+    }
+  }, HEARTBEAT_PING_INTERVAL_MS);
+}
+
 function scheduleReconnect(reason: string, delayMs: number = RECONNECT_DELAY_MS): void {
   if (state.intentionallyClosed) {
     return;
@@ -392,6 +469,8 @@ function requestSocketRecycle(reason: string, delayMs: number): void {
   state.pendingReconnectReason = reason;
   state.ws = null;
   state.isConnected = false;
+  stopHeartbeatPing();
+  stopConnectionAliveTimer();
   notifyStatus('reconnecting');
 
   socket.onopen = null;
@@ -430,9 +509,7 @@ function startWatchdog(): void {
     }
 
     const socket = state.ws;
-    const now = Date.now();
-    const silenceDuration = state.lastTickTime > 0 ? now - state.lastTickTime : 0;
-    const connectDuration = state.connectStartedAt > 0 ? now - state.connectStartedAt : 0;
+    const connectDuration = state.connectStartedAt > 0 ? Date.now() - state.connectStartedAt : 0;
 
     if (!socket) {
       if (!state.closingSocket) {
@@ -454,14 +531,6 @@ function startWatchdog(): void {
     if (socket.readyState === WebSocket.CLOSED) {
       console.warn('⚠️ [GoldWS] Watchdog detected closed Finnhub socket');
       scheduleReconnect('watchdog-closed-socket', RECONNECT_DELAY_MS);
-      return;
-    }
-
-    if (silenceDuration > WATCHDOG_STALE_TIMEOUT_MS) {
-      console.warn(`⚠️ [GoldWS] No Finnhub trade for ${(silenceDuration / 1000).toFixed(1)}s — forcing immediate reconnect`);
-      activateRestFallback();
-      notifyStatus('reconnecting');
-      requestSocketRecycle('watchdog-no-trade', 0);
     }
   }, WATCHDOG_INTERVAL_MS);
 }
@@ -549,6 +618,8 @@ function connect(): void {
     }
 
     startWatchdog();
+    startHeartbeatPing(socket, connectionId);
+    resetConnectionAliveTimer(connectionId, 'socket-open');
   };
 
   socket.onmessage = (event: MessageEvent) => {
@@ -556,10 +627,15 @@ function connect(): void {
       return;
     }
 
+    const rawData = typeof event.data === 'string' ? event.data : String(event.data ?? '');
+    state.lastMessageTime = Date.now();
+    resetConnectionAliveTimer(connectionId, 'incoming-message');
+    killRestFallback();
+    notifyStatus('connected');
+    console.log(`💬 [GoldWS] Finnhub message received (connection ${connectionId}): ${rawData.slice(0, 200)}`);
+
     try {
-      const rawData = typeof event.data === 'string' ? event.data : String(event.data ?? '');
       const data = JSON.parse(rawData) as FinnhubWebSocketMessage;
-      state.lastMessageTime = Date.now();
 
       if (data.type !== 'trade') {
         console.log('ℹ️ [GoldWS] Finnhub control message:', data);
@@ -592,8 +668,6 @@ function connect(): void {
         : Number.NaN;
 
       state.lastTickTime = Date.now();
-      killRestFallback();
-      notifyStatus('connected');
       notifyPrice(roundedPrice, FINNHUB_LIVE_SOURCE);
 
       if (Number.isFinite(latencyMs)) {
@@ -614,6 +688,8 @@ function connect(): void {
     const diagnostics = getEventDiagnostics(event, socket, connectionId);
     console.warn('⚠️ [GoldWS] Finnhub websocket error', diagnostics);
     state.isConnected = false;
+    stopHeartbeatPing();
+    stopConnectionAliveTimer();
     activateRestFallback();
     requestSocketRecycle('transport-error', RECONNECT_DELAY_MS);
   };
@@ -635,6 +711,8 @@ function connect(): void {
     state.isConnected = false;
     state.connectStartedAt = 0;
     stopWatchdog();
+    stopHeartbeatPing();
+    stopConnectionAliveTimer();
 
     if (state.intentionallyClosed) {
       notifyStatus('disconnected');
@@ -671,6 +749,8 @@ export const goldWebSocketService = {
     console.log('🛑 [GoldWS] Stopping Finnhub websocket service');
     state.intentionallyClosed = true;
     stopWatchdog();
+    stopHeartbeatPing();
+    stopConnectionAliveTimer();
     killRestFallback();
     clearReconnectTimer();
     state.pendingReconnectDelayMs = null;
