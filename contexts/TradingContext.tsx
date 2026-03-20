@@ -276,7 +276,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   useEffect(() => {
     let isMounted = true;
 
-    console.log('🔌 Starting Tiingo guide price feed...');
+    console.log('🔌 Starting Finnhub guide price feed...');
 
     const unsubPrice = goldWebSocketService.onPrice((price: number, source: string) => {
       if (!isMounted) return;
@@ -286,7 +286,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const unsubStatus = goldWebSocketService.onStatus((status) => {
       if (!isMounted) return;
 
-      console.log(`📡 Tiingo guide feed status: ${status}`);
+      console.log(`📡 Finnhub guide feed status: ${status}`);
 
       if (status === 'connected') {
         const lastGuidePrice = goldWebSocketService.getLastPrice();
@@ -295,14 +295,14 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         if (lastGuidePrice > 0) {
           commitGuidePrice(lastGuidePrice, lastGuidePriceSource);
         } else {
-          setGuidePriceSource('🟢 tiingo live');
+          setGuidePriceSource('🟢 Finnhub-Live');
         }
       } else if (status === 'fallback') {
-        setGuidePriceSource('🟡 guide fallback');
+        setGuidePriceSource('🟡 Finnhub REST Fallback');
       } else if (status === 'disconnected') {
-        setGuidePriceSource('🔴 disconnected');
+        setGuidePriceSource('🔴 Disconnected');
       } else if (status === 'reconnecting') {
-        setGuidePriceSource('🔄 reconnecting...');
+        setGuidePriceSource('🔴 Reconnecting...');
       }
     });
 
@@ -1137,7 +1137,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     if (chartFeedLooksStalled && hasFreshGuidePrice) {
       return {
         price: guidePrice,
-        source: `${guidePriceSource || '🟢 tiingo live'} • chart-failover`,
+        source: `${guidePriceSource || '🟢 Finnhub-Live'} • chart-failover`,
         updatedAt: guidePriceUpdatedAt,
       };
     }
@@ -1145,7 +1145,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     if (hasFreshGuidePrice) {
       return {
         price: guidePrice,
-        source: guidePriceSource || '🟢 tiingo live',
+        source: guidePriceSource || '🟢 Finnhub-Live',
         updatedAt: guidePriceUpdatedAt,
       };
     }

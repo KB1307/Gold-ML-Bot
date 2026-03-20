@@ -3,9 +3,11 @@ import * as z from "zod";
 
 let goldPriceCache: { price: number; source: string; timestamp: number } | null = null;
 let tiingoGuideCache: { price: number; source: string; timestamp: number } | null = null;
+let finnhubGuideCache: { price: number; source: string; timestamp: number } | null = null;
 let intermarketCache: { dxy: number; us10y: number; vix: number; timestamp: number } | null = null;
 const GOLD_CACHE_MS = 10000;
 const TIINGO_GUIDE_CACHE_MS = 1500;
+const FINNHUB_GUIDE_CACHE_MS = 1500;
 const INTERMARKET_CACHE_MS = 60000;
 const RECENT_CACHE_MS = 600000;
 
@@ -580,6 +582,52 @@ export const goldPriceRouter = createTRPCRouter({
 
     console.error('[GOLD] ALL SPOT PRICE SOURCES FAILED - No cache available');
     return { price: 0, source: 'unavailable', timestamp: now, cached: false };
+  }),
+
+  getFinnhubRestPrice: publicProcedure.query(async () => {
+    const now = Date.now();
+
+    if (finnhubGuideCache && now - finnhubGuideCache.timestamp < FINNHUB_GUIDE_CACHE_MS) {
+      return {
+        price: finnhubGuideCache.price,
+        source: finnhubGuideCache.source,
+        timestamp: finnhubGuideCache.timestamp,
+        cached: true,
+      };
+    }
+
+    const finnhubPrice = await fetchFinnhubGold();
+
+    if (finnhubPrice) {
+      finnhubGuideCache = {
+        price: finnhubPrice.price,
+        source: 'finnhub-rest',
+        timestamp: now,
+      };
+
+      return {
+        price: finnhubGuideCache.price,
+        source: finnhubGuideCache.source,
+        timestamp: now,
+        cached: false,
+      };
+    }
+
+    if (finnhubGuideCache) {
+      return {
+        price: finnhubGuideCache.price,
+        source: `${finnhubGuideCache.source}-stale`,
+        timestamp: finnhubGuideCache.timestamp,
+        cached: true,
+      };
+    }
+
+    return {
+      price: 0,
+      source: 'finnhub-rest-unavailable',
+      timestamp: now,
+      cached: false,
+    };
   }),
 
   getTiingoRestPrice: publicProcedure.query(async () => {
