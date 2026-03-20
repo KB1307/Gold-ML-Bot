@@ -225,6 +225,74 @@ function buildTradingViewHTML(instanceId: string): string {
 `;
 }
 
+const WebChartFrame = React.memo(({ html, onLoad }: { html: string; onLoad: () => void }) => {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+
+  const handleHostRef = useCallback((node: HTMLDivElement | null) => {
+    hostRef.current = node;
+  }, []);
+
+  useEffect(() => {
+    const host = hostRef.current;
+
+    if (!host) {
+      return;
+    }
+
+    let iframe = iframeRef.current;
+
+    if (!iframe) {
+      iframe = document.createElement('iframe');
+      iframe.title = 'TradingView XAUUSD chart';
+      iframe.style.width = '100%';
+      iframe.style.height = '100%';
+      iframe.style.border = '0';
+      iframe.style.backgroundColor = '#0F0F0F';
+      iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms');
+      iframe.setAttribute('loading', 'eager');
+      iframe.setAttribute('referrerpolicy', 'origin');
+      iframe.setAttribute('data-testid', 'tradingview-chart-web');
+      iframe.srcdoc = html;
+      iframe.addEventListener('load', onLoad);
+      host.appendChild(iframe);
+      iframeRef.current = iframe;
+      console.log('[PriceChart] Created persistent web iframe');
+    } else if (!host.contains(iframe)) {
+      host.appendChild(iframe);
+    }
+
+    return () => {
+      const mountedIframe = iframeRef.current;
+
+      if (!mountedIframe) {
+        return;
+      }
+
+      mountedIframe.removeEventListener('load', onLoad);
+
+      if (mountedIframe.parentNode === host) {
+        host.removeChild(mountedIframe);
+      }
+
+      iframeRef.current = null;
+      console.log('[PriceChart] Destroyed persistent web iframe');
+    };
+  }, [html, onLoad]);
+
+  return React.createElement('div', {
+    ref: handleHostRef,
+    style: {
+      width: '100%',
+      height: '100%',
+      backgroundColor: '#0F0F0F',
+    },
+    'data-testid': 'tradingview-chart-web-wrapper',
+  });
+}, (prevProps, nextProps) => prevProps.html === nextProps.html && prevProps.onLoad === nextProps.onLoad);
+
+WebChartFrame.displayName = 'WebChartFrame';
+
 const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartProps) => {
   const webViewRef = useRef<WebView>(null);
   const instanceIdRef = useRef<string>(`price-chart-${Math.random().toString(36).slice(2, 10)}`);
@@ -349,30 +417,6 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
     console.log("[PriceChart] Web iframe loaded");
   }, []);
 
-  const webIframeStyle = useMemo(() => ({
-    width: "100%",
-    height: "100%",
-    border: "0",
-    backgroundColor: "#0F0F0F",
-  }), []);
-
-  const webIframe = useMemo(() => {
-    if (Platform.OS !== "web") {
-      return null;
-    }
-
-    return React.createElement("iframe", {
-      title: "TradingView XAUUSD chart",
-      srcDoc: htmlSource.html,
-      style: webIframeStyle,
-      sandbox: "allow-scripts allow-same-origin allow-popups allow-forms",
-      loading: "eager",
-      referrerPolicy: "origin",
-      onLoad: handleWebIframeLoad,
-      "data-testid": "tradingview-chart-web",
-    } as Record<string, unknown>);
-  }, [handleWebIframeLoad, htmlSource.html, webIframeStyle]);
-
   return (
     <View style={styles.container} testID="price-chart-container">
       {isLoading ? (
@@ -392,7 +436,7 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
       {isActive ? (
         Platform.OS === "web" ? (
           <View style={[styles.webview, isLoading ? styles.hidden : null]} testID="tradingview-chart-web-wrapper">
-            {webIframe}
+            <WebChartFrame html={htmlSource.html} onLoad={handleWebIframeLoad} />
           </View>
         ) : (
           <WebView

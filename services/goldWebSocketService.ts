@@ -1,3 +1,6 @@
+import { Platform } from 'react-native';
+import { trpcClient } from '@/lib/trpc';
+
 type PriceCallback = (price: number, source: string) => void;
 type ConnectionStatus = 'connected' | 'disconnected' | 'reconnecting' | 'fallback';
 type StatusCallback = (status: ConnectionStatus) => void;
@@ -92,6 +95,41 @@ function getTiingoApiKey(): string | null {
 
 function getTiingoRestUrl(apiKey: string): string {
   return `https://api.tiingo.com/tiingo/fx/top?tickers=${TIINGO_TICKER}&token=${encodeURIComponent(apiKey)}`;
+}
+
+function isLikelyNetworkError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return (
+    message.includes('networkerror') ||
+    message.includes('failed to fetch') ||
+    message.includes('fetch failed') ||
+    message.includes('network request failed')
+  );
+}
+
+async function fetchTiingoRestProxyPrice(reason: string, sourceLabel: string): Promise<boolean> {
+  try {
+    console.log(`🔄 [GoldWS] Tiingo REST proxy fetch (${reason})...`);
+    const payload = await trpcClient.goldPrice.getTiingoRestPrice.query();
+    const parsedPrice = typeof payload?.price === 'number' ? payload.price : Number.NaN;
+
+    if (Number.isNaN(parsedPrice) || parsedPrice <= 1000 || parsedPrice > 10000) {
+      console.warn('⚠️ [GoldWS] Tiingo REST proxy returned invalid price', payload);
+      return false;
+    }
+
+    const roundedPrice = Number(parsedPrice.toFixed(2));
+    console.log(`✅ [GoldWS] Tiingo REST proxy price: ${roundedPrice.toFixed(2)} (${reason})`);
+    notifyPrice(roundedPrice, `${sourceLabel} • proxy`);
+    return true;
+  } catch (error) {
+    console.error(`❌ [GoldWS] Tiingo REST proxy fetch error (${reason}):`, error);
+    return false;
+  }
 }
 
 function notifyPrice(price: number, source: string): void {
@@ -192,10 +230,16 @@ function killRestFallback(): void {
 }
 
 async function fetchTiingoRestPrice(reason: string, sourceLabel: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    await fetchTiingoRestProxyPrice(reason, sourceLabel);
+    return;
+  }
+
   const apiKey = state.apiKey ?? getTiingoApiKey();
 
   if (!apiKey) {
     console.error(`❌ [GoldWS] Cannot fetch Tiingo REST price (${reason}) without API key`);
+    await fetchTiingoRestProxyPrice(`${reason}-missing-key`, sourceLabel);
     return;
   }
 
@@ -213,6 +257,7 @@ async function fetchTiingoRestPrice(reason: string, sourceLabel: string): Promis
     if (!response.ok) {
       const responseText = await response.text();
       console.warn(`⚠️ [GoldWS] Tiingo REST fetch failed with ${response.status}: ${responseText.slice(0, 200)}`);
+      await fetchTiingoRestProxyPrice(`${reason}-http-${response.status}`, sourceLabel);
       return;
     }
 
@@ -227,6 +272,7 @@ async function fetchTiingoRestPrice(reason: string, sourceLabel: string): Promis
 
     if (Number.isNaN(parsedPrice) || parsedPrice <= 1000 || parsedPrice > 10000) {
       console.warn('⚠️ [GoldWS] Tiingo REST fetch returned invalid price', payload);
+      await fetchTiingoRestProxyPrice(`${reason}-invalid-payload`, sourceLabel);
       return;
     }
 
@@ -235,6 +281,10 @@ async function fetchTiingoRestPrice(reason: string, sourceLabel: string): Promis
     notifyPrice(roundedPrice, sourceLabel);
   } catch (err) {
     console.error(`❌ [GoldWS] Tiingo REST fetch error (${reason}):`, err);
+
+    if (isLikelyNetworkError(err)) {
+      await fetchTiingoRestProxyPrice(`${reason}-network-recovery`, sourceLabel);
+    }
   }
 }
 

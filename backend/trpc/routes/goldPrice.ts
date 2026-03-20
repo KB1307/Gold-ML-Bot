@@ -2,8 +2,10 @@ import { createTRPCRouter, publicProcedure } from "../create-context";
 import * as z from "zod";
 
 let goldPriceCache: { price: number; source: string; timestamp: number } | null = null;
+let tiingoGuideCache: { price: number; source: string; timestamp: number } | null = null;
 let intermarketCache: { dxy: number; us10y: number; vix: number; timestamp: number } | null = null;
 const GOLD_CACHE_MS = 10000;
+const TIINGO_GUIDE_CACHE_MS = 1500;
 const INTERMARKET_CACHE_MS = 60000;
 const RECENT_CACHE_MS = 600000;
 
@@ -257,6 +259,81 @@ async function fetchSwissquoteGold(): Promise<{ price: number; source: string } 
   return null;
 }
 
+type TiingoTopQuote = {
+  ticker?: string;
+  midPrice?: number | string | null;
+  bidPrice?: number | string | null;
+  askPrice?: number | string | null;
+  quoteTimestamp?: string;
+};
+
+function getTiingoApiKey(): string | null {
+  const publicApiKey = process.env.EXPO_PUBLIC_TIINGO_API_KEY?.trim();
+  const privateApiKey = process.env.TIINGO_API_KEY?.trim();
+  return publicApiKey || privateApiKey || null;
+}
+
+function parseTiingoTopPrice(quote: TiingoTopQuote | null | undefined): number | null {
+  const midPrice = typeof quote?.midPrice === 'number'
+    ? quote.midPrice
+    : parseFloat(String(quote?.midPrice ?? ''));
+
+  if (Number.isFinite(midPrice) && midPrice > 1000 && midPrice < 10000) {
+    return Number(midPrice.toFixed(2));
+  }
+
+  const bidPrice = typeof quote?.bidPrice === 'number'
+    ? quote.bidPrice
+    : parseFloat(String(quote?.bidPrice ?? ''));
+  const askPrice = typeof quote?.askPrice === 'number'
+    ? quote.askPrice
+    : parseFloat(String(quote?.askPrice ?? ''));
+
+  if (Number.isFinite(bidPrice) && Number.isFinite(askPrice) && bidPrice > 1000 && askPrice > 1000) {
+    return Number((((bidPrice + askPrice) / 2)).toFixed(2));
+  }
+
+  return null;
+}
+
+async function fetchTiingoRestGuidePrice(): Promise<{ price: number; source: string } | null> {
+  const apiKey = getTiingoApiKey();
+  if (!apiKey) {
+    console.log('[GOLD] Tiingo FX key not configured');
+    return null;
+  }
+
+  try {
+    console.log('[GOLD] Trying Tiingo FX top quote...');
+    const response = await fetchWithTimeout(
+      `https://api.tiingo.com/tiingo/fx/top?tickers=xauusd&token=${encodeURIComponent(apiKey)}`,
+      5000,
+    );
+
+    if (!response.ok) {
+      console.log(`[GOLD] Tiingo FX top returned ${response.status}`);
+      return null;
+    }
+
+    const payload = await response.json() as unknown;
+    const quote = Array.isArray(payload)
+      ? payload[0] as TiingoTopQuote | undefined
+      : payload as TiingoTopQuote | undefined;
+    const price = parseTiingoTopPrice(quote);
+
+    if (price === null) {
+      console.log('[GOLD] Tiingo FX top returned invalid quote:', payload);
+      return null;
+    }
+
+    console.log(`[GOLD] Tiingo FX top success: ${price}`);
+    return { price, source: 'tiingo-rest' };
+  } catch (e) {
+    console.log('[GOLD] Tiingo FX top error:', e instanceof Error ? e.message : 'Unknown');
+    return null;
+  }
+}
+
 async function fetchFXCMGold(): Promise<{ price: number; source: string } | null> {
   if (shouldSkipApi('fxcm')) {
     console.log('[GOLD] Skipping FXCM (in cooldown)');
@@ -503,6 +580,52 @@ export const goldPriceRouter = createTRPCRouter({
 
     console.error('[GOLD] ALL SPOT PRICE SOURCES FAILED - No cache available');
     return { price: 0, source: 'unavailable', timestamp: now, cached: false };
+  }),
+
+  getTiingoRestPrice: publicProcedure.query(async () => {
+    const now = Date.now();
+
+    if (tiingoGuideCache && now - tiingoGuideCache.timestamp < TIINGO_GUIDE_CACHE_MS) {
+      return {
+        price: tiingoGuideCache.price,
+        source: tiingoGuideCache.source,
+        timestamp: tiingoGuideCache.timestamp,
+        cached: true,
+      };
+    }
+
+    const tiingoPrice = await fetchTiingoRestGuidePrice();
+
+    if (tiingoPrice) {
+      tiingoGuideCache = {
+        price: tiingoPrice.price,
+        source: tiingoPrice.source,
+        timestamp: now,
+      };
+
+      return {
+        price: tiingoPrice.price,
+        source: tiingoPrice.source,
+        timestamp: now,
+        cached: false,
+      };
+    }
+
+    if (tiingoGuideCache) {
+      return {
+        price: tiingoGuideCache.price,
+        source: `${tiingoGuideCache.source}-stale`,
+        timestamp: tiingoGuideCache.timestamp,
+        cached: true,
+      };
+    }
+
+    return {
+      price: 0,
+      source: 'tiingo-rest-unavailable',
+      timestamp: now,
+      cached: false,
+    };
   }),
 
   healthCheck: publicProcedure.query(async () => {

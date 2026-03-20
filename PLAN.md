@@ -52,5 +52,7 @@ Make the TradingView chart price the primary live input for signal generation an
 - [x] **Duplicate live tick suppression** now prevents repeated identical price samples from saturating engine history and flattening momentum detection
 - [x] **TP2 breakeven protection** now closes signals as protected partial wins instead of losses when two targets were banked before the runner reversed
 - [x] **Tiingo real-time guide feed** now uses sub-second Tiingo FX websocket pricing with Tiingo REST bootstrap and 60-second fallback recovery for the market-price bubble
+- [x] **Web-safe Tiingo REST proxy recovery** now routes bootstrap and fallback REST quotes through the backend on web so browser CORS/network restrictions no longer break guide-price recovery
 - [x] **TradingView render isolation** now routes chart ticks through a standalone bridge so dashboard state updates no longer force chart-container rerenders/remounts
+- [x] **Persistent TradingView iframe mounting** now creates the web chart iframe once and keeps it mounted across dashboard updates so the chart stays rendered instead of reloading every few seconds
 - [x] **Sandbox verification** confirmed the engine now generates signals again over the accelerated 24-hour replay
