@@ -23,11 +23,17 @@ type TiingoWebSocketMessage = {
   detail?: string;
 };
 
+type TiingoPacket = unknown[];
+
+type TiingoNumericPacketObject = Record<string, unknown>;
+
 interface WebSocketServiceState {
   ws: WebSocket | null;
   isConnected: boolean;
   lastTickTime: number;
+  lastMessageTime: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
+  reconnectTimerReason: string | null;
   heartbeatTimer: ReturnType<typeof setInterval> | null;
   watchdogTimer: ReturnType<typeof setInterval> | null;
   restFallbackTimer: ReturnType<typeof setInterval> | null;
@@ -40,19 +46,24 @@ interface WebSocketServiceState {
   lastPriceSource: string;
   currentStatus: ConnectionStatus;
   connectionId: number;
+  connectStartedAt: number;
   lastBootstrapFetchAt: number;
+  lastStaleFallbackAt: number;
   apiKey: string | null;
 }
 
 const HEARTBEAT_INTERVAL_MS = 5000;
 const WATCHDOG_INTERVAL_MS = 1000;
-const WATCHDOG_TIMEOUT_MS = 30000;
+const STALE_PRICE_TIMEOUT_MS = 30000;
+const SOCKET_RECYCLE_TIMEOUT_MS = 180000;
+const CONNECT_TIMEOUT_MS = 15000;
 const RECONNECT_DELAY_MS = 1500;
 const REST_FALLBACK_INTERVAL_MS = 60000;
 const TIINGO_BOOTSTRAP_INTERVAL_MS = 1000;
 const MAX_RECONNECT_ATTEMPTS = 50;
 const TIINGO_WS_URL = 'wss://api.tiingo.com/fx';
 const TIINGO_TICKER = 'xauusd';
+const TIINGO_TICKER_SYMBOL = 'XAUUSD';
 const TIINGO_LIVE_SOURCE = '🟢 tiingo live';
 const TIINGO_REST_SOURCE = '🟡 tiingo rest';
 const TIINGO_REST_FALLBACK_SOURCE = '🟡 tiingo rest fallback';
@@ -61,7 +72,9 @@ const state: WebSocketServiceState = {
   ws: null,
   isConnected: false,
   lastTickTime: 0,
+  lastMessageTime: 0,
   reconnectTimer: null,
+  reconnectTimerReason: null,
   heartbeatTimer: null,
   watchdogTimer: null,
   restFallbackTimer: null,
@@ -74,7 +87,9 @@ const state: WebSocketServiceState = {
   lastPriceSource: 'connecting...',
   currentStatus: 'disconnected',
   connectionId: 0,
+  connectStartedAt: 0,
   lastBootstrapFetchAt: 0,
+  lastStaleFallbackAt: 0,
   apiKey: null,
 };
 
@@ -111,6 +126,66 @@ function isLikelyNetworkError(error: unknown): boolean {
   );
 }
 
+function isTiingoNumericPacketObject(value: unknown): value is TiingoNumericPacketObject {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+
+  const keys = Object.keys(value);
+  return keys.length > 0 && keys.every(key => /^\d+$/.test(key));
+}
+
+function normalizeTiingoPacket(data: unknown): TiingoPacket | null {
+  const candidate = Array.isArray(data) && data.length > 0 && (Array.isArray(data[0]) || isTiingoNumericPacketObject(data[0]))
+    ? data[0]
+    : data;
+
+  if (Array.isArray(candidate)) {
+    return candidate;
+  }
+
+  if (isTiingoNumericPacketObject(candidate)) {
+    return Object.keys(candidate)
+      .sort((left, right) => Number(left) - Number(right))
+      .map(key => candidate[key]);
+  }
+
+  return null;
+}
+
+function getTiingoPacketText(value: unknown): string | null {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+
+  return null;
+}
+
+function getTiingoPacketNumber(value: unknown): number {
+  if (typeof value === 'number') {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    return parseFloat(value);
+  }
+
+  return Number.NaN;
+}
+
+function clearReconnectTimer(): void {
+  if (state.reconnectTimer) {
+    clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+  }
+
+  state.reconnectTimerReason = null;
+}
+
 async function fetchTiingoRestProxyPrice(reason: string, sourceLabel: string): Promise<boolean> {
   try {
     console.log(`🔄 [GoldWS] Tiingo REST proxy fetch (${reason})...`);
@@ -145,6 +220,10 @@ function notifyPrice(price: number, source: string): void {
 }
 
 function notifyStatus(status: ConnectionStatus): void {
+  if (state.currentStatus === status) {
+    return;
+  }
+
   state.currentStatus = status;
   state.statusCallbacks.forEach(cb => {
     try {
@@ -199,14 +278,39 @@ function startHeartbeat(): void {
   state.heartbeatTimer = setInterval(() => {
     const socket = state.ws;
     const readyState = socket?.readyState;
-    const silenceDuration = state.lastTickTime > 0 ? Date.now() - state.lastTickTime : 0;
+    const now = Date.now();
+    const silenceDuration = state.lastTickTime > 0 ? now - state.lastTickTime : 0;
+    const connectDuration = state.connectStartedAt > 0 ? now - state.connectStartedAt : 0;
 
-    console.log(`💓 [GoldWS] Heartbeat check | state=${getReadyStateLabel(readyState)} | silence=${(silenceDuration / 1000).toFixed(1)}s`);
+    console.log(`💓 [GoldWS] Heartbeat check | state=${getReadyStateLabel(readyState)} | silence=${(silenceDuration / 1000).toFixed(1)}s | connecting=${(connectDuration / 1000).toFixed(1)}s`);
 
-    if (!socket || (readyState !== WebSocket.OPEN && readyState !== WebSocket.CONNECTING)) {
-      console.warn('⚠️ [GoldWS] Heartbeat detected inactive Tiingo socket — forcing reconnect');
-      activateRestFallback();
-      scheduleReconnect();
+    if (!socket) {
+      console.warn('⚠️ [GoldWS] Heartbeat detected missing Tiingo socket — scheduling reconnect');
+      scheduleReconnect('heartbeat-missing-socket');
+      return;
+    }
+
+    if (readyState === WebSocket.CONNECTING) {
+      if (connectDuration > CONNECT_TIMEOUT_MS) {
+        console.warn(`⚠️ [GoldWS] Tiingo socket stuck CONNECTING for ${(connectDuration / 1000).toFixed(1)}s — recycling connection`);
+        try {
+          socket.close();
+        } catch (err) {
+          console.warn('⚠️ [GoldWS] Failed to close hung Tiingo socket:', err);
+          scheduleReconnect('heartbeat-connect-timeout-force');
+        }
+      }
+      return;
+    }
+
+    if (readyState === WebSocket.CLOSING) {
+      console.log('ℹ️ [GoldWS] Heartbeat sees Tiingo socket closing — waiting for close event');
+      return;
+    }
+
+    if (readyState === WebSocket.CLOSED) {
+      console.warn('⚠️ [GoldWS] Heartbeat detected closed Tiingo socket — scheduling reconnect');
+      scheduleReconnect('heartbeat-closed-socket');
     }
   }, HEARTBEAT_INTERVAL_MS);
 }
@@ -317,27 +421,54 @@ async function fetchTiingoBootstrapPrice(reason: string): Promise<void> {
 function startWatchdog(): void {
   stopWatchdog();
   state.watchdogTimer = setInterval(() => {
+    const socket = state.ws;
     const now = Date.now();
-    const silenceDuration = now - state.lastTickTime;
+    const silenceDuration = state.lastTickTime > 0 ? now - state.lastTickTime : 0;
+    const connectDuration = state.connectStartedAt > 0 ? now - state.connectStartedAt : 0;
 
-    if (state.lastTickTime > 0 && silenceDuration > WATCHDOG_TIMEOUT_MS) {
-      console.warn(`⚠️ [GoldWS] Watchdog: No Tiingo tick for ${(silenceDuration / 1000).toFixed(1)}s`);
+    if (!socket) {
+      if (state.lastTickTime > 0 && silenceDuration > STALE_PRICE_TIMEOUT_MS) {
+        activateRestFallback();
+      }
+      scheduleReconnect('watchdog-missing-socket');
+      return;
+    }
+
+    if (socket.readyState === WebSocket.CONNECTING) {
+      if (connectDuration > CONNECT_TIMEOUT_MS) {
+        console.warn(`⚠️ [GoldWS] Watchdog: Tiingo socket stuck CONNECTING for ${(connectDuration / 1000).toFixed(1)}s`);
+        try {
+          socket.close();
+        } catch (err) {
+          console.warn('⚠️ [GoldWS] Failed to close connecting Tiingo socket:', err);
+          scheduleReconnect('watchdog-connect-timeout-force');
+        }
+      }
+      return;
+    }
+
+    if (state.lastTickTime > 0 && silenceDuration > STALE_PRICE_TIMEOUT_MS) {
+      if (state.lastStaleFallbackAt === 0 || (now - state.lastStaleFallbackAt) >= STALE_PRICE_TIMEOUT_MS) {
+        console.warn(`⚠️ [GoldWS] Watchdog: No Tiingo price tick for ${(silenceDuration / 1000).toFixed(1)}s — keeping socket open and switching guide price to REST fallback`);
+        state.lastStaleFallbackAt = now;
+      }
+
       activateRestFallback();
 
-      const socket = state.ws;
-      state.lastTickTime = now;
-
-      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
-        console.warn('⚠️ [GoldWS] Recycling stale Tiingo socket after watchdog timeout');
+      if (socket.readyState === WebSocket.OPEN && silenceDuration > SOCKET_RECYCLE_TIMEOUT_MS) {
+        console.warn(`⚠️ [GoldWS] Watchdog: No Tiingo price tick for ${(silenceDuration / 1000).toFixed(1)}s while socket stayed OPEN — recycling connection`);
         try {
           socket.close();
         } catch (err) {
           console.warn('⚠️ [GoldWS] Failed to close stale Tiingo socket:', err);
-          scheduleReconnect();
+          scheduleReconnect('watchdog-stale-open-socket');
         }
-      } else {
-        scheduleReconnect();
+        return;
       }
+    }
+
+    if (socket.readyState === WebSocket.CLOSED) {
+      scheduleReconnect('watchdog-closed-socket');
     }
   }, WATCHDOG_INTERVAL_MS);
 }
@@ -355,11 +486,14 @@ function connect(): void {
     return;
   }
 
+  clearReconnectTimer();
+
   const apiKey = getTiingoApiKey();
   state.apiKey = apiKey;
 
   if (!apiKey) {
     activateRestFallback();
+    notifyStatus('fallback');
     return;
   }
 
@@ -369,7 +503,11 @@ function connect(): void {
       state.ws.onmessage = null;
       state.ws.onerror = null;
       state.ws.onclose = null;
-      if (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING) {
+      if (
+        state.ws.readyState === WebSocket.OPEN ||
+        state.ws.readyState === WebSocket.CONNECTING ||
+        state.ws.readyState === WebSocket.CLOSING
+      ) {
         state.ws.close();
       }
     } catch (e) {
@@ -380,15 +518,23 @@ function connect(): void {
 
   const connectionId = state.connectionId + 1;
   state.connectionId = connectionId;
+  state.connectStartedAt = Date.now();
+  state.lastMessageTime = 0;
   console.log(`🔌 [GoldWS] Connecting to Tiingo WebSocket (connection ${connectionId})...`);
-  notifyStatus('reconnecting');
-  void fetchTiingoBootstrapPrice(`connection-${connectionId}`);
+  notifyStatus(state.isRestFallbackActive ? 'fallback' : 'reconnecting');
+
+  const shouldBootstrapPrice = state.lastPrice <= 0 || state.lastTickTime <= 0 || (Date.now() - state.lastTickTime) >= STALE_PRICE_TIMEOUT_MS;
+  if (shouldBootstrapPrice) {
+    void fetchTiingoBootstrapPrice(`connection-${connectionId}`);
+  } else {
+    console.log(`ℹ️ [GoldWS] Skipping Tiingo bootstrap REST fetch for connection ${connectionId} because cached guide price is still fresh`);
+  }
 
   try {
     state.ws = new WebSocket(TIINGO_WS_URL);
   } catch (err) {
     console.error('❌ [GoldWS] WebSocket constructor failed:', err);
-    scheduleReconnect();
+    scheduleReconnect('constructor-failed');
     return;
   }
 
@@ -400,10 +546,14 @@ function connect(): void {
       return;
     }
 
+    clearReconnectTimer();
     console.log(`✅ [GoldWS] Tiingo WebSocket connected (connection ${connectionId})`);
     state.isConnected = true;
     state.reconnectAttempts = 0;
+    state.connectStartedAt = Date.now();
+    state.lastMessageTime = Date.now();
     state.lastTickTime = Date.now();
+    state.lastStaleFallbackAt = 0;
     notifyStatus('connected');
 
     const subscribeMsg = JSON.stringify({
@@ -417,9 +567,12 @@ function connect(): void {
 
     try {
       socket.send(subscribeMsg);
-      console.log(`📡 [GoldWS] Subscribed to ${TIINGO_TICKER.toUpperCase()} on Tiingo (connection ${connectionId})`);
+      console.log(`📡 [GoldWS] Subscribed to ${TIINGO_TICKER_SYMBOL} on Tiingo (connection ${connectionId})`);
     } catch (err) {
       console.error('❌ [GoldWS] Subscribe send failed:', err);
+      activateRestFallback();
+      scheduleReconnect('subscribe-send-failed');
+      return;
     }
 
     startHeartbeat();
@@ -434,32 +587,49 @@ function connect(): void {
     try {
       const rawData = typeof event.data === 'string' ? event.data : String(event.data ?? '');
       const data = JSON.parse(rawData) as TiingoWebSocketMessage;
+      state.lastMessageTime = Date.now();
 
       if (data.messageType === 'A') {
-        const packet = Array.isArray(data.data)
-          ? (Array.isArray(data.data[0]) ? data.data[0] : data.data)
-          : null;
+        const packet = normalizeTiingoPacket(data.data);
 
         if (!packet) {
-          console.warn('⚠️ [GoldWS] Tiingo messageType A did not include an array payload', data);
+          console.warn('⚠️ [GoldWS] Tiingo messageType A did not include a normalizable payload', data);
           return;
         }
 
+        const updateType = getTiingoPacketText(packet[0])?.toUpperCase() ?? '';
+        const packetTicker = getTiingoPacketText(packet[1])?.toUpperCase() ?? '';
         const rawPrice = packet[5];
-        const parsedPrice = parseFloat(String(rawPrice ?? ''));
+        const parsedPrice = getTiingoPacketNumber(rawPrice);
+
+        if (updateType && updateType !== 'Q') {
+          console.log('ℹ️ [GoldWS] Ignoring non-quote Tiingo packet', { connectionId, updateType, packetTicker });
+          return;
+        }
+
+        if (packetTicker && packetTicker !== TIINGO_TICKER_SYMBOL) {
+          console.log('ℹ️ [GoldWS] Ignoring Tiingo packet for different ticker', { connectionId, packetTicker });
+          return;
+        }
 
         if (Number.isNaN(parsedPrice) || parsedPrice <= 1000 || parsedPrice > 10000) {
-          console.warn(`⚠️ [GoldWS] Invalid Tiingo mid price: ${String(rawPrice)}`);
+          console.warn('⚠️ [GoldWS] Invalid Tiingo mid price', {
+            connectionId,
+            rawPrice,
+            packet,
+          });
           return;
         }
 
-        const roundedPrice = Number(parseFloat(String(rawPrice)).toFixed(2));
-        state.lastTickTime = Date.now();
+        const roundedPrice = Number(parsedPrice.toFixed(2));
+        state.lastTickTime = state.lastMessageTime;
+        state.lastStaleFallbackAt = 0;
         killRestFallback();
+        notifyStatus('connected');
         notifyPrice(roundedPrice, TIINGO_LIVE_SOURCE);
 
         if (state.lastTickTime % 10000 < 2000) {
-          console.log(`📈 [GoldWS] ${TIINGO_TICKER.toUpperCase()}: ${roundedPrice.toFixed(2)}`);
+          console.log(`📈 [GoldWS] ${TIINGO_TICKER_SYMBOL}: ${roundedPrice.toFixed(2)}`);
         }
         return;
       }
@@ -476,6 +646,7 @@ function connect(): void {
 
       if (data.error || data.detail) {
         console.error('❌ [GoldWS] Tiingo server error:', data.error ?? data.detail);
+        activateRestFallback();
         return;
       }
 
@@ -491,9 +662,13 @@ function connect(): void {
     }
 
     const diagnostics = getEventDiagnostics(event, socket, connectionId);
-    console.warn('⚠️ [GoldWS] Tiingo WebSocket transport issue detected; waiting for close event', diagnostics);
-    state.isConnected = false;
-    notifyStatus('disconnected');
+    console.warn('⚠️ [GoldWS] Tiingo WebSocket transport issue detected', diagnostics);
+
+    if (socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) {
+      state.isConnected = false;
+      activateRestFallback();
+      scheduleReconnect('transport-error');
+    }
   };
 
   socket.onclose = (event: CloseEvent) => {
@@ -505,20 +680,31 @@ function connect(): void {
     console.log('🔌 [GoldWS] Tiingo WebSocket closed', diagnostics);
     state.isConnected = false;
     state.ws = null;
+    state.connectStartedAt = 0;
+    state.lastMessageTime = 0;
     stopHeartbeat();
     stopWatchdog();
-    notifyStatus('disconnected');
 
     if (!state.intentionallyClosed) {
       activateRestFallback();
-      scheduleReconnect();
+      scheduleReconnect(`close-${event.code}`);
+      return;
     }
+
+    notifyStatus('disconnected');
   };
 }
 
-function scheduleReconnect(): void {
+function scheduleReconnect(reason: string): void {
+  if (state.intentionallyClosed) {
+    return;
+  }
+
   if (state.reconnectTimer) {
-    clearTimeout(state.reconnectTimer);
+    if (state.reconnectTimerReason !== reason) {
+      console.log(`ℹ️ [GoldWS] Reconnect already scheduled (${state.reconnectTimerReason ?? 'unknown'}) — skipping ${reason}`);
+    }
+    return;
   }
 
   state.reconnectAttempts++;
@@ -526,21 +712,34 @@ function scheduleReconnect(): void {
   if (state.reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
     console.error(`❌ [GoldWS] Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached — staying on Tiingo REST fallback`);
     activateRestFallback();
+    notifyStatus('fallback');
     return;
   }
 
   const delay = Math.min(RECONNECT_DELAY_MS * Math.pow(1.5, Math.min(state.reconnectAttempts - 1, 5)), 30000);
-  console.log(`🔄 [GoldWS] Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${state.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+  state.reconnectTimerReason = reason;
+  console.log(`🔄 [GoldWS] Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${state.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}, reason=${reason})...`);
+  notifyStatus(state.isRestFallbackActive ? 'fallback' : 'reconnecting');
 
   state.reconnectTimer = setTimeout(() => {
+    state.reconnectTimer = null;
+    state.reconnectTimerReason = null;
     connect();
   }, delay);
 }
 
 export const goldWebSocketService = {
   start(): void {
-    if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) {
+    if (
+      state.ws &&
+      (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING || state.ws.readyState === WebSocket.CLOSING)
+    ) {
       console.log('ℹ️ [GoldWS] WebSocket service already active, skipping duplicate start');
+      return;
+    }
+
+    if (state.reconnectTimer) {
+      console.log(`ℹ️ [GoldWS] Reconnect already scheduled (${state.reconnectTimerReason ?? 'unknown'}), skipping duplicate start`);
       return;
     }
 
@@ -555,11 +754,7 @@ export const goldWebSocketService = {
     stopHeartbeat();
     stopWatchdog();
     killRestFallback();
-
-    if (state.reconnectTimer) {
-      clearTimeout(state.reconnectTimer);
-      state.reconnectTimer = null;
-    }
+    clearReconnectTimer();
 
     if (state.ws) {
       try {
@@ -567,7 +762,11 @@ export const goldWebSocketService = {
         state.ws.onmessage = null;
         state.ws.onerror = null;
         state.ws.onclose = null;
-        if (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING) {
+        if (
+          state.ws.readyState === WebSocket.OPEN ||
+          state.ws.readyState === WebSocket.CONNECTING ||
+          state.ws.readyState === WebSocket.CLOSING
+        ) {
           state.ws.close();
         }
       } catch (e) {
@@ -577,6 +776,9 @@ export const goldWebSocketService = {
     }
 
     state.lastTickTime = 0;
+    state.lastMessageTime = 0;
+    state.connectStartedAt = 0;
+    state.lastStaleFallbackAt = 0;
     state.isConnected = false;
     notifyStatus('disconnected');
   },
