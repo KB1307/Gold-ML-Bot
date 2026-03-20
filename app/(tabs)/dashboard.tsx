@@ -774,7 +774,7 @@ export default function DashboardScreen() {
 
               <View style={styles.divider} />
 
-              <Text style={styles.srTitle}>Support & Resistance Zones</Text>
+              <Text style={styles.srTitle} testID="dashboard-daily-zones-title">Daily Support & Resistance Zones</Text>
               <View style={styles.srGrid}>
                 <View style={styles.srColumn}>
                   <Text style={styles.srColumnTitle}>Resistance</Text>

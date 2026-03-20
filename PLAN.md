@@ -56,4 +56,5 @@ Make the TradingView chart price the primary live input for signal generation an
 - [x] **TradingView render isolation** now routes chart ticks through a standalone bridge so dashboard state updates no longer force chart-container rerenders/remounts
 - [x] **Persistent TradingView iframe mounting** now creates the web chart iframe once and keeps it mounted across dashboard updates so the chart stays rendered instead of reloading every few seconds
 - [x] **Daily market-status pivot refresh** now rebuilds completed NY-session OHLC bars from historical minute data and derives dashboard support/resistance from a fresh completed trading-day bar instead of stale rollover snapshots
+- [x] **Daily intraday support/resistance zoning** now uses tighter completed-day zone anchors for the dashboard/outlook so levels match the signal bot’s intraday frequency instead of wider long-range spacing
 - [x] **Sandbox verification** confirmed the engine now generates signals again over the accelerated 24-hour replay

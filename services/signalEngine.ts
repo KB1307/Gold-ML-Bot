@@ -1853,18 +1853,23 @@ class SignalGenerationEngine {
     s3: number;
   } {
     const ohlc = this.getDerivedDailyOHLC();
+    const observedDailyRange = Math.max(ohlc.yesterdayHigh - ohlc.yesterdayLow, 0);
+    const atrFloor = Math.max(this.calculateRealATR(14), 2);
+    const dailyRange = Math.max(observedDailyRange, atrFloor);
+    const zoneStep = dailyRange / 12;
     const dailyPivot = (ohlc.yesterdayHigh + ohlc.yesterdayLow + ohlc.yesterdayClose) / 3;
-    const dailyRange = ohlc.yesterdayHigh - ohlc.yesterdayLow;
-    const r1 = (2 * dailyPivot) - ohlc.yesterdayLow;
-    const s1 = (2 * dailyPivot) - ohlc.yesterdayHigh;
-    const r2 = dailyPivot + dailyRange;
-    const s2 = dailyPivot - dailyRange;
-    const r3 = ohlc.yesterdayHigh + (2 * (dailyPivot - ohlc.yesterdayLow));
-    const s3 = ohlc.yesterdayLow - (2 * (ohlc.yesterdayHigh - dailyPivot));
+    const r1 = ohlc.yesterdayClose + zoneStep;
+    const s1 = ohlc.yesterdayClose - zoneStep;
+    const r2 = ohlc.yesterdayClose + (zoneStep * 2);
+    const s2 = ohlc.yesterdayClose - (zoneStep * 2);
+    const r3 = ohlc.yesterdayClose + (zoneStep * 3);
+    const s3 = ohlc.yesterdayClose - (zoneStep * 3);
 
-    console.log(`📊 Dashboard Pivot Levels:`);
-    console.log(`   Pivot: ${dailyPivot.toFixed(1)} | R1: ${r1.toFixed(1)} | R2: ${r2.toFixed(1)} | R3: ${r3.toFixed(1)}`);
-    console.log(`   S1: ${s1.toFixed(1)} | S2: ${s2.toFixed(1)} | S3: ${s3.toFixed(1)}`);
+    console.log(`📊 Dashboard Daily Intraday Zones:`);
+    console.log(`   Completed Day OHLC -> H: ${ohlc.yesterdayHigh.toFixed(1)} | L: ${ohlc.yesterdayLow.toFixed(1)} | C: ${ohlc.yesterdayClose.toFixed(1)}`);
+    console.log(`   Range: ${dailyRange.toFixed(1)} | Zone Step: ${zoneStep.toFixed(2)} | Pivot: ${dailyPivot.toFixed(1)}`);
+    console.log(`   Resistance Anchors -> R1: ${r1.toFixed(1)} | R2: ${r2.toFixed(1)} | R3: ${r3.toFixed(1)}`);
+    console.log(`   Support Anchors -> S1: ${s1.toFixed(1)} | S2: ${s2.toFixed(1)} | S3: ${s3.toFixed(1)}`);
 
     return {
       dailyPivot: parseFloat(dailyPivot.toFixed(1)),
@@ -4346,9 +4351,10 @@ class SignalGenerationEngine {
     const pivotLevels = this.calculateDashboardPivotLevels();
     const currentPrice = this.getCurrentPrice();
     
+    const trendBuffer = Math.max(2.5, Math.abs(pivotLevels.r2 - pivotLevels.dailyPivot));
     let trend: "BULLISH" | "BEARISH" | "NEUTRAL" = "NEUTRAL";
-    if (currentPrice > pivotLevels.dailyPivot + 10) trend = "BULLISH";
-    else if (currentPrice < pivotLevels.dailyPivot - 10) trend = "BEARISH";
+    if (currentPrice > pivotLevels.dailyPivot + trendBuffer) trend = "BULLISH";
+    else if (currentPrice < pivotLevels.dailyPivot - trendBuffer) trend = "BEARISH";
     
     const volatility: "LOW" | "MEDIUM" | "HIGH" = 
       features.atr < 9 ? "LOW" : features.atr < 11 ? "MEDIUM" : "HIGH";

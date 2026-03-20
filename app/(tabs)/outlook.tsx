@@ -12,7 +12,7 @@ export default function OutlookScreen() {
   }
 
   const getPivotColor = (level: "r" | "s") => {
-    return level === "r" ? "#22c55e" : "#ef4444";
+    return level === "r" ? "#ef4444" : "#22c55e";
   };
 
   return (
@@ -158,7 +158,7 @@ export default function OutlookScreen() {
             <View style={styles.pivotCard}>
               <View style={styles.cardHeader}>
                 <BarChart3 size={20} color="#FFD700" />
-                <Text style={styles.cardTitle}>Daily Pivot Points</Text>
+                <Text style={styles.cardTitle}>Daily S/R Zones & Pivot</Text>
               </View>
               <View style={styles.pivotRow}>
                 <View style={styles.pivotLabelContainer}>
@@ -225,7 +225,7 @@ export default function OutlookScreen() {
               </View>
               <View style={styles.pivotInfo}>
                 <Text style={styles.pivotInfoText}>
-                  Pivot points are calculated from previous day&apos;s high, low, and close prices
+                  Daily intraday support and resistance anchors are calculated from the completed day range and close for tighter bot-ready zones
                 </Text>
               </View>
             </View>
