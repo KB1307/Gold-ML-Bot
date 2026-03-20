@@ -1,13 +1,18 @@
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Alert } from "react-native";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { LinearGradient } from "expo-linear-gradient";
 import { History, TrendingUp, TrendingDown, Trash2, CheckCircle, XCircle } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
 import { Stack } from "expo-router";
 import { TradingSignal } from "@/types/trading";
 
+const MIN_VISIBLE_SIGNAL_CONFIDENCE = 0.9;
+
 export default function HistoryScreen() {
   const { signalHistory, deleteSignalFromHistory, signalUpdateTrigger, isLoading } = useTrading();
+  const visibleSignalHistory = useMemo(() => (
+    signalHistory.filter((signal) => signal.confidence >= MIN_VISIBLE_SIGNAL_CONFIDENCE)
+  ), [signalHistory]);
 
   useEffect(() => {
     console.log(`📋 History UI update triggered (TP status changed) - Trigger: ${signalUpdateTrigger}`);
@@ -85,7 +90,7 @@ export default function HistoryScreen() {
               <History size={32} color="#FFD700" strokeWidth={2} />
               <View style={styles.headerTextContainer}>
                 <Text style={styles.headerTitle}>Signal History</Text>
-                <Text style={styles.headerSubtitle}>{signalHistory.length} Total Signals</Text>
+                <Text style={styles.headerSubtitle}>{visibleSignalHistory.length} Visible Signals (90%+)</Text>
               </View>
             </View>
 
@@ -97,17 +102,17 @@ export default function HistoryScreen() {
                   Retrieving your signal history from storage.
                 </Text>
               </View>
-            ) : signalHistory.length === 0 ? (
+            ) : visibleSignalHistory.length === 0 ? (
               <View style={styles.emptyState}>
                 <History size={64} color="#444" strokeWidth={1.5} />
                 <Text style={styles.emptyTitle}>No Signal History</Text>
                 <Text style={styles.emptyText}>
-                  Closed signals will appear here. The learning engine tracks all signals for continuous improvement.
+                  Only 90%+ probability signals appear here. The learning engine still tracks the full signal set for continuous improvement.
                 </Text>
               </View>
             ) : (
               <View style={styles.signalList}>
-                {signalHistory.map((signal) => (
+                {visibleSignalHistory.map((signal) => (
                   <View key={signal.id} style={styles.signalCard}>
                     <LinearGradient
                       colors={signal.type === "BUY" 

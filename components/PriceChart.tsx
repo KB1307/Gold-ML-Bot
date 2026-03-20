@@ -5,6 +5,7 @@ import { publishChartPrice } from "@/services/chartPriceBridge";
 
 const CHART_HEIGHT = 350;
 const CHART_READY_TIMEOUT_MS = 8000;
+const SHARED_CHART_INSTANCE_ID = "price-chart-shared";
 
 interface PriceChartProps {
   onPriceUpdate?: (price: number) => void;
@@ -17,6 +18,36 @@ interface ChartBridgeMessage {
   value?: number;
   message?: string;
   source?: string;
+}
+
+let sharedWebIframe: HTMLIFrameElement | null = null;
+let sharedWebIframeHtml = "";
+
+function getOrCreateSharedWebIframe(html: string): HTMLIFrameElement {
+  if (!sharedWebIframe) {
+    sharedWebIframe = document.createElement('iframe');
+    sharedWebIframe.title = 'TradingView XAUUSD chart';
+    sharedWebIframe.style.width = '100%';
+    sharedWebIframe.style.height = '100%';
+    sharedWebIframe.style.border = '0';
+    sharedWebIframe.style.backgroundColor = '#0F0F0F';
+    sharedWebIframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms');
+    sharedWebIframe.setAttribute('loading', 'eager');
+    sharedWebIframe.setAttribute('referrerpolicy', 'origin');
+    sharedWebIframe.setAttribute('data-testid', 'tradingview-chart-web');
+    sharedWebIframe.srcdoc = html;
+    sharedWebIframeHtml = html;
+    console.log('[PriceChart] Created shared persistent web iframe');
+    return sharedWebIframe;
+  }
+
+  if (sharedWebIframeHtml !== html) {
+    sharedWebIframe.srcdoc = html;
+    sharedWebIframeHtml = html;
+    console.log('[PriceChart] Refreshed shared web iframe document');
+  }
+
+  return sharedWebIframe;
 }
 
 function buildTradingViewHTML(instanceId: string): string {
@@ -227,7 +258,6 @@ function buildTradingViewHTML(instanceId: string): string {
 
 const WebChartFrame = React.memo(({ html, onLoad }: { html: string; onLoad: () => void }) => {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
   const handleHostRef = useCallback((node: HTMLDivElement | null) => {
     hostRef.current = node;
@@ -240,43 +270,21 @@ const WebChartFrame = React.memo(({ html, onLoad }: { html: string; onLoad: () =
       return;
     }
 
-    let iframe = iframeRef.current;
+    const iframe = getOrCreateSharedWebIframe(html);
+    iframe.addEventListener('load', onLoad);
 
-    if (!iframe) {
-      iframe = document.createElement('iframe');
-      iframe.title = 'TradingView XAUUSD chart';
-      iframe.style.width = '100%';
-      iframe.style.height = '100%';
-      iframe.style.border = '0';
-      iframe.style.backgroundColor = '#0F0F0F';
-      iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms');
-      iframe.setAttribute('loading', 'eager');
-      iframe.setAttribute('referrerpolicy', 'origin');
-      iframe.setAttribute('data-testid', 'tradingview-chart-web');
-      iframe.srcdoc = html;
-      iframe.addEventListener('load', onLoad);
+    if (!host.contains(iframe)) {
       host.appendChild(iframe);
-      iframeRef.current = iframe;
-      console.log('[PriceChart] Created persistent web iframe');
-    } else if (!host.contains(iframe)) {
-      host.appendChild(iframe);
+      console.log('[PriceChart] Attached shared web iframe to chart host');
     }
 
     return () => {
-      const mountedIframe = iframeRef.current;
+      iframe.removeEventListener('load', onLoad);
 
-      if (!mountedIframe) {
-        return;
+      if (iframe.parentNode === host) {
+        host.removeChild(iframe);
+        console.log('[PriceChart] Detached shared web iframe without destroying it');
       }
-
-      mountedIframe.removeEventListener('load', onLoad);
-
-      if (mountedIframe.parentNode === host) {
-        host.removeChild(mountedIframe);
-      }
-
-      iframeRef.current = null;
-      console.log('[PriceChart] Destroyed persistent web iframe');
     };
   }, [html, onLoad]);
 
@@ -295,7 +303,7 @@ WebChartFrame.displayName = 'WebChartFrame';
 
 const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartProps) => {
   const webViewRef = useRef<WebView>(null);
-  const instanceIdRef = useRef<string>(`price-chart-${Math.random().toString(36).slice(2, 10)}`);
+  const instanceIdRef = useRef<string>(SHARED_CHART_INSTANCE_ID);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [hasError, setHasError] = useState<boolean>(false);
 

@@ -175,6 +175,8 @@ function getIndicatorInfo(feature: string, signalType: string): { description: s
   };
 }
 
+const MIN_VISIBLE_SIGNAL_CONFIDENCE = 0.9;
+
 export default function DashboardScreen() {
   const {
     signalHistory,
@@ -190,7 +192,13 @@ export default function DashboardScreen() {
     signalUpdateTrigger,
   } = useTrading();
   
-  const currentSignal = signalHistory.find(s => s.status === "ACTIVE" || s.status === "PARTIALLY_MANAGED" || s.status === "TP1_HIT" || s.status === "TP2_HIT") || null;
+  const visibleSignalHistory = useMemo(() => (
+    signalHistory.filter((signal) => signal.confidence >= MIN_VISIBLE_SIGNAL_CONFIDENCE)
+  ), [signalHistory]);
+
+  const currentSignal = visibleSignalHistory.find((signal) => (
+    signal.status === "ACTIVE" || signal.status === "PARTIALLY_MANAGED" || signal.status === "TP1_HIT" || signal.status === "TP2_HIT"
+  )) || null;
   const [refreshing, setRefreshing] = useState(false);
 
   const onRefresh = useCallback(async () => {
@@ -579,7 +587,7 @@ export default function DashboardScreen() {
                 <View style={styles.probabilityBanner}>
                   <TrendingUpDown size={14} color="#22c55e" />
                   <Text style={styles.probabilityText}>
-                    {currentSignal.confidence >= 0.75 ? 'Strong' : currentSignal.confidence >= 0.65 ? 'Moderate' : 'Cautious'} {currentSignal.type.toLowerCase()} setup with multiple confirming indicators across different timeframes and analysis methods.
+                    Elite {currentSignal.type.toLowerCase()} setup with 90%+ probability and multiple confirming indicators across different timeframes and analysis methods.
                   </Text>
                 </View>
               </View>
@@ -591,7 +599,7 @@ export default function DashboardScreen() {
                 <Text style={styles.noSignalTitle}>No Active Signal</Text>
                 <Text style={styles.noSignalText}>
                   {marketOutlook?.isMarketOpen 
-                    ? "Analyzing market conditions. New signal will appear when high-confidence setup is detected."
+                    ? "Analyzing market conditions. Only elite 90%+ probability setups will be shown."
                     : "Market is closed. Signals will resume when market opens."
                   }
                 </Text>

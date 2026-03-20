@@ -18,7 +18,7 @@ export default function SettingsScreen() {
   const [tp2Pips, setTp2Pips] = useState<string>(settings.tp2Pips.toString());
   const [tp3Pips, setTp3Pips] = useState<string>(settings.tp3Pips.toString());
   const [slPips, setSlPips] = useState<string>(settings.slPips.toString());
-  const [minConfidence, setMinConfidence] = useState<string>((settings.minConfidence * 100).toString());
+  const [minConfidence, setMinConfidence] = useState<string>((settings.minConfidence * 100).toFixed(0));
   const [numberOfTPs, setNumberOfTPs] = useState<1 | 2 | 3>(settings.numberOfTPs);
 
   useEffect(() => {
@@ -28,20 +28,36 @@ export default function SettingsScreen() {
         setBgTaskStatus(status);
       }
     }
-    checkBackgroundTask();
+    void checkBackgroundTask();
     const interval = setInterval(checkBackgroundTask, 5000);
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    setTp1Pips(settings.tp1Pips.toString());
+    setTp2Pips(settings.tp2Pips.toString());
+    setTp3Pips(settings.tp3Pips.toString());
+    setSlPips(settings.slPips.toString());
+    setMinConfidence((settings.minConfidence * 100).toFixed(0));
+    setNumberOfTPs(settings.numberOfTPs);
+  }, [settings]);
+
   const handleSave = async () => {
+    const parsedMinConfidence = parseFloat(minConfidence);
+    const normalizedMinConfidence = Number.isFinite(parsedMinConfidence)
+      ? Math.max(90, Math.min(98, parsedMinConfidence)) / 100
+      : settings.minConfidence;
+
     await updateSettings({
       tp1Pips: parseFloat(tp1Pips) || settings.tp1Pips,
       tp2Pips: parseFloat(tp2Pips) || settings.tp2Pips,
       tp3Pips: parseFloat(tp3Pips) || settings.tp3Pips,
       slPips: parseFloat(slPips) || settings.slPips,
-      minConfidence: parseFloat(minConfidence) / 100 || settings.minConfidence,
+      minConfidence: normalizedMinConfidence,
       numberOfTPs,
     });
+
+    setMinConfidence((normalizedMinConfidence * 100).toFixed(0));
     
     if (Platform.OS === 'web') {
       alert('Settings saved successfully!');
@@ -258,13 +274,13 @@ export default function SettingsScreen() {
                   value={minConfidence}
                   onChangeText={setMinConfidence}
                   keyboardType="decimal-pad"
-                  placeholder="70"
+                  placeholder="90"
                   placeholderTextColor="#666"
                 />
               </View>
 
               <Text style={styles.helperText}>
-                Only generate signals with confidence above this threshold (55-98%).
+                Only 90%+ probability signals will be generated and shown (90-98%).
               </Text>
 
               <View style={styles.tpSelector}>

@@ -20,7 +20,7 @@ const DEFAULT_SETTINGS: Settings = {
   tp3Pips: 65,
   slPips: 70,
   numberOfTPs: 3,
-  minConfidence: 0.85,
+  minConfidence: 0.90,
   enableNotifications: true,
   basePositionSize: 0.01,
   maxRiskPercentage: 2.0,
@@ -53,6 +53,18 @@ const CHART_STALL_FAILOVER_MS = 20000;
 const MIN_MEANINGFUL_PRICE_CHANGE = 0.03;
 const HISTORICAL_RECONCILIATION_INTERVAL_MS = 30000;
 const TERMINAL_SIGNAL_STATUSES: SignalStatus[] = ["CLOSED", "SL_HIT", "ALL_TARGETS_HIT", "PARTIAL_WIN_SL_HIT"];
+const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.90;
+
+function clampSignalConfidenceThreshold(value: number): number {
+  return Number(Math.min(0.98, Math.max(ENFORCED_MIN_SIGNAL_CONFIDENCE, value)).toFixed(2));
+}
+
+function sanitizeSettings(settings: Settings): Settings {
+  return {
+    ...settings,
+    minConfidence: clampSignalConfidenceThreshold(settings.minConfidence),
+  };
+}
 
 function getProtectedExitPrice(signal: TradingSignal, targetsHit: number): number {
   const normalizedTargetsHit = Math.max(0, Math.min(2, targetsHit));
@@ -818,9 +830,15 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log('📦 Raw saved history from storage:', savedHistory);
 
       if (savedSettings) {
-        const parsedSettings = JSON.parse(savedSettings);
+        const rawParsedSettings = JSON.parse(savedSettings) as Settings;
+        const parsedSettings = sanitizeSettings(rawParsedSettings);
         setSettings(parsedSettings);
         console.log('✅ Settings loaded:', parsedSettings);
+
+        if (parsedSettings.minConfidence !== rawParsedSettings.minConfidence) {
+          await AsyncStorage.setItem("trading_settings", JSON.stringify(parsedSettings));
+          console.log(`🔒 Raised persisted minimum confidence to enforced floor ${(ENFORCED_MIN_SIGNAL_CONFIDENCE * 100).toFixed(0)}%`);
+        }
       } else {
         console.log('⚠️ No saved settings found - using defaults');
         setSettings(DEFAULT_SETTINGS);
@@ -1190,7 +1208,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     console.log(`Market Open: ${outlook.isMarketOpen}`);
     console.log(`Current Session: ${outlook.currentSession}`);
     
-    const fullyActiveSignals = signalHistory.filter(s => s.status === "ACTIVE");
+    const fullyActiveSignals = signalHistory.filter((signal) => (
+      signal.status === "ACTIVE" && signal.confidence >= ENFORCED_MIN_SIGNAL_CONFIDENCE
+    ));
     
     console.log(`Active Signals: ${fullyActiveSignals.length}`);
     fullyActiveSignals.forEach(s => {
@@ -1655,7 +1675,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   }, []);
 
   const updateSettings = useCallback(async (newSettings: Partial<Settings>) => {
-    const updated = { ...settings, ...newSettings };
+    const updated = sanitizeSettings({ ...settings, ...newSettings });
     setSettings(updated);
     await AsyncStorage.setItem("trading_settings", JSON.stringify(updated));
 

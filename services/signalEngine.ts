@@ -170,9 +170,10 @@ const DRIFT_CHECK_INTERVAL = 24 * 60 * 60 * 1000;
 const FEATURE_DRIFT_STORAGE_KEY = 'feature_drift_history_v1';
 const MIN_SIGNAL_CONVICTION_THRESHOLD = 0.62;
 const MIN_SIGNAL_STRENGTH_DIFFERENCE = 0.12;
-const ABSOLUTE_MIN_SIGNAL_CONFIDENCE = 0.72;
+const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.90;
+const ABSOLUTE_MIN_SIGNAL_CONFIDENCE = ENFORCED_MIN_SIGNAL_CONFIDENCE;
 const SIGNAL_STARVATION_RELIEF_ATTEMPTS = 10;
-const SIGNAL_STARVATION_RELIEF_CONFIDENCE = 0.78;
+const SIGNAL_STARVATION_RELIEF_CONFIDENCE = ENFORCED_MIN_SIGNAL_CONFIDENCE;
 
 const TIME_WEIGHTS = {
   LOW_LIQUIDITY: 0.5,
@@ -3543,7 +3544,9 @@ class SignalGenerationEngine {
     console.log(`📊 SIGNAL GENERATION ATTEMPT #${this.signalGenerationAttempts}`);
     console.log(`${'='.repeat(80)}`);
     
-    const fullyActiveSignals = activeSignals.filter(s => s.status === "ACTIVE");
+    const fullyActiveSignals = activeSignals.filter((signal) => (
+      signal.status === "ACTIVE" && signal.confidence >= ENFORCED_MIN_SIGNAL_CONFIDENCE
+    ));
     
     console.log(`🔍 Signal Status Check:`);
     console.log(`   Active Signals: ${fullyActiveSignals.length}`);
@@ -3631,9 +3634,11 @@ class SignalGenerationEngine {
       console.log(`   ${requires5MinConfirmation.reason}`);
     }
     
+    const requestedMinConfidence = Math.max(ENFORCED_MIN_SIGNAL_CONFIDENCE, settings.minConfidence);
+
     console.log(`🎯 Preliminary Analysis:`);
     console.log(`   Signal Type: ${analysis.signalType}`);
-    console.log(`   Confidence: ${(analysis.confidence * 100).toFixed(1)}% (Min Required: ${(settings.minConfidence * 100).toFixed(0)}%)`);
+    console.log(`   Confidence: ${(analysis.confidence * 100).toFixed(1)}% (Min Required: ${(requestedMinConfidence * 100).toFixed(0)}%)`);
     console.log(`   Market Regime: ${features.marketRegime.type} (Strength: ${(features.marketRegime.strength * 100).toFixed(0)}%)`);
     console.log(`   Final Cooldown: ${(dynamicCooldown / 1000).toFixed(1)}s`);
     
@@ -3651,11 +3656,11 @@ class SignalGenerationEngine {
       return null;
     }
     
-    let effectiveMinConfidence = settings.minConfidence;
+    let effectiveMinConfidence = requestedMinConfidence;
     const starvationReliefActive = this.successfulSignalsGenerated === 0 && this.signalGenerationAttempts >= SIGNAL_STARVATION_RELIEF_ATTEMPTS;
     
     if (this.driftAlertLevel === 'HIGH') {
-      effectiveMinConfidence = Math.max(settings.minConfidence, 0.80);
+      effectiveMinConfidence = Math.max(requestedMinConfidence, 0.80);
       console.log(`🔶 HIGH DRIFT DETECTED: Confidence threshold temporarily elevated`);
       console.log(`   Base Threshold: ${(settings.minConfidence * 100).toFixed(0)}%`);
       console.log(`   Elevated Threshold: ${(effectiveMinConfidence * 100).toFixed(0)}%`);
@@ -3678,7 +3683,7 @@ class SignalGenerationEngine {
       if (this.driftAlertLevel === 'HIGH') {
         console.log(`   ⚠️ Elevated threshold active due to HIGH CONCEPT DRIFT`);
       }
-      console.log(`   💡 TIP: Lower minConfidence in settings to ${Math.max(60, Math.floor(analysis.confidence * 100))}% or wait for better setup`);
+      console.log(`   💡 TIP: Only 90%+ setups are allowed right now. Wait for a stronger setup or raise the threshold further in settings.`);
       console.log(`${'='.repeat(80)}\n`);
       return null;
     }
