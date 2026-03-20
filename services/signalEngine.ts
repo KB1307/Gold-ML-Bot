@@ -157,6 +157,9 @@ const INTERMARKET_CACHE_DURATION = 10000;
 const EXTERNAL_PRICE_MAX_AGE_MS = 15000;
 const MIN_PRICE_HISTORY_SAMPLE_INTERVAL_MS = 5000;
 const MIN_PRICE_HISTORY_CHANGE = 0.03;
+const DAILY_OHLC_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+const DAILY_OHLC_REFRESH_LOOKBACK_MS = 72 * 60 * 60 * 1000;
+const MIN_VALID_DAILY_RANGE = 6;
 
 const HYPOTHETICAL_TRADE_HISTORY_LIMIT = 100;
 const MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL = 15;
@@ -692,6 +695,7 @@ class SignalGenerationEngine {
   private lastSessionUpdate: number = 0;
   private lastOHLCFetchTime: number = 0;
   private ohlcDataSource: string = 'estimated';
+  private lastDailyOHLCRefreshAt: number = 0;
   
   private async fetchAndUpdateOHLCHistory(): Promise<void> {
     const now = Date.now();
@@ -862,12 +866,10 @@ class SignalGenerationEngine {
 
   async updateDailyOHLC(currentPrice: number): Promise<DailyOHLC | null> {
     const now = new Date();
-    const NY_CLOSE_HOUR_UTC = 21;
-    
     const dateKey = this.getNYTradingDayKey(now);
-    
-    if (!this.currentDayOHLC || this.currentDayOHLC.date !== dateKey) {
-      console.log(`📅 Starting new trading day: ${dateKey}`);
+
+    if (!this.currentDayOHLC) {
+      console.log(`📅 Starting tracked trading day: ${dateKey}`);
       this.currentDayOHLC = {
         date: dateKey,
         open: currentPrice,
@@ -875,46 +877,26 @@ class SignalGenerationEngine {
         low: currentPrice,
         close: currentPrice,
       };
-    } else {
-      this.currentDayOHLC.high = Math.max(this.currentDayOHLC.high, currentPrice);
-      this.currentDayOHLC.low = Math.min(this.currentDayOHLC.low, currentPrice);
-      this.currentDayOHLC.close = currentPrice;
+      return null;
     }
-    
-    const nowUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours(), now.getUTCMinutes());
-    const todayNYClose = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), NY_CLOSE_HOUR_UTC, 0, 0);
-    const timeSinceNYClose = Math.abs(nowUTC - todayNYClose);
-    const fiveMinutesMs = 5 * 60 * 1000;
-    
-    if (timeSinceNYClose < fiveMinutesMs && Date.now() - this.lastNYCloseCheck > 60000) {
-      this.lastNYCloseCheck = Date.now();
-      
-      const completedBar: DailyOHLC = {
-        date: this.currentDayOHLC.date,
-        open: this.currentDayOHLC.open,
-        high: this.currentDayOHLC.high,
-        low: this.currentDayOHLC.low,
-        close: this.currentDayOHLC.close,
-        timestamp: todayNYClose,
+
+    if (this.currentDayOHLC.date !== dateKey) {
+      const completedBar = await this.persistCompletedTradingDayBar(this.currentDayOHLC, 'day-rollover');
+      console.log(`📅 Trading day rollover: ${this.currentDayOHLC.date} → ${dateKey}`);
+      this.currentDayOHLC = {
+        date: dateKey,
+        open: currentPrice,
+        high: currentPrice,
+        low: currentPrice,
+        close: currentPrice,
       };
-      
-      const existingIndex = this.dailyOHLCHistory.findIndex(d => d.date === completedBar.date);
-      if (existingIndex >= 0) {
-        this.dailyOHLCHistory[existingIndex] = completedBar;
-      } else {
-        this.dailyOHLCHistory.push(completedBar);
-        if (this.dailyOHLCHistory.length > 30) {
-          this.dailyOHLCHistory = this.dailyOHLCHistory.slice(-30);
-        }
-      }
-      
-      console.log(`📊 NY Close Snapshot: ${completedBar.date} | O: ${completedBar.open.toFixed(1)} H: ${completedBar.high.toFixed(1)} L: ${completedBar.low.toFixed(1)} C: ${completedBar.close.toFixed(1)}`);
-      
-      await this.saveDailyOHLCHistory();
-      
       return completedBar;
     }
-    
+
+    this.currentDayOHLC.high = Math.max(this.currentDayOHLC.high, currentPrice);
+    this.currentDayOHLC.low = Math.min(this.currentDayOHLC.low, currentPrice);
+    this.currentDayOHLC.close = currentPrice;
+
     return null;
   }
   
@@ -932,6 +914,176 @@ class SignalGenerationEngine {
     const day = String(tradingDate.getUTCDate()).padStart(2, '0');
     
     return `${year}-${month}-${day}`;
+  }
+
+  private getNYTradingDayCloseTimestamp(dateKey: string): number {
+    const [yearString, monthString, dayString] = dateKey.split('-');
+    const year = Number.parseInt(yearString ?? '', 10);
+    const month = Number.parseInt(monthString ?? '', 10);
+    const day = Number.parseInt(dayString ?? '', 10);
+
+    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+      console.warn(`⚠️ Invalid NY trading day key received for close timestamp: ${dateKey}`);
+      return Date.now();
+    }
+
+    return Date.UTC(year, month - 1, day, 21, 0, 0, 0);
+  }
+
+  private async persistCompletedTradingDayBar(
+    tradingDay: { open: number; high: number; low: number; close: number; date: string },
+    reason: 'day-rollover' | 'historical-refresh',
+  ): Promise<DailyOHLC> {
+    const completedBar: DailyOHLC = {
+      date: tradingDay.date,
+      open: tradingDay.open,
+      high: tradingDay.high,
+      low: tradingDay.low,
+      close: tradingDay.close,
+      timestamp: this.getNYTradingDayCloseTimestamp(tradingDay.date),
+    };
+
+    const existingIndex = this.dailyOHLCHistory.findIndex((bar) => bar.date === completedBar.date);
+    if (existingIndex >= 0) {
+      this.dailyOHLCHistory[existingIndex] = completedBar;
+    } else {
+      this.dailyOHLCHistory.push(completedBar);
+    }
+
+    this.dailyOHLCHistory = [...this.dailyOHLCHistory]
+      .sort((left, right) => left.timestamp - right.timestamp)
+      .slice(-30);
+
+    console.log(`📊 Daily OHLC persisted (${reason}): ${completedBar.date} | O: ${completedBar.open.toFixed(1)} H: ${completedBar.high.toFixed(1)} L: ${completedBar.low.toFixed(1)} C: ${completedBar.close.toFixed(1)}`);
+
+    await this.saveDailyOHLCHistory();
+
+    return completedBar;
+  }
+
+  private buildDailyOHLCBarsFromHistoricalBars(
+    bars: { timestamp: number; open: number; high: number; low: number; close: number }[],
+    now: number,
+  ): DailyOHLC[] {
+    const groupedBars = new Map<string, DailyOHLC>();
+    const orderedBars = [...bars].sort((left, right) => left.timestamp - right.timestamp);
+
+    orderedBars.forEach((bar) => {
+      const dateKey = this.getNYTradingDayKey(new Date(bar.timestamp));
+      const closeTimestamp = this.getNYTradingDayCloseTimestamp(dateKey);
+      const existingBar = groupedBars.get(dateKey);
+
+      if (!existingBar) {
+        groupedBars.set(dateKey, {
+          date: dateKey,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          timestamp: closeTimestamp,
+        });
+        return;
+      }
+
+      existingBar.high = Math.max(existingBar.high, bar.high);
+      existingBar.low = Math.min(existingBar.low, bar.low);
+      existingBar.close = bar.close;
+    });
+
+    return Array.from(groupedBars.values())
+      .filter((bar) => bar.timestamp <= now)
+      .sort((left, right) => left.timestamp - right.timestamp);
+  }
+
+  private mergeDailyOHLCBars(bars: DailyOHLC[]): boolean {
+    const existingSnapshot = JSON.stringify(
+      [...this.dailyOHLCHistory].sort((left, right) => left.timestamp - right.timestamp),
+    );
+    const mergedBars = new Map<string, DailyOHLC>();
+
+    this.dailyOHLCHistory.forEach((bar) => {
+      mergedBars.set(bar.date, bar);
+    });
+
+    bars.forEach((bar) => {
+      mergedBars.set(bar.date, bar);
+    });
+
+    const nextHistory = Array.from(mergedBars.values())
+      .sort((left, right) => left.timestamp - right.timestamp)
+      .slice(-30);
+
+    const nextSnapshot = JSON.stringify(nextHistory);
+    if (nextSnapshot === existingSnapshot) {
+      return false;
+    }
+
+    this.dailyOHLCHistory = nextHistory;
+    return true;
+  }
+
+  private shouldRefreshDailyOHLCFromHistory(now: number): boolean {
+    if (this.dailyOHLCHistory.length === 0) {
+      return true;
+    }
+
+    const latestCompletedBar = [...this.dailyOHLCHistory].sort((left, right) => right.timestamp - left.timestamp)[0];
+    if (!latestCompletedBar) {
+      return true;
+    }
+
+    const expectedTimestamp = this.getNYTradingDayCloseTimestamp(latestCompletedBar.date);
+    const range = latestCompletedBar.high - latestCompletedBar.low;
+    const timestampLooksWrong = !Number.isFinite(latestCompletedBar.timestamp) || Math.abs(latestCompletedBar.timestamp - expectedTimestamp) > 60_000;
+    const rangeLooksBroken = !Number.isFinite(range) || range < MIN_VALID_DAILY_RANGE;
+    const dataIsStale = (now - latestCompletedBar.timestamp) > DAILY_OHLC_REFRESH_LOOKBACK_MS;
+
+    return timestampLooksWrong || rangeLooksBroken || dataIsStale;
+  }
+
+  private async refreshRecentDailyOHLCFromHistory(force: boolean = false): Promise<void> {
+    const now = Date.now();
+
+    if (!force && (now - this.lastDailyOHLCRefreshAt) < DAILY_OHLC_REFRESH_INTERVAL_MS) {
+      return;
+    }
+
+    if (!force && !this.shouldRefreshDailyOHLCFromHistory(now)) {
+      return;
+    }
+
+    this.lastDailyOHLCRefreshAt = now;
+    console.log('📊 Refreshing daily OHLC cache from recent historical minute bars...');
+
+    try {
+      const minuteBars = await fetchHistoricalData({
+        fromTime: now - DAILY_OHLC_REFRESH_LOOKBACK_MS,
+        toTime: now,
+        timeoutMs: 20000,
+      });
+
+      if (minuteBars.length === 0) {
+        console.warn('⚠️ Daily OHLC refresh returned no historical minute bars');
+        return;
+      }
+
+      const rebuiltDailyBars = this.buildDailyOHLCBarsFromHistoricalBars(minuteBars, now);
+      if (rebuiltDailyBars.length === 0) {
+        console.warn('⚠️ Daily OHLC refresh could not derive any completed daily bars');
+        return;
+      }
+
+      const historyChanged = this.mergeDailyOHLCBars(rebuiltDailyBars);
+      if (!historyChanged) {
+        console.log('ℹ️ Daily OHLC refresh found no changes');
+        return;
+      }
+
+      await this.saveDailyOHLCHistory();
+      console.log(`✅ Daily OHLC refresh rebuilt ${rebuiltDailyBars.length} completed trading day bar(s)`);
+    } catch (error) {
+      console.warn('⚠️ Daily OHLC refresh failed:', error instanceof Error ? error.message : 'Unknown');
+    }
   }
   
   getCurrentPrice(): number {
@@ -1654,44 +1806,74 @@ class SignalGenerationEngine {
   }
   
   private getDerivedDailyOHLC(): { yesterdayHigh: number; yesterdayLow: number; yesterdayClose: number; yesterdayOpen: number } {
-    if (this.dailyOHLCHistory.length === 0) {
-      const currentPrice = this.currentPrice;
-      const volatilityRange = currentPrice * 0.015;
+    if (this.dailyOHLCHistory.length > 0) {
+      const sortedHistory = [...this.dailyOHLCHistory].sort((left, right) => right.timestamp - left.timestamp);
+      const mostRecentBar = sortedHistory[0];
+
+      console.log(`📊 Using Latest Completed Daily Bar: ${mostRecentBar.date}`);
+      console.log(`   Open: ${mostRecentBar.open.toFixed(1)} | High: ${mostRecentBar.high.toFixed(1)} | Low: ${mostRecentBar.low.toFixed(1)} | Close: ${mostRecentBar.close.toFixed(1)}`);
+
       return {
-        yesterdayHigh: currentPrice + (volatilityRange / 2),
-        yesterdayLow: currentPrice - (volatilityRange / 2),
-        yesterdayClose: currentPrice,
-        yesterdayOpen: currentPrice - (volatilityRange * 0.3),
+        yesterdayHigh: mostRecentBar.high,
+        yesterdayLow: mostRecentBar.low,
+        yesterdayClose: mostRecentBar.close,
+        yesterdayOpen: mostRecentBar.open,
       };
     }
-    
-    const sortedHistory = [...this.dailyOHLCHistory].sort((a, b) => b.timestamp - a.timestamp);
-    const mostRecentBar = sortedHistory[0];
-    const now = Date.now();
-    const timeSinceBar = now - mostRecentBar.timestamp;
-    const sixHoursMs = 6 * 60 * 60 * 1000;
-    
-    if (timeSinceBar < sixHoursMs && sortedHistory.length > 1) {
-      const previousBar = sortedHistory[1];
-      console.log(`📊 Using Previous Day's Completed Bar: ${previousBar.date}`);
-      console.log(`   Open: ${previousBar.open.toFixed(1)} | High: ${previousBar.high.toFixed(1)} | Low: ${previousBar.low.toFixed(1)} | Close: ${previousBar.close.toFixed(1)}`);
-      
+
+    if (this.currentDayOHLC) {
+      console.log(`📊 Using Developing Trading Day Fallback: ${this.currentDayOHLC.date}`);
+      console.log(`   Open: ${this.currentDayOHLC.open.toFixed(1)} | High: ${this.currentDayOHLC.high.toFixed(1)} | Low: ${this.currentDayOHLC.low.toFixed(1)} | Close: ${this.currentDayOHLC.close.toFixed(1)}`);
+
       return {
-        yesterdayHigh: previousBar.high,
-        yesterdayLow: previousBar.low,
-        yesterdayClose: previousBar.close,
-        yesterdayOpen: previousBar.open,
+        yesterdayHigh: this.currentDayOHLC.high,
+        yesterdayLow: this.currentDayOHLC.low,
+        yesterdayClose: this.currentDayOHLC.close,
+        yesterdayOpen: this.currentDayOHLC.open,
       };
     }
-    
-    console.log(`📊 Using Most Recent Completed Bar: ${mostRecentBar.date}`);
-    console.log(`   Open: ${mostRecentBar.open.toFixed(1)} | High: ${mostRecentBar.high.toFixed(1)} | Low: ${mostRecentBar.low.toFixed(1)} | Close: ${mostRecentBar.close.toFixed(1)}`);
-    
+
+    const currentPrice = this.currentPrice;
+    const volatilityRange = currentPrice * 0.015;
     return {
-      yesterdayHigh: mostRecentBar.high,
-      yesterdayLow: mostRecentBar.low,
-      yesterdayClose: mostRecentBar.close,
-      yesterdayOpen: mostRecentBar.open,
+      yesterdayHigh: currentPrice + (volatilityRange / 2),
+      yesterdayLow: currentPrice - (volatilityRange / 2),
+      yesterdayClose: currentPrice,
+      yesterdayOpen: currentPrice - (volatilityRange * 0.3),
+    };
+  }
+
+  private calculateDashboardPivotLevels(): {
+    dailyPivot: number;
+    r1: number;
+    r2: number;
+    r3: number;
+    s1: number;
+    s2: number;
+    s3: number;
+  } {
+    const ohlc = this.getDerivedDailyOHLC();
+    const dailyPivot = (ohlc.yesterdayHigh + ohlc.yesterdayLow + ohlc.yesterdayClose) / 3;
+    const dailyRange = ohlc.yesterdayHigh - ohlc.yesterdayLow;
+    const r1 = (2 * dailyPivot) - ohlc.yesterdayLow;
+    const s1 = (2 * dailyPivot) - ohlc.yesterdayHigh;
+    const r2 = dailyPivot + dailyRange;
+    const s2 = dailyPivot - dailyRange;
+    const r3 = ohlc.yesterdayHigh + (2 * (dailyPivot - ohlc.yesterdayLow));
+    const s3 = ohlc.yesterdayLow - (2 * (ohlc.yesterdayHigh - dailyPivot));
+
+    console.log(`📊 Dashboard Pivot Levels:`);
+    console.log(`   Pivot: ${dailyPivot.toFixed(1)} | R1: ${r1.toFixed(1)} | R2: ${r2.toFixed(1)} | R3: ${r3.toFixed(1)}`);
+    console.log(`   S1: ${s1.toFixed(1)} | S2: ${s2.toFixed(1)} | S3: ${s3.toFixed(1)}`);
+
+    return {
+      dailyPivot: parseFloat(dailyPivot.toFixed(1)),
+      r1: parseFloat(r1.toFixed(1)),
+      r2: parseFloat(r2.toFixed(1)),
+      r3: parseFloat(r3.toFixed(1)),
+      s1: parseFloat(s1.toFixed(1)),
+      s2: parseFloat(s2.toFixed(1)),
+      s3: parseFloat(s3.toFixed(1)),
     };
   }
 
@@ -4139,6 +4321,8 @@ class SignalGenerationEngine {
   }
 
   async getMarketOutlook(): Promise<MarketOutlook> {
+    await this.refreshRecentDailyOHLCFromHistory();
+
     const now = new Date();
     const hour = now.getUTCHours();
     const dayOfWeek = now.getUTCDay();
@@ -4151,7 +4335,7 @@ class SignalGenerationEngine {
     
     const isLondonActive = hour >= 6 && hour < 13 && isMarketOpen;
     const isNYActive = hour >= 13 && hour < 21 && isMarketOpen;
-    const isAsianActive = (hour >= 0 && hour < 6) || (hour >= 21 && hour < 24) && isMarketOpen;
+    const isAsianActive = ((hour >= 0 && hour < 6) || (hour >= 21 && hour < 24)) && isMarketOpen;
     
     let currentSession = "MARKET_CLOSED";
     if (isLondonActive) currentSession = "LONDON";
@@ -4159,11 +4343,12 @@ class SignalGenerationEngine {
     else if (isAsianActive) currentSession = "ASIAN";
     
     const features = await this.calculateMarketFeatures();
+    const pivotLevels = this.calculateDashboardPivotLevels();
     const currentPrice = this.getCurrentPrice();
     
     let trend: "BULLISH" | "BEARISH" | "NEUTRAL" = "NEUTRAL";
-    if (currentPrice > features.dailyPivot + 10) trend = "BULLISH";
-    else if (currentPrice < features.dailyPivot - 10) trend = "BEARISH";
+    if (currentPrice > pivotLevels.dailyPivot + 10) trend = "BULLISH";
+    else if (currentPrice < pivotLevels.dailyPivot - 10) trend = "BEARISH";
     
     const volatility: "LOW" | "MEDIUM" | "HIGH" = 
       features.atr < 9 ? "LOW" : features.atr < 11 ? "MEDIUM" : "HIGH";
@@ -4178,13 +4363,13 @@ class SignalGenerationEngine {
       ],
       trend,
       volatility,
-      dailyPivot: parseFloat(features.dailyPivot.toFixed(1)),
-      r1: parseFloat(features.r1.toFixed(1)),
-      r2: parseFloat(features.r2.toFixed(1)),
-      r3: parseFloat(features.r3.toFixed(1)),
-      s1: parseFloat(features.s1.toFixed(1)),
-      s2: parseFloat(features.s2.toFixed(1)),
-      s3: parseFloat(features.s3.toFixed(1)),
+      dailyPivot: pivotLevels.dailyPivot,
+      r1: pivotLevels.r1,
+      r2: pivotLevels.r2,
+      r3: pivotLevels.r3,
+      s1: pivotLevels.s1,
+      s2: pivotLevels.s2,
+      s3: pivotLevels.s3,
     };
   }
   
