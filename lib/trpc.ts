@@ -4,6 +4,14 @@ import superjson from "superjson";
 
 import type { AppRouter } from "@/backend/trpc/app-router";
 
+export interface HistoricalPriceBar {
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
 export const trpc = createTRPCReact<AppRouter>();
 
 const TRPC_PATH = "/api/trpc";
@@ -83,6 +91,204 @@ const buildAttemptUrls = (requestUrl: string): string[] => {
   return Array.from(new Set(attemptUrls));
 };
 
+const getRequestHeaders = (headersInit: HeadersInit | undefined, method: string): Headers => {
+  const headers = new Headers(headersInit);
+
+  if (!headers.has("accept")) {
+    headers.set("accept", "application/json");
+  }
+
+  if (headers.get("trpc-accept") === "application/jsonl") {
+    headers.set("trpc-accept", "application/json");
+  }
+
+  if (method !== "GET" && method !== "HEAD" && !headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
+
+  return headers;
+};
+
+const isAbortError = (error: unknown): boolean => {
+  return error instanceof Error && error.name === "AbortError";
+};
+
+const isObjectRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === "object" && value !== null;
+};
+
+const isHistoricalPriceBar = (value: unknown): value is HistoricalPriceBar => {
+  if (!isObjectRecord(value)) {
+    return false;
+  }
+
+  const { timestamp, open, high, low, close } = value;
+
+  return [timestamp, open, high, low, close].every(
+    (entry) => typeof entry === "number" && Number.isFinite(entry),
+  );
+};
+
+const normalizeHistoricalBars = (value: unknown): HistoricalPriceBar[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter(isHistoricalPriceBar);
+};
+
+const recoverJsonPayload = (rawBody: string): unknown => {
+  const sanitized = rawBody.replace(/^\uFEFF/, "").trim();
+
+  if (!sanitized) {
+    return null;
+  }
+
+  const attempts: string[] = [];
+
+  const pushAttempt = (value: string): void => {
+    const trimmedValue = value.trim();
+    if (trimmedValue && !attempts.includes(trimmedValue)) {
+      attempts.push(trimmedValue);
+    }
+  };
+
+  pushAttempt(sanitized);
+
+  const firstObjectIndex = sanitized.indexOf("{");
+  const lastObjectIndex = sanitized.lastIndexOf("}");
+  if (firstObjectIndex >= 0 && lastObjectIndex > firstObjectIndex) {
+    pushAttempt(sanitized.slice(firstObjectIndex, lastObjectIndex + 1));
+  }
+
+  const firstArrayIndex = sanitized.indexOf("[");
+  const lastArrayIndex = sanitized.lastIndexOf("]");
+  if (firstArrayIndex >= 0 && lastArrayIndex > firstArrayIndex) {
+    pushAttempt(sanitized.slice(firstArrayIndex, lastArrayIndex + 1));
+  }
+
+  sanitized.split(/\r?\n/).forEach((line) => {
+    pushAttempt(line);
+  });
+
+  for (const attempt of attempts) {
+    try {
+      return JSON.parse(attempt);
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+};
+
+const extractHistoricalBars = (payload: unknown): HistoricalPriceBar[] => {
+  const directBars = normalizeHistoricalBars(payload);
+  if (directBars.length > 0) {
+    return directBars;
+  }
+
+  if (!isObjectRecord(payload)) {
+    return [];
+  }
+
+  const payloadJsonBars = normalizeHistoricalBars(payload.json);
+  if (payloadJsonBars.length > 0) {
+    return payloadJsonBars;
+  }
+
+  const payloadData = payload.data;
+  if (isObjectRecord(payloadData)) {
+    const payloadDataJsonBars = normalizeHistoricalBars(payloadData.json);
+    if (payloadDataJsonBars.length > 0) {
+      return payloadDataJsonBars;
+    }
+  }
+
+  const result = payload.result;
+  if (isObjectRecord(result)) {
+    const resultJsonBars = normalizeHistoricalBars(result.json);
+    if (resultJsonBars.length > 0) {
+      return resultJsonBars;
+    }
+
+    const resultData = result.data;
+    if (isObjectRecord(resultData)) {
+      const resultDataJsonBars = normalizeHistoricalBars(resultData.json);
+      if (resultDataJsonBars.length > 0) {
+        return resultDataJsonBars;
+      }
+    }
+  }
+
+  return [];
+};
+
+export const fetchHistoricalData = async (
+  input: { fromTime: number; toTime: number; timeoutMs?: number },
+): Promise<HistoricalPriceBar[]> => {
+  const { fromTime, toTime, timeoutMs = 15000 } = input;
+  const requestUrl = `${getPrimaryTrpcUrl()}/goldPrice.getHistoricalData?input=${encodeURIComponent(
+    JSON.stringify({ json: { fromTime, toTime } }),
+  )}`;
+  const attemptUrls = buildAttemptUrls(requestUrl);
+  let lastError: unknown = null;
+
+  for (let index = 0; index < attemptUrls.length; index += 1) {
+    const attemptUrl = attemptUrls[index];
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      console.log(
+        `🌐 [History] GET ${attemptUrl} (attempt ${index + 1}/${attemptUrls.length})`,
+      );
+
+      const response = await fetch(attemptUrl, {
+        method: "GET",
+        headers: { accept: "application/json" },
+        signal: controller.signal,
+      });
+
+      const rawBody = await response.text();
+
+      if (!response.ok) {
+        console.warn(
+          `⚠️ [History] Request failed with status ${response.status}: ${rawBody.slice(0, 240)}`,
+        );
+        continue;
+      }
+
+      const payload = recoverJsonPayload(rawBody);
+      const bars = extractHistoricalBars(payload);
+
+      if (bars.length > 0 || rawBody.includes("[]")) {
+        console.log(`✅ [History] Parsed ${bars.length} historical bar(s)`);
+        return bars;
+      }
+
+      console.warn(
+        `⚠️ [History] Response parsed but no historical bars were extracted. Prefix: ${rawBody.slice(0, 240)}`,
+      );
+    } catch (error) {
+      lastError = error;
+      console.warn(`⚠️ [History] Request failed for ${attemptUrl}:`, error);
+
+      if (!isNetworkRetryableError(error) && !isAbortError(error)) {
+        break;
+      }
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  if (lastError) {
+    console.error("❌ [History] All historical data fetch attempts failed:", lastError);
+  }
+
+  return [];
+};
+
 export const trpcClient = trpc.createClient({
   links: [
     httpLink({
@@ -95,15 +301,7 @@ export const trpcClient = trpc.createClient({
             ? url.href
             : url.url;
         const method = options?.method?.toUpperCase() ?? "GET";
-        const headers: Record<string, string> = {
-          Accept: "application/json",
-          ...(options?.headers as Record<string, string> | undefined),
-        };
-
-        if (method !== "GET" && method !== "HEAD") {
-          headers["Content-Type"] = "application/json";
-        }
-
+        const headers = getRequestHeaders(options?.headers as HeadersInit | undefined, method);
         const attemptUrls = buildAttemptUrls(requestUrl);
         let lastError: unknown = null;
 

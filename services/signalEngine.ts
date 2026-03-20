@@ -1,6 +1,6 @@
 import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC } from "@/types/trading";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { trpcClient } from "@/lib/trpc";
+import { fetchHistoricalData, trpcClient } from "@/lib/trpc";
 import { Platform } from "react-native";
 
 interface OrderFlowData {
@@ -706,14 +706,11 @@ class SignalGenerationEngine {
       const toTime = now;
       const fromTime = now - (100 * 60 * 1000);
       
-      const bars = await withTimeout(
-        trpcClient.goldPrice.getHistoricalData.query({
-          fromTime,
-          toTime,
-        }),
-        10000,
-        'getHistoricalData'
-      );
+      const bars = await fetchHistoricalData({
+        fromTime,
+        toTime,
+        timeoutMs: 10000,
+      });
       
       if (bars && bars.length > 0) {
         this.highHistory = bars.map((b: { high: number }) => b.high);

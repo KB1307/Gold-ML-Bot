@@ -4,7 +4,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { TradingSignal, SignalStatus, Settings, MarketOutlook, PerformanceMetrics, PositionSizing, DailyOHLC } from "@/types/trading";
 import { signalEngine, setExternalPrice } from "@/services/signalEngine";
 import { Platform } from "react-native";
-import { trpcClient } from "@/lib/trpc";
+import { fetchHistoricalData } from "@/lib/trpc";
 import { goldWebSocketService } from "@/services/goldWebSocketService";
 import { 
   registerBackgroundTask, 
@@ -302,25 +302,23 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   const fetchPriceHistory = useCallback(async (fromTime: number, toTime: number): Promise<{timestamp: number, open: number, high: number, low: number, close: number}[]> => {
     try {
-      console.log(`📊 Fetching historical 1-MINUTE OHLCV data (via tRPC)...`);
+      console.log(`📊 Fetching historical 1-MINUTE OHLCV data...`);
       console.log(`   From: ${new Date(fromTime).toISOString()}`);
       console.log(`   To: ${new Date(toTime).toISOString()}`);
-      
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('fetchPriceHistory timed out after 15s')), 15000)
-      );
-      const bars = await Promise.race([
-        trpcClient.goldPrice.getHistoricalData.query({ fromTime, toTime }),
-        timeoutPromise,
-      ]);
-      
+
+      const bars = await fetchHistoricalData({
+        fromTime,
+        toTime,
+        timeoutMs: 15000,
+      });
+
       console.log(`✅ Fetched ${bars.length} historical 1-MINUTE bars`);
-      
+
       if (bars.length > 0) {
         console.log(`   First bar: ${new Date(bars[0].timestamp).toISOString()} - Close: ${bars[0].close.toFixed(2)}`);
         console.log(`   Last bar: ${new Date(bars[bars.length - 1].timestamp).toISOString()} - Close: ${bars[bars.length - 1].close.toFixed(2)}`);
       }
-      
+
       return bars;
     } catch (error) {
       console.error('❌ Error fetching price history:', error);
