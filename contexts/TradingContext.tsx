@@ -297,8 +297,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         } else {
           setGuidePriceSource('🟢 Finnhub-Live');
         }
-      } else if (status === 'fallback') {
-        setGuidePriceSource('🟡 Finnhub REST Fallback');
+      } else if (status === 'waiting_for_trade') {
+        setGuidePriceSource('🟠 Waiting for Trade');
       } else if (status === 'disconnected') {
         setGuidePriceSource('🔴 Disconnected');
       } else if (status === 'reconnecting') {

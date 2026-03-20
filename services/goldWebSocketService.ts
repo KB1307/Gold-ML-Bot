@@ -1,18 +1,6 @@
-import { Platform } from 'react-native';
-import { trpcClient } from '@/lib/trpc';
-
 type PriceCallback = (price: number, source: string) => void;
-type ConnectionStatus = 'connected' | 'disconnected' | 'reconnecting' | 'fallback';
+type ConnectionStatus = 'connected' | 'waiting_for_trade' | 'disconnected' | 'reconnecting';
 type StatusCallback = (status: ConnectionStatus) => void;
-
-type FinnhubRestQuote = {
-  c?: number | string | null;
-  h?: number | string | null;
-  l?: number | string | null;
-  o?: number | string | null;
-  pc?: number | string | null;
-  t?: number | string | null;
-};
 
 type FinnhubTrade = {
   p?: number | string | null;
@@ -31,6 +19,7 @@ interface WebSocketServiceState {
   ws: WebSocket | null;
   closingSocket: WebSocket | null;
   isConnected: boolean;
+  hasReceivedTradeOnActiveConnection: boolean;
   lastTickTime: number;
   lastMessageTime: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
@@ -39,8 +28,6 @@ interface WebSocketServiceState {
   watchdogTimer: ReturnType<typeof setInterval> | null;
   connectionAliveTimer: ReturnType<typeof setTimeout> | null;
   heartbeatPingTimer: ReturnType<typeof setInterval> | null;
-  restFallbackTimer: ReturnType<typeof setInterval> | null;
-  isRestFallbackActive: boolean;
   priceCallbacks: Set<PriceCallback>;
   statusCallbacks: Set<StatusCallback>;
   intentionallyClosed: boolean;
@@ -49,7 +36,6 @@ interface WebSocketServiceState {
   currentStatus: ConnectionStatus;
   connectionId: number;
   connectStartedAt: number;
-  lastBootstrapFetchAt: number;
   apiKey: string | null;
   pendingReconnectDelayMs: number | null;
   pendingReconnectReason: string | null;
@@ -60,17 +46,14 @@ const CONNECT_TIMEOUT_MS = 15000;
 const CONNECTION_ALIVE_TIMEOUT_MS = 60000;
 const HEARTBEAT_PING_INTERVAL_MS = 20000;
 const RECONNECT_DELAY_MS = 5000;
-const REST_FALLBACK_INTERVAL_MS = 60000;
-const REST_BOOTSTRAP_INTERVAL_MS = 1000;
 const FINNHUB_SYMBOL = 'OANDA:XAU_USD';
 const FINNHUB_LIVE_SOURCE = '🟢 Finnhub-Live';
-const FINNHUB_REST_SOURCE = '🟡 Finnhub REST';
-const FINNHUB_REST_FALLBACK_SOURCE = '🟡 Finnhub REST Fallback';
 
 const state: WebSocketServiceState = {
   ws: null,
   closingSocket: null,
   isConnected: false,
+  hasReceivedTradeOnActiveConnection: false,
   lastTickTime: 0,
   lastMessageTime: 0,
   reconnectTimer: null,
@@ -79,8 +62,6 @@ const state: WebSocketServiceState = {
   watchdogTimer: null,
   connectionAliveTimer: null,
   heartbeatPingTimer: null,
-  restFallbackTimer: null,
-  isRestFallbackActive: false,
   priceCallbacks: new Set(),
   statusCallbacks: new Set(),
   intentionallyClosed: false,
@@ -89,7 +70,6 @@ const state: WebSocketServiceState = {
   currentStatus: 'disconnected',
   connectionId: 0,
   connectStartedAt: 0,
-  lastBootstrapFetchAt: 0,
   apiKey: null,
   pendingReconnectDelayMs: null,
   pendingReconnectReason: null,
@@ -114,10 +94,6 @@ function getFinnhubWebSocketUrl(apiKey: string): string {
   return `wss://ws.finnhub.io?token=${encodeURIComponent(apiKey)}`;
 }
 
-function getFinnhubRestUrl(apiKey: string): string {
-  return `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(FINNHUB_SYMBOL)}&token=${encodeURIComponent(apiKey)}`;
-}
-
 function parseNumericValue(value: unknown): number {
   if (typeof value === 'number') {
     return value;
@@ -128,20 +104,6 @@ function parseNumericValue(value: unknown): number {
   }
 
   return Number.NaN;
-}
-
-function isLikelyNetworkError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-
-  const message = error.message.toLowerCase();
-  return (
-    message.includes('networkerror') ||
-    message.includes('failed to fetch') ||
-    message.includes('fetch failed') ||
-    message.includes('network request failed')
-  );
 }
 
 function clearReconnectTimer(): void {
@@ -157,6 +119,7 @@ function clearReconnectTimer(): void {
 function notifyPrice(price: number, source: string): void {
   state.lastPrice = price;
   state.lastPriceSource = source;
+
   state.priceCallbacks.forEach((callback) => {
     try {
       callback(price, source);
@@ -172,6 +135,7 @@ function notifyStatus(status: ConnectionStatus): void {
   }
 
   state.currentStatus = status;
+
   state.statusCallbacks.forEach((callback) => {
     try {
       callback(status);
@@ -196,7 +160,11 @@ function getReadyStateLabel(readyState: number | undefined): string {
   }
 }
 
-function getEventDiagnostics(event: Event | CloseEvent | MessageEvent | undefined, socket: WebSocket | null, connectionId: number): Record<string, unknown> {
+function getEventDiagnostics(
+  event: Event | CloseEvent | MessageEvent | undefined,
+  socket: WebSocket | null,
+  connectionId: number,
+): Record<string, unknown> {
   const target = socket ?? (event?.target instanceof WebSocket ? event.target : null);
   const diagnostics: Record<string, unknown> = {
     connectionId,
@@ -218,115 +186,6 @@ function getEventDiagnostics(event: Event | CloseEvent | MessageEvent | undefine
   }
 
   return diagnostics;
-}
-
-async function fetchFinnhubRestProxyPrice(reason: string, sourceLabel: string): Promise<boolean> {
-  try {
-    console.log(`🔄 [GoldWS] Finnhub REST proxy fetch (${reason})...`);
-    const payload = await trpcClient.goldPrice.getFinnhubRestPrice.query();
-    const parsedPrice = typeof payload?.price === 'number' ? payload.price : Number.NaN;
-
-    if (Number.isNaN(parsedPrice) || parsedPrice <= 1000 || parsedPrice > 10000) {
-      console.warn('⚠️ [GoldWS] Finnhub REST proxy returned invalid price', payload);
-      return false;
-    }
-
-    const roundedPrice = Number(parsedPrice.toFixed(2));
-    console.log(`✅ [GoldWS] Finnhub REST proxy price: ${roundedPrice.toFixed(2)} (${reason})`);
-    notifyPrice(roundedPrice, `${sourceLabel} • proxy`);
-    return true;
-  } catch (error) {
-    console.error(`❌ [GoldWS] Finnhub REST proxy fetch error (${reason}):`, error);
-    return false;
-  }
-}
-
-function killRestFallback(): void {
-  if (state.restFallbackTimer) {
-    clearInterval(state.restFallbackTimer);
-    state.restFallbackTimer = null;
-  }
-
-  if (state.isRestFallbackActive) {
-    console.log('🔄 [GoldWS] Finnhub REST fallback stopped — websocket recovered');
-    state.isRestFallbackActive = false;
-  }
-}
-
-async function fetchFinnhubRestPrice(reason: string, sourceLabel: string): Promise<void> {
-  if (Platform.OS === 'web') {
-    await fetchFinnhubRestProxyPrice(reason, sourceLabel);
-    return;
-  }
-
-  const apiKey = state.apiKey ?? getFinnhubApiKey();
-
-  if (!apiKey) {
-    await fetchFinnhubRestProxyPrice(`${reason}-missing-key`, sourceLabel);
-    return;
-  }
-
-  state.apiKey = apiKey;
-
-  try {
-    const url = getFinnhubRestUrl(apiKey);
-    console.log(`🔄 [GoldWS] Finnhub REST fetch (${reason})...`);
-    const response = await fetch(url, {
-      headers: {
-        Accept: 'application/json',
-      },
-    });
-
-    if (!response.ok) {
-      const responseText = await response.text();
-      console.warn(`⚠️ [GoldWS] Finnhub REST fetch failed with ${response.status}: ${responseText.slice(0, 200)}`);
-      await fetchFinnhubRestProxyPrice(`${reason}-http-${response.status}`, sourceLabel);
-      return;
-    }
-
-    const payload = await response.json() as FinnhubRestQuote;
-    const parsedPrice = parseNumericValue(payload?.c);
-
-    if (Number.isNaN(parsedPrice) || parsedPrice <= 1000 || parsedPrice > 10000) {
-      console.warn('⚠️ [GoldWS] Finnhub REST fetch returned invalid payload', payload);
-      await fetchFinnhubRestProxyPrice(`${reason}-invalid-payload`, sourceLabel);
-      return;
-    }
-
-    const roundedPrice = Number(parsedPrice.toFixed(2));
-    console.log(`✅ [GoldWS] Finnhub REST price: ${roundedPrice.toFixed(2)} (${reason})`);
-    notifyPrice(roundedPrice, sourceLabel);
-  } catch (error) {
-    console.error(`❌ [GoldWS] Finnhub REST fetch error (${reason}):`, error);
-
-    if (isLikelyNetworkError(error)) {
-      await fetchFinnhubRestProxyPrice(`${reason}-network-recovery`, sourceLabel);
-    }
-  }
-}
-
-function activateRestFallback(): void {
-  if (state.isRestFallbackActive) {
-    return;
-  }
-
-  state.isRestFallbackActive = true;
-  console.log(`⚠️ [GoldWS] Activating Finnhub REST fallback every ${(REST_FALLBACK_INTERVAL_MS / 1000).toFixed(0)}s`);
-  void fetchFinnhubRestPrice('fallback-initial', FINNHUB_REST_FALLBACK_SOURCE);
-
-  state.restFallbackTimer = setInterval(() => {
-    void fetchFinnhubRestPrice('fallback-interval', FINNHUB_REST_FALLBACK_SOURCE);
-  }, REST_FALLBACK_INTERVAL_MS);
-}
-
-async function fetchFinnhubBootstrapPrice(reason: string): Promise<void> {
-  const now = Date.now();
-  if ((now - state.lastBootstrapFetchAt) < REST_BOOTSTRAP_INTERVAL_MS) {
-    return;
-  }
-
-  state.lastBootstrapFetchAt = now;
-  await fetchFinnhubRestPrice(`bootstrap-${reason}`, FINNHUB_REST_SOURCE);
 }
 
 function stopWatchdog(): void {
@@ -363,13 +222,16 @@ function resetConnectionAliveTimer(connectionId: number, reason: string): void {
     }
 
     const socket = state.ws;
+
     if (!socket) {
       console.warn(`⚠️ [GoldWS] Connection alive timer expired without an active socket (connection ${connectionId})`);
+      scheduleReconnect('alive-timeout-missing-socket', RECONNECT_DELAY_MS);
       return;
     }
 
     if (socket.readyState !== WebSocket.OPEN) {
       console.warn(`⚠️ [GoldWS] Connection alive timer expired while socket state=${getReadyStateLabel(socket.readyState)} (connection ${connectionId})`);
+      requestSocketRecycle('alive-timeout-non-open-socket', RECONNECT_DELAY_MS);
       return;
     }
 
@@ -377,8 +239,8 @@ function resetConnectionAliveTimer(connectionId: number, reason: string): void {
       ? Date.now() - state.lastMessageTime
       : CONNECTION_ALIVE_TIMEOUT_MS;
 
-    console.warn(`⚠️ [GoldWS] No Finnhub heartbeat/control/trade message for ${(silenceDurationMs / 1000).toFixed(1)}s — recycling socket`);
-    requestSocketRecycle('heartbeat-timeout', RECONNECT_DELAY_MS);
+    console.warn(`⚠️ [GoldWS] No Finnhub message received for ${(silenceDurationMs / 1000).toFixed(1)}s — reconnecting socket`);
+    requestSocketRecycle('connection-alive-timeout', RECONNECT_DELAY_MS);
   }, CONNECTION_ALIVE_TIMEOUT_MS);
 
   console.log(`💓 [GoldWS] Connection alive timer reset (${reason}) for connection ${connectionId}`);
@@ -399,7 +261,6 @@ function startHeartbeatPing(socket: WebSocket, connectionId: number): void {
 
     try {
       socket.send(JSON.stringify({ type: 'ping' }));
-      resetConnectionAliveTimer(connectionId, 'ping-sent');
       console.log(`🏓 [GoldWS] Sent Finnhub ping (connection ${connectionId})`);
     } catch (error) {
       console.warn(`⚠️ [GoldWS] Finnhub ping send failed (connection ${connectionId})`, error);
@@ -469,6 +330,7 @@ function requestSocketRecycle(reason: string, delayMs: number): void {
   state.pendingReconnectReason = reason;
   state.ws = null;
   state.isConnected = false;
+  state.hasReceivedTradeOnActiveConnection = false;
   stopHeartbeatPing();
   stopConnectionAliveTimer();
   notifyStatus('reconnecting');
@@ -503,6 +365,7 @@ function requestSocketRecycle(reason: string, delayMs: number): void {
 
 function startWatchdog(): void {
   stopWatchdog();
+
   state.watchdogTimer = setInterval(() => {
     if (state.intentionallyClosed) {
       return;
@@ -522,7 +385,6 @@ function startWatchdog(): void {
     if (socket.readyState === WebSocket.CONNECTING) {
       if (connectDuration > CONNECT_TIMEOUT_MS) {
         console.warn(`⚠️ [GoldWS] Finnhub socket stuck CONNECTING for ${(connectDuration / 1000).toFixed(1)}s`);
-        activateRestFallback();
         requestSocketRecycle('watchdog-connect-timeout', RECONNECT_DELAY_MS);
       }
       return;
@@ -565,8 +427,8 @@ function connect(): void {
   state.apiKey = apiKey;
 
   if (!apiKey) {
-    activateRestFallback();
-    notifyStatus('fallback');
+    state.isConnected = false;
+    notifyStatus('disconnected');
     return;
   }
 
@@ -575,20 +437,15 @@ function connect(): void {
   state.connectStartedAt = Date.now();
   state.lastMessageTime = 0;
   state.lastTickTime = 0;
+  state.hasReceivedTradeOnActiveConnection = false;
   console.log(`🔌 [GoldWS] Connecting to Finnhub WebSocket (connection ${connectionId})...`);
   notifyStatus('reconnecting');
-
-  const shouldBootstrapPrice = state.lastPrice <= 0;
-  if (shouldBootstrapPrice) {
-    void fetchFinnhubBootstrapPrice(`connection-${connectionId}`);
-  }
 
   let socket: WebSocket;
   try {
     socket = new WebSocket(getFinnhubWebSocketUrl(apiKey));
   } catch (error) {
     console.error('❌ [GoldWS] Finnhub WebSocket constructor failed:', error);
-    activateRestFallback();
     scheduleReconnect('constructor-failed', RECONNECT_DELAY_MS);
     return;
   }
@@ -603,16 +460,14 @@ function connect(): void {
 
     console.log(`✅ [GoldWS] Finnhub WebSocket connected (connection ${connectionId})`);
     state.isConnected = true;
-    state.connectStartedAt = Date.now();
+    state.connectStartedAt = 0;
     state.lastMessageTime = Date.now();
-    notifyStatus('connected');
 
     try {
       socket.send(JSON.stringify({ type: 'subscribe', symbol: FINNHUB_SYMBOL }));
       console.log(`📡 [GoldWS] Subscribed to ${FINNHUB_SYMBOL} on Finnhub (connection ${connectionId})`);
     } catch (error) {
       console.error('❌ [GoldWS] Finnhub subscribe send failed:', error);
-      activateRestFallback();
       requestSocketRecycle('subscribe-send-failed', RECONNECT_DELAY_MS);
       return;
     }
@@ -620,6 +475,7 @@ function connect(): void {
     startWatchdog();
     startHeartbeatPing(socket, connectionId);
     resetConnectionAliveTimer(connectionId, 'socket-open');
+    notifyStatus('waiting_for_trade');
   };
 
   socket.onmessage = (event: MessageEvent) => {
@@ -630,20 +486,24 @@ function connect(): void {
     const rawData = typeof event.data === 'string' ? event.data : String(event.data ?? '');
     state.lastMessageTime = Date.now();
     resetConnectionAliveTimer(connectionId, 'incoming-message');
-    killRestFallback();
-    notifyStatus('connected');
     console.log(`💬 [GoldWS] Finnhub message received (connection ${connectionId}): ${rawData.slice(0, 200)}`);
 
     try {
       const data = JSON.parse(rawData) as FinnhubWebSocketMessage;
 
       if (data.type !== 'trade') {
-        console.log('ℹ️ [GoldWS] Finnhub control message:', data);
+        if (!state.hasReceivedTradeOnActiveConnection) {
+          notifyStatus('waiting_for_trade');
+        }
+        console.log('ℹ️ [GoldWS] Finnhub control/heartbeat message:', data);
         return;
       }
 
       if (!Array.isArray(data.data) || data.data.length === 0) {
         console.warn('⚠️ [GoldWS] Finnhub trade message missing data array', data);
+        if (!state.hasReceivedTradeOnActiveConnection) {
+          notifyStatus('waiting_for_trade');
+        }
         return;
       }
 
@@ -668,7 +528,9 @@ function connect(): void {
         : Number.NaN;
 
       state.lastTickTime = Date.now();
+      state.hasReceivedTradeOnActiveConnection = true;
       notifyPrice(roundedPrice, FINNHUB_LIVE_SOURCE);
+      notifyStatus('connected');
 
       if (Number.isFinite(latencyMs)) {
         console.log(`⚡ [GoldWS] Finnhub trade ${roundedPrice.toFixed(2)} | latency=${latencyMs}ms | symbol=${tradeSymbol || FINNHUB_SYMBOL}`);
@@ -677,6 +539,9 @@ function connect(): void {
       }
     } catch (error) {
       console.warn('⚠️ [GoldWS] Failed to parse Finnhub websocket message:', error);
+      if (!state.hasReceivedTradeOnActiveConnection) {
+        notifyStatus('waiting_for_trade');
+      }
     }
   };
 
@@ -688,9 +553,9 @@ function connect(): void {
     const diagnostics = getEventDiagnostics(event, socket, connectionId);
     console.warn('⚠️ [GoldWS] Finnhub websocket error', diagnostics);
     state.isConnected = false;
+    state.hasReceivedTradeOnActiveConnection = false;
     stopHeartbeatPing();
     stopConnectionAliveTimer();
-    activateRestFallback();
     requestSocketRecycle('transport-error', RECONNECT_DELAY_MS);
   };
 
@@ -710,6 +575,7 @@ function connect(): void {
 
     state.isConnected = false;
     state.connectStartedAt = 0;
+    state.hasReceivedTradeOnActiveConnection = false;
     stopWatchdog();
     stopHeartbeatPing();
     stopConnectionAliveTimer();
@@ -718,8 +584,6 @@ function connect(): void {
       notifyStatus('disconnected');
       return;
     }
-
-    activateRestFallback();
 
     if (isClosingSocket) {
       const reconnectReason = state.pendingReconnectReason ?? `close-${event.code}`;
@@ -751,7 +615,6 @@ export const goldWebSocketService = {
     stopWatchdog();
     stopHeartbeatPing();
     stopConnectionAliveTimer();
-    killRestFallback();
     clearReconnectTimer();
     state.pendingReconnectDelayMs = null;
     state.pendingReconnectReason = null;
@@ -800,6 +663,7 @@ export const goldWebSocketService = {
     state.lastMessageTime = 0;
     state.connectStartedAt = 0;
     state.isConnected = false;
+    state.hasReceivedTradeOnActiveConnection = false;
     notifyStatus('disconnected');
   },
 
@@ -838,7 +702,7 @@ export const goldWebSocketService = {
   },
 
   isRestFallbackActive(): boolean {
-    return state.isRestFallbackActive;
+    return false;
   },
 
   getLastPrice(): number {

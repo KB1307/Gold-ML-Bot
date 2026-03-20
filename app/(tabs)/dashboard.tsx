@@ -276,7 +276,7 @@ export default function DashboardScreen() {
     console.log(`📍 Dashboard signal tracking price: ${signalTrackingPrice.toFixed(2)} from ${signalTrackingSource}`);
   }, [currentSignal, signalTrackingPrice, signalTrackingSource]);
   const marketPriceSource = guidePriceSource || 'connecting...';
-  const marketPriceSourceLabel = marketPriceSource.replace(/🟢 |🟡 |🔴 |🔄 /g, '');
+  const marketPriceSourceLabel = marketPriceSource.replace(/🟢 |🟠 |🟡 |🔴 |🔄 /g, '');
 
   return (
     <>
@@ -308,12 +308,14 @@ export default function DashboardScreen() {
                     <View style={[
                       styles.statusDot,
                       marketPriceSource?.includes('🟢') && styles.statusDotLive,
+                      marketPriceSource?.includes('🟠') && styles.statusDotWaiting,
                       marketPriceSource?.includes('🟡') && styles.statusDotCached,
                       marketPriceSource?.includes('🔴') && styles.statusDotError,
                     ]} />
                     <Text style={[
                       styles.statusSourceText,
                       marketPriceSource?.includes('🟢') && styles.priceSourceLive,
+                      marketPriceSource?.includes('🟠') && styles.priceSourceWaiting,
                       marketPriceSource?.includes('🟡') && styles.priceSourceCached,
                       marketPriceSource?.includes('🔴') && styles.priceSourceError,
                     ]} testID="dashboard-market-price-source">
@@ -926,6 +928,9 @@ const styles = StyleSheet.create({
   },
   statusDotCached: {
     backgroundColor: "#FFA500",
+  },
+  statusDotWaiting: {
+    backgroundColor: "#f59e0b",
   },
   statusDotError: {
     backgroundColor: "#ef4444",
@@ -1702,6 +1707,9 @@ const styles = StyleSheet.create({
   },
   priceSourceCached: {
     color: "#FFA500",
+  },
+  priceSourceWaiting: {
+    color: "#f59e0b",
   },
   priceSourceError: {
     color: "#ef4444",
