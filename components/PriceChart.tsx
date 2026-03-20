@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, StyleSheet, ActivityIndicator, Text, Platform } from "react-native";
 import { WebView } from "react-native-webview";
+import { publishChartPrice } from "@/services/chartPriceBridge";
 
 const CHART_HEIGHT = 350;
 const CHART_READY_TIMEOUT_MS = 8000;
@@ -252,6 +253,11 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
     }
 
     if (payload.type === "price" && typeof payload.value === "number") {
+      const source = typeof payload.source === "string" && payload.source.length > 0
+        ? payload.source
+        : "tradingview-chart";
+
+      publishChartPrice(payload.value, source);
       onPriceUpdate?.(payload.value);
     }
   }, [onPriceUpdate]);

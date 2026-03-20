@@ -12,6 +12,7 @@ import {
   requestNotificationPermissions,
   sendSignalNotification
 } from "@/services/backgroundTaskService";
+import { subscribeToChartPrice } from "@/services/chartPriceBridge";
 
 const DEFAULT_SETTINGS: Settings = {
   tp1Pips: 20,
@@ -243,9 +244,22 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     commitLivePrice(price, source);
   }, [commitLivePrice]);
 
-  const ingestChartPrice = useCallback((price: number) => {
-    applyLivePrice(price, '🟢 tradingview-chart', "chart");
+  const ingestChartPrice = useCallback((price: number, source: string = 'tradingview-chart') => {
+    const normalizedSource = source.startsWith('🟢') ? source : `🟢 ${source}`;
+    applyLivePrice(price, normalizedSource, "chart");
   }, [applyLivePrice]);
+
+  useEffect(() => {
+    console.log('📈 Subscribing to TradingView chart price bridge...');
+    const unsubscribe = subscribeToChartPrice((price: number, source: string) => {
+      ingestChartPrice(price, source);
+    });
+
+    return () => {
+      console.log('📉 Unsubscribing from TradingView chart price bridge...');
+      unsubscribe();
+    };
+  }, [ingestChartPrice]);
 
   useEffect(() => {
     let isMounted = true;
