@@ -27,6 +27,10 @@ interface WebSocketServiceState {
   isConnecting: boolean;
   pendingReconnectDelayMs: number | null;
   pendingReconnectReason: string | null;
+  restFallbackTimer: ReturnType<typeof setInterval> | null;
+  restFallbackActive: boolean;
+  lastWsTradeTime: number;
+  wsStartTime: number;
 }
 
 const WATCHDOG_INTERVAL_MS = 1000;
@@ -37,6 +41,9 @@ const RECONNECT_DELAY_MS = 5000;
 const TIINGO_FX_TICKER = 'xauusd';
 const TIINGO_LIVE_SOURCE = '🟢 Tiingo-Live';
 const TIINGO_WS_URL = 'wss://api.tiingo.com/fx';
+const REST_FALLBACK_ACTIVATION_MS = 20000;
+const REST_FALLBACK_POLL_INTERVAL_MS = 15000;
+const REST_FALLBACK_SOURCE = '🟠 REST-Fallback';
 
 const state: WebSocketServiceState = {
   ws: null,
@@ -63,11 +70,179 @@ const state: WebSocketServiceState = {
   isConnecting: false,
   pendingReconnectDelayMs: null,
   pendingReconnectReason: null,
+  restFallbackTimer: null,
+  restFallbackActive: false,
+  lastWsTradeTime: 0,
+  wsStartTime: 0,
 };
 
 function getTiingoApiKey(): string | null {
   const key = process.env.EXPO_PUBLIC_TIINGO_API_KEY?.trim() ?? '';
   return key.length > 0 ? key : null;
+}
+
+async function fetchRestFallbackPrice(): Promise<{ price: number; source: string } | null> {
+  const apiKey = getTiingoApiKey();
+  if (apiKey) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
+      const response = await fetch(
+        `https://api.tiingo.com/tiingo/fx/top?tickers=xauusd&token=${encodeURIComponent(apiKey)}`,
+        { signal: controller.signal, headers: { 'Accept': 'application/json' } }
+      );
+      clearTimeout(timeoutId);
+      if (response.ok) {
+        const payload = await response.json();
+        const quote = Array.isArray(payload) ? payload[0] : payload;
+        const mid = typeof quote?.midPrice === 'number' ? quote.midPrice : parseFloat(String(quote?.midPrice ?? ''));
+        if (Number.isFinite(mid) && mid > 1000 && mid < 10000) {
+          console.log(`✅ [GoldWS-REST] Tiingo REST fallback price: ${mid.toFixed(2)}`);
+          return { price: Number(mid.toFixed(2)), source: 'Tiingo-REST' };
+        }
+        const bid = typeof quote?.bidPrice === 'number' ? quote.bidPrice : parseFloat(String(quote?.bidPrice ?? ''));
+        const ask = typeof quote?.askPrice === 'number' ? quote.askPrice : parseFloat(String(quote?.askPrice ?? ''));
+        if (Number.isFinite(bid) && Number.isFinite(ask) && bid > 1000 && ask > 1000) {
+          const avgPrice = Number(((bid + ask) / 2).toFixed(2));
+          console.log(`✅ [GoldWS-REST] Tiingo REST fallback bid/ask price: ${avgPrice}`);
+          return { price: avgPrice, source: 'Tiingo-REST' };
+        }
+      }
+    } catch (e) {
+      console.warn('⚠️ [GoldWS-REST] Tiingo REST fallback failed:', e instanceof Error ? e.message : 'Unknown');
+    }
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+    const response = await fetch(
+      'https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD',
+      { signal: controller.signal, headers: { 'Accept': 'application/json' } }
+    );
+    clearTimeout(timeoutId);
+    if (response.ok) {
+      const data = await response.json();
+      if (Array.isArray(data) && data.length > 0) {
+        const quote = data[0];
+        const bid = quote?.spreadProfilePrices?.[0]?.bid;
+        const ask = quote?.spreadProfilePrices?.[0]?.ask;
+        if (bid && ask && typeof bid === 'number' && typeof ask === 'number' && bid > 1000) {
+          const price = Number(((bid + ask) / 2).toFixed(2));
+          console.log(`✅ [GoldWS-REST] Swissquote fallback price: ${price}`);
+          return { price, source: 'Swissquote-REST' };
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('⚠️ [GoldWS-REST] Swissquote fallback failed:', e instanceof Error ? e.message : 'Unknown');
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+    const response = await fetch('https://api.metals.live/v1/spot/gold', { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (response.ok) {
+      const data = await response.json();
+      if (data?.[0]?.price) {
+        const price = Number(parseFloat(data[0].price.toString()).toFixed(2));
+        if (price > 1000 && price < 10000) {
+          console.log(`✅ [GoldWS-REST] metals.live fallback price: ${price}`);
+          return { price, source: 'MetalsLive-REST' };
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('⚠️ [GoldWS-REST] metals.live fallback failed:', e instanceof Error ? e.message : 'Unknown');
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+    const response = await fetch('https://data-asg.goldprice.org/dbXRates/USD', { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (response.ok) {
+      const data = await response.json();
+      if (data?.items?.[0]?.xauPrice) {
+        const price = Number(parseFloat(data.items[0].xauPrice).toFixed(2));
+        if (price > 1000 && price < 10000) {
+          console.log(`✅ [GoldWS-REST] goldprice.org fallback price: ${price}`);
+          return { price, source: 'GoldPrice-REST' };
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('⚠️ [GoldWS-REST] goldprice.org fallback failed:', e instanceof Error ? e.message : 'Unknown');
+  }
+
+  console.warn('❌ [GoldWS-REST] All REST fallback sources failed');
+  return null;
+}
+
+function stopRestFallback(): void {
+  if (state.restFallbackTimer) {
+    clearInterval(state.restFallbackTimer);
+    state.restFallbackTimer = null;
+  }
+  if (state.restFallbackActive) {
+    state.restFallbackActive = false;
+    console.log('🛑 [GoldWS-REST] REST fallback polling stopped');
+  }
+}
+
+function startRestFallbackIfNeeded(): void {
+  if (state.intentionallyClosed) {
+    return;
+  }
+
+  if (state.isConnected && state.hasReceivedTradeOnActiveConnection) {
+    stopRestFallback();
+    return;
+  }
+
+  if (state.restFallbackTimer) {
+    return;
+  }
+
+  const timeSinceStart = state.wsStartTime > 0 ? Date.now() - state.wsStartTime : 0;
+  const timeSinceLastWsTrade = state.lastWsTradeTime > 0 ? Date.now() - state.lastWsTradeTime : timeSinceStart;
+
+  if (timeSinceLastWsTrade < REST_FALLBACK_ACTIVATION_MS && timeSinceStart < REST_FALLBACK_ACTIVATION_MS) {
+    return;
+  }
+
+  console.log(`🔄 [GoldWS-REST] Activating REST fallback polling (WS silent for ${(timeSinceLastWsTrade / 1000).toFixed(1)}s)`);
+  state.restFallbackActive = true;
+
+  const pollOnce = async () => {
+    if (state.intentionallyClosed) {
+      stopRestFallback();
+      return;
+    }
+
+    if (state.isConnected && state.hasReceivedTradeOnActiveConnection) {
+      console.log('✅ [GoldWS-REST] WebSocket recovered — stopping REST fallback');
+      stopRestFallback();
+      return;
+    }
+
+    const result = await fetchRestFallbackPrice();
+    if (result && !state.intentionallyClosed) {
+      if (state.isConnected && state.hasReceivedTradeOnActiveConnection) {
+        console.log('ℹ️ [GoldWS-REST] WS recovered during REST fetch — discarding REST price');
+        stopRestFallback();
+        return;
+      }
+      notifyPrice(result.price, `${REST_FALLBACK_SOURCE} (${result.source})`);
+    }
+  };
+
+  void pollOnce();
+
+  state.restFallbackTimer = setInterval(() => {
+    void pollOnce();
+  }, REST_FALLBACK_POLL_INTERVAL_MS);
 }
 
 function clearReconnectTimer(): void {
@@ -251,6 +426,7 @@ function scheduleReconnect(reason: string, delayMs: number = RECONNECT_DELAY_MS)
   state.reconnectTimerDelayMs = delayMs;
   console.log(`🔄 [GoldWS] Scheduling Tiingo reconnect in ${(delayMs / 1000).toFixed(1)}s (reason=${reason})`);
   notifyStatus('reconnecting');
+  startRestFallbackIfNeeded();
 
   state.reconnectTimer = setTimeout(() => {
     state.reconnectTimer = null;
@@ -351,6 +527,8 @@ function startWatchdog(): void {
       console.warn('⚠️ [GoldWS] Watchdog detected closed Tiingo socket');
       scheduleReconnect('watchdog-closed-socket', RECONNECT_DELAY_MS);
     }
+
+    startRestFallbackIfNeeded();
   }, WATCHDOG_INTERVAL_MS);
 }
 
@@ -451,6 +629,7 @@ async function connect(): Promise<void> {
     state.isConnecting = false;
     state.isConnected = false;
     notifyStatus('disconnected');
+    startRestFallbackIfNeeded();
     return;
   }
 
@@ -565,9 +744,11 @@ async function connect(): Promise<void> {
         }
 
         state.lastTickTime = Date.now();
+        state.lastWsTradeTime = Date.now();
         state.hasReceivedTradeOnActiveConnection = true;
         notifyPrice(parsedPrice, TIINGO_LIVE_SOURCE);
         notifyStatus('connected');
+        stopRestFallback();
         console.log(`⚡ [GoldWS] Tiingo ${updateType} ${parsedPrice.toFixed(2)} | ticker=${ticker}`);
         return;
       }
@@ -644,6 +825,7 @@ export const goldWebSocketService = {
     }
 
     state.intentionallyClosed = false;
+    state.wsStartTime = Date.now();
     console.log('🚀 [GoldWS] Starting Tiingo FX websocket service for XAU/USD...');
     void connect();
   },
@@ -651,6 +833,7 @@ export const goldWebSocketService = {
   stop(): void {
     console.log('🛑 [GoldWS] Stopping Tiingo websocket service');
     state.intentionallyClosed = true;
+    stopRestFallback();
     stopWatchdog();
     stopHeartbeatPing();
     stopConnectionAliveTimer();
@@ -704,6 +887,7 @@ export const goldWebSocketService = {
     state.isConnecting = false;
     state.isConnected = false;
     state.hasReceivedTradeOnActiveConnection = false;
+    state.wsStartTime = 0;
     notifyStatus('disconnected');
   },
 
@@ -742,7 +926,7 @@ export const goldWebSocketService = {
   },
 
   isRestFallbackActive(): boolean {
-    return false;
+    return state.restFallbackActive;
   },
 
   getLastPrice(): number {

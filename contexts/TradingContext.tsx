@@ -297,6 +297,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const unsubPrice = goldWebSocketService.onPrice((price: number, source: string) => {
       if (!isMounted) return;
       commitGuidePrice(price, source);
+
+      if (source.includes('REST-Fallback')) {
+        applyLivePrice(price, source, 'feed');
+      }
     });
 
     const unsubStatus = goldWebSocketService.onStatus((status) => {
@@ -318,7 +322,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       } else if (status === 'disconnected') {
         setGuidePriceSource('🔴 Disconnected');
       } else if (status === 'reconnecting') {
-        setGuidePriceSource('🔴 Reconnecting...');
+        if (!goldWebSocketService.isRestFallbackActive()) {
+          setGuidePriceSource('🔴 Reconnecting...');
+        }
       }
     });
 
@@ -330,7 +336,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       unsubStatus();
       goldWebSocketService.stop();
     };
-  }, [commitGuidePrice]);
+  }, [commitGuidePrice, applyLivePrice]);
 
   useEffect(() => {
     const interval = setInterval(() => {
