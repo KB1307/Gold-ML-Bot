@@ -170,10 +170,14 @@ const DRIFT_CHECK_INTERVAL = 24 * 60 * 60 * 1000;
 const FEATURE_DRIFT_STORAGE_KEY = 'feature_drift_history_v1';
 const MIN_SIGNAL_CONVICTION_THRESHOLD = 0.62;
 const MIN_SIGNAL_STRENGTH_DIFFERENCE = 0.12;
-const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.90;
-const ABSOLUTE_MIN_SIGNAL_CONFIDENCE = ENFORCED_MIN_SIGNAL_CONFIDENCE;
-const SIGNAL_STARVATION_RELIEF_ATTEMPTS = 10;
-const SIGNAL_STARVATION_RELIEF_CONFIDENCE = ENFORCED_MIN_SIGNAL_CONFIDENCE;
+const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.72;
+const ABSOLUTE_MIN_SIGNAL_CONFIDENCE = 0.68;
+const SIGNAL_STARVATION_RELIEF_ATTEMPTS = 15;
+const SIGNAL_STARVATION_RELIEF_CONFIDENCE = 0.70;
+const SYNTHETIC_DATA_PENALTY = 0.06;
+const _BIDIRECTIONAL_INFLATION_PENALTY = 0.04;
+const LOW_DATA_QUALITY_PENALTY = 0.05;
+const MAX_CONFIDENCE_CAP = 0.96;
 
 const TIME_WEIGHTS = {
   LOW_LIQUIDITY: 0.5,
@@ -2077,23 +2081,26 @@ class SignalGenerationEngine {
       this.confidenceHistory.shift();
     }
     
-    const weights = [0.1, 0.15, 0.2, 0.25, 0.3];
     const recentHistory = this.confidenceHistory.slice(-CONFIDENCE_SMOOTHING_WINDOW);
     
-    let smoothedConfidence = 0;
-    let totalWeight = 0;
-    
-    for (let i = 0; i < recentHistory.length; i++) {
-      const weight = weights[i] || weights[weights.length - 1];
-      smoothedConfidence += recentHistory[i] * weight;
-      totalWeight += weight;
+    if (recentHistory.length <= 1) {
+      console.log(`🔄 Confidence: Raw ${(rawConfidence * 100).toFixed(1)}% (no smoothing - insufficient history)`);
+      return rawConfidence;
     }
     
-    const finalConfidence = totalWeight > 0 ? smoothedConfidence / totalWeight : rawConfidence;
+    const currentWeight = 0.65;
+    const historyWeight = 0.35;
+    const historyAvg = recentHistory.slice(0, -1).reduce((a, b) => a + b, 0) / (recentHistory.length - 1);
     
-    console.log(`🔄 Confidence Smoothing: Raw ${(rawConfidence * 100).toFixed(1)}% -> Smoothed ${(finalConfidence * 100).toFixed(1)}% (${recentHistory.length}-tick EMA)`);
+    let finalConfidence = rawConfidence * currentWeight + historyAvg * historyWeight;
     
-    return finalConfidence;
+    finalConfidence = Math.min(finalConfidence, rawConfidence + 0.03);
+    
+    finalConfidence = Math.min(finalConfidence, MAX_CONFIDENCE_CAP);
+    
+    console.log(`🔄 Confidence Smoothing: Raw ${(rawConfidence * 100).toFixed(1)}% -> Smoothed ${(finalConfidence * 100).toFixed(1)}% (history avg: ${(historyAvg * 100).toFixed(1)}%, cap: raw+3%)`);
+    
+    return parseFloat(finalConfidence.toFixed(3));
   }
   
   private calculateFeatureCorrelation(): void {
@@ -2543,10 +2550,8 @@ class SignalGenerationEngine {
     }
     
     if (isLondonSession || isNYSession) {
-      buySignalStrength += 0.15;
-      sellSignalStrength += 0.15;
-      attentionScores.set('high_liquidity_session', 0.15);
-      console.log(`✅ High Liquidity Session (${isLondonSession ? 'LONDON' : 'NY'})`);
+      attentionScores.set('high_liquidity_session', 0.10);
+      console.log(`✅ High Liquidity Session (${isLondonSession ? 'LONDON' : 'NY'}) - context factor, not directional boost`);
     }
     
     if (features.orderFlow.largeOrdersDetected) {
@@ -2578,10 +2583,8 @@ class SignalGenerationEngine {
       node => Math.abs(this.currentPrice - node) < 3
     );
     if (nearHighVolumeNode) {
-      buySignalStrength += 0.08;
-      sellSignalStrength += 0.08;
-      attentionScores.set('volume_node_support_resistance', 0.08);
-      console.log('✅ Price near High Volume Node (potential S/R)');
+      attentionScores.set('volume_node_support_resistance', 0.05);
+      console.log('ℹ️ Price near High Volume Node (context only, no directional boost)');
     }
     
     if (features.marketRegime.type === 'TRENDING' && features.marketRegime.strength > 0.75) {
@@ -2595,10 +2598,8 @@ class SignalGenerationEngine {
         console.log('🔴 SELL: Strong Downtrend Confirmed');
       }
     } else if (features.marketRegime.type === 'VOLATILE') {
-      buySignalStrength += 0.05;
-      sellSignalStrength += 0.05;
-      attentionScores.set('volatile_opportunities', 0.05);
-      console.log('⚡ Volatile regime - Both directions active');
+      attentionScores.set('volatile_regime_context', 0.03);
+      console.log('⚡ Volatile regime - Context noted, no directional boost (noise risk)');
     }
     
     if (features.priceActionPattern === 'BULLISH_REVERSAL') {
@@ -2655,10 +2656,14 @@ class SignalGenerationEngine {
     
     const fibonacciAlignment = nearFibLevel;
     if (fibonacciAlignment) {
-      buySignalStrength += 0.20; // Increased boost for high accuracy mode
-      sellSignalStrength += 0.20; // Increased boost for high accuracy mode
-      attentionScores.set('fibonacci_alignment', 0.20);
-      console.log('✅ Price near Fibonacci Level (Boosted for High Accuracy)');
+      const fibDirectionalBoost = 0.08;
+      if (buySignalStrength > sellSignalStrength) {
+        buySignalStrength += fibDirectionalBoost;
+      } else if (sellSignalStrength > buySignalStrength) {
+        sellSignalStrength += fibDirectionalBoost;
+      }
+      attentionScores.set('fibonacci_alignment', fibDirectionalBoost);
+      console.log(`✅ Price near Fibonacci Level (+${(fibDirectionalBoost * 100).toFixed(0)}% to dominant direction only)`);
     }
     
     if (features.emaCrossover > 0.5) {
@@ -2793,35 +2798,62 @@ class SignalGenerationEngine {
       console.log('   Signal allowed but confidence may be reduced');
     }
     
-    let baseConfidence = 0.55 + signalStrength * 0.35;
+    let baseConfidence = 0.40 + signalStrength * 0.30;
     
-    baseConfidence += Math.abs(sentimentImpact) * 0.1;
+    baseConfidence += Math.abs(sentimentImpact) * 0.05;
     
     if (fibonacciAlignment) {
-      baseConfidence += 0.10; // Increased boost
+      baseConfidence += 0.04;
     }
     
     if (features.marketRegime.confidence > 0.85) {
-      baseConfidence += 0.03;
+      baseConfidence += 0.02;
     }
     
-    const timeBoost = (features.timeWindowFactor - 1.0) * 0.08;
+    const timeBoost = (features.timeWindowFactor - 1.0) * 0.04;
     baseConfidence += timeBoost;
     
     if (timeBoost > 0) {
       console.log(`⏰ Time Window Boost: +${(timeBoost * 100).toFixed(1)}% confidence (Factor: ${features.timeWindowFactor.toFixed(1)}x)`);
     }
     
-    const learningAdjustment = (this.performanceMetrics.profitFactor - 1.5) * 0.05;
+    const learningAdjustment = Math.max(-0.05, Math.min(0.03, (this.performanceMetrics.profitFactor - 1.5) * 0.03));
     baseConfidence += learningAdjustment;
     
     if (strengthDifference < 0.15) {
-      baseConfidence *= 0.85;
-      console.log(`⚠️ Weak directional conviction - Confidence reduced by 15%`);
+      baseConfidence *= 0.80;
+      console.log(`⚠️ Weak directional conviction - Confidence reduced by 20%`);
     }
     
-    const dataQualityPenalty = this.priceHistory.length < 30 ? -0.02 : 0;
-    let rawConfidence = Math.max(0.55, Math.min(0.98, baseConfidence + dataQualityPenalty));
+    if (strengthDifference < 0.20) {
+      baseConfidence *= 0.92;
+      console.log(`⚠️ Moderate directional conviction - Confidence reduced by 8%`);
+    }
+    
+    const losingStrength = isBullish ? sellSignalStrength : buySignalStrength;
+    if (losingStrength > 0.3) {
+      const conflictPenalty = losingStrength * 0.12;
+      baseConfidence -= conflictPenalty;
+      console.log(`⚠️ Opposing signal strength penalty: -${(conflictPenalty * 100).toFixed(1)}% (opposing: ${(losingStrength * 100).toFixed(1)}%)`);
+    }
+    
+    let dataQualityPenalty = 0;
+    if (this.priceHistory.length < 30) {
+      dataQualityPenalty += LOW_DATA_QUALITY_PENALTY;
+      console.log(`⚠️ Low data quality penalty: -${(LOW_DATA_QUALITY_PENALTY * 100).toFixed(1)}% (only ${this.priceHistory.length} price samples)`);
+    }
+    if (this.ohlcDataSource === 'estimated') {
+      dataQualityPenalty += SYNTHETIC_DATA_PENALTY;
+      console.log(`⚠️ Synthetic OHLC data penalty: -${(SYNTHETIC_DATA_PENALTY * 100).toFixed(1)}% (using estimated H/L)`);
+    }
+    if (this.priceHistory.length < 50) {
+      dataQualityPenalty += 0.03;
+      console.log(`⚠️ Insufficient history penalty: -3% (need 50+ samples for reliable indicators)`);
+    }
+    
+    let rawConfidence = Math.max(0.45, Math.min(MAX_CONFIDENCE_CAP, baseConfidence - dataQualityPenalty));
+    
+    console.log(`📊 Confidence Breakdown: base=${(0.40 + signalStrength * 0.30).toFixed(3)}, bonuses=${(baseConfidence - 0.40 - signalStrength * 0.30).toFixed(3)}, penalties=-${dataQualityPenalty.toFixed(3)}, raw=${rawConfidence.toFixed(3)}`);
     
     const smoothedConfidence = this.smoothConfidence(rawConfidence);
     
@@ -3490,15 +3522,15 @@ class SignalGenerationEngine {
       console.log('📊 Regime: QUIET - Cooldown extended to 90s (Low opportunity)');
     }
     
-    if (confidence >= 0.95) {
-      console.log('🚀 ULTRA-HIGH CONFIDENCE (≥95%) - COOLDOWN CANCELLED');
-      return 0;
-    } else if (confidence >= 0.90) {
-      cooldownMultiplier *= 0.5;
-      console.log('⚡ High confidence (≥90%) - Additional 50% cooldown reduction');
-    } else if (confidence >= 0.85) {
-      cooldownMultiplier *= 0.7;
-      console.log('⚡ Strong confidence (≥85%) - Additional 30% cooldown reduction');
+    if (confidence >= 0.93) {
+      cooldownMultiplier *= 0.4;
+      console.log('🚀 Ultra-high confidence (≥93%) - 60% cooldown reduction');
+    } else if (confidence >= 0.87) {
+      cooldownMultiplier *= 0.6;
+      console.log('⚡ High confidence (≥87%) - 40% cooldown reduction');
+    } else if (confidence >= 0.80) {
+      cooldownMultiplier *= 0.8;
+      console.log('⚡ Strong confidence (≥80%) - 20% cooldown reduction');
     }
     
     const calculatedCooldown = BASE_COOLDOWN * cooldownMultiplier;
@@ -3772,17 +3804,17 @@ class SignalGenerationEngine {
     let tp2Distance = settings.tp2Pips;
     let tp3Distance = settings.tp3Pips;
     
-    if (analysis.confidence >= 0.95) {
-      tp3Distance = settings.tp3Pips * 1.3;
-      tp2Distance = settings.tp2Pips * 1.15;
+    if (analysis.confidence >= 0.92) {
+      tp3Distance = settings.tp3Pips * 1.2;
+      tp2Distance = settings.tp2Pips * 1.1;
       console.log(`🎯 Ultra-high confidence (${(analysis.confidence * 100).toFixed(0)}%): TP targets widened (TP3: ${tp3Distance.toFixed(0)} pips)`);
     } else if (analysis.confidence >= 0.85) {
-      tp3Distance = settings.tp3Pips * 1.15;
+      tp3Distance = settings.tp3Pips * 1.1;
       console.log(`🎯 High confidence (${(analysis.confidence * 100).toFixed(0)}%): TP3 widened slightly (${tp3Distance.toFixed(0)} pips)`);
-    } else if (analysis.confidence < 0.70) {
-      tp1Distance = settings.tp1Pips * 0.85;
+    } else if (analysis.confidence < 0.75) {
+      tp1Distance = settings.tp1Pips * 0.90;
       tp2Distance = settings.tp2Pips * 0.85;
-      tp3Distance = settings.tp3Pips * 0.7;
+      tp3Distance = settings.tp3Pips * 0.75;
       console.log(`⚠️ Lower confidence (${(analysis.confidence * 100).toFixed(0)}%): TP targets tightened`);
     }
     
@@ -4251,15 +4283,15 @@ class SignalGenerationEngine {
   ): PositionSizing {
     let confidenceMultiplier = 1.0;
     
-    if (confidence >= 0.90) {
-      confidenceMultiplier = 2.0;
-    } else if (confidence >= 0.85) {
+    if (confidence >= 0.92) {
       confidenceMultiplier = 1.75;
-    } else if (confidence >= 0.80) {
+    } else if (confidence >= 0.87) {
       confidenceMultiplier = 1.5;
-    } else if (confidence >= 0.75) {
+    } else if (confidence >= 0.82) {
       confidenceMultiplier = 1.25;
-    } else if (confidence >= 0.70) {
+    } else if (confidence >= 0.77) {
+      confidenceMultiplier = 1.1;
+    } else if (confidence >= 0.72) {
       confidenceMultiplier = 1.0;
     } else {
       confidenceMultiplier = 0.75;

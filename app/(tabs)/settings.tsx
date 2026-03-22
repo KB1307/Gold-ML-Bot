@@ -472,7 +472,7 @@ export default function SettingsScreen() {
               </View>
 
               <Text style={styles.helperText}>
-                Only 90%+ probability signals will be generated and shown (90-98%).
+                Signals are filtered by confidence threshold. Higher values = fewer but stronger signals (72-96%).
               </Text>
 
               <View style={styles.tpSelector}>

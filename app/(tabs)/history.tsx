@@ -90,7 +90,7 @@ export default function HistoryScreen() {
               <History size={32} color="#FFD700" strokeWidth={2} />
               <View style={styles.headerTextContainer}>
                 <Text style={styles.headerTitle}>Signal History</Text>
-                <Text style={styles.headerSubtitle}>{visibleSignalHistory.length} Visible Signals (90%+)</Text>
+                <Text style={styles.headerSubtitle}>{visibleSignalHistory.length} Tracked Signals</Text>
               </View>
             </View>
 
@@ -107,7 +107,7 @@ export default function HistoryScreen() {
                 <History size={64} color="#444" strokeWidth={1.5} />
                 <Text style={styles.emptyTitle}>No Signal History</Text>
                 <Text style={styles.emptyText}>
-                  Only 90%+ probability signals appear here. The learning engine still tracks the full signal set for continuous improvement.
+                  Signals above your confidence threshold appear here. The learning engine tracks all signal outcomes for continuous improvement.
                 </Text>
               </View>
             ) : (

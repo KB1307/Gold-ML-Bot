@@ -589,7 +589,7 @@ export default function DashboardScreen() {
                 <View style={styles.probabilityBanner}>
                   <TrendingUpDown size={14} color="#22c55e" />
                   <Text style={styles.probabilityText}>
-                    Elite {currentSignal.type.toLowerCase()} setup with 90%+ probability and multiple confirming indicators across different timeframes and analysis methods.
+                    High-confidence {currentSignal.type.toLowerCase()} setup with {(currentSignal.confidence * 100).toFixed(0)}% probability and multiple confirming indicators across different timeframes and analysis methods.
                   </Text>
                 </View>
               </View>
@@ -601,7 +601,7 @@ export default function DashboardScreen() {
                 <Text style={styles.noSignalTitle}>No Active Signal</Text>
                 <Text style={styles.noSignalText}>
                   {marketOutlook?.isMarketOpen 
-                    ? "Analyzing market conditions. Only elite 90%+ probability setups will be shown."
+                    ? "Analyzing market conditions. Only high-confidence setups above your threshold will be shown."
                     : "Market is closed. Signals will resume when market opens."
                   }
                 </Text>

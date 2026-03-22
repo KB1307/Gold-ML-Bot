@@ -20,7 +20,7 @@ const DEFAULT_SETTINGS: Settings = {
   tp3Pips: 65,
   slPips: 70,
   numberOfTPs: 3,
-  minConfidence: 0.90,
+  minConfidence: 0.72,
   enableNotifications: true,
   basePositionSize: 0.01,
   maxRiskPercentage: 2.0,
@@ -59,7 +59,7 @@ const CHART_STALL_FAILOVER_MS = 20000;
 const MIN_MEANINGFUL_PRICE_CHANGE = 0.03;
 const HISTORICAL_RECONCILIATION_INTERVAL_MS = 30000;
 const TERMINAL_SIGNAL_STATUSES: SignalStatus[] = ["CLOSED", "SL_HIT", "ALL_TARGETS_HIT", "PARTIAL_WIN_SL_HIT"];
-const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.90;
+const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.72;
 
 function clampSignalConfidenceThreshold(value: number): number {
   return Number(Math.min(0.98, Math.max(ENFORCED_MIN_SIGNAL_CONFIDENCE, value)).toFixed(2));
