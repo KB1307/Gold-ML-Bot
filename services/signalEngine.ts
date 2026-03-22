@@ -96,6 +96,24 @@ interface SessionSweep {
   strength: number;
 }
 
+interface SRZone {
+  price: number;
+  type: 'SUPPORT' | 'RESISTANCE';
+  touches: number;
+  lastTouch: number;
+  rejectionWicks: number;
+  avgRejectionSize: number;
+  reactionStrength: number;
+  source: 'PRICE_ACTION' | 'PIVOT' | 'FIBONACCI' | 'VOLUME_NODE';
+}
+
+interface SRZoneReaction {
+  zone: SRZone;
+  reactionType: 'BOUNCE' | 'REJECTION_WICK' | 'STRONG_REVERSAL';
+  strength: number;
+  confirmed: boolean;
+}
+
 interface MarketFeatures {
   asianHigh: number;
   asianLow: number;
@@ -125,6 +143,8 @@ interface MarketFeatures {
   priceActionPattern: string;
   supportStrength: number;
   resistanceStrength: number;
+  srZones: SRZone[];
+  activeSRReaction: SRZoneReaction | null;
   intermarketData: IntermarketData;
   liquidityWindow: LiquidityWindow;
   timeWindowFactor: number;
@@ -691,6 +711,8 @@ class SignalGenerationEngine {
   private lastFiveMinCandleClose: number = 0;
   private quasimodolLevels: QuasimodolLevel[] = [];
   private sessionSweeps: SessionSweep[] = [];
+  private srZones: SRZone[] = [];
+  private srZoneProximityThreshold: number = 5;
   private asianSessionHigh: number = 0;
   private asianSessionLow: number = Infinity;
   private londonSessionHigh: number = 0;
@@ -1710,6 +1732,207 @@ class SignalGenerationEngine {
     };
   }
 
+  private detectSRZones(): SRZone[] {
+    const now = Date.now();
+    const currentPrice = this.currentPrice;
+    const zones: SRZone[] = [];
+    const atr = this.calculateRealATR(14);
+    const zoneWidth = Math.max(2, atr * 0.3);
+
+    if (this.priceHistory.length < 20 || this.highHistory.length < 20 || this.lowHistory.length < 20) {
+      console.log('⚠️ S/R Zones: Insufficient data for zone detection');
+      return this.srZones;
+    }
+
+    const candidateLevels: { price: number; source: 'PRICE_ACTION' | 'PIVOT' | 'FIBONACCI' | 'VOLUME_NODE' }[] = [];
+
+    const recentHighs = this.highHistory.slice(-50);
+    const recentLows = this.lowHistory.slice(-50);
+    for (let i = 2; i < recentHighs.length - 2; i++) {
+      if (recentHighs[i] > recentHighs[i - 1] && recentHighs[i] > recentHighs[i - 2] &&
+          recentHighs[i] > recentHighs[i + 1] && recentHighs[i] > recentHighs[i + 2]) {
+        candidateLevels.push({ price: recentHighs[i], source: 'PRICE_ACTION' });
+      }
+    }
+    for (let i = 2; i < recentLows.length - 2; i++) {
+      if (recentLows[i] < recentLows[i - 1] && recentLows[i] < recentLows[i - 2] &&
+          recentLows[i] < recentLows[i + 1] && recentLows[i] < recentLows[i + 2]) {
+        candidateLevels.push({ price: recentLows[i], source: 'PRICE_ACTION' });
+      }
+    }
+
+    const ohlc = this.getDerivedDailyOHLC();
+    const dailyPivot = (ohlc.yesterdayHigh + ohlc.yesterdayLow + ohlc.yesterdayClose) / 3;
+    const dailyRange = Math.max(ohlc.yesterdayHigh - ohlc.yesterdayLow, atr);
+    const zoneStep = dailyRange / 12;
+    candidateLevels.push({ price: dailyPivot, source: 'PIVOT' });
+    candidateLevels.push({ price: ohlc.yesterdayClose + zoneStep, source: 'PIVOT' });
+    candidateLevels.push({ price: ohlc.yesterdayClose - zoneStep, source: 'PIVOT' });
+    candidateLevels.push({ price: ohlc.yesterdayClose + zoneStep * 2, source: 'PIVOT' });
+    candidateLevels.push({ price: ohlc.yesterdayClose - zoneStep * 2, source: 'PIVOT' });
+
+    const clustered: { price: number; source: 'PRICE_ACTION' | 'PIVOT' | 'FIBONACCI' | 'VOLUME_NODE'; count: number }[] = [];
+    for (const level of candidateLevels) {
+      const existing = clustered.find(c => Math.abs(c.price - level.price) < zoneWidth);
+      if (existing) {
+        existing.count++;
+        existing.price = (existing.price + level.price) / 2;
+        if (level.source === 'PRICE_ACTION') existing.source = level.source;
+      } else {
+        clustered.push({ ...level, count: 1 });
+      }
+    }
+
+    for (const cluster of clustered) {
+      let touches = 0;
+      let rejectionWicks = 0;
+      let totalRejectionSize = 0;
+      let lastTouch = 0;
+      const isResistance = cluster.price > currentPrice;
+
+      for (let i = 0; i < this.priceHistory.length; i++) {
+        const price = this.priceHistory[i];
+        const high = this.highHistory[i] ?? price;
+        const low = this.lowHistory[i] ?? price;
+
+        if (Math.abs(price - cluster.price) < zoneWidth) {
+          touches++;
+          lastTouch = now - ((this.priceHistory.length - i) * 5000);
+        }
+
+        if (isResistance && high >= cluster.price - zoneWidth && price < cluster.price) {
+          const wickSize = high - Math.max(price, this.priceHistory[Math.max(0, i - 1)] ?? price);
+          if (wickSize > zoneWidth * 0.3) {
+            rejectionWicks++;
+            totalRejectionSize += wickSize;
+          }
+        }
+
+        if (!isResistance && low <= cluster.price + zoneWidth && price > cluster.price) {
+          const wickSize = Math.min(price, this.priceHistory[Math.max(0, i - 1)] ?? price) - low;
+          if (wickSize > zoneWidth * 0.3) {
+            rejectionWicks++;
+            totalRejectionSize += wickSize;
+          }
+        }
+      }
+
+      const touchScore = Math.min(1, touches / 6);
+      const rejectionScore = Math.min(1, rejectionWicks / 4);
+      const avgRejectionSize = rejectionWicks > 0 ? totalRejectionSize / rejectionWicks : 0;
+      const rejectionSizeScore = Math.min(1, avgRejectionSize / (atr * 0.5));
+      const clusterScore = Math.min(1, cluster.count / 3);
+      const reactionStrength = (touchScore * 0.30) + (rejectionScore * 0.30) + (rejectionSizeScore * 0.20) + (clusterScore * 0.20);
+
+      if (touches >= 2 || rejectionWicks >= 1 || cluster.count >= 2) {
+        zones.push({
+          price: parseFloat(cluster.price.toFixed(1)),
+          type: isResistance ? 'RESISTANCE' : 'SUPPORT',
+          touches,
+          lastTouch,
+          rejectionWicks,
+          avgRejectionSize: parseFloat(avgRejectionSize.toFixed(2)),
+          reactionStrength: parseFloat(reactionStrength.toFixed(3)),
+          source: cluster.source,
+        });
+      }
+    }
+
+    zones.sort((a, b) => b.reactionStrength - a.reactionStrength);
+    this.srZones = zones.slice(0, 12);
+
+    if (this.srZones.length > 0) {
+      console.log('\n📊 S/R ZONE DETECTION:');
+      console.log('='.repeat(60));
+      for (const zone of this.srZones.slice(0, 6)) {
+        console.log(`   ${zone.type} @ ${zone.price.toFixed(1)} | Touches: ${zone.touches} | Wick Rejections: ${zone.rejectionWicks} | Reaction: ${(zone.reactionStrength * 100).toFixed(0)}% | Source: ${zone.source}`);
+      }
+      console.log('='.repeat(60));
+    }
+
+    return this.srZones;
+  }
+
+  private detectActiveSRReaction(features: MarketFeatures): SRZoneReaction | null {
+    const currentPrice = this.currentPrice;
+    const atr = features.atr || this.calculateRealATR(14);
+    const proximityThreshold = Math.max(3, atr * 0.25);
+
+    for (const zone of this.srZones) {
+      const distance = Math.abs(currentPrice - zone.price);
+      if (distance > proximityThreshold) continue;
+
+      if (zone.reactionStrength < 0.3) continue;
+
+      const recentPrices = this.priceHistory.slice(-5);
+      const recentHighs = this.highHistory.slice(-5);
+      const recentLows = this.lowHistory.slice(-5);
+      if (recentPrices.length < 3) continue;
+
+      let reactionType: 'BOUNCE' | 'REJECTION_WICK' | 'STRONG_REVERSAL' = 'BOUNCE';
+      let reactionConfirmed = false;
+      let reactionBoost = 0;
+
+      if (zone.type === 'SUPPORT') {
+        const touchedZone = recentLows.some(l => l <= zone.price + proximityThreshold * 0.5);
+        const priceAboveZone = currentPrice > zone.price;
+        const movingAway = recentPrices.length >= 3 && recentPrices[recentPrices.length - 1] > recentPrices[recentPrices.length - 3];
+
+        if (touchedZone && priceAboveZone && movingAway) {
+          reactionConfirmed = true;
+          const bounceSize = currentPrice - zone.price;
+          if (bounceSize > atr * 0.4) {
+            reactionType = 'STRONG_REVERSAL';
+            reactionBoost = 0.25;
+          } else if (recentLows.some(l => l < zone.price) && currentPrice > zone.price) {
+            reactionType = 'REJECTION_WICK';
+            reactionBoost = 0.20;
+          } else {
+            reactionBoost = 0.15;
+          }
+        }
+      } else {
+        const touchedZone = recentHighs.some(h => h >= zone.price - proximityThreshold * 0.5);
+        const priceBelowZone = currentPrice < zone.price;
+        const movingAway = recentPrices.length >= 3 && recentPrices[recentPrices.length - 1] < recentPrices[recentPrices.length - 3];
+
+        if (touchedZone && priceBelowZone && movingAway) {
+          reactionConfirmed = true;
+          const rejectionSize = zone.price - currentPrice;
+          if (rejectionSize > atr * 0.4) {
+            reactionType = 'STRONG_REVERSAL';
+            reactionBoost = 0.25;
+          } else if (recentHighs.some(h => h > zone.price) && currentPrice < zone.price) {
+            reactionType = 'REJECTION_WICK';
+            reactionBoost = 0.20;
+          } else {
+            reactionBoost = 0.15;
+          }
+        }
+      }
+
+      if (reactionConfirmed) {
+        const zoneMultiplier = Math.min(1.5, 0.8 + zone.reactionStrength);
+        const finalStrength = reactionBoost * zoneMultiplier;
+
+        console.log(`\n🎯 S/R ZONE REACTION DETECTED:`);
+        console.log(`   Zone: ${zone.type} @ ${zone.price.toFixed(1)} (Reaction Strength: ${(zone.reactionStrength * 100).toFixed(0)}%)`);
+        console.log(`   Reaction Type: ${reactionType}`);
+        console.log(`   Touches: ${zone.touches} | Rejection Wicks: ${zone.rejectionWicks}`);
+        console.log(`   Signal Boost: +${(finalStrength * 100).toFixed(1)}% (base: ${(reactionBoost * 100).toFixed(0)}% × zone multiplier: ${zoneMultiplier.toFixed(2)})`);
+
+        return {
+          zone,
+          reactionType,
+          strength: parseFloat(finalStrength.toFixed(3)),
+          confirmed: true,
+        };
+      }
+    }
+
+    return null;
+  }
+
   private generateSentimentAnalysis(): SentimentData {
     const rsi = this.calculateRealRSI(14);
     const trendStrength = this.calculateTrendStrength();
@@ -1982,6 +2205,7 @@ class SignalGenerationEngine {
     const marketRegime = await this.detectMarketRegime();
     const priceActionPattern = this.detectPriceActionPattern();
     const srStrength = this.calculateSupportResistanceStrength();
+    const srZones = this.detectSRZones();
     
     const intermarketData = await fetchIntermarketData();
     const liquidityWindow = this.calculateLiquidityWindow();
@@ -2029,6 +2253,8 @@ class SignalGenerationEngine {
       priceActionPattern,
       supportStrength: srStrength.supportStrength,
       resistanceStrength: srStrength.resistanceStrength,
+      srZones,
+      activeSRReaction: null,
       intermarketData,
       liquidityWindow,
       timeWindowFactor,
@@ -2622,14 +2848,40 @@ class SignalGenerationEngine {
     
     if (features.supportStrength > 0.8) {
       buySignalStrength += 0.10;
-      attentionScores.set('strong_support_bounce', 0.10);
-      console.log('✅ BUY: Strong Support Zone');
+      attentionScores.set('strong_support_proximity', 0.10);
+      console.log('✅ BUY: Strong Support Proximity');
     }
     
     if (features.resistanceStrength > 0.8) {
       sellSignalStrength += 0.10;
-      attentionScores.set('strong_resistance_rejection', 0.10);
-      console.log('🔴 SELL: Strong Resistance Zone');
+      attentionScores.set('strong_resistance_proximity', 0.10);
+      console.log('🔴 SELL: Strong Resistance Proximity');
+    }
+
+    const srReaction = this.detectActiveSRReaction(features);
+    if (srReaction && srReaction.confirmed) {
+      features.activeSRReaction = srReaction;
+      if (srReaction.zone.type === 'SUPPORT') {
+        buySignalStrength += srReaction.strength;
+        attentionScores.set(`sr_zone_${srReaction.reactionType.toLowerCase()}`, srReaction.strength);
+        console.log(`✅ BUY: S/R Zone ${srReaction.reactionType} @ ${srReaction.zone.price.toFixed(1)} (+${(srReaction.strength * 100).toFixed(1)}%)`);
+      } else {
+        sellSignalStrength += srReaction.strength;
+        attentionScores.set(`sr_zone_${srReaction.reactionType.toLowerCase()}`, srReaction.strength);
+        console.log(`🔴 SELL: S/R Zone ${srReaction.reactionType} @ ${srReaction.zone.price.toFixed(1)} (+${(srReaction.strength * 100).toFixed(1)}%)`);
+      }
+
+      if (srReaction.zone.touches >= 3 && srReaction.zone.rejectionWicks >= 2) {
+        const multiTouchBonus = 0.08;
+        if (srReaction.zone.type === 'SUPPORT') {
+          buySignalStrength += multiTouchBonus;
+          attentionScores.set('multi_touch_sr_confirmation', multiTouchBonus);
+        } else {
+          sellSignalStrength += multiTouchBonus;
+          attentionScores.set('multi_touch_sr_confirmation', multiTouchBonus);
+        }
+        console.log(`   🔥 Multi-touch S/R Confirmation: ${srReaction.zone.touches} touches, ${srReaction.zone.rejectionWicks} rejection wicks (+${(multiTouchBonus * 100).toFixed(0)}%)`);
+      }
     }
     
     let sentimentImpact = 0;
@@ -2804,6 +3056,12 @@ class SignalGenerationEngine {
     
     if (fibonacciAlignment) {
       baseConfidence += 0.04;
+    }
+
+    if (features.activeSRReaction && features.activeSRReaction.confirmed) {
+      const srConfBoost = features.activeSRReaction.strength * 0.15;
+      baseConfidence += srConfBoost;
+      console.log(`🎯 S/R Zone Reaction Confidence Boost: +${(srConfBoost * 100).toFixed(1)}% (${features.activeSRReaction.reactionType} @ ${features.activeSRReaction.zone.price.toFixed(1)})`);
     }
     
     if (features.marketRegime.confidence > 0.85) {
@@ -3715,7 +3973,7 @@ class SignalGenerationEngine {
       if (this.driftAlertLevel === 'HIGH') {
         console.log(`   ⚠️ Elevated threshold active due to HIGH CONCEPT DRIFT`);
       }
-      console.log(`   💡 TIP: Only 90%+ setups are allowed right now. Wait for a stronger setup or raise the threshold further in settings.`);
+      console.log(`   💡 TIP: Confidence ${(analysis.confidence * 100).toFixed(1)}% below ${(effectiveMinConfidence * 100).toFixed(0)}% threshold. Wait for stronger alignment or adjust threshold in settings.`);
       console.log(`${'='.repeat(80)}\n`);
       return null;
     }
