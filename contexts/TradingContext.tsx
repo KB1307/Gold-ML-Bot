@@ -12,7 +12,7 @@ import {
   requestNotificationPermissions,
   sendSignalNotification
 } from "@/services/backgroundTaskService";
-import { subscribeToChartPrice } from "@/services/chartPriceBridge";
+import { subscribeToChartPrice, subscribeToChartHeartbeat } from "@/services/chartPriceBridge";
 
 const DEFAULT_SETTINGS: Settings = {
   tp1Pips: 20,
@@ -292,21 +292,18 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   useEffect(() => {
     let isMounted = true;
 
-    console.log('🔌 Starting Tiingo guide price feed...');
+    console.log('🔌 Starting Tiingo live price feed (quote+trade, thresholdLevel=0)...');
 
     const unsubPrice = goldWebSocketService.onPrice((price: number, source: string) => {
       if (!isMounted) return;
       commitGuidePrice(price, source);
-
-      if (source.includes('REST-Fallback')) {
-        applyLivePrice(price, source, 'feed');
-      }
+      applyLivePrice(price, source, 'feed');
     });
 
     const unsubStatus = goldWebSocketService.onStatus((status) => {
       if (!isMounted) return;
 
-      console.log(`📡 Tiingo guide feed status: ${status}`);
+      console.log(`📡 Tiingo feed status: ${status}`);
 
       if (status === 'connected') {
         const lastGuidePrice = goldWebSocketService.getLastPrice();
@@ -318,7 +315,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           setGuidePriceSource('🟢 Tiingo-Live');
         }
       } else if (status === 'waiting_for_trade') {
-        setGuidePriceSource('🟠 Waiting for Trade');
+        setGuidePriceSource('🟠 Waiting for Data');
       } else if (status === 'disconnected') {
         setGuidePriceSource('🔴 Disconnected');
       } else if (status === 'reconnecting') {
@@ -337,6 +334,19 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       goldWebSocketService.stop();
     };
   }, [commitGuidePrice, applyLivePrice]);
+
+  useEffect(() => {
+    const unsubHeartbeat = subscribeToChartHeartbeat((isAlive, lastPriceAt, _lastPrice) => {
+      if (!isAlive && lastPriceAt > 0) {
+        const staleSec = ((Date.now() - lastPriceAt) / 1000).toFixed(1);
+        console.log(`💔 [ChartHeartbeat] Chart feed stale for ${staleSec}s — Tiingo feed is active backup`);
+      }
+    });
+
+    return () => {
+      unsubHeartbeat();
+    };
+  }, []);
 
   useEffect(() => {
     const interval = setInterval(() => {

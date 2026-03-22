@@ -31,12 +31,19 @@ interface WebSocketServiceState {
   restFallbackActive: boolean;
   lastWsTradeTime: number;
   wsStartTime: number;
+  lastHeartbeatSentAt: number;
+  lastHeartbeatResponseAt: number;
+  heartbeatMissCount: number;
+  lastQuoteTime: number;
+  quotesReceivedCount: number;
+  tradesReceivedCount: number;
 }
 
 const WATCHDOG_INTERVAL_MS = 1000;
 const CONNECT_TIMEOUT_MS = 15000;
-const CONNECTION_ALIVE_TIMEOUT_MS = 90000;
-const HEARTBEAT_PING_INTERVAL_MS = 25000;
+const CONNECTION_ALIVE_TIMEOUT_MS = 45000;
+const HEARTBEAT_PING_INTERVAL_MS = 15000;
+const HEARTBEAT_RESPONSE_TIMEOUT_MS = 10000;
 const RECONNECT_DELAY_MS = 5000;
 const TIINGO_FX_TICKER = 'xauusd';
 const TIINGO_LIVE_SOURCE = '🟢 Tiingo-Live';
@@ -44,6 +51,7 @@ const TIINGO_WS_URL = 'wss://api.tiingo.com/fx';
 const REST_FALLBACK_ACTIVATION_MS = 20000;
 const REST_FALLBACK_POLL_INTERVAL_MS = 15000;
 const REST_FALLBACK_SOURCE = '🟠 REST-Fallback';
+const TIINGO_THRESHOLD_LEVEL = 0;
 
 const state: WebSocketServiceState = {
   ws: null,
@@ -74,6 +82,12 @@ const state: WebSocketServiceState = {
   restFallbackActive: false,
   lastWsTradeTime: 0,
   wsStartTime: 0,
+  lastHeartbeatSentAt: 0,
+  lastHeartbeatResponseAt: 0,
+  heartbeatMissCount: 0,
+  lastQuoteTime: 0,
+  quotesReceivedCount: 0,
+  tradesReceivedCount: 0,
 };
 
 function getTiingoApiKey(): string | null {
@@ -381,6 +395,9 @@ function resetConnectionAliveTimer(connectionId: number, reason: string): void {
 
 function startHeartbeatPing(socket: WebSocket, connectionId: number): void {
   stopHeartbeatPing();
+  state.lastHeartbeatSentAt = 0;
+  state.lastHeartbeatResponseAt = Date.now();
+  state.heartbeatMissCount = 0;
 
   state.heartbeatPingTimer = setInterval(() => {
     if (state.intentionallyClosed || state.ws !== socket) {
@@ -392,9 +409,24 @@ function startHeartbeatPing(socket: WebSocket, connectionId: number): void {
       return;
     }
 
+    if (state.lastHeartbeatSentAt > 0 && state.lastHeartbeatResponseAt < state.lastHeartbeatSentAt) {
+      const waitMs = Date.now() - state.lastHeartbeatSentAt;
+      if (waitMs > HEARTBEAT_RESPONSE_TIMEOUT_MS) {
+        state.heartbeatMissCount += 1;
+        console.warn(`⚠️ [GoldWS] Heartbeat response missed #${state.heartbeatMissCount} (waited ${(waitMs / 1000).toFixed(1)}s) (connection ${connectionId})`);
+
+        if (state.heartbeatMissCount >= 2) {
+          console.warn(`🚨 [GoldWS] ${state.heartbeatMissCount} consecutive heartbeat misses — recycling socket (connection ${connectionId})`);
+          requestSocketRecycle('heartbeat-response-timeout', RECONNECT_DELAY_MS);
+          return;
+        }
+      }
+    }
+
     try {
+      state.lastHeartbeatSentAt = Date.now();
       socket.send(JSON.stringify({ eventName: 'heartbeat' }));
-      console.log(`🏓 [GoldWS] Sent Tiingo heartbeat (connection ${connectionId})`);
+      console.log(`🏓 [GoldWS] Sent Tiingo heartbeat #${state.heartbeatMissCount > 0 ? 'retry' : 'ok'} (connection ${connectionId})`);
     } catch (error) {
       console.warn(`⚠️ [GoldWS] Tiingo heartbeat send failed (connection ${connectionId})`, error);
       requestSocketRecycle('heartbeat-ping-failed', RECONNECT_DELAY_MS);
@@ -669,7 +701,7 @@ async function connect(): Promise<void> {
       eventName: 'subscribe',
       authorization: apiKey,
       eventData: {
-        thresholdLevel: 5,
+        thresholdLevel: TIINGO_THRESHOLD_LEVEL,
         tickers: [TIINGO_FX_TICKER],
       },
     };
@@ -703,8 +735,19 @@ async function connect(): Promise<void> {
       const messageType = message.messageType as string | undefined;
       const response = message.response as Record<string, unknown> | undefined;
 
-      if (messageType === 'I' || messageType === 'H') {
-        console.log(`ℹ️ [GoldWS] Tiingo control message (type=${messageType}):`, response?.message ?? rawData.slice(0, 200));
+      if (messageType === 'I') {
+        console.log(`ℹ️ [GoldWS] Tiingo info message:`, response?.message ?? rawData.slice(0, 200));
+        if (!state.hasReceivedTradeOnActiveConnection) {
+          notifyStatus('waiting_for_trade');
+        }
+        return;
+      }
+
+      if (messageType === 'H') {
+        state.lastHeartbeatResponseAt = Date.now();
+        state.heartbeatMissCount = 0;
+        const rttMs = state.lastHeartbeatSentAt > 0 ? Date.now() - state.lastHeartbeatSentAt : 0;
+        console.log(`💓 [GoldWS] Heartbeat response received (RTT=${rttMs}ms, connection ${connectionId})`);
         if (!state.hasReceivedTradeOnActiveConnection) {
           notifyStatus('waiting_for_trade');
         }
@@ -731,11 +774,17 @@ async function connect(): Promise<void> {
         }
 
         let parsedPrice: number | null = null;
+        let updateLabel = updateType;
 
         if (updateType === 'Q') {
           parsedPrice = parseTiingoQuotePrice(data);
+          state.quotesReceivedCount += 1;
+          state.lastQuoteTime = Date.now();
+          updateLabel = 'Q';
         } else if (updateType === 'T') {
           parsedPrice = parseTiingoTradePrice(data);
+          state.tradesReceivedCount += 1;
+          updateLabel = 'T';
         }
 
         if (parsedPrice === null) {
@@ -746,10 +795,13 @@ async function connect(): Promise<void> {
         state.lastTickTime = Date.now();
         state.lastWsTradeTime = Date.now();
         state.hasReceivedTradeOnActiveConnection = true;
-        notifyPrice(parsedPrice, TIINGO_LIVE_SOURCE);
+        notifyPrice(parsedPrice, `${TIINGO_LIVE_SOURCE} (${updateLabel})`);
         notifyStatus('connected');
         stopRestFallback();
-        console.log(`⚡ [GoldWS] Tiingo ${updateType} ${parsedPrice.toFixed(2)} | ticker=${ticker}`);
+
+        if (state.quotesReceivedCount % 30 === 0 || updateType === 'T') {
+          console.log(`⚡ [GoldWS] Tiingo ${updateLabel} ${parsedPrice.toFixed(2)} | ticker=${ticker} | Q:${state.quotesReceivedCount} T:${state.tradesReceivedCount}`);
+        }
         return;
       }
 
