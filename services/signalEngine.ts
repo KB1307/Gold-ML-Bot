@@ -4625,13 +4625,16 @@ class SignalGenerationEngine {
 
     const now = new Date();
     const hour = now.getUTCHours();
+    const minute = now.getUTCMinutes();
     const dayOfWeek = now.getUTCDay();
     
-    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+    const isSaturday = dayOfWeek === 6;
     const isFridayClose = dayOfWeek === 5 && hour >= 21;
     const isSundayBeforeOpen = dayOfWeek === 0 && hour < 22;
     
-    const isMarketOpen = !isWeekend && !isFridayClose && !isSundayBeforeOpen;
+    const isMarketOpen = !isSaturday && !isFridayClose && !isSundayBeforeOpen;
+    
+    console.log(`[MarketStatus] UTC ${dayOfWeek} ${hour}:${minute} | open=${isMarketOpen} | sat=${isSaturday} friClose=${isFridayClose} sunBefore=${isSundayBeforeOpen}`);
     
     const isLondonActive = hour >= 6 && hour < 13 && isMarketOpen;
     const isNYActive = hour >= 13 && hour < 21 && isMarketOpen;
