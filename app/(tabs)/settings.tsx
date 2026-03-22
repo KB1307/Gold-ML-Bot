@@ -3,13 +3,48 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Settings as SettingsIcon, Target, Shield, TrendingUp, LogOut, Save, Trash2, Activity, AlertTriangle, RefreshCw, Bell, Smartphone, Crown } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
 import { useSubscription } from "@/contexts/SubscriptionContext";
-import { useState, useEffect } from "react";
+import { useAuth } from "@/contexts/AuthContext";
+import { AccountSettingsCard } from "@/components/AccountSettingsCard";
+import { useState, useEffect, useMemo } from "react";
 import { Stack, useRouter } from "expo-router";
 import { getBackgroundTaskStatus } from "@/services/backgroundTaskService";
 
+function getProviderLabel(provider: unknown): string {
+  if (provider === "google") {
+    return "Google";
+  }
+
+  if (provider === "apple") {
+    return "Apple";
+  }
+
+  if (provider === "email") {
+    return "Email";
+  }
+
+  return "Email / OAuth";
+}
+
 export default function SettingsScreen() {
   const { settings, updateSettings, logout, clearHistory, performanceMetrics, triggerManualRetrain, backgroundTaskActive } = useTrading();
-  const { isPro } = useSubscription();
+  const { isPro, appUserId, isSyncingCustomerIdentity } = useSubscription();
+  const {
+    isConfigured,
+    user,
+    isAuthenticated,
+    statusMessage,
+    errorMessage,
+    activeOAuthProvider,
+    isLoadingSession,
+    isSigningInWithEmail,
+    isCreatingAccount,
+    isSigningOut,
+    isSigningInWithOAuth,
+    signInWithEmail,
+    signUpWithEmail,
+    signInWithOAuth,
+    signOut,
+  } = useAuth();
   const router = useRouter();
   const [isRetraining, setIsRetraining] = useState<boolean>(false);
   const [bgTaskStatus, setBgTaskStatus] = useState<{ isRegistered: boolean; isAvailable: boolean; } | null>(null);
@@ -41,6 +76,10 @@ export default function SettingsScreen() {
     setMinConfidence((settings.minConfidence * 100).toFixed(0));
     setNumberOfTPs(settings.numberOfTPs);
   }, [settings]);
+
+  const authProviderLabel = useMemo(() => {
+    return getProviderLabel(user?.app_metadata?.provider);
+  }, [user?.app_metadata?.provider]);
 
   const handleSave = async () => {
     const parsedMinConfidence = parseFloat(minConfidence);
@@ -190,6 +229,27 @@ export default function SettingsScreen() {
                 <Text style={styles.proActiveText}>Bullrun Pro Active</Text>
               </View>
             )}
+
+            <AccountSettingsCard
+              isConfigured={isConfigured}
+              isAuthenticated={isAuthenticated}
+              userEmail={user?.email ?? null}
+              userId={user?.id ?? null}
+              providerLabel={authProviderLabel}
+              revenueCatUserId={appUserId}
+              isRevenueCatSyncing={isSyncingCustomerIdentity}
+              statusMessage={statusMessage}
+              errorMessage={errorMessage}
+              isLoadingSession={isLoadingSession}
+              isSubmittingEmail={isSigningInWithEmail || isCreatingAccount}
+              isSubmittingOAuth={isSigningInWithOAuth}
+              isSigningOut={isSigningOut}
+              activeOAuthProvider={activeOAuthProvider}
+              onSignInWithEmail={signInWithEmail}
+              onCreateAccount={signUpWithEmail}
+              onSignInWithOAuth={signInWithOAuth}
+              onSignOut={signOut}
+            />
 
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
@@ -520,9 +580,9 @@ export default function SettingsScreen() {
               <Text style={styles.clearText}>Clear Signal History</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+            <TouchableOpacity style={styles.logoutButton} onPress={handleLogout} testID="settings-exit-dashboard-button">
               <LogOut size={20} color="#ef4444" />
-              <Text style={styles.logoutText}>Logout</Text>
+              <Text style={styles.logoutText}>Exit Dashboard</Text>
             </TouchableOpacity>
 
             <View style={styles.footer}>

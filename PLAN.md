@@ -60,3 +60,7 @@ Make the TradingView chart price the primary live input for signal generation an
 - [x] **Daily intraday support/resistance zoning** now uses tighter completed-day zone anchors for the dashboard/outlook so levels match the signal bot’s intraday frequency instead of wider long-range spacing
 - [x] **90% signal probability floor** now clamps generation settings to 90%+, blocks sub-90% engine output, and hides any legacy sub-90% signals from dashboard/history surfaces
 - [x] **Sandbox verification** confirmed the engine now generates signals again over the accelerated 24-hour replay
+- [x] **Supabase auth client wiring** now initializes a typed Supabase client with persisted Expo-compatible sessions and OAuth callback handling
+- [x] **Settings account center** now includes email sign-in, create-account, Google sign-in, and Apple sign-in actions directly inside the settings page
+- [x] **RevenueCat user identity sync** now logs RevenueCat into the authenticated Supabase user ID so tiered pricing can follow the signed-in user across sessions
+- [x] **Type validation for auth integration** confirmed the new auth and subscription wiring passes strict TypeScript checks
