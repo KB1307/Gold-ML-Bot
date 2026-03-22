@@ -48,6 +48,12 @@ interface PriceDataPoint {
   price: number;
 }
 
+interface SignalTrackingSnapshot {
+  price: number;
+  source: string;
+  updatedAt: number;
+}
+
 const CHART_PRICE_PRIORITY_WINDOW_MS = 15000;
 const CHART_STALL_FAILOVER_MS = 20000;
 const MIN_MEANINGFUL_PRICE_CHANGE = 0.03;
@@ -123,6 +129,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [accountBalance, setAccountBalance] = useState<number>(100);
   const [currentPrice, setCurrentPrice] = useState<number>(0);
   const [currentPriceUpdatedAt, setCurrentPriceUpdatedAt] = useState<number>(0);
+  const [chartPrice, setChartPrice] = useState<number>(0);
+  const [chartPriceUpdatedAt, setChartPriceUpdatedAt] = useState<number>(0);
   const [guidePrice, setGuidePrice] = useState<number>(0);
   const [priceHistory, setPriceHistory] = useState<PriceDataPoint[]>([]);
   const [dailyOHLCHistory, setDailyOHLCHistory] = useState<DailyOHLC[]>([]);
@@ -130,6 +138,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [appLaunchTime] = useState<number>(Date.now());
   const [backgroundTaskActive, setBackgroundTaskActive] = useState<boolean>(false);
   const [priceSource, setPriceSource] = useState<string>('connecting...');
+  const [chartPriceSource, setChartPriceSource] = useState<string>('connecting...');
   const [guidePriceSource, setGuidePriceSource] = useState<string>('connecting...');
   const [guidePriceUpdatedAt, setGuidePriceUpdatedAt] = useState<number>(0);
   const [livePriceError, setLivePriceError] = useState<string | null>(null);
@@ -177,7 +186,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const commitLivePrice = useCallback((price: number, source: string) => {
+  const commitSignalPrice = useCallback((price: number, source: string, options?: { markChartFresh?: boolean }) => {
     setExternalPrice(price, source);
     setCurrentPrice(price);
     setPriceSource(source);
@@ -185,6 +194,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
     const now = Date.now();
     setCurrentPriceUpdatedAt(now);
+
+    if (options?.markChartFresh) {
+      setChartPrice(price);
+      setChartPriceSource(source);
+      setChartPriceUpdatedAt(now);
+    }
+
     setPriceHistory(prev => {
       const newHistory = [...prev, { timestamp: now, price }];
       const maxPoints = 60;
@@ -238,7 +254,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       }
 
       lastChartPriceRef.current = price;
-      commitLivePrice(price, source);
+      commitSignalPrice(price, source, { markChartFresh: true });
       return;
     }
 
@@ -249,12 +265,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
     if (isChartFeedFresh && chartFeedLooksStalled) {
       console.warn(`⚠️ Promoting ${source} tick because TradingView chart price appears stalled`);
-      commitLivePrice(price, `${source} • chart-failover`);
+      commitSignalPrice(price, `${source} • chart-failover`);
       return;
     }
 
-    commitLivePrice(price, source);
-  }, [commitLivePrice]);
+    commitSignalPrice(price, source);
+  }, [commitSignalPrice]);
 
   const ingestChartPrice = useCallback((price: number, source: string = 'tradingview-chart') => {
     const normalizedSource = source.startsWith('🟢') ? source : `🟢 ${source}`;
@@ -1115,22 +1131,22 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     }
   }, []);
 
-  const signalTrackingSnapshot = useMemo(() => {
+  const signalTrackingSnapshot = useMemo<SignalTrackingSnapshot>(() => {
     const now = Date.now();
-    const chartAgeMs = currentPriceUpdatedAt > 0 ? now - currentPriceUpdatedAt : Number.POSITIVE_INFINITY;
+    const chartAgeMs = chartPriceUpdatedAt > 0 ? now - chartPriceUpdatedAt : Number.POSITIVE_INFINITY;
     const chartMovementAgeMs = chartPriceLastMeaningfulMoveRef.current > 0
       ? now - chartPriceLastMeaningfulMoveRef.current
       : Number.POSITIVE_INFINITY;
     const guideAgeMs = guidePriceUpdatedAt > 0 ? now - guidePriceUpdatedAt : Number.POSITIVE_INFINITY;
-    const hasFreshChartPrice = currentPrice > 0 && chartAgeMs < CHART_PRICE_PRIORITY_WINDOW_MS;
+    const hasFreshChartPrice = chartPrice > 0 && chartAgeMs < CHART_PRICE_PRIORITY_WINDOW_MS;
     const hasFreshGuidePrice = guidePrice > 0 && guideAgeMs < CHART_PRICE_PRIORITY_WINDOW_MS;
     const chartFeedLooksStalled = hasFreshChartPrice && chartMovementAgeMs >= CHART_STALL_FAILOVER_MS;
 
     if (hasFreshChartPrice && !chartFeedLooksStalled) {
       return {
-        price: currentPrice,
-        source: priceSource || '🟢 tradingview-chart',
-        updatedAt: currentPriceUpdatedAt,
+        price: chartPrice,
+        source: chartPriceSource || '🟢 tradingview-chart',
+        updatedAt: chartPriceUpdatedAt,
       };
     }
 
@@ -1166,7 +1182,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       source: '🔴 no live price',
       updatedAt: 0,
     };
-  }, [currentPrice, currentPriceUpdatedAt, guidePrice, guidePriceSource, guidePriceUpdatedAt, priceSource]);
+  }, [chartPrice, chartPriceSource, chartPriceUpdatedAt, currentPriceUpdatedAt, guidePrice, guidePriceSource, guidePriceUpdatedAt]);
 
   useEffect(() => {
     signalHistoryRef.current = signalHistory;
@@ -1744,10 +1760,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     signalTrackingSource: signalTrackingSnapshot.source,
     signalTrackingUpdatedAt: signalTrackingSnapshot.updatedAt,
     guidePrice,
+    chartPrice,
     priceHistory,
     dailyOHLCHistory,
     signalUpdateTrigger,
     priceSource,
+    chartPriceSource,
     guidePriceSource,
     guidePriceUpdatedAt,
     livePriceError,
@@ -1765,6 +1783,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     accountBalance,
     backgroundTaskActive,
     clearHistory,
+    chartPrice,
+    chartPriceSource,
     currentPrice,
     dailyOHLCHistory,
     deleteSignalFromHistory,

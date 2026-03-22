@@ -40,6 +40,7 @@ Make the TradingView chart price the primary live input for signal generation an
 - [x] **TradingView chart wrapper** updated to forward chart-derived live price updates without replacing the chart itself
 - [x] **Dashboard chart integration** updated so chart prices feed the shared trading context directly
 - [x] **Dashboard context** updated to keep Finnhub on a separate live-display path so it powers the dashboard market price label without affecting signal generation
+- [x] **State-level chart/guide split** now stores TradingView freshness independently from the active engine price so guide-feed updates cannot accidentally displace chart-first signal driving
 - [x] **Signal engine** updated to keep preferring fresh signal-driving live prices instead of forcing slow direct refreshes during normal signal generation
 - [x] **WebSocket service path** retained for guide pricing and recovery support rather than foreground signal generation
 - [x] **REST/direct recovery path** retained for bootstrap and recovery only
