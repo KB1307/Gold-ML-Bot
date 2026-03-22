@@ -56,6 +56,7 @@ interface SignalTrackingSnapshot {
 
 const CHART_PRICE_PRIORITY_WINDOW_MS = 15000;
 const CHART_STALL_FAILOVER_MS = 20000;
+const GUIDE_PRICE_STALE_THRESHOLD_MS = 12000;
 const MIN_MEANINGFUL_PRICE_CHANGE = 0.03;
 const HISTORICAL_RECONCILIATION_INTERVAL_MS = 30000;
 const TERMINAL_SIGNAL_STATUSES: SignalStatus[] = ["CLOSED", "SL_HIT", "ALL_TARGETS_HIT", "PARTIAL_WIN_SL_HIT"];
@@ -275,7 +276,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const ingestChartPrice = useCallback((price: number, source: string = 'tradingview-chart') => {
     const normalizedSource = source.startsWith('🟢') ? source : `🟢 ${source}`;
     applyLivePrice(price, normalizedSource, "chart");
-  }, [applyLivePrice]);
+
+    const now = Date.now();
+    const guideFeedStale = guidePriceUpdatedAt <= 0 || (now - guidePriceUpdatedAt) > GUIDE_PRICE_STALE_THRESHOLD_MS;
+    const guidePriceZero = guidePrice <= 0;
+
+    if (guidePriceZero || guideFeedStale) {
+      console.log(`📊 [GuidePrice] Promoting chart price ${price.toFixed(2)} to guide (WS ${guidePriceZero ? 'has no price' : `stale ${((now - guidePriceUpdatedAt) / 1000).toFixed(1)}s`})`);
+      commitGuidePrice(price, normalizedSource);
+    }
+  }, [applyLivePrice, commitGuidePrice, guidePrice, guidePriceUpdatedAt]);
 
   useEffect(() => {
     console.log('📈 Subscribing to TradingView chart price bridge...');

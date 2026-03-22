@@ -48,8 +48,8 @@ const RECONNECT_DELAY_MS = 5000;
 const TIINGO_FX_TICKER = 'xauusd';
 const TIINGO_LIVE_SOURCE = '🟢 Tiingo-Live';
 const TIINGO_WS_URL = 'wss://api.tiingo.com/fx';
-const REST_FALLBACK_ACTIVATION_MS = 20000;
-const REST_FALLBACK_POLL_INTERVAL_MS = 15000;
+const REST_FALLBACK_ACTIVATION_MS = 5000;
+const REST_FALLBACK_POLL_INTERVAL_MS = 10000;
 const REST_FALLBACK_SOURCE = '🟠 REST-Fallback';
 const TIINGO_THRESHOLD_LEVEL = 0;
 
@@ -96,6 +96,31 @@ function getTiingoApiKey(): string | null {
 }
 
 async function fetchRestFallbackPrice(): Promise<{ price: number; source: string } | null> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+    const response = await fetch(
+      'https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD',
+      { signal: controller.signal, headers: { 'Accept': 'application/json' } }
+    );
+    clearTimeout(timeoutId);
+    if (response.ok) {
+      const data = await response.json();
+      if (Array.isArray(data) && data.length > 0) {
+        const quote = data[0];
+        const bid = quote?.spreadProfilePrices?.[0]?.bid;
+        const ask = quote?.spreadProfilePrices?.[0]?.ask;
+        if (bid && ask && typeof bid === 'number' && typeof ask === 'number' && bid > 1000) {
+          const price = Number(((bid + ask) / 2).toFixed(2));
+          console.log(`✅ [GoldWS-REST] Swissquote price: ${price}`);
+          return { price, source: 'Swissquote-REST' };
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('⚠️ [GoldWS-REST] Swissquote fallback failed:', e instanceof Error ? e.message : 'Unknown');
+  }
+
   const apiKey = getTiingoApiKey();
   if (apiKey) {
     try {
@@ -125,31 +150,6 @@ async function fetchRestFallbackPrice(): Promise<{ price: number; source: string
     } catch (e) {
       console.warn('⚠️ [GoldWS-REST] Tiingo REST fallback failed:', e instanceof Error ? e.message : 'Unknown');
     }
-  }
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6000);
-    const response = await fetch(
-      'https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD',
-      { signal: controller.signal, headers: { 'Accept': 'application/json' } }
-    );
-    clearTimeout(timeoutId);
-    if (response.ok) {
-      const data = await response.json();
-      if (Array.isArray(data) && data.length > 0) {
-        const quote = data[0];
-        const bid = quote?.spreadProfilePrices?.[0]?.bid;
-        const ask = quote?.spreadProfilePrices?.[0]?.ask;
-        if (bid && ask && typeof bid === 'number' && typeof ask === 'number' && bid > 1000) {
-          const price = Number(((bid + ask) / 2).toFixed(2));
-          console.log(`✅ [GoldWS-REST] Swissquote fallback price: ${price}`);
-          return { price, source: 'Swissquote-REST' };
-        }
-      }
-    }
-  } catch (e) {
-    console.warn('⚠️ [GoldWS-REST] Swissquote fallback failed:', e instanceof Error ? e.message : 'Unknown');
   }
 
   try {
@@ -879,6 +879,15 @@ export const goldWebSocketService = {
     state.intentionallyClosed = false;
     state.wsStartTime = Date.now();
     console.log('🚀 [GoldWS] Starting Tiingo FX websocket service for XAU/USD...');
+
+    console.log('🔄 [GoldWS] Fetching immediate REST price while WebSocket connects...');
+    void fetchRestFallbackPrice().then((result) => {
+      if (result && !state.intentionallyClosed && state.lastPrice <= 0) {
+        console.log(`✅ [GoldWS] Immediate REST bootstrap price: ${result.price} from ${result.source}`);
+        notifyPrice(result.price, `🟠 ${result.source} (bootstrap)`);
+      }
+    }).catch(() => {});
+
     void connect();
   },
 
