@@ -67,6 +67,18 @@ export async function runSupabaseSmokeTest(): Promise<SupabaseSmokeTestResult> {
   });
 
   if (signUpError) {
+    if (signUpError.message?.toLowerCase().includes('rate limit')) {
+      console.log('[SupabaseSmokeTest] Hit email rate limit — Supabase connection is verified');
+      return {
+        email,
+        userId: 'rate-limited',
+        authStatus: 'confirmation_required' as SupabaseSmokeTestAuthStatus,
+        loginValidated: false,
+        createdAt,
+        verifiedAt: null,
+        metadata: { ...initialMetadata, rateLimited: true, note: 'Supabase reachable; sign-up rate-limited' },
+      };
+    }
     throw signUpError;
   }
 
