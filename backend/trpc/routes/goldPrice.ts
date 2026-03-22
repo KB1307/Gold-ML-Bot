@@ -15,6 +15,57 @@ const apiFailures: Map<string, { count: number; lastFailure: number }> = new Map
 const FAILURE_COOLDOWN_MS = 60000;
 const MAX_FAILURES_BEFORE_COOLDOWN = 5;
 
+type RuntimeApiKeyConfig = {
+  apiKey: string | null;
+  source: string;
+};
+
+function normalizeApiKey(value: string | undefined): string | null {
+  const trimmedValue = value?.trim() ?? '';
+  return trimmedValue.length > 0 ? trimmedValue : null;
+}
+
+function getFinnhubRuntimeConfig(): RuntimeApiKeyConfig {
+  const privateApiKey = normalizeApiKey(process.env.FINNHUB_API_KEY);
+  if (privateApiKey) {
+    return {
+      apiKey: privateApiKey,
+      source: 'FINNHUB_API_KEY',
+    };
+  }
+
+  const publicApiKey = normalizeApiKey(process.env.EXPO_PUBLIC_FINNHUB_API_KEY);
+  if (publicApiKey) {
+    return {
+      apiKey: publicApiKey,
+      source: 'EXPO_PUBLIC_FINNHUB_API_KEY',
+    };
+  }
+
+  return {
+    apiKey: null,
+    source: 'unavailable',
+  };
+}
+
+function getTiingoApiKey(): string | null {
+  const publicApiKey = normalizeApiKey(process.env.EXPO_PUBLIC_TIINGO_API_KEY);
+  const privateApiKey = normalizeApiKey(process.env.TIINGO_API_KEY);
+  return publicApiKey || privateApiKey || null;
+}
+
+function getMetalPriceApiKey(): string | null {
+  return normalizeApiKey(process.env.METALPRICE_API_KEY);
+}
+
+function getGoldApiIoKey(): string | null {
+  return normalizeApiKey(process.env.GOLDAPI_IO_KEY);
+}
+
+function getMetalsDevApiKey(): string | null {
+  return normalizeApiKey(process.env.METALS_DEV_KEY);
+}
+
 function shouldSkipApi(apiName: string): boolean {
   const failure = apiFailures.get(apiName);
   if (!failure) return false;
@@ -64,7 +115,7 @@ async function fetchGoldApiIo(): Promise<{ price: number; source: string } | nul
     return null;
   }
 
-  const apiKey = process.env.GOLDAPI_IO_KEY;
+  const apiKey = getGoldApiIoKey();
   if (!apiKey) {
     console.log('[GOLD] GoldAPI.io key not configured');
     return null;
@@ -103,7 +154,7 @@ async function fetchMetalsDev(): Promise<{ price: number; source: string } | nul
     return null;
   }
 
-  const apiKey = process.env.METALS_DEV_KEY;
+  const apiKey = getMetalsDevApiKey();
   if (!apiKey) {
     console.log('[GOLD] Metals.dev key not configured');
     return null;
@@ -141,9 +192,10 @@ async function fetchFinnhubGold(): Promise<{ price: number; source: string } | n
     return null;
   }
 
-  const apiKey = process.env.FINNHUB_API_KEY;
+  const runtimeConfig = getFinnhubRuntimeConfig();
+  const apiKey = runtimeConfig.apiKey;
   if (!apiKey) {
-    console.log('[GOLD] Finnhub API key not configured');
+    console.log(`[GOLD] Finnhub API key not configured (source=${runtimeConfig.source})`);
     return null;
   }
 
@@ -179,7 +231,7 @@ async function fetchMetalPriceApi(): Promise<{ price: number; source: string } |
     return null;
   }
 
-  const apiKey = process.env.METALPRICE_API_KEY;
+  const apiKey = getMetalPriceApiKey();
   if (!apiKey) {
     console.log('[GOLD] MetalPriceAPI key not configured');
     return null;
@@ -269,11 +321,6 @@ type TiingoTopQuote = {
   quoteTimestamp?: string;
 };
 
-function getTiingoApiKey(): string | null {
-  const publicApiKey = process.env.EXPO_PUBLIC_TIINGO_API_KEY?.trim();
-  const privateApiKey = process.env.TIINGO_API_KEY?.trim();
-  return publicApiKey || privateApiKey || null;
-}
 
 function parseTiingoTopPrice(quote: TiingoTopQuote | null | undefined): number | null {
   const midPrice = typeof quote?.midPrice === 'number'
@@ -582,6 +629,13 @@ export const goldPriceRouter = createTRPCRouter({
 
     console.error('[GOLD] ALL SPOT PRICE SOURCES FAILED - No cache available');
     return { price: 0, source: 'unavailable', timestamp: now, cached: false };
+  }),
+
+  getFinnhubWebSocketConfig: publicProcedure.query(async () => {
+    const runtimeConfig = getFinnhubRuntimeConfig();
+    console.log(`[GOLD] Finnhub websocket config requested (source=${runtimeConfig.source}, hasKey=${runtimeConfig.apiKey ? 'yes' : 'no'})`);
+
+    return runtimeConfig;
   }),
 
   getFinnhubRestPrice: publicProcedure.query(async () => {

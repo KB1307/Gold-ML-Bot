@@ -1,3 +1,5 @@
+import { getRuntimeFinnhubApiKey } from '@/lib/finnhub';
+
 type PriceCallback = (price: number, source: string) => void;
 type ConnectionStatus = 'connected' | 'waiting_for_trade' | 'disconnected' | 'reconnecting';
 type StatusCallback = (status: ConnectionStatus) => void;
@@ -37,6 +39,7 @@ interface WebSocketServiceState {
   connectionId: number;
   connectStartedAt: number;
   apiKey: string | null;
+  isConnecting: boolean;
   pendingReconnectDelayMs: number | null;
   pendingReconnectReason: string | null;
 }
@@ -71,22 +74,21 @@ const state: WebSocketServiceState = {
   connectionId: 0,
   connectStartedAt: 0,
   apiKey: null,
+  isConnecting: false,
   pendingReconnectDelayMs: null,
   pendingReconnectReason: null,
 };
 
-function getFinnhubApiKey(): string | null {
-  const publicApiKey = process.env.EXPO_PUBLIC_FINNHUB_API_KEY?.trim();
-  const privateApiKey = process.env.FINNHUB_API_KEY?.trim();
-  const apiKey = publicApiKey || privateApiKey || null;
+async function getFinnhubApiKey(): Promise<string | null> {
+  const runtimeConfig = await getRuntimeFinnhubApiKey();
+  const apiKey = runtimeConfig.apiKey?.trim() ?? null;
 
   if (!apiKey) {
-    console.error('❌ [GoldWS] Finnhub API key missing (checked EXPO_PUBLIC_FINNHUB_API_KEY and FINNHUB_API_KEY)');
+    console.error(`❌ [GoldWS] Finnhub API key missing (source=${runtimeConfig.source})`);
     return null;
   }
 
-  const keySource = publicApiKey ? 'EXPO_PUBLIC_FINNHUB_API_KEY' : 'FINNHUB_API_KEY';
-  console.log(`🔑 [GoldWS] Using Finnhub key from ${keySource}`);
+  console.log(`🔑 [GoldWS] Using Finnhub key from ${runtimeConfig.source}`);
   return apiKey;
 }
 
@@ -299,7 +301,7 @@ function scheduleReconnect(reason: string, delayMs: number = RECONNECT_DELAY_MS)
     state.reconnectTimer = null;
     state.reconnectTimerReason = null;
     state.reconnectTimerDelayMs = null;
-    connect();
+    void connect();
   }, delayMs);
 }
 
@@ -397,9 +399,14 @@ function startWatchdog(): void {
   }, WATCHDOG_INTERVAL_MS);
 }
 
-function connect(): void {
+async function connect(): Promise<void> {
   if (state.intentionallyClosed) {
     console.log('🛑 [GoldWS] Connection intentionally closed, skipping reconnect');
+    return;
+  }
+
+  if (state.isConnecting) {
+    console.log('ℹ️ [GoldWS] Finnhub websocket connection already in progress');
     return;
   }
 
@@ -423,10 +430,25 @@ function connect(): void {
     state.ws = null;
   }
 
-  const apiKey = getFinnhubApiKey();
+  state.isConnecting = true;
+  notifyStatus('reconnecting');
+
+  const apiKey = await getFinnhubApiKey();
   state.apiKey = apiKey;
 
+  if (state.intentionallyClosed) {
+    state.isConnecting = false;
+    return;
+  }
+
+  if (state.ws || state.closingSocket) {
+    console.log('ℹ️ [GoldWS] Finnhub socket state changed while loading API key, skipping stale connect attempt');
+    state.isConnecting = false;
+    return;
+  }
+
   if (!apiKey) {
+    state.isConnecting = false;
     state.isConnected = false;
     notifyStatus('disconnected');
     return;
@@ -439,12 +461,12 @@ function connect(): void {
   state.lastTickTime = 0;
   state.hasReceivedTradeOnActiveConnection = false;
   console.log(`🔌 [GoldWS] Connecting to Finnhub WebSocket (connection ${connectionId})...`);
-  notifyStatus('reconnecting');
 
   let socket: WebSocket;
   try {
     socket = new WebSocket(getFinnhubWebSocketUrl(apiKey));
   } catch (error) {
+    state.isConnecting = false;
     console.error('❌ [GoldWS] Finnhub WebSocket constructor failed:', error);
     scheduleReconnect('constructor-failed', RECONNECT_DELAY_MS);
     return;
@@ -459,6 +481,7 @@ function connect(): void {
     }
 
     console.log(`✅ [GoldWS] Finnhub WebSocket connected (connection ${connectionId})`);
+    state.isConnecting = false;
     state.isConnected = true;
     state.connectStartedAt = 0;
     state.lastMessageTime = Date.now();
@@ -552,6 +575,7 @@ function connect(): void {
 
     const diagnostics = getEventDiagnostics(event, socket, connectionId);
     console.warn('⚠️ [GoldWS] Finnhub websocket error', diagnostics);
+    state.isConnecting = false;
     state.isConnected = false;
     state.hasReceivedTradeOnActiveConnection = false;
     stopHeartbeatPing();
@@ -573,6 +597,7 @@ function connect(): void {
       state.closingSocket = null;
     }
 
+    state.isConnecting = false;
     state.isConnected = false;
     state.connectStartedAt = 0;
     state.hasReceivedTradeOnActiveConnection = false;
@@ -600,13 +625,13 @@ function connect(): void {
 
 export const goldWebSocketService = {
   start(): void {
-    if (state.ws || state.closingSocket || state.reconnectTimer) {
+    if (state.ws || state.closingSocket || state.reconnectTimer || state.isConnecting) {
       console.log('ℹ️ [GoldWS] Finnhub websocket service already active, skipping duplicate start');
       return;
     }
 
     state.intentionallyClosed = false;
-    connect();
+    void connect();
   },
 
   stop(): void {
@@ -662,6 +687,7 @@ export const goldWebSocketService = {
     state.lastTickTime = 0;
     state.lastMessageTime = 0;
     state.connectStartedAt = 0;
+    state.isConnecting = false;
     state.isConnected = false;
     state.hasReceivedTradeOnActiveConnection = false;
     notifyStatus('disconnected');
