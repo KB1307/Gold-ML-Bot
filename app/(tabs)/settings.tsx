@@ -55,7 +55,7 @@ function formatMetadataValue(value: unknown): string {
 
 export default function SettingsScreen() {
   const { settings, updateSettings, logout, clearHistory, performanceMetrics, triggerManualRetrain, backgroundTaskActive } = useTrading();
-  const { isPro, appUserId, isSyncingCustomerIdentity } = useSubscription();
+  const { isPro, isProGold, appUserId, isSyncingCustomerIdentity } = useSubscription();
   const {
     isConfigured,
     user,
@@ -267,7 +267,7 @@ export default function SettingsScreen() {
                     <Crown size={24} color="#FFD700" />
                     <View>
                       <Text style={styles.proCardTitle}>Upgrade to Pro</Text>
-                      <Text style={styles.proCardSubtitle}>Unlock all premium features</Text>
+                      <Text style={styles.proCardSubtitle}>Unlock AI-driven gold signals</Text>
                     </View>
                   </View>
                   <View style={styles.proCardArrow}>
@@ -277,10 +277,22 @@ export default function SettingsScreen() {
               </TouchableOpacity>
             )}
 
-            {isPro && (
+            {isPro && !isProGold && (
+              <TouchableOpacity
+                style={styles.proActiveBadge}
+                onPress={() => router.push("/paywall" as any)}
+                activeOpacity={0.8}
+              >
+                <Crown size={16} color="#3b82f6" />
+                <Text style={[styles.proActiveText, { color: "#3b82f6" }]}>Bullrun Pro Active</Text>
+                <Text style={styles.upgradeHint}>Upgrade to Pro Gold \u203A</Text>
+              </TouchableOpacity>
+            )}
+
+            {isProGold && (
               <View style={styles.proActiveBadge}>
                 <Crown size={16} color="#FFD700" />
-                <Text style={styles.proActiveText}>Bullrun Pro Active</Text>
+                <Text style={styles.proActiveText}>Bullrun Pro Gold Active</Text>
               </View>
             )}
 
@@ -1229,6 +1241,12 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700" as const,
     color: "#FFD700",
+  },
+  upgradeHint: {
+    fontSize: 12,
+    fontWeight: "600" as const,
+    color: "#FFD700",
+    marginLeft: 4,
   },
   supabaseTestButton: {
     flexDirection: "row",

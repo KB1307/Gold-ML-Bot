@@ -31,7 +31,12 @@ if (apiKey) {
   console.warn("[RC] No RevenueCat API key found");
 }
 
-const ENTITLEMENT_ID = "Bullrun Pro";
+const ENTITLEMENT_PRO = "Bullrun Pro";
+const ENTITLEMENT_PRO_GOLD = "Bullrun Pro Gold";
+
+export type SubscriptionTier = "free" | "pro" | "pro_gold";
+
+const PRO_DAILY_SIGNAL_CAP = 5;
 const CUSTOMER_INFO_QUERY_KEY = ["rc-customer-info"] as const;
 const OFFERINGS_QUERY_KEY = ["rc-offerings"] as const;
 const APP_USER_ID_QUERY_KEY = ["rc-app-user-id"] as const;
@@ -220,8 +225,23 @@ export const [SubscriptionProvider, useSubscription] = createContextHook(() => {
   const currentOffering = offeringsQuery.data?.current ?? null;
   const appUserId = appUserIdQuery.data ?? null;
 
-  const isPro =
-    customerInfo?.entitlements?.active?.[ENTITLEMENT_ID]?.isActive === true;
+  const isProGold =
+    customerInfo?.entitlements?.active?.[ENTITLEMENT_PRO_GOLD]?.isActive === true;
+  const isProBase =
+    customerInfo?.entitlements?.active?.[ENTITLEMENT_PRO]?.isActive === true;
+  const isPro = isProBase || isProGold;
+
+  const tier: SubscriptionTier = isProGold
+    ? "pro_gold"
+    : isProBase
+    ? "pro"
+    : "free";
+
+  const dailySignalCap: number | null = isProGold
+    ? null
+    : isProBase
+    ? PRO_DAILY_SIGNAL_CAP
+    : 0;
 
   const purchasePackage = useCallback(
     (pkg: PurchasesPackage) => purchaseMutation.mutateAsync(pkg),
@@ -237,6 +257,9 @@ export const [SubscriptionProvider, useSubscription] = createContextHook(() => {
     () => ({
       isRevenueCatConfigured: Boolean(apiKey),
       isPro,
+      isProGold,
+      tier,
+      dailySignalCap,
       customerInfo,
       currentOffering,
       appUserId,
@@ -255,7 +278,10 @@ export const [SubscriptionProvider, useSubscription] = createContextHook(() => {
       currentOffering,
       customerInfo,
       customerInfoQuery.isLoading,
+      dailySignalCap,
       isPro,
+      isProGold,
+      tier,
       offeringsQuery.isLoading,
       purchaseMutation.error,
       purchaseMutation.isPending,
