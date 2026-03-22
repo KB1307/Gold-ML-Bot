@@ -1,12 +1,7 @@
 import createContextHook from "@nkzw/create-context-hook";
-import { useState, useEffect, useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { Platform } from "react-native";
-import Purchases, {
-  LOG_LEVEL,
-  CustomerInfo,
-  PurchasesOffering,
-  PurchasesPackage,
-} from "react-native-purchases";
+import Purchases, { LOG_LEVEL, PurchasesPackage } from "react-native-purchases";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 function getRCToken() {
@@ -21,9 +16,9 @@ function getRCToken() {
 
 const apiKey = getRCToken();
 if (apiKey) {
-  Purchases.setLogLevel(LOG_LEVEL.VERBOSE);
+  void Purchases.setLogLevel(LOG_LEVEL.VERBOSE);
   Purchases.configure({ apiKey });
-  console.log("[RC] RevenueCat configured with key:", apiKey.substring(0, 12) + "...");
+  console.log("[RC] RevenueCat configured successfully");
 } else {
   console.warn("[RC] No RevenueCat API key found");
 }
@@ -74,7 +69,7 @@ export const [SubscriptionProvider, useSubscription] = createContextHook(() => {
       return result;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["rc-customer-info"] });
+      void queryClient.invalidateQueries({ queryKey: ["rc-customer-info"] });
     },
     onError: (error: any) => {
       if (error.userCancelled) {
@@ -92,7 +87,7 @@ export const [SubscriptionProvider, useSubscription] = createContextHook(() => {
       return info;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["rc-customer-info"] });
+      void queryClient.invalidateQueries({ queryKey: ["rc-customer-info"] });
     },
     onError: (error: any) => {
       console.error("[RC] Restore error:", error);
@@ -115,17 +110,32 @@ export const [SubscriptionProvider, useSubscription] = createContextHook(() => {
     [restoreMutation]
   );
 
-  return {
-    isPro,
-    customerInfo,
-    currentOffering,
-    purchasePackage,
-    restorePurchases,
-    isPurchasing: purchaseMutation.isPending,
-    isRestoring: restoreMutation.isPending,
-    isLoadingOfferings: offeringsQuery.isLoading,
-    isLoadingCustomerInfo: customerInfoQuery.isLoading,
-    purchaseError: purchaseMutation.error,
-    restoreError: restoreMutation.error,
-  };
+  return useMemo(
+    () => ({
+      isPro,
+      customerInfo,
+      currentOffering,
+      purchasePackage,
+      restorePurchases,
+      isPurchasing: purchaseMutation.isPending,
+      isRestoring: restoreMutation.isPending,
+      isLoadingOfferings: offeringsQuery.isLoading,
+      isLoadingCustomerInfo: customerInfoQuery.isLoading,
+      purchaseError: purchaseMutation.error,
+      restoreError: restoreMutation.error,
+    }),
+    [
+      currentOffering,
+      customerInfo,
+      customerInfoQuery.isLoading,
+      isPro,
+      offeringsQuery.isLoading,
+      purchaseMutation.error,
+      purchaseMutation.isPending,
+      purchasePackage,
+      restoreMutation.error,
+      restoreMutation.isPending,
+      restorePurchases,
+    ]
+  );
 });
