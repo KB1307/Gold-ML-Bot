@@ -292,7 +292,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   useEffect(() => {
     let isMounted = true;
 
-    console.log('🔌 Starting Finnhub guide price feed...');
+    console.log('🔌 Starting Tiingo guide price feed...');
 
     const unsubPrice = goldWebSocketService.onPrice((price: number, source: string) => {
       if (!isMounted) return;
@@ -302,7 +302,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const unsubStatus = goldWebSocketService.onStatus((status) => {
       if (!isMounted) return;
 
-      console.log(`📡 Finnhub guide feed status: ${status}`);
+      console.log(`📡 Tiingo guide feed status: ${status}`);
 
       if (status === 'connected') {
         const lastGuidePrice = goldWebSocketService.getLastPrice();
@@ -311,7 +311,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         if (lastGuidePrice > 0) {
           commitGuidePrice(lastGuidePrice, lastGuidePriceSource);
         } else {
-          setGuidePriceSource('🟢 Finnhub-Live');
+          setGuidePriceSource('🟢 Tiingo-Live');
         }
       } else if (status === 'waiting_for_trade') {
         setGuidePriceSource('🟠 Waiting for Trade');
@@ -1153,7 +1153,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     if (chartFeedLooksStalled && hasFreshGuidePrice) {
       return {
         price: guidePrice,
-        source: `${guidePriceSource || '🟢 Finnhub-Live'} • chart-failover`,
+        source: `${guidePriceSource || '🟢 Tiingo-Live'} • chart-failover`,
         updatedAt: guidePriceUpdatedAt,
       };
     }
@@ -1161,7 +1161,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     if (hasFreshGuidePrice) {
       return {
         price: guidePrice,
-        source: guidePriceSource || '🟢 Finnhub-Live',
+        source: guidePriceSource || '🟢 Tiingo-Live',
         updatedAt: guidePriceUpdatedAt,
       };
     }

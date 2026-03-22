@@ -2,14 +2,14 @@
 
 ## Overview
 
-Make the TradingView chart price the primary live input for signal generation and live signal monitoring. Finnhub WebSocket remains available as a separate live market-price feed for the dashboard bubble, while direct fetch and REST recovery paths stay available only when the engine needs a non-WebSocket refresh. If the TradingView bridge stalls without meaningfully updating, the app may temporarily fail over to a fresher guide tick until chart movement resumes.
+Make the TradingView chart price the primary live input for signal generation and live signal monitoring. Tiingo FX WebSocket provides a separate live market-price feed for the dashboard bubble (replacing the previous Finnhub WebSocket which failed to deliver trades on its free tier for forex symbols). Direct fetch and REST recovery paths stay available only when the engine needs a non-WebSocket refresh. If the TradingView bridge stalls without meaningfully updating, the app may temporarily fail over to a fresher guide tick until chart movement resumes.
 
 ---
 
 ### **Features**
 
 - **TradingView chart-first pricing**: signal generation and active signal monitoring use the chart-fed price path when chart updates are available
-- **Finnhub guide-first display with emergency failover**: Finnhub remains a fast secondary indicator in app state and powers the market-price bubble, but it only drives signal generation temporarily when the chart bridge is stale
+- **Tiingo FX guide-first display with emergency failover**: Tiingo FX WebSocket (xauusd) remains a fast secondary indicator in app state and powers the market-price bubble, but it only drives signal generation temporarily when the chart bridge is stale
 - **REST/direct recovery path**: direct price refresh paths remain available for bootstrap and recovery when the engine needs a non-chart update
 - **Fresh-price preference inside the engine**: the signal engine still prefers fresh external prices before making any direct fetch
 - **Signal generation cadence unchanged**: the existing ML logic, confidence checks, cooldowns, and 30-second generation cadence remain intact
@@ -24,7 +24,7 @@ Make the TradingView chart price the primary live input for signal generation an
 1. **TradingView price bridge** extracts live price updates from the embedded chart wrapper and forwards them into the signal path
 2. **Dashboard context split** keeps chart price on the signal-driving path while storing Finnhub separately for the dashboard market-price display
 3. **Signal engine freshness check** uses the latest chart-fed external price before falling back to any direct fetch path
-4. **Finnhub indicator stream** continues updating the separate guide-price path and powers the dashboard market price bubble, but it can temporarily take over the signal-driving path when the chart bridge is alive yet stalled
+4. **Tiingo FX indicator stream** continues updating the separate guide-price path and powers the dashboard market price bubble, but it can temporarily take over the signal-driving path when the chart bridge is alive yet stalled
 5. **Live-path deduplication** suppresses repeated identical ticks so the engine keeps a cleaner momentum history instead of being flattened by chart echo noise
 6. **REST bootstrap/recovery** only runs when the engine has no fresh signal-driving live price, preventing slower guide feeds from hijacking foreground signals
 7. **Historical reconciliation pass** replays 1-minute bars from signal creation through the present for every open signal so missed TP/SL hits are corrected even if live monitoring pauses
@@ -52,9 +52,10 @@ Make the TradingView chart price the primary live input for signal generation an
 - [x] **Chart-stall failover** now promotes a fresher live guide tick when the TradingView bridge stops meaningfully moving, preventing foreground signal generation from freezing on stale chart echoes
 - [x] **Duplicate live tick suppression** now prevents repeated identical price samples from saturating engine history and flattening momentum detection
 - [x] **TP2 breakeven protection** now closes signals as protected partial wins instead of losses when two targets were banked before the runner reversed
-- [x] **Finnhub real-time guide feed** now uses a persistent Finnhub OANDA:XAU_USD websocket for the market-price bubble, keeps the pipe alive with 20-second pings, resets liveness on any incoming message, and shows a waiting-for-trade state instead of falling back to REST during quiet markets
-- [x] **Finnhub websocket stability hardening** now prevents reconnect thrash by deduping reconnect scheduling, using heartbeat-based liveness instead of trade-silence watchdogs, sending 20-second manual pings, and enforcing clean reconnects so zombie connections cannot linger
-- [x] **Pure websocket guide-feed recovery** now reconnects the Finnhub socket cleanly after close/error without running an automatic REST fallback loop, so low-volume periods no longer stick the dashboard on REST pricing
+- [x] **Tiingo FX real-time guide feed** now uses a persistent Tiingo FX xauusd websocket for the market-price bubble (replacing Finnhub which could not deliver forex trades on the free tier), reads `EXPO_PUBLIC_TIINGO_API_KEY` directly on the client, keeps the pipe alive with 25-second heartbeats, resets liveness on any incoming message, and shows a waiting-for-trade state instead of falling back to REST during quiet markets
+- [x] **Tiingo websocket stability hardening** now prevents reconnect thrash by deduping reconnect scheduling, using heartbeat-based liveness instead of trade-silence watchdogs, sending periodic heartbeats, and enforcing clean reconnects so zombie connections cannot linger
+- [x] **Pure websocket guide-feed recovery** now reconnects the Tiingo socket cleanly after close/error without running an automatic REST fallback loop, so low-volume periods no longer stick the dashboard on REST pricing
+- [x] **Finnhub → Tiingo migration** removed `lib/finnhub.ts` and the tRPC round-trip for API key retrieval; the websocket service now connects directly to `wss://api.tiingo.com/fx` using the client-accessible Tiingo key
 - [x] **TradingView render isolation** now routes chart ticks through a standalone bridge so dashboard state updates no longer force chart-container rerenders/remounts
 - [x] **Persistent TradingView iframe mounting** now creates the web chart iframe once and keeps it mounted across dashboard updates so the chart stays rendered instead of reloading every few seconds
 - [x] **Daily market-status pivot refresh** now rebuilds completed NY-session OHLC bars from historical minute data and derives dashboard support/resistance from a fresh completed trading-day bar instead of stale rollover snapshots
