@@ -25,6 +25,34 @@ function getProviderLabel(provider: unknown): string {
   return "Email / OAuth";
 }
 
+function maskValue(value: string | null): string {
+  if (!value) {
+    return "Pending";
+  }
+
+  if (value.length <= 18) {
+    return value;
+  }
+
+  return `${value.slice(0, 8)}…${value.slice(-6)}`;
+}
+
+function getSmokeTestStatusLabel(loginValidated: boolean): string {
+  return loginValidated ? "Login verified" : "Confirmation required";
+}
+
+function formatMetadataValue(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  return "Pending";
+}
+
 export default function SettingsScreen() {
   const { settings, updateSettings, logout, clearHistory, performanceMetrics, triggerManualRetrain, backgroundTaskActive } = useTrading();
   const { isPro, appUserId, isSyncingCustomerIdentity } = useSubscription();
@@ -40,10 +68,13 @@ export default function SettingsScreen() {
     isCreatingAccount,
     isSigningOut,
     isSigningInWithOAuth,
+    isRunningSupabaseSmokeTest,
+    supabaseSmokeTestResult,
     signInWithEmail,
     signUpWithEmail,
     signInWithOAuth,
     signOut,
+    runSupabaseSmokeTest,
   } = useAuth();
   const router = useRouter();
   const [isRetraining, setIsRetraining] = useState<boolean>(false);
@@ -174,6 +205,29 @@ export default function SettingsScreen() {
     }
   };
 
+  const handleRunSupabaseSmokeTest = async () => {
+    try {
+      const result = await runSupabaseSmokeTest();
+      const message = result.loginValidated
+        ? `Dummy user created, metadata saved, and email login verified for ${result.email}.`
+        : `Dummy user created and metadata saved for ${result.email}. Email confirmation is required before login verification can complete.`;
+
+      if (Platform.OS === 'web') {
+        alert(message);
+      } else {
+        Alert.alert('Supabase Test Passed', message);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Supabase smoke test failed.';
+
+      if (Platform.OS === 'web') {
+        alert(message);
+      } else {
+        Alert.alert('Supabase Test Failed', message);
+      }
+    }
+  };
+
   return (
     <>
       <Stack.Screen options={{ 
@@ -250,6 +304,84 @@ export default function SettingsScreen() {
               onSignInWithOAuth={signInWithOAuth}
               onSignOut={signOut}
             />
+
+            <View style={styles.section} testID="settings-supabase-smoke-test-section">
+              <View style={styles.sectionHeader}>
+                <Shield size={20} color="#60a5fa" />
+                <Text style={styles.sectionTitle}>Supabase Smoke Test</Text>
+              </View>
+
+              <Text style={styles.helperText}>
+                Create a throwaway Supabase user, save metadata, and verify password login when email confirmation allows it.
+              </Text>
+
+              <TouchableOpacity
+                style={[
+                  styles.supabaseTestButton,
+                  (!isConfigured || isRunningSupabaseSmokeTest) && styles.supabaseTestButtonDisabled,
+                ]}
+                onPress={() => {
+                  void handleRunSupabaseSmokeTest();
+                }}
+                disabled={!isConfigured || isRunningSupabaseSmokeTest}
+                testID="settings-supabase-smoke-test-button"
+              >
+                <Shield size={18} color={isRunningSupabaseSmokeTest ? "#94a3b8" : "#60a5fa"} />
+                <Text
+                  style={[
+                    styles.supabaseTestButtonText,
+                    isRunningSupabaseSmokeTest && styles.supabaseTestButtonTextDisabled,
+                  ]}
+                >
+                  {isRunningSupabaseSmokeTest
+                    ? "Running Supabase smoke test..."
+                    : "Create test user & save data"}
+                </Text>
+              </TouchableOpacity>
+
+              {supabaseSmokeTestResult ? (
+                <View style={styles.supabaseResultCard} testID="settings-supabase-smoke-test-result">
+                  <Text style={styles.supabaseResultTitle}>Latest verification</Text>
+                  <View style={styles.supabaseResultRow}>
+                    <Text style={styles.supabaseResultLabel}>Test email</Text>
+                    <Text style={styles.supabaseResultValue}>{supabaseSmokeTestResult.email}</Text>
+                  </View>
+                  <View style={styles.supabaseResultRow}>
+                    <Text style={styles.supabaseResultLabel}>Supabase user</Text>
+                    <Text style={styles.supabaseResultValue}>
+                      {maskValue(supabaseSmokeTestResult.userId)}
+                    </Text>
+                  </View>
+                  <View style={styles.supabaseResultRow}>
+                    <Text style={styles.supabaseResultLabel}>Auth status</Text>
+                    <Text
+                      style={[
+                        styles.supabaseResultValue,
+                        styles.supabaseResultValueSuccess,
+                      ]}
+                    >
+                      {getSmokeTestStatusLabel(supabaseSmokeTestResult.loginValidated)}
+                    </Text>
+                  </View>
+                  <View style={styles.supabaseResultRow}>
+                    <Text style={styles.supabaseResultLabel}>Run ID</Text>
+                    <Text style={styles.supabaseResultValue}>
+                      {formatMetadataValue(supabaseSmokeTestResult.metadata.runId)}
+                    </Text>
+                  </View>
+                  <View style={styles.supabaseResultRow}>
+                    <Text style={styles.supabaseResultLabel}>Created</Text>
+                    <Text style={styles.supabaseResultValue}>{supabaseSmokeTestResult.createdAt}</Text>
+                  </View>
+                  <View style={styles.supabaseResultRow}>
+                    <Text style={styles.supabaseResultLabel}>Verified</Text>
+                    <Text style={styles.supabaseResultValue}>
+                      {supabaseSmokeTestResult.verifiedAt ?? "Awaiting confirmation"}
+                    </Text>
+                  </View>
+                </View>
+              ) : null}
+            </View>
 
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
@@ -1097,5 +1229,62 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700" as const,
     color: "#FFD700",
+  },
+  supabaseTestButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(96, 165, 250, 0.12)",
+    paddingVertical: 14,
+    borderRadius: 12,
+    marginTop: 16,
+    borderWidth: 1,
+    borderColor: "rgba(96, 165, 250, 0.28)",
+    gap: 8,
+  },
+  supabaseTestButtonDisabled: {
+    backgroundColor: "rgba(255, 255, 255, 0.03)",
+    borderColor: "rgba(255, 255, 255, 0.05)",
+  },
+  supabaseTestButtonText: {
+    fontSize: 15,
+    fontWeight: "700" as const,
+    color: "#60a5fa",
+  },
+  supabaseTestButtonTextDisabled: {
+    color: "#94a3b8",
+  },
+  supabaseResultCard: {
+    marginTop: 16,
+    padding: 16,
+    borderRadius: 14,
+    backgroundColor: "rgba(15, 23, 42, 0.55)",
+    borderWidth: 1,
+    borderColor: "rgba(96, 165, 250, 0.2)",
+    gap: 10,
+  },
+  supabaseResultTitle: {
+    fontSize: 13,
+    fontWeight: "700" as const,
+    color: "#bfdbfe",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  supabaseResultRow: {
+    gap: 4,
+  },
+  supabaseResultLabel: {
+    fontSize: 12,
+    color: "#94a3b8",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  supabaseResultValue: {
+    fontSize: 13,
+    color: "#e2e8f0",
+    fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+  },
+  supabaseResultValueSuccess: {
+    color: "#4ade80",
   },
 });

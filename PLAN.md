@@ -65,3 +65,4 @@ Make the TradingView chart price the primary live input for signal generation an
 - [x] **Settings account center** now includes email sign-in, create-account, Google sign-in, and Apple sign-in actions directly inside the settings page
 - [x] **RevenueCat user identity sync** now logs RevenueCat into the authenticated Supabase user ID so tiered pricing can follow the signed-in user across sessions
 - [x] **Type validation for auth integration** confirmed the new auth and subscription wiring passes strict TypeScript checks
+- [x] **Supabase smoke test tooling** now creates a throwaway auth user, saves auth metadata, and exposes an in-app verification action in settings

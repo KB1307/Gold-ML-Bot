@@ -76,6 +76,21 @@ export const supabase: SupabaseClient | null = isSupabaseConfigured
     })
   : null;
 
+export function createEphemeralSupabaseClient(): SupabaseClient {
+  if (!isSupabaseConfigured) {
+    throw new Error("Supabase is not configured yet.");
+  }
+
+  return createClient(supabaseUrl as string, supabaseAnonKey as string, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+      detectSessionInUrl: false,
+      flowType: "pkce",
+    },
+  });
+}
+
 export function getSupabaseRedirectUrl(path: string = AUTH_CALLBACK_PATH): string {
   return Linking.createURL(path);
 }

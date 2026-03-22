@@ -17,6 +17,10 @@ import {
   isSupabaseConfigured,
   supabase,
 } from "@/lib/supabase";
+import {
+  runSupabaseSmokeTest as executeSupabaseSmokeTest,
+  type SupabaseSmokeTestResult,
+} from "@/lib/supabaseSmokeTest";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -113,6 +117,8 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [activeOAuthProvider, setActiveOAuthProvider] =
     useState<OAuthProvider | null>(null);
+  const [supabaseSmokeTestResult, setSupabaseSmokeTestResult] =
+    useState<SupabaseSmokeTestResult | null>(null);
   const lastHandledUrlRef = useRef<string | null>(null);
 
   const sessionQuery = useQuery({
@@ -421,6 +427,30 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     },
   });
 
+  const supabaseSmokeTestMutation = useMutation({
+    mutationFn: async () => executeSupabaseSmokeTest(),
+    onMutate: () => {
+      setErrorMessage(null);
+      setStatusMessage("Running Supabase smoke test...");
+      setSupabaseSmokeTestResult(null);
+    },
+    onSuccess: (result) => {
+      console.log("[Auth] Supabase smoke test succeeded:", result);
+      setSupabaseSmokeTestResult(result);
+      setStatusMessage(
+        result.authStatus === "created_session"
+          ? "Supabase smoke test passed. Dummy user created, metadata saved, and email login verified."
+          : "Supabase smoke test passed. Dummy user created and metadata saved, but email confirmation is required before password login can be verified."
+      );
+    },
+    onError: (error) => {
+      const readableMessage = getReadableErrorMessage(error);
+      console.error("[Auth] Supabase smoke test failed:", error);
+      setSupabaseSmokeTestResult(null);
+      setErrorMessage(`Supabase smoke test failed: ${readableMessage}`);
+    },
+  });
+
   const session = sessionQuery.data ?? null;
   const user: User | null = session?.user ?? null;
 
@@ -453,6 +483,11 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
 
   const signOut = useCallback(async () => signOutMutation.mutateAsync(), [signOutMutation]);
 
+  const runSupabaseSmokeTest = useCallback(
+    async () => supabaseSmokeTestMutation.mutateAsync(),
+    [supabaseSmokeTestMutation]
+  );
+
   return useMemo(
     () => ({
       isConfigured: isSupabaseConfigured,
@@ -467,10 +502,13 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
       isCreatingAccount: signUpMutation.isPending,
       isSigningOut: signOutMutation.isPending,
       isSigningInWithOAuth: signInWithOAuthMutation.isPending,
+      isRunningSupabaseSmokeTest: supabaseSmokeTestMutation.isPending,
+      supabaseSmokeTestResult,
       signInWithEmail,
       signUpWithEmail,
       signInWithOAuth,
       signOut,
+      runSupabaseSmokeTest,
     }),
     [
       activeOAuthProvider,
@@ -486,6 +524,9 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
       signUpMutation.isPending,
       signUpWithEmail,
       statusMessage,
+      supabaseSmokeTestMutation.isPending,
+      supabaseSmokeTestResult,
+      runSupabaseSmokeTest,
       user,
     ]
   );
