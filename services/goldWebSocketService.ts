@@ -48,8 +48,8 @@ const RECONNECT_DELAY_MS = 5000;
 const TIINGO_FX_TICKER = 'xauusd';
 const TIINGO_LIVE_SOURCE = '🟢 Tiingo-Live';
 const TIINGO_WS_URL = 'wss://api.tiingo.com/fx';
-const REST_FALLBACK_ACTIVATION_MS = 5000;
-const REST_FALLBACK_POLL_INTERVAL_MS = 10000;
+const REST_FALLBACK_ACTIVATION_MS = 2000;
+const REST_FALLBACK_POLL_INTERVAL_MS = 8000;
 const REST_FALLBACK_SOURCE = '🟠 REST-Fallback';
 const TIINGO_THRESHOLD_LEVEL = 0;
 
@@ -882,13 +882,27 @@ export const goldWebSocketService = {
 
     console.log('🔄 [GoldWS] Fetching immediate REST price while WebSocket connects...');
     void fetchRestFallbackPrice().then((result) => {
-      if (result && !state.intentionallyClosed && state.lastPrice <= 0) {
+      if (result && !state.intentionallyClosed) {
         console.log(`✅ [GoldWS] Immediate REST bootstrap price: ${result.price} from ${result.source}`);
         notifyPrice(result.price, `🟠 ${result.source} (bootstrap)`);
       }
-    }).catch(() => {});
+    }).catch((err) => {
+      console.warn('⚠️ [GoldWS] Bootstrap REST fetch failed:', err instanceof Error ? err.message : 'Unknown');
+    });
 
     void connect();
+
+    setTimeout(() => {
+      if (!state.intentionallyClosed && state.lastPrice <= 0 && !state.hasReceivedTradeOnActiveConnection) {
+        console.log('🔄 [GoldWS] No price after 3s — running emergency REST fetch...');
+        void fetchRestFallbackPrice().then((result) => {
+          if (result && !state.intentionallyClosed) {
+            console.log(`✅ [GoldWS] Emergency REST price: ${result.price} from ${result.source}`);
+            notifyPrice(result.price, `🟠 ${result.source} (emergency)`);
+          }
+        }).catch(() => {});
+      }
+    }, 3000);
   },
 
   stop(): void {

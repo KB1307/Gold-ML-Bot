@@ -149,6 +149,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const historicalReconciliationInFlightRef = useRef<boolean>(false);
   const signalHistoryRef = useRef<TradingSignal[]>([]);
   const historicalFallbackPriceRef = useRef<number>(0);
+  const guidePriceRef = useRef<number>(0);
+  const guidePriceUpdatedAtRef = useRef<number>(0);
+  const wsConnectedRef = useRef<boolean>(false);
 
   useEffect(() => {
     const init = async () => {
@@ -232,6 +235,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   }, []);
 
   const commitGuidePrice = useCallback((price: number, source: string) => {
+    guidePriceRef.current = price;
+    guidePriceUpdatedAtRef.current = Date.now();
     setGuidePrice(price);
     setGuidePriceSource(source);
     setGuidePriceUpdatedAt(Date.now());
@@ -278,14 +283,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     applyLivePrice(price, normalizedSource, "chart");
 
     const now = Date.now();
-    const guideFeedStale = guidePriceUpdatedAt <= 0 || (now - guidePriceUpdatedAt) > GUIDE_PRICE_STALE_THRESHOLD_MS;
-    const guidePriceZero = guidePrice <= 0;
+    const lastGuidePriceAt = guidePriceUpdatedAtRef.current;
+    const lastGuidePrice = guidePriceRef.current;
+    const guideFeedStale = lastGuidePriceAt <= 0 || (now - lastGuidePriceAt) > GUIDE_PRICE_STALE_THRESHOLD_MS;
+    const guidePriceZero = lastGuidePrice <= 0;
+    const wsDown = !wsConnectedRef.current;
 
-    if (guidePriceZero || guideFeedStale) {
-      console.log(`📊 [GuidePrice] Promoting chart price ${price.toFixed(2)} to guide (WS ${guidePriceZero ? 'has no price' : `stale ${((now - guidePriceUpdatedAt) / 1000).toFixed(1)}s`})`);
+    if (guidePriceZero || guideFeedStale || wsDown) {
+      console.log(`📊 [GuidePrice] Promoting chart price ${price.toFixed(2)} to guide (${guidePriceZero ? 'no guide price' : guideFeedStale ? `stale ${((now - lastGuidePriceAt) / 1000).toFixed(1)}s` : 'WS down'})`);
       commitGuidePrice(price, normalizedSource);
     }
-  }, [applyLivePrice, commitGuidePrice, guidePrice, guidePriceUpdatedAt]);
+  }, [applyLivePrice, commitGuidePrice]);
 
   useEffect(() => {
     console.log('📈 Subscribing to TradingView chart price bridge...');
@@ -306,6 +314,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
     const unsubPrice = goldWebSocketService.onPrice((price: number, source: string) => {
       if (!isMounted) return;
+      wsConnectedRef.current = true;
       commitGuidePrice(price, source);
       applyLivePrice(price, source, 'feed');
     });
@@ -316,6 +325,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log(`📡 Tiingo feed status: ${status}`);
 
       if (status === 'connected') {
+        wsConnectedRef.current = true;
         const lastGuidePrice = goldWebSocketService.getLastPrice();
         const lastGuidePriceSource = goldWebSocketService.getLastPriceSource();
 
@@ -325,11 +335,18 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           setGuidePriceSource('🟢 Tiingo-Live');
         }
       } else if (status === 'waiting_for_trade') {
-        setGuidePriceSource('🟠 Waiting for Data');
+        wsConnectedRef.current = false;
+        if (guidePriceRef.current <= 0) {
+          setGuidePriceSource('🟠 Waiting for Data');
+        }
       } else if (status === 'disconnected') {
-        setGuidePriceSource('🔴 Disconnected');
+        wsConnectedRef.current = false;
+        if (guidePriceRef.current <= 0) {
+          setGuidePriceSource('🔴 Disconnected');
+        }
       } else if (status === 'reconnecting') {
-        if (!goldWebSocketService.isRestFallbackActive()) {
+        wsConnectedRef.current = false;
+        if (guidePriceRef.current <= 0 && !goldWebSocketService.isRestFallbackActive()) {
           setGuidePriceSource('🔴 Reconnecting...');
         }
       }
@@ -339,11 +356,32 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
     return () => {
       isMounted = false;
+      wsConnectedRef.current = false;
       unsubPrice();
       unsubStatus();
       goldWebSocketService.stop();
     };
   }, [commitGuidePrice, applyLivePrice]);
+
+  useEffect(() => {
+    const CHART_GUIDE_PROMOTION_INTERVAL_MS = 5000;
+    const timer = setInterval(() => {
+      const now = Date.now();
+      const chartPx = lastChartPriceRef.current;
+      const chartFresh = chartPriceHeartbeatRef.current > 0 && (now - chartPriceHeartbeatRef.current) < 15000;
+      const guidePx = guidePriceRef.current;
+      const guideAt = guidePriceUpdatedAtRef.current;
+      const guideStale = guideAt <= 0 || (now - guideAt) > GUIDE_PRICE_STALE_THRESHOLD_MS;
+      const wsUp = wsConnectedRef.current;
+
+      if (chartPx > 1000 && chartFresh && (guidePx <= 0 || (guideStale && !wsUp))) {
+        console.log(`🔄 [GuidePromoTimer] Promoting chart price ${chartPx.toFixed(2)} to guide (guidePx=${guidePx.toFixed(2)}, guideStale=${guideStale}, wsUp=${wsUp})`);
+        commitGuidePrice(chartPx, '🟢 TradingView (auto)');
+      }
+    }, CHART_GUIDE_PROMOTION_INTERVAL_MS);
+
+    return () => clearInterval(timer);
+  }, [commitGuidePrice]);
 
   useEffect(() => {
     const unsubHeartbeat = subscribeToChartHeartbeat((isAlive, lastPriceAt, _lastPrice) => {
