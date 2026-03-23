@@ -45,6 +45,8 @@ const CONNECTION_ALIVE_TIMEOUT_MS = 45000;
 const HEARTBEAT_PING_INTERVAL_MS = 15000;
 const HEARTBEAT_RESPONSE_TIMEOUT_MS = 10000;
 const RECONNECT_DELAY_MS = 5000;
+const MAX_TIME_WITHOUT_ANY_PRICE_MS = 30000;
+const FULL_RESET_AFTER_NO_PRICE_MS = 120000;
 const TIINGO_FX_TICKER = 'xauusd';
 const TIINGO_LIVE_SOURCE = '🟢 Tiingo-Live';
 const TIINGO_WS_URL = 'wss://api.tiingo.com/fx';
@@ -528,6 +530,56 @@ function requestSocketRecycle(reason: string, delayMs: number): void {
   scheduleReconnect(reconnectReason, reconnectDelay);
 }
 
+function forceFullReset(reason: string): void {
+  console.warn(`🚨 [GoldWS] FORCE FULL RESET: ${reason}`);
+
+  if (state.ws) {
+    try {
+      const s = state.ws;
+      state.ws = null;
+      s.onopen = null;
+      s.onmessage = null;
+      s.onerror = null;
+      s.onclose = null;
+      if (s.readyState === WebSocket.OPEN || s.readyState === WebSocket.CONNECTING) {
+        s.close();
+      }
+    } catch { /* ignore */ }
+  }
+
+  if (state.closingSocket) {
+    try {
+      const s = state.closingSocket;
+      state.closingSocket = null;
+      s.onopen = null;
+      s.onmessage = null;
+      s.onerror = null;
+      s.onclose = null;
+      if (s.readyState === WebSocket.OPEN || s.readyState === WebSocket.CONNECTING) {
+        s.close();
+      }
+    } catch { /* ignore */ }
+  }
+
+  clearReconnectTimer();
+  stopHeartbeatPing();
+  stopConnectionAliveTimer();
+  state.isConnecting = false;
+  state.isConnected = false;
+  state.hasReceivedTradeOnActiveConnection = false;
+  state.connectStartedAt = 0;
+  state.pendingReconnectDelayMs = null;
+  state.pendingReconnectReason = null;
+
+  notifyStatus('reconnecting');
+  startRestFallbackIfNeeded();
+
+  state.reconnectTimer = setTimeout(() => {
+    state.reconnectTimer = null;
+    void connect();
+  }, 2000);
+}
+
 function startWatchdog(): void {
   stopWatchdog();
 
@@ -536,13 +588,25 @@ function startWatchdog(): void {
       return;
     }
 
+    const now = Date.now();
     const socket = state.ws;
-    const connectDuration = state.connectStartedAt > 0 ? Date.now() - state.connectStartedAt : 0;
+    const connectDuration = state.connectStartedAt > 0 ? now - state.connectStartedAt : 0;
+    const timeSinceLastPrice = state.lastTickTime > 0 ? now - state.lastTickTime : (state.wsStartTime > 0 ? now - state.wsStartTime : 0);
+
+    if (timeSinceLastPrice > FULL_RESET_AFTER_NO_PRICE_MS && state.wsStartTime > 0) {
+      console.warn(`🚨 [GoldWS] No price received for ${(timeSinceLastPrice / 1000).toFixed(0)}s — forcing full reset`);
+      forceFullReset(`no-price-for-${(timeSinceLastPrice / 1000).toFixed(0)}s`);
+      return;
+    }
+
+    if (timeSinceLastPrice > MAX_TIME_WITHOUT_ANY_PRICE_MS && state.wsStartTime > 0) {
+      startRestFallbackIfNeeded();
+    }
 
     if (!socket) {
-      if (!state.closingSocket) {
-        console.warn('⚠️ [GoldWS] Watchdog found no active Tiingo socket');
-        scheduleReconnect('watchdog-missing-socket', RECONNECT_DELAY_MS);
+      if (!state.closingSocket && !state.reconnectTimer && !state.isConnecting) {
+        console.warn('⚠️ [GoldWS] Watchdog found no active Tiingo socket and no pending reconnect');
+        forceFullReset('watchdog-orphaned-state');
       }
       return;
     }
@@ -557,7 +621,8 @@ function startWatchdog(): void {
 
     if (socket.readyState === WebSocket.CLOSED) {
       console.warn('⚠️ [GoldWS] Watchdog detected closed Tiingo socket');
-      scheduleReconnect('watchdog-closed-socket', RECONNECT_DELAY_MS);
+      forceFullReset('watchdog-closed-socket');
+      return;
     }
 
     startRestFallbackIfNeeded();

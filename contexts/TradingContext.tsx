@@ -2,7 +2,7 @@ import createContextHook from "@nkzw/create-context-hook";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { TradingSignal, SignalStatus, Settings, MarketOutlook, PerformanceMetrics, PositionSizing, DailyOHLC } from "@/types/trading";
-import { signalEngine, setExternalPrice } from "@/services/signalEngine";
+import { signalEngine, setExternalPrice, fetchLiveGoldPriceFallback } from "@/services/signalEngine";
 import { Platform } from "react-native";
 import { fetchHistoricalData } from "@/lib/trpc";
 import { goldWebSocketService } from "@/services/goldWebSocketService";
@@ -13,6 +13,10 @@ import {
   sendSignalNotification
 } from "@/services/backgroundTaskService";
 import { subscribeToChartPrice, subscribeToChartHeartbeat } from "@/services/chartPriceBridge";
+
+const INDEPENDENT_POLL_INTERVAL_MS = 12000;
+const INDEPENDENT_POLL_NO_PRICE_INTERVAL_MS = 5000;
+const PRICE_STALE_THRESHOLD_FOR_POLL_MS = 20000;
 
 const DEFAULT_SETTINGS: Settings = {
   tp1Pips: 20,
@@ -405,6 +409,76 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    let consecutiveSuccesses = 0;
+
+    const runIndependentPricePoll = async () => {
+      if (!isMounted) return;
+
+      const now = Date.now();
+      const guidePx = guidePriceRef.current;
+      const guideAt = guidePriceUpdatedAtRef.current;
+      const chartPx = lastChartPriceRef.current;
+      const chartAt = chartPriceHeartbeatRef.current;
+      const guideAge = guideAt > 0 ? now - guideAt : Number.POSITIVE_INFINITY;
+      const chartAge = chartAt > 0 ? now - chartAt : Number.POSITIVE_INFINITY;
+      const hasFreshPrice = (guidePx > 0 && guideAge < PRICE_STALE_THRESHOLD_FOR_POLL_MS) ||
+                            (chartPx > 0 && chartAge < PRICE_STALE_THRESHOLD_FOR_POLL_MS);
+
+      if (hasFreshPrice && consecutiveSuccesses > 2) {
+        schedulePoll(INDEPENDENT_POLL_INTERVAL_MS);
+        return;
+      }
+
+      const pollLabel = guidePx <= 0 ? 'no-price' : guideAge > PRICE_STALE_THRESHOLD_FOR_POLL_MS ? `stale-${(guideAge / 1000).toFixed(0)}s` : 'routine';
+      console.log(`🔄 [IndependentPoll] Fetching price (reason=${pollLabel}, guidePx=${guidePx.toFixed(2)}, guideAge=${guideAge === Number.POSITIVE_INFINITY ? '∞' : (guideAge / 1000).toFixed(1) + 's'})`);
+
+      try {
+        const result = await fetchLiveGoldPriceFallback();
+        if (!isMounted) return;
+
+        if (result.price > 0) {
+          consecutiveSuccesses++;
+          const freshSource = `🟢 ${result.source.replace(/🟢 |🟠 |🟡 |🔴 /g, '')} (poll)`;
+          console.log(`✅ [IndependentPoll] Got price: ${result.price.toFixed(2)} from ${freshSource}`);
+
+          commitGuidePrice(result.price, freshSource);
+          applyLivePrice(result.price, freshSource, 'feed');
+        } else {
+          consecutiveSuccesses = 0;
+          console.warn('⚠️ [IndependentPoll] All price sources returned 0');
+        }
+      } catch (err) {
+        consecutiveSuccesses = 0;
+        console.warn('⚠️ [IndependentPoll] Price fetch failed:', err instanceof Error ? err.message : 'Unknown');
+      }
+
+      const nextInterval = guidePriceRef.current <= 0
+        ? INDEPENDENT_POLL_NO_PRICE_INTERVAL_MS
+        : INDEPENDENT_POLL_INTERVAL_MS;
+      schedulePoll(nextInterval);
+    };
+
+    const schedulePoll = (delayMs: number) => {
+      if (!isMounted) return;
+      if (pollTimer) clearTimeout(pollTimer);
+      pollTimer = setTimeout(() => {
+        void runIndependentPricePoll();
+      }, delayMs);
+    };
+
+    console.log('🛡️ [IndependentPoll] Starting independent price safety net (first poll in 3s)');
+    schedulePoll(3000);
+
+    return () => {
+      isMounted = false;
+      if (pollTimer) clearTimeout(pollTimer);
+      console.log('🛑 [IndependentPoll] Stopped independent price safety net');
+    };
+  }, [commitGuidePrice, applyLivePrice]);
 
   const fetchPriceHistory = useCallback(async (fromTime: number, toTime: number): Promise<{timestamp: number, open: number, high: number, low: number, close: number}[]> => {
     try {
@@ -1275,8 +1349,23 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       setExternalPrice(signalTrackingSnapshot.price, signalTrackingSnapshot.source);
       syncSignalPriceFromEngine(signalTrackingSnapshot.price);
     } else {
-      const refreshedEnginePrice = await signalEngine.updateCurrentPrice();
-      syncSignalPriceFromEngine(refreshedEnginePrice);
+      console.warn('⚠️ [SignalGen] No tracking price available — force-fetching via REST...');
+      try {
+        const fallback = await fetchLiveGoldPriceFallback();
+        if (fallback.price > 0) {
+          console.log(`✅ [SignalGen] Force-fetched price: ${fallback.price.toFixed(2)} from ${fallback.source}`);
+          setExternalPrice(fallback.price, fallback.source);
+          syncSignalPriceFromEngine(fallback.price);
+          commitGuidePrice(fallback.price, `🟢 ${fallback.source.replace(/🟢 |🟠 |🟡 |🔴 /g, '')} (signal-force)`);
+        } else {
+          const refreshedEnginePrice = await signalEngine.updateCurrentPrice();
+          syncSignalPriceFromEngine(refreshedEnginePrice);
+        }
+      } catch (err) {
+        console.warn('⚠️ [SignalGen] Force-fetch failed:', err instanceof Error ? err.message : 'Unknown');
+        const refreshedEnginePrice = await signalEngine.updateCurrentPrice();
+        syncSignalPriceFromEngine(refreshedEnginePrice);
+      }
     }
     
     const outlook = await signalEngine.getMarketOutlook();
@@ -1394,7 +1483,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.error("Error:", error);
       console.error("Stack:", error instanceof Error ? error.stack : 'No stack trace');
     }
-  }, [settings, accountBalance, signalHistory, appLaunchTime, signalTrackingSnapshot, syncSignalPriceFromEngine]);
+  }, [settings, accountBalance, signalHistory, appLaunchTime, signalTrackingSnapshot, syncSignalPriceFromEngine, commitGuidePrice]);
 
   const updateAllSignalsStatus = useCallback(() => {
     const price = signalTrackingSnapshot.price;
