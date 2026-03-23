@@ -2,6 +2,8 @@ import { createTRPCRouter, publicProcedure } from "../create-context";
 import * as z from "zod";
 
 let goldPriceCache: { price: number; source: string; timestamp: number } | null = null;
+let livePriceCache: { price: number; source: string; timestamp: number } | null = null;
+const LIVE_PRICE_CACHE_MS = 1500;
 let tiingoGuideCache: { price: number; source: string; timestamp: number } | null = null;
 let finnhubGuideCache: { price: number; source: string; timestamp: number } | null = null;
 let intermarketCache: { dxy: number; us10y: number; vix: number; timestamp: number } | null = null;
@@ -628,6 +630,44 @@ export const goldPriceRouter = createTRPCRouter({
     }
 
     console.error('[GOLD] ALL SPOT PRICE SOURCES FAILED - No cache available');
+    return { price: 0, source: 'unavailable', timestamp: now, cached: false };
+  }),
+
+  getLivePrice: publicProcedure.query(async () => {
+    const now = Date.now();
+
+    if (livePriceCache && now - livePriceCache.timestamp < LIVE_PRICE_CACHE_MS) {
+      return { price: livePriceCache.price, source: livePriceCache.source, timestamp: livePriceCache.timestamp, cached: true };
+    }
+
+    const swissquote = await fetchSwissquoteGold();
+    if (swissquote) {
+      livePriceCache = { price: swissquote.price, source: 'swissquote-live', timestamp: now };
+      return { price: swissquote.price, source: 'swissquote-live', timestamp: now, cached: false };
+    }
+
+    const tier2Results = await Promise.allSettled([
+      fetchMetalsLive(),
+      fetchTiingoRestGuidePrice(),
+      fetchGoldPriceOrg(),
+      fetchFXCMGold(),
+    ]);
+
+    for (const r of tier2Results) {
+      if (r.status === 'fulfilled' && r.value) {
+        livePriceCache = { price: r.value.price, source: r.value.source, timestamp: now };
+        return { price: r.value.price, source: r.value.source, timestamp: now, cached: false };
+      }
+    }
+
+    if (livePriceCache && now - livePriceCache.timestamp < 30000) {
+      return { price: livePriceCache.price, source: `${livePriceCache.source}-recent`, timestamp: livePriceCache.timestamp, cached: true };
+    }
+
+    if (goldPriceCache) {
+      return { price: goldPriceCache.price, source: `${goldPriceCache.source}-fallback`, timestamp: goldPriceCache.timestamp, cached: true };
+    }
+
     return { price: 0, source: 'unavailable', timestamp: now, cached: false };
   }),
 

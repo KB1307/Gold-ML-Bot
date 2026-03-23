@@ -18,16 +18,15 @@ interface ServiceState {
   totalSuccesses: number;
   isPolling: boolean;
   restFallbackActive: boolean;
+  backendBaseUrl: string;
 }
 
-const SWISSQUOTE_URL = 'https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD';
-const SWISSQUOTE_SOURCE = '🟢 Swissquote-Live';
-const POLL_INTERVAL_MS = 1500;
-const WATCHDOG_INTERVAL_MS = 5000;
+const POLL_INTERVAL_MS = 2000;
+const WATCHDOG_INTERVAL_MS = 6000;
 const STALE_THRESHOLD_MS = 15000;
 const BACKOFF_BASE_MS = 2000;
 const MAX_BACKOFF_MS = 30000;
-const FETCH_TIMEOUT_MS = 6000;
+const FETCH_TIMEOUT_MS = 8000;
 
 const state: ServiceState = {
   priceCallbacks: new Set(),
@@ -45,7 +44,33 @@ const state: ServiceState = {
   totalSuccesses: 0,
   isPolling: false,
   restFallbackActive: false,
+  backendBaseUrl: '',
 };
+
+function resolveBackendBaseUrl(): string {
+  if (state.backendBaseUrl.length > 0) return state.backendBaseUrl;
+
+  const configured = process.env.EXPO_PUBLIC_RORK_API_BASE_URL;
+  if (configured) {
+    const trimmed = configured.trim().replace(/\/+$/, '');
+    state.backendBaseUrl = trimmed.endsWith('/api/trpc')
+      ? trimmed
+      : trimmed.endsWith('/api')
+        ? `${trimmed}/trpc`
+        : `${trimmed}/api/trpc`;
+    console.log(`🔗 [GoldWS] Backend base URL resolved: ${state.backendBaseUrl}`);
+    return state.backendBaseUrl;
+  }
+
+  if (typeof window !== 'undefined' && typeof window.location?.origin === 'string') {
+    state.backendBaseUrl = `${window.location.origin}/api/trpc`;
+    console.log(`🔗 [GoldWS] Backend base URL from window: ${state.backendBaseUrl}`);
+    return state.backendBaseUrl;
+  }
+
+  state.backendBaseUrl = '/api/trpc';
+  return state.backendBaseUrl;
+}
 
 function notifyPrice(price: number, source: string): void {
   state.lastPrice = price;
@@ -80,130 +105,142 @@ function getBackoffDelay(): number {
   return delay;
 }
 
-async function fetchSwissquotePrice(): Promise<{ price: number; source: string } | null> {
+async function fetchBackendLivePrice(): Promise<{ price: number; source: string } | null> {
   try {
+    const baseUrl = resolveBackendBaseUrl();
+    const url = `${baseUrl}/goldPrice.getLivePrice`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    const response = await fetch(SWISSQUOTE_URL, {
+
+    console.log(`🔄 [GoldWS] Fetching live price via backend proxy...`);
+    const response = await fetch(url, {
       signal: controller.signal,
       headers: { 'Accept': 'application/json' },
     });
     clearTimeout(timeoutId);
 
     if (!response.ok) {
-      console.warn(`⚠️ [GoldWS] Swissquote HTTP ${response.status}`);
+      console.warn(`⚠️ [GoldWS] Backend proxy HTTP ${response.status}`);
       return null;
     }
 
-    const data = await response.json();
-    if (Array.isArray(data) && data.length > 0) {
-      const quote = data[0];
-      const spreadProfiles = quote?.spreadProfilePrices;
-      if (Array.isArray(spreadProfiles) && spreadProfiles.length > 0) {
-        const bid = spreadProfiles[0]?.bid;
-        const ask = spreadProfiles[0]?.ask;
-        if (typeof bid === 'number' && typeof ask === 'number' && bid > 1000 && ask > 1000) {
-          const price = Number(((bid + ask) / 2).toFixed(2));
-          return { price, source: SWISSQUOTE_SOURCE };
+    const rawBody = await response.text();
+    let data: unknown = null;
+
+    try {
+      data = JSON.parse(rawBody);
+    } catch {
+      const firstBrace = rawBody.indexOf('{');
+      const lastBrace = rawBody.lastIndexOf('}');
+      if (firstBrace >= 0 && lastBrace > firstBrace) {
+        try {
+          data = JSON.parse(rawBody.slice(firstBrace, lastBrace + 1));
+        } catch {
+          console.warn('⚠️ [GoldWS] Backend response parse failed');
+          return null;
         }
       }
     }
 
-    console.warn('⚠️ [GoldWS] Swissquote returned unexpected data shape');
+    if (!data || typeof data !== 'object') return null;
+
+    const record = data as Record<string, unknown>;
+    let price = 0;
+    let source = 'backend-proxy';
+
+    const resultData = record.result as Record<string, unknown> | undefined;
+    if (resultData?.data) {
+      const innerData = resultData.data as Record<string, unknown>;
+      if (innerData?.json) {
+        const json = innerData.json as Record<string, unknown>;
+        price = typeof json.price === 'number' ? json.price : 0;
+        source = typeof json.source === 'string' ? json.source : 'backend-proxy';
+      } else {
+        price = typeof innerData.price === 'number' ? innerData.price : 0;
+        source = typeof innerData.source === 'string' ? innerData.source : 'backend-proxy';
+      }
+    } else if (typeof record.price === 'number') {
+      price = record.price;
+      source = typeof record.source === 'string' ? record.source : 'backend-proxy';
+    }
+
+    if (price > 1000 && price < 10000) {
+      return { price: Number(price.toFixed(2)), source };
+    }
+
+    console.warn('⚠️ [GoldWS] Backend returned invalid price:', price);
     return null;
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Unknown';
     if (!msg.includes('abort')) {
-      console.warn(`⚠️ [GoldWS] Swissquote fetch failed: ${msg}`);
+      console.warn(`⚠️ [GoldWS] Backend proxy fetch failed: ${msg}`);
     }
     return null;
   }
 }
 
-async function fetchMetalsLivePrice(): Promise<{ price: number; source: string } | null> {
+async function fetchBackendSpotPrice(): Promise<{ price: number; source: string } | null> {
   try {
+    const baseUrl = resolveBackendBaseUrl();
+    const url = `${baseUrl}/goldPrice.getSpotPrice`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    const response = await fetch('https://api.metals.live/v1/spot/gold', { signal: controller.signal });
+
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'Accept': 'application/json' },
+    });
     clearTimeout(timeoutId);
-    if (response.ok) {
-      const data = await response.json();
-      if (data?.[0]?.price) {
-        const price = Number(parseFloat(data[0].price.toString()).toFixed(2));
-        if (price > 1000 && price < 10000) {
-          return { price, source: '🟠 MetalsLive-Fallback' };
+
+    if (!response.ok) return null;
+
+    const rawBody = await response.text();
+    let data: unknown = null;
+
+    try {
+      data = JSON.parse(rawBody);
+    } catch {
+      const firstBrace = rawBody.indexOf('{');
+      const lastBrace = rawBody.lastIndexOf('}');
+      if (firstBrace >= 0 && lastBrace > firstBrace) {
+        try {
+          data = JSON.parse(rawBody.slice(firstBrace, lastBrace + 1));
+        } catch {
+          return null;
         }
       }
     }
-  } catch (e) {
-    console.warn('⚠️ [GoldWS] metals.live fallback failed:', e instanceof Error ? e.message : 'Unknown');
-  }
-  return null;
-}
 
-async function fetchGoldPriceOrg(): Promise<{ price: number; source: string } | null> {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    const response = await fetch('https://data-asg.goldprice.org/dbXRates/USD', { signal: controller.signal });
-    clearTimeout(timeoutId);
-    if (response.ok) {
-      const data = await response.json();
-      if (data?.items?.[0]?.xauPrice) {
-        const price = Number(parseFloat(data.items[0].xauPrice).toFixed(2));
-        if (price > 1000 && price < 10000) {
-          return { price, source: '🟠 GoldPrice-Fallback' };
-        }
+    if (!data || typeof data !== 'object') return null;
+
+    const record = data as Record<string, unknown>;
+    let price = 0;
+    let source = 'backend-spot';
+
+    const resultData = record.result as Record<string, unknown> | undefined;
+    if (resultData?.data) {
+      const innerData = resultData.data as Record<string, unknown>;
+      if (innerData?.json) {
+        const json = innerData.json as Record<string, unknown>;
+        price = typeof json.price === 'number' ? json.price : 0;
+        source = typeof json.source === 'string' ? json.source : 'backend-spot';
+      } else {
+        price = typeof innerData.price === 'number' ? innerData.price : 0;
+        source = typeof innerData.source === 'string' ? innerData.source : 'backend-spot';
       }
+    } else if (typeof record.price === 'number') {
+      price = record.price;
+      source = typeof record.source === 'string' ? record.source : 'backend-spot';
     }
-  } catch (e) {
-    console.warn('⚠️ [GoldWS] goldprice.org fallback failed:', e instanceof Error ? e.message : 'Unknown');
-  }
-  return null;
-}
 
-async function fetchTiingoRestPrice(): Promise<{ price: number; source: string } | null> {
-  const apiKey = process.env.EXPO_PUBLIC_TIINGO_API_KEY?.trim() ?? '';
-  if (!apiKey) return null;
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    const response = await fetch(
-      `https://api.tiingo.com/tiingo/fx/top?tickers=xauusd&token=${encodeURIComponent(apiKey)}`,
-      { signal: controller.signal, headers: { 'Accept': 'application/json' } }
-    );
-    clearTimeout(timeoutId);
-    if (response.ok) {
-      const payload = await response.json();
-      const quote = Array.isArray(payload) ? payload[0] : payload;
-      const mid = typeof quote?.midPrice === 'number' ? quote.midPrice : parseFloat(String(quote?.midPrice ?? ''));
-      if (Number.isFinite(mid) && mid > 1000 && mid < 10000) {
-        return { price: Number(mid.toFixed(2)), source: '🟠 Tiingo-Fallback' };
-      }
-      const bid = typeof quote?.bidPrice === 'number' ? quote.bidPrice : parseFloat(String(quote?.bidPrice ?? ''));
-      const ask = typeof quote?.askPrice === 'number' ? quote.askPrice : parseFloat(String(quote?.askPrice ?? ''));
-      if (Number.isFinite(bid) && Number.isFinite(ask) && bid > 1000 && ask > 1000) {
-        return { price: Number(((bid + ask) / 2).toFixed(2)), source: '🟠 Tiingo-Fallback' };
-      }
+    if (price > 1000 && price < 10000) {
+      return { price: Number(price.toFixed(2)), source };
     }
-  } catch (e) {
-    console.warn('⚠️ [GoldWS] Tiingo REST fallback failed:', e instanceof Error ? e.message : 'Unknown');
+
+    return null;
+  } catch {
+    return null;
   }
-  return null;
-}
-
-async function fetchFallbackPrice(): Promise<{ price: number; source: string } | null> {
-  const metalsResult = await fetchMetalsLivePrice();
-  if (metalsResult) return metalsResult;
-
-  const tiingoResult = await fetchTiingoRestPrice();
-  if (tiingoResult) return tiingoResult;
-
-  const goldPriceResult = await fetchGoldPriceOrg();
-  if (goldPriceResult) return goldPriceResult;
-
-  return null;
 }
 
 async function pollPrice(): Promise<void> {
@@ -213,7 +250,7 @@ async function pollPrice(): Promise<void> {
   state.totalPolls += 1;
 
   try {
-    const result = await fetchSwissquotePrice();
+    const result = await fetchBackendLivePrice();
 
     if (state.intentionallyClosed) return;
 
@@ -221,26 +258,27 @@ async function pollPrice(): Promise<void> {
       state.consecutiveFailures = 0;
       state.totalSuccesses += 1;
       state.restFallbackActive = false;
-      notifyPrice(result.price, result.source);
+      const displaySource = result.source.includes('swissquote') ? '🟢 Swissquote-Live' : `🟢 ${result.source}`;
+      notifyPrice(result.price, displaySource);
       notifyStatus('connected');
 
-      if (state.totalSuccesses % 40 === 0) {
-        console.log(`⚡ [GoldWS] Swissquote ${result.price.toFixed(2)} | polls:${state.totalPolls} ok:${state.totalSuccesses} fails:${state.consecutiveFailures}`);
+      if (state.totalSuccesses % 30 === 0) {
+        console.log(`⚡ [GoldWS] ${result.price.toFixed(2)} via ${result.source} | polls:${state.totalPolls} ok:${state.totalSuccesses} fails:${state.consecutiveFailures}`);
       }
       return;
     }
 
     state.consecutiveFailures += 1;
-    console.warn(`⚠️ [GoldWS] Swissquote poll failed (streak: ${state.consecutiveFailures})`);
+    console.warn(`⚠️ [GoldWS] Backend poll failed (streak: ${state.consecutiveFailures})`);
 
     if (state.consecutiveFailures >= 2) {
       state.restFallbackActive = true;
       notifyStatus('reconnecting');
 
-      console.log('🔄 [GoldWS] Attempting fallback price sources...');
-      const fallback = await fetchFallbackPrice();
+      console.log('🔄 [GoldWS] Attempting fallback via getSpotPrice...');
+      const fallback = await fetchBackendSpotPrice();
       if (fallback && !state.intentionallyClosed) {
-        notifyPrice(fallback.price, fallback.source);
+        notifyPrice(fallback.price, `🟠 ${fallback.source} (fallback)`);
         notifyStatus('connected');
         console.log(`✅ [GoldWS] Fallback price: ${fallback.price} from ${fallback.source}`);
       }
@@ -260,7 +298,7 @@ async function pollPrice(): Promise<void> {
 function startPolling(): void {
   stopPolling();
 
-  console.log(`🚀 [GoldWS] Starting Swissquote price polling (interval=${POLL_INTERVAL_MS}ms)...`);
+  console.log(`🚀 [GoldWS] Starting backend-proxied price polling (interval=${POLL_INTERVAL_MS}ms)...`);
   notifyStatus('reconnecting');
 
   void pollPrice();
@@ -324,7 +362,7 @@ function stopWatchdog(): void {
 export const goldWebSocketService = {
   start(): void {
     if (state.pollTimer) {
-      console.log('ℹ️ [GoldWS] Swissquote price service already active, skipping duplicate start');
+      console.log('ℹ️ [GoldWS] Price service already active, skipping duplicate start');
       return;
     }
 
@@ -334,13 +372,14 @@ export const goldWebSocketService = {
     state.totalPolls = 0;
     state.totalSuccesses = 0;
     state.restFallbackActive = false;
-    console.log('🚀 [GoldWS] Starting Swissquote XAU/USD price service (no API key required)...');
+    state.backendBaseUrl = '';
+    console.log('🚀 [GoldWS] Starting XAU/USD price service via backend proxy (CORS-safe)...');
 
     startPolling();
   },
 
   stop(): void {
-    console.log('🛑 [GoldWS] Stopping Swissquote price service');
+    console.log('🛑 [GoldWS] Stopping price service');
     state.intentionallyClosed = true;
     stopPolling();
     stopWatchdog();
