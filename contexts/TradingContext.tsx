@@ -314,7 +314,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   useEffect(() => {
     let isMounted = true;
 
-    console.log('🔌 Starting Tiingo live price feed (quote+trade, thresholdLevel=0)...');
+    console.log('🔌 Starting Swissquote live price feed...');
 
     const unsubPrice = goldWebSocketService.onPrice((price: number, source: string) => {
       if (!isMounted) return;
@@ -326,7 +326,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const unsubStatus = goldWebSocketService.onStatus((status) => {
       if (!isMounted) return;
 
-      console.log(`📡 Tiingo feed status: ${status}`);
+      console.log(`📡 Price feed status: ${status}`);
 
       if (status === 'connected') {
         wsConnectedRef.current = true;
@@ -336,7 +336,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         if (lastGuidePrice > 0) {
           commitGuidePrice(lastGuidePrice, lastGuidePriceSource);
         } else {
-          setGuidePriceSource('🟢 Tiingo-Live');
+          setGuidePriceSource('🟢 Swissquote-Live');
         }
       } else if (status === 'waiting_for_trade') {
         wsConnectedRef.current = false;
