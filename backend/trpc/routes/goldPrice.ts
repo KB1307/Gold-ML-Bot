@@ -804,63 +804,177 @@ export const goldPriceRouter = createTRPCRouter({
     }))
     .query(async ({ input }) => {
       const { fromTime, toTime } = input;
-      const period1 = Math.floor(fromTime / 1000);
-      const period2 = Math.floor(toTime / 1000) + 120;
 
-      const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
+      type HistBar = { timestamp: number; open: number; high: number; low: number; close: number };
 
-      for (const host of hosts) {
+      async function fetchYahooHistory(): Promise<HistBar[]> {
+        const period1 = Math.floor(fromTime / 1000);
+        const period2 = Math.floor(toTime / 1000) + 120;
+        const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
+
+        for (const host of hosts) {
+          try {
+            const url = `https://${host}/v8/finance/chart/GC=F?interval=1m&period1=${period1}&period2=${period2}`;
+            console.log(`[GOLD-HISTORY] Yahoo: Fetching from ${host}`);
+            const response = await fetchWithTimeout(url, 8000);
+
+            if (!response.ok) {
+              console.log(`[GOLD-HISTORY] Yahoo ${host} returned ${response.status}`);
+              continue;
+            }
+
+            const data = await response.json();
+            if (!data?.chart?.result?.[0]?.timestamp) {
+              console.log(`[GOLD-HISTORY] Yahoo: Invalid data from ${host}`);
+              continue;
+            }
+
+            const result = data.chart.result[0];
+            const timestamps = result.timestamp;
+            const quotes = result.indicators.quote[0];
+            const bars: HistBar[] = [];
+
+            for (let i = 0; i < timestamps.length; i++) {
+              const barTime = timestamps[i] * 1000;
+              if (barTime >= fromTime && barTime <= toTime) {
+                const open = quotes.open[i];
+                const high = quotes.high[i];
+                const low = quotes.low[i];
+                const close = quotes.close[i];
+                if (open !== null && high !== null && low !== null && close !== null) {
+                  bars.push({ timestamp: barTime, open, high, low, close });
+                }
+              }
+            }
+
+            console.log(`[GOLD-HISTORY] Yahoo success: ${bars.length} bars from ${host}`);
+            return bars;
+          } catch (e) {
+            console.warn(`[GOLD-HISTORY] Yahoo ${host} error:`, e instanceof Error ? e.message : 'Unknown');
+            continue;
+          }
+        }
+        return [];
+      }
+
+      async function fetchTwelveDataHistory(): Promise<HistBar[]> {
+        const apiKey = normalizeApiKey(process.env.EXPO_PUBLIC_TWELVEDATA_API_KEY);
+        if (!apiKey) {
+          console.log('[GOLD-HISTORY] TwelveData key not configured');
+          return [];
+        }
+
         try {
-          const url = `https://${host}/v8/finance/chart/GC=F?interval=1m&period1=${period1}&period2=${period2}`;
-          console.log(`[GOLD-HISTORY] Fetching ${url}`);
-          const response = await fetchWithTimeout(url, 5000);
+          const startDate = new Date(fromTime).toISOString().slice(0, 19);
+          const endDate = new Date(toTime).toISOString().slice(0, 19);
+          const url = `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=1min&start_date=${startDate}&end_date=${endDate}&outputsize=500&apikey=${apiKey}`;
+          console.log(`[GOLD-HISTORY] TwelveData: Fetching...`);
+          const response = await fetchWithTimeout(url, 10000);
 
           if (!response.ok) {
-            console.log(`[GOLD-HISTORY] ${host} returned ${response.status}`);
-            continue;
+            console.log(`[GOLD-HISTORY] TwelveData returned ${response.status}`);
+            return [];
           }
 
           const data = await response.json();
-          if (!data?.chart?.result?.[0]?.timestamp) {
-            console.log(`[GOLD-HISTORY] Invalid data from ${host}`);
-            continue;
+          if (data?.status === 'error') {
+            console.log(`[GOLD-HISTORY] TwelveData API error: ${data?.message}`);
+            return [];
           }
 
-          const result = data.chart.result[0];
-          const timestamps = result.timestamp;
-          const quotes = result.indicators.quote[0];
+          const values = data?.values;
+          if (!Array.isArray(values) || values.length === 0) {
+            console.log('[GOLD-HISTORY] TwelveData: No values returned');
+            return [];
+          }
 
-          const bars = [];
-
-          for (let i = 0; i < timestamps.length; i++) {
-            const barTime = timestamps[i] * 1000;
-
-            if (barTime >= fromTime && barTime <= toTime) {
-              const open = quotes.open[i];
-              const high = quotes.high[i];
-              const low = quotes.low[i];
-              const close = quotes.close[i];
-
-              if (open !== null && high !== null && low !== null && close !== null) {
-                bars.push({
-                  timestamp: barTime,
-                  open,
-                  high,
-                  low,
-                  close,
-                });
+          const bars: HistBar[] = [];
+          for (const v of values) {
+            const ts = new Date(v.datetime + 'Z').getTime();
+            const open = parseFloat(v.open);
+            const high = parseFloat(v.high);
+            const low = parseFloat(v.low);
+            const close = parseFloat(v.close);
+            if (!isNaN(ts) && !isNaN(open) && !isNaN(high) && !isNaN(low) && !isNaN(close) && open > 1000) {
+              if (ts >= fromTime && ts <= toTime) {
+                bars.push({ timestamp: ts, open, high, low, close });
               }
             }
           }
 
-          console.log(`[GOLD-HISTORY] Success: fetched ${bars.length} bars`);
+          bars.sort((a, b) => a.timestamp - b.timestamp);
+          console.log(`[GOLD-HISTORY] TwelveData success: ${bars.length} bars`);
           return bars;
         } catch (e) {
-          console.error(`[GOLD-HISTORY] Error fetching from ${host}:`, e);
-          continue;
+          console.warn('[GOLD-HISTORY] TwelveData error:', e instanceof Error ? e.message : 'Unknown');
+          return [];
         }
       }
 
+      async function fetchTiingoHistory(): Promise<HistBar[]> {
+        const apiKey = getTiingoApiKey();
+        if (!apiKey) {
+          console.log('[GOLD-HISTORY] Tiingo key not configured');
+          return [];
+        }
+
+        try {
+          const startDate = new Date(fromTime).toISOString();
+          const endDate = new Date(toTime).toISOString();
+          const url = `https://api.tiingo.com/iex/?tickers=xauusd&startDate=${startDate}&endDate=${endDate}&resampleFreq=1min&token=${encodeURIComponent(apiKey)}`;
+          console.log(`[GOLD-HISTORY] Tiingo: Fetching...`);
+          const response = await fetchWithTimeout(url, 10000, {
+            'Content-Type': 'application/json',
+          });
+
+          if (!response.ok) {
+            console.log(`[GOLD-HISTORY] Tiingo returned ${response.status}`);
+            return [];
+          }
+
+          const data = await response.json();
+          if (!Array.isArray(data) || data.length === 0) {
+            console.log('[GOLD-HISTORY] Tiingo: No data returned');
+            return [];
+          }
+
+          const bars: HistBar[] = [];
+          for (const item of data) {
+            const ts = new Date(item.date || item.datetime).getTime();
+            const open = parseFloat(item.open);
+            const high = parseFloat(item.high);
+            const low = parseFloat(item.low);
+            const close = parseFloat(item.close);
+            if (!isNaN(ts) && !isNaN(open) && !isNaN(high) && !isNaN(low) && !isNaN(close) && open > 1000) {
+              if (ts >= fromTime && ts <= toTime) {
+                bars.push({ timestamp: ts, open, high, low, close });
+              }
+            }
+          }
+
+          bars.sort((a, b) => a.timestamp - b.timestamp);
+          console.log(`[GOLD-HISTORY] Tiingo success: ${bars.length} bars`);
+          return bars;
+        } catch (e) {
+          console.warn('[GOLD-HISTORY] Tiingo error:', e instanceof Error ? e.message : 'Unknown');
+          return [];
+        }
+      }
+
+      console.log(`[GOLD-HISTORY] Fetching bars from ${new Date(fromTime).toISOString()} to ${new Date(toTime).toISOString()}`);
+
+      const yahooResult = await fetchYahooHistory();
+      if (yahooResult.length > 0) return yahooResult;
+
+      console.log('[GOLD-HISTORY] Yahoo failed, trying TwelveData...');
+      const twelveResult = await fetchTwelveDataHistory();
+      if (twelveResult.length > 0) return twelveResult;
+
+      console.log('[GOLD-HISTORY] TwelveData failed, trying Tiingo...');
+      const tiingoResult = await fetchTiingoHistory();
+      if (tiingoResult.length > 0) return tiingoResult;
+
+      console.warn('[GOLD-HISTORY] All historical data sources failed');
       return [];
     }),
 

@@ -224,61 +224,75 @@ const extractHistoricalBars = (payload: unknown): HistoricalPriceBar[] => {
   return [];
 };
 
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 export const fetchHistoricalData = async (
   input: { fromTime: number; toTime: number; timeoutMs?: number },
 ): Promise<HistoricalPriceBar[]> => {
-  const { fromTime, toTime, timeoutMs = 15000 } = input;
+  const { fromTime, toTime, timeoutMs = 25000 } = input;
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 2000;
+
   const requestUrl = `${getPrimaryTrpcUrl()}/goldPrice.getHistoricalData?input=${encodeURIComponent(
     JSON.stringify({ json: { fromTime, toTime } }),
   )}`;
   const attemptUrls = buildAttemptUrls(requestUrl);
   let lastError: unknown = null;
 
-  for (let index = 0; index < attemptUrls.length; index += 1) {
-    const attemptUrl = attemptUrls[index];
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  for (let retry = 0; retry < MAX_RETRIES; retry += 1) {
+    if (retry > 0) {
+      const waitMs = RETRY_DELAY_MS * retry;
+      console.log(`⏳ [History] Retry ${retry}/${MAX_RETRIES - 1} after ${waitMs}ms...`);
+      await delay(waitMs);
+    }
 
-    try {
-      console.log(
-        `🌐 [History] GET ${attemptUrl} (attempt ${index + 1}/${attemptUrls.length})`,
-      );
+    for (let index = 0; index < attemptUrls.length; index += 1) {
+      const attemptUrl = attemptUrls[index];
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-      const response = await fetch(attemptUrl, {
-        method: "GET",
-        headers: { accept: "application/json" },
-        signal: controller.signal,
-      });
-
-      const rawBody = await response.text();
-
-      if (!response.ok) {
-        console.warn(
-          `⚠️ [History] Request failed with status ${response.status}: ${rawBody.slice(0, 240)}`,
+      try {
+        console.log(
+          `🌐 [History] GET ${attemptUrl} (retry ${retry}, attempt ${index + 1}/${attemptUrls.length})`,
         );
-        continue;
+
+        const response = await fetch(attemptUrl, {
+          method: "GET",
+          headers: { accept: "application/json" },
+          signal: controller.signal,
+        });
+
+        const rawBody = await response.text();
+
+        if (!response.ok) {
+          console.warn(
+            `⚠️ [History] Request failed with status ${response.status}: ${rawBody.slice(0, 240)}`,
+          );
+          continue;
+        }
+
+        const payload = recoverJsonPayload(rawBody);
+        const bars = extractHistoricalBars(payload);
+
+        if (bars.length > 0 || rawBody.includes("[]")) {
+          console.log(`✅ [History] Parsed ${bars.length} historical bar(s)`);
+          return bars;
+        }
+
+        console.warn(
+          `⚠️ [History] Response parsed but no historical bars were extracted. Prefix: ${rawBody.slice(0, 240)}`,
+        );
+      } catch (error) {
+        lastError = error;
+        const msg = error instanceof Error ? error.message : "Unknown";
+        console.warn(`⚠️ [History] Request failed for ${attemptUrl}: ${msg}`);
+
+        if (!isNetworkRetryableError(error) && !isAbortError(error)) {
+          break;
+        }
+      } finally {
+        clearTimeout(timeoutId);
       }
-
-      const payload = recoverJsonPayload(rawBody);
-      const bars = extractHistoricalBars(payload);
-
-      if (bars.length > 0 || rawBody.includes("[]")) {
-        console.log(`✅ [History] Parsed ${bars.length} historical bar(s)`);
-        return bars;
-      }
-
-      console.warn(
-        `⚠️ [History] Response parsed but no historical bars were extracted. Prefix: ${rawBody.slice(0, 240)}`,
-      );
-    } catch (error) {
-      lastError = error;
-      console.warn(`⚠️ [History] Request failed for ${attemptUrl}:`, error);
-
-      if (!isNetworkRetryableError(error) && !isAbortError(error)) {
-        break;
-      }
-    } finally {
-      clearTimeout(timeoutId);
     }
   }
 
