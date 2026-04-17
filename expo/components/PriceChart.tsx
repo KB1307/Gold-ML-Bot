@@ -321,11 +321,32 @@ const WebChartFrame = React.memo(({ html, onLoad }: { html: string; onLoad: () =
       return;
     }
 
-    const iframe = attachSharedWebIframe(host, html);
-    iframe.addEventListener('load', onLoad);
+    const iframe = getOrCreateSharedWebIframe(html);
+    const handleIframeLoad = () => {
+      onLoad();
+    };
+
+    iframe.addEventListener('load', handleIframeLoad);
+    attachSharedWebIframe(host, html);
+
+    let readyFrameTimer: ReturnType<typeof setTimeout> | null = null;
+
+    try {
+      if (iframe.contentDocument?.readyState === 'complete') {
+        readyFrameTimer = setTimeout(() => {
+          onLoad();
+        }, 0);
+      }
+    } catch (error) {
+      console.warn('[PriceChart] Unable to inspect shared iframe readiness:', error);
+    }
 
     return () => {
-      iframe.removeEventListener('load', onLoad);
+      iframe.removeEventListener('load', handleIframeLoad);
+
+      if (readyFrameTimer) {
+        clearTimeout(readyFrameTimer);
+      }
 
       if (iframe.parentNode === host) {
         parkSharedWebIframe();
@@ -358,6 +379,14 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
 
   const handleBridgePayload = useCallback((payload: ChartBridgeMessage) => {
     if (payload.instanceId !== instanceIdRef.current) {
+      return;
+    }
+
+    if (payload.type === "chartBootstrap") {
+      console.log("[PriceChart] TradingView chart bootstrapped");
+      initialLoadHandledRef.current = true;
+      setHasError(false);
+      setIsLoading(false);
       return;
     }
 
@@ -513,6 +542,16 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
 
   const handleWebIframeLoad = useCallback(() => {
     console.log("[PriceChart] Web iframe loaded");
+    initialLoadHandledRef.current = true;
+    setHasError(false);
+    setIsLoading((previousValue) => {
+      if (!previousValue) {
+        return previousValue;
+      }
+
+      console.log("[PriceChart] Revealing chart after iframe load");
+      return false;
+    });
   }, []);
 
   const nativeWebView = useMemo(() => (
