@@ -304,6 +304,8 @@ WebChartFrame.displayName = 'WebChartFrame';
 const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartProps) => {
   const webViewRef = useRef<WebView>(null);
   const instanceIdRef = useRef<string>(SHARED_CHART_INSTANCE_ID);
+  const chartReadyRef = useRef<boolean>(false);
+  const initialLoadHandledRef = useRef<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [hasError, setHasError] = useState<boolean>(false);
 
@@ -316,6 +318,8 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
 
     if (payload.type === "chartReady") {
       console.log("[PriceChart] TradingView chart ready");
+      chartReadyRef.current = true;
+      initialLoadHandledRef.current = true;
       setHasError(false);
       setIsLoading(false);
       return;
@@ -323,6 +327,8 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
 
     if (payload.type === "chartError") {
       console.error("[PriceChart] Chart bridge error:", payload.message ?? "Unknown chart error");
+      chartReadyRef.current = false;
+      initialLoadHandledRef.current = true;
       setHasError(true);
       setIsLoading(false);
       return;
@@ -340,11 +346,15 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
 
   useEffect(() => {
     if (!isActive) {
+      chartReadyRef.current = false;
+      initialLoadHandledRef.current = false;
       setIsLoading(false);
       setHasError(false);
       return;
     }
 
+    chartReadyRef.current = false;
+    initialLoadHandledRef.current = false;
     setIsLoading(true);
     setHasError(false);
 
@@ -393,14 +403,23 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
     };
   }, [handleBridgePayload]);
 
-  const handleLoadStart = useCallback(() => {
-    console.log("[PriceChart] Chart loading started");
+  const handleLoadStart = useCallback((syntheticEvent: { nativeEvent: { url?: string } }) => {
+    const requestUrl = syntheticEvent.nativeEvent.url ?? "unknown";
+
+    if (chartReadyRef.current || initialLoadHandledRef.current) {
+      console.log(`[PriceChart] Ignoring follow-up navigation start: ${requestUrl}`);
+      return;
+    }
+
+    console.log(`[PriceChart] Chart loading started: ${requestUrl}`);
     setIsLoading(true);
     setHasError(false);
   }, []);
 
-  const handleLoadEnd = useCallback(() => {
-    console.log("[PriceChart] Chart document loaded");
+  const handleLoadEnd = useCallback((syntheticEvent?: { nativeEvent?: { url?: string } }) => {
+    const requestUrl = syntheticEvent?.nativeEvent?.url ?? "unknown";
+    initialLoadHandledRef.current = true;
+    console.log(`[PriceChart] Chart document loaded: ${requestUrl}`);
   }, []);
 
   const handleError = useCallback((syntheticEvent: { nativeEvent: unknown }) => {
@@ -411,6 +430,20 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
 
   const handleHttpError = useCallback((syntheticEvent: { nativeEvent: { statusCode: number } }) => {
     console.error("[PriceChart] HTTP error:", syntheticEvent.nativeEvent.statusCode);
+  }, []);
+
+  const handleShouldStartLoadWithRequest = useCallback((request: { url: string }) => {
+    const requestUrl = request.url ?? "";
+    const normalizedUrl = requestUrl.toLowerCase();
+    const isInlineDocument = normalizedUrl === "about:blank" || normalizedUrl.startsWith("about:srcdoc") || normalizedUrl.startsWith("data:text/html") || normalizedUrl.startsWith("blob:") || normalizedUrl.startsWith("javascript:");
+    const isTradingViewHost = normalizedUrl.includes("tradingview.com") || normalizedUrl.includes("tradingview-widget.com");
+
+    if (isInlineDocument || isTradingViewHost) {
+      return true;
+    }
+
+    console.warn(`[PriceChart] Blocking unexpected navigation: ${requestUrl}`);
+    return false;
   }, []);
 
   const handleMessage = useCallback((event: { nativeEvent: { data: string } }) => {
@@ -459,6 +492,8 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
             mediaPlaybackRequiresUserAction={false}
             mixedContentMode="always"
             originWhitelist={["*"]}
+            setSupportMultipleWindows={false}
+            onShouldStartLoadWithRequest={handleShouldStartLoadWithRequest}
             onLoadStart={handleLoadStart}
             onLoadEnd={handleLoadEnd}
             onError={handleError}

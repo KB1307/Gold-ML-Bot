@@ -6,13 +6,22 @@ import { useTrading } from "@/contexts/TradingContext";
 import { Stack } from "expo-router";
 import { TradingSignal } from "@/types/trading";
 
-const MIN_VISIBLE_SIGNAL_CONFIDENCE = 0.9;
+const ACTIVE_SIGNAL_STATUSES: TradingSignal["status"][] = ["ACTIVE", "PARTIALLY_MANAGED", "TP1_HIT", "TP2_HIT"];
 
 export default function HistoryScreen() {
   const { signalHistory, deleteSignalFromHistory, signalUpdateTrigger, isLoading } = useTrading();
-  const visibleSignalHistory = useMemo(() => (
-    signalHistory.filter((signal) => signal.confidence >= MIN_VISIBLE_SIGNAL_CONFIDENCE)
+
+  const sortedSignalHistory = useMemo(() => (
+    [...signalHistory].sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
   ), [signalHistory]);
+
+  const activeSignals = useMemo(() => (
+    sortedSignalHistory.filter((signal) => ACTIVE_SIGNAL_STATUSES.includes(signal.status))
+  ), [sortedSignalHistory]);
+
+  const closedSignals = useMemo(() => (
+    sortedSignalHistory.filter((signal) => !ACTIVE_SIGNAL_STATUSES.includes(signal.status))
+  ), [sortedSignalHistory]);
 
   useEffect(() => {
     console.log(`📋 History UI update triggered (TP status changed) - Trigger: ${signalUpdateTrigger}`);
@@ -37,14 +46,18 @@ export default function HistoryScreen() {
 
   const getStatusColor = (status: TradingSignal["status"]) => {
     switch (status) {
+      case "ACTIVE":
+      case "PARTIALLY_MANAGED":
+        return "#38bdf8";
+      case "TP2_HIT":
+      case "TP1_HIT":
+        return "#FFA500";
       case "ALL_TARGETS_HIT":
       case "TP3_HIT":
       case "PARTIAL_WIN_SL_HIT":
         return "#22c55e";
-      case "TP2_HIT":
-      case "TP1_HIT":
-        return "#FFA500";
       case "SL_HIT":
+      case "EXPIRED_MISSED_ENTRY":
         return "#ef4444";
       default:
         return "#999";
@@ -52,16 +65,19 @@ export default function HistoryScreen() {
   };
 
   const getStatusIcon = (status: TradingSignal["status"]) => {
-    if (status === "SL_HIT") {
+    if (status === "SL_HIT" || status === "EXPIRED_MISSED_ENTRY") {
       return <XCircle size={16} color="#ef4444" />;
     }
-    return <CheckCircle size={16} color="#22c55e" />;
+    return <CheckCircle size={16} color={getStatusColor(status)} />;
   };
 
   const getStatusLabel = (status: TradingSignal["status"], targetsHit: number) => {
+    if (status === "ACTIVE") return "Live Setup";
+    if (status === "PARTIALLY_MANAGED") return "Managed Position";
     if (status === "SL_HIT") return "Stop Loss Hit";
+    if (status === "EXPIRED_MISSED_ENTRY") return "Missed Entry";
     if (status === "PARTIAL_WIN_SL_HIT") return "TP1 + TP2 Banked • Runner Breakeven";
-    if (status === "ALL_TARGETS_HIT" || targetsHit === 3) return "All Targets Acquired";
+    if (status === "ALL_TARGETS_HIT" || status === "TP3_HIT" || targetsHit === 3) return "All Targets Acquired";
     if (status === "CLOSED") {
       if (targetsHit === 3) return "All Targets Acquired";
       if (targetsHit > 0) return `Expired (${targetsHit}/3 Targets)`;
@@ -71,17 +87,135 @@ export default function HistoryScreen() {
     return "Active";
   };
 
+  const renderSignalCard = (signal: TradingSignal) => (
+    <View key={signal.id} style={styles.signalCard} testID={`history-signal-card-${signal.id}`}>
+      <LinearGradient
+        colors={signal.type === "BUY"
+          ? ["rgba(34, 197, 94, 0.08)", "rgba(34, 197, 94, 0.02)"]
+          : ["rgba(239, 68, 68, 0.08)", "rgba(239, 68, 68, 0.02)"]
+        }
+        style={styles.signalGradient}
+      >
+        <View style={styles.signalHeader}>
+          <View style={styles.signalTypeRow}>
+            {signal.type === "BUY" ? (
+              <TrendingUp size={24} color="#22c55e" strokeWidth={2} />
+            ) : (
+              <TrendingDown size={24} color="#ef4444" strokeWidth={2} />
+            )}
+            <View style={styles.signalInfo}>
+              <Text style={styles.signalType}>{signal.type} XAUUSD</Text>
+              <Text style={styles.signalDate}>{new Date(signal.timestamp).toLocaleString()}</Text>
+            </View>
+          </View>
+          <TouchableOpacity
+            onPress={() => handleDelete(signal.id)}
+            style={styles.deleteButton}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            testID={`history-delete-${signal.id}`}
+          >
+            <Trash2 size={18} color="#666" />
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.statusRow}>
+          {getStatusIcon(signal.status)}
+          <Text style={[styles.statusText, { color: getStatusColor(signal.status) }]}>
+            {getStatusLabel(signal.status, signal.targetsHit)}
+          </Text>
+          <View style={styles.confidenceBadge}>
+            <Text style={styles.confidenceText}>{(signal.confidence * 100).toFixed(0)}%</Text>
+          </View>
+        </View>
+
+        <View style={styles.priceGrid}>
+          <View style={styles.priceColumn}>
+            <Text style={styles.priceLabel}>Entry</Text>
+            <Text style={styles.priceValue}>${signal.entryPrice.toFixed(1)}</Text>
+          </View>
+          <View style={[styles.priceColumn, signal.targetsHit >= 1 && styles.targetHit]}>
+            <Text style={styles.priceLabel}>TP1</Text>
+            <Text style={[styles.priceValue, signal.targetsHit >= 1 && styles.targetValueHit]}>${signal.tp1.toFixed(1)}</Text>
+          </View>
+          <View style={[styles.priceColumn, signal.targetsHit >= 2 && styles.targetHit]}>
+            <Text style={styles.priceLabel}>TP2</Text>
+            <Text style={[styles.priceValue, signal.targetsHit >= 2 && styles.targetValueHit]}>${signal.tp2.toFixed(1)}</Text>
+          </View>
+          <View style={[styles.priceColumn, signal.targetsHit >= 3 && styles.targetHit]}>
+            <Text style={[styles.priceLabel]}>TP3</Text>
+            <Text style={[styles.priceValue, signal.targetsHit >= 3 && styles.targetValueHit]}>${signal.tp3.toFixed(1)}</Text>
+          </View>
+        </View>
+
+        <View style={[
+          styles.slRow,
+          signal.status === "SL_HIT" && styles.slRowLoss,
+          signal.status === "PARTIAL_WIN_SL_HIT" && styles.slRowWin,
+        ]}>
+          <Text style={styles.slLabel}>{signal.status === "PARTIAL_WIN_SL_HIT" ? "Protected Exit" : "Stop Loss"}</Text>
+          <Text
+            style={[
+              styles.slValue,
+              signal.status === "SL_HIT"
+                ? styles.slValueLoss
+                : signal.status === "PARTIAL_WIN_SL_HIT"
+                  ? styles.slValueWin
+                  : styles.slValueNeutral,
+            ]}
+          >
+            {signal.status === "PARTIAL_WIN_SL_HIT"
+              ? `${(signal.exitPrice ?? signal.entryPrice).toFixed(1)}`
+              : `${signal.sl.toFixed(1)}`}
+          </Text>
+        </View>
+
+        {signal.breakevenReached && signal.breakevenTime ? (
+          <View style={styles.breakevenMarker}>
+            <View style={styles.breakevenIcon}>
+              <Text style={styles.breakevenIconText}>⚖️</Text>
+            </View>
+            <View style={styles.breakevenContent}>
+              <Text style={styles.breakevenTitle}>Breakeven Reached</Text>
+              <Text style={styles.breakevenTime}>at {signal.breakevenTime}</Text>
+            </View>
+          </View>
+        ) : null}
+
+        {signal.exitTime ? (
+          <View style={styles.exitInfo}>
+            <Text style={styles.exitText}>Exit: {signal.exitTime}</Text>
+          </View>
+        ) : null}
+      </LinearGradient>
+    </View>
+  );
+
+  const renderSection = (title: string, signals: TradingSignal[]) => {
+    if (signals.length === 0) {
+      return null;
+    }
+
+    return (
+      <View style={styles.sectionBlock} testID={`history-section-${title.toLowerCase().replace(/\s+/g, "-")}`}>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>{title}</Text>
+          <View style={styles.sectionCountBadge}>
+            <Text style={styles.sectionCountText}>{signals.length}</Text>
+          </View>
+        </View>
+        <View style={styles.signalList}>
+          {signals.map(renderSignalCard)}
+        </View>
+      </View>
+    );
+  };
+
   return (
     <>
-      <Stack.Screen options={{ 
-        headerShown: false,
-      }} />
+      <Stack.Screen options={{ headerShown: false }} />
       <View style={styles.container}>
-        <LinearGradient
-          colors={["#0a0a0a", "#1a1a2e"]}
-          style={styles.gradient}
-        >
-          <ScrollView 
+        <LinearGradient colors={["#0a0a0a", "#1a1a2e"]} style={styles.gradient}>
+          <ScrollView
             style={styles.scrollView}
             contentContainerStyle={styles.scrollContent}
             showsVerticalScrollIndicator={false}
@@ -90,7 +224,9 @@ export default function HistoryScreen() {
               <History size={32} color="#FFD700" strokeWidth={2} />
               <View style={styles.headerTextContainer}>
                 <Text style={styles.headerTitle}>Signal History</Text>
-                <Text style={styles.headerSubtitle}>{visibleSignalHistory.length} Tracked Signals</Text>
+                <Text style={styles.headerSubtitle}>
+                  {sortedSignalHistory.length} Tracked Signals • {activeSignals.length} Active • {closedSignals.length} Closed
+                </Text>
               </View>
             </View>
 
@@ -98,137 +234,26 @@ export default function HistoryScreen() {
               <View style={styles.emptyState}>
                 <History size={64} color="#444" strokeWidth={1.5} />
                 <Text style={styles.emptyTitle}>Loading History...</Text>
-                <Text style={styles.emptyText}>
-                  Retrieving your signal history from storage.
-                </Text>
+                <Text style={styles.emptyText}>Retrieving your signal history from storage.</Text>
               </View>
-            ) : visibleSignalHistory.length === 0 ? (
+            ) : sortedSignalHistory.length === 0 ? (
               <View style={styles.emptyState}>
                 <History size={64} color="#444" strokeWidth={1.5} />
                 <Text style={styles.emptyTitle}>No Signal History</Text>
                 <Text style={styles.emptyText}>
-                  Signals above your confidence threshold appear here. The learning engine tracks all signal outcomes for continuous improvement.
+                  Active and closed signals appear here automatically as soon as the engine creates them.
                 </Text>
               </View>
             ) : (
-              <View style={styles.signalList}>
-                {visibleSignalHistory.map((signal) => (
-                  <View key={signal.id} style={styles.signalCard}>
-                    <LinearGradient
-                      colors={signal.type === "BUY" 
-                        ? ["rgba(34, 197, 94, 0.08)", "rgba(34, 197, 94, 0.02)"]
-                        : ["rgba(239, 68, 68, 0.08)", "rgba(239, 68, 68, 0.02)"]
-                      }
-                      style={styles.signalGradient}
-                    >
-                      <View style={styles.signalHeader}>
-                        <View style={styles.signalTypeRow}>
-                          {signal.type === "BUY" ? (
-                            <TrendingUp size={24} color="#22c55e" strokeWidth={2} />
-                          ) : (
-                            <TrendingDown size={24} color="#ef4444" strokeWidth={2} />
-                          )}
-                          <View style={styles.signalInfo}>
-                            <Text style={styles.signalType}>{signal.type} XAUUSD</Text>
-                            <Text style={styles.signalDate}>
-                              {new Date(signal.timestamp).toLocaleString()}
-                            </Text>
-                          </View>
-                        </View>
-                        <TouchableOpacity
-                          onPress={() => handleDelete(signal.id)}
-                          style={styles.deleteButton}
-                          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                        >
-                          <Trash2 size={18} color="#666" />
-                        </TouchableOpacity>
-                      </View>
-
-                      <View style={styles.statusRow}>
-                        {getStatusIcon(signal.status)}
-                        <Text style={[styles.statusText, { color: getStatusColor(signal.status) }]}>
-                          {getStatusLabel(signal.status, signal.targetsHit)}
-                        </Text>
-                        <View style={styles.confidenceBadge}>
-                          <Text style={styles.confidenceText}>{(signal.confidence * 100).toFixed(0)}%</Text>
-                        </View>
-                      </View>
-
-                      <View style={styles.priceGrid}>
-                        <View style={styles.priceColumn}>
-                          <Text style={styles.priceLabel}>Entry</Text>
-                          <Text style={styles.priceValue}>${signal.entryPrice.toFixed(1)}</Text>
-                        </View>
-                        <View style={[
-                          styles.priceColumn, 
-                          signal.targetsHit >= 1 && styles.targetHit
-                        ]}>
-                          <Text style={styles.priceLabel}>TP1</Text>
-                          <Text style={[
-                            styles.priceValue, 
-                            signal.targetsHit >= 1 && { color: "#22c55e" }
-                          ]}>${signal.tp1.toFixed(1)}</Text>
-                        </View>
-                        <View style={[
-                          styles.priceColumn, 
-                          signal.targetsHit >= 2 && styles.targetHit
-                        ]}>
-                          <Text style={styles.priceLabel}>TP2</Text>
-                          <Text style={[
-                            styles.priceValue, 
-                            signal.targetsHit >= 2 && { color: "#22c55e" }
-                          ]}>${signal.tp2.toFixed(1)}</Text>
-                        </View>
-                        <View style={[
-                          styles.priceColumn, 
-                          signal.targetsHit >= 3 && styles.targetHit
-                        ]}>
-                          <Text style={styles.priceLabel}>TP3</Text>
-                          <Text style={[
-                            styles.priceValue, 
-                            signal.targetsHit >= 3 && { color: "#22c55e" }
-                          ]}>${signal.tp3.toFixed(1)}</Text>
-                        </View>
-                      </View>
-
-                      <View style={[
-                        styles.slRow,
-                        signal.status === "SL_HIT" && { backgroundColor: "rgba(239, 68, 68, 0.15)", borderColor: "rgba(239, 68, 68, 0.3)" },
-                        signal.status === "PARTIAL_WIN_SL_HIT" && { backgroundColor: "rgba(34, 197, 94, 0.12)", borderColor: "rgba(34, 197, 94, 0.28)" }
-                      ]}>
-                        <Text style={styles.slLabel}>{signal.status === "PARTIAL_WIN_SL_HIT" ? "Protected Exit" : "Stop Loss"}</Text>
-                        <Text style={[
-                          styles.slValue,
-                          { color: signal.status === "SL_HIT" ? "#ef4444" : signal.status === "PARTIAL_WIN_SL_HIT" ? "#22c55e" : "#999" }
-                        ]}>{signal.status === "PARTIAL_WIN_SL_HIT" ? `${(signal.exitPrice ?? signal.entryPrice).toFixed(1)}` : `${signal.sl.toFixed(1)}`}</Text>
-                      </View>
-
-                      {signal.breakevenReached && signal.breakevenTime && (
-                        <View style={styles.breakevenMarker}>
-                          <View style={styles.breakevenIcon}>
-                            <Text style={styles.breakevenIconText}>⚖️</Text>
-                          </View>
-                          <View style={styles.breakevenContent}>
-                            <Text style={styles.breakevenTitle}>Breakeven Reached</Text>
-                            <Text style={styles.breakevenTime}>at {signal.breakevenTime}</Text>
-                          </View>
-                        </View>
-                      )}
-
-                      {signal.exitTime && (
-                        <View style={styles.exitInfo}>
-                          <Text style={styles.exitText}>Exit: {signal.exitTime}</Text>
-                        </View>
-                      )}
-                    </LinearGradient>
-                  </View>
-                ))}
+              <View style={styles.signalSections}>
+                {renderSection("Active Signals", activeSignals)}
+                {renderSection("Closed Signals", closedSignals)}
               </View>
             )}
 
             <View style={styles.infoCard}>
               <Text style={styles.infoText}>
-                Deleting signals from history only removes them from your view. All signals remain in the learning engine&apos;s database for continuous model improvement.
+                Deleting signals from history only removes them from your view. Active and closed trade records continue to drive the learning engine until they are naturally replaced by newer model data.
               </Text>
             </View>
           </ScrollView>
@@ -271,6 +296,7 @@ const styles = StyleSheet.create({
   headerSubtitle: {
     fontSize: 14,
     color: "#999",
+    lineHeight: 20,
   },
   emptyState: {
     alignItems: "center",
@@ -291,9 +317,41 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     paddingHorizontal: 40,
   },
+  signalSections: {
+    gap: 24,
+    marginBottom: 20,
+  },
+  sectionBlock: {
+    gap: 14,
+  },
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#fff",
+  } as const,
+  sectionCountBadge: {
+    minWidth: 28,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255, 215, 0, 0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 215, 0, 0.24)",
+  },
+  sectionCountText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#FFD700",
+  } as const,
   signalList: {
     gap: 16,
-    marginBottom: 20,
   },
   signalCard: {
     borderRadius: 12,
@@ -376,6 +434,9 @@ const styles = StyleSheet.create({
     borderColor: "rgba(34, 197, 94, 0.3)",
     backgroundColor: "rgba(34, 197, 94, 0.08)",
   },
+  targetValueHit: {
+    color: "#22c55e",
+  },
   priceLabel: {
     fontSize: 11,
     color: "#999",
@@ -398,6 +459,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255, 255, 255, 0.05)",
   },
+  slRowLoss: {
+    backgroundColor: "rgba(239, 68, 68, 0.15)",
+    borderColor: "rgba(239, 68, 68, 0.3)",
+  },
+  slRowWin: {
+    backgroundColor: "rgba(34, 197, 94, 0.12)",
+    borderColor: "rgba(34, 197, 94, 0.28)",
+  },
   slLabel: {
     fontSize: 13,
     color: "#999",
@@ -407,6 +476,15 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "700",
   } as const,
+  slValueLoss: {
+    color: "#ef4444",
+  },
+  slValueWin: {
+    color: "#22c55e",
+  },
+  slValueNeutral: {
+    color: "#999",
+  },
   breakevenMarker: {
     flexDirection: "row",
     alignItems: "center",

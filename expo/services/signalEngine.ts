@@ -190,14 +190,14 @@ const DRIFT_CHECK_INTERVAL = 24 * 60 * 60 * 1000;
 const FEATURE_DRIFT_STORAGE_KEY = 'feature_drift_history_v1';
 const MIN_SIGNAL_CONVICTION_THRESHOLD = 0.62;
 const MIN_SIGNAL_STRENGTH_DIFFERENCE = 0.12;
-const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.72;
-const ABSOLUTE_MIN_SIGNAL_CONFIDENCE = 0.68;
-const SIGNAL_STARVATION_RELIEF_ATTEMPTS = 15;
-const SIGNAL_STARVATION_RELIEF_CONFIDENCE = 0.70;
+const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;
+const ABSOLUTE_MIN_SIGNAL_CONFIDENCE = 0.64;
+const SIGNAL_STARVATION_RELIEF_ATTEMPTS = 8;
+const SIGNAL_STARVATION_RELIEF_CONFIDENCE = 0.66;
 const SYNTHETIC_DATA_PENALTY = 0.06;
 const _BIDIRECTIONAL_INFLATION_PENALTY = 0.04;
 const LOW_DATA_QUALITY_PENALTY = 0.05;
-const MAX_CONFIDENCE_CAP = 0.96;
+const MAX_CONFIDENCE_CAP = 0.91;
 
 const TIME_WEIGHTS = {
   LOW_LIQUIDITY: 0.5,
@@ -3110,8 +3110,36 @@ class SignalGenerationEngine {
     }
     
     let rawConfidence = Math.max(0.45, Math.min(MAX_CONFIDENCE_CAP, baseConfidence - dataQualityPenalty));
+    let calibrationPenalty = 0;
+
+    if (strengthDifference < 0.25) {
+      calibrationPenalty += 0.07;
+      console.log(`⚠️ Confidence calibration penalty: -7.0% (directional spread only ${(strengthDifference * 100).toFixed(1)}%)`);
+    }
+
+    if (signalStrength < 0.74) {
+      calibrationPenalty += 0.04;
+      console.log(`⚠️ Confidence calibration penalty: -4.0% (signal strength ${signalStrength.toFixed(3)})`);
+    }
+
+    if (features.marketRegime.confidence < 0.7) {
+      calibrationPenalty += 0.03;
+      console.log(`⚠️ Confidence calibration penalty: -3.0% (regime confidence ${(features.marketRegime.confidence * 100).toFixed(1)}%)`);
+    }
+
+    if (losingStrength > 0.22) {
+      calibrationPenalty += 0.03;
+      console.log(`⚠️ Confidence calibration penalty: -3.0% (opposing pressure ${(losingStrength * 100).toFixed(1)}%)`);
+    }
+
+    if (this.priceHistory.length < 60) {
+      calibrationPenalty += 0.02;
+      console.log(`⚠️ Confidence calibration penalty: -2.0% (${this.priceHistory.length} samples available)`);
+    }
+
+    rawConfidence = Math.max(0.42, Math.min(MAX_CONFIDENCE_CAP, rawConfidence - calibrationPenalty));
     
-    console.log(`📊 Confidence Breakdown: base=${(0.40 + signalStrength * 0.30).toFixed(3)}, bonuses=${(baseConfidence - 0.40 - signalStrength * 0.30).toFixed(3)}, penalties=-${dataQualityPenalty.toFixed(3)}, raw=${rawConfidence.toFixed(3)}`);
+    console.log(`📊 Confidence Breakdown: base=${(0.40 + signalStrength * 0.30).toFixed(3)}, bonuses=${(baseConfidence - 0.40 - signalStrength * 0.30).toFixed(3)}, penalties=-${dataQualityPenalty.toFixed(3)}, calibration=-${calibrationPenalty.toFixed(3)}, raw=${rawConfidence.toFixed(3)}`);
     
     const smoothedConfidence = this.smoothConfidence(rawConfidence);
     
@@ -3780,15 +3808,15 @@ class SignalGenerationEngine {
       console.log('📊 Regime: QUIET - Cooldown extended to 90s (Low opportunity)');
     }
     
-    if (confidence >= 0.93) {
-      cooldownMultiplier *= 0.4;
-      console.log('🚀 Ultra-high confidence (≥93%) - 60% cooldown reduction');
-    } else if (confidence >= 0.87) {
-      cooldownMultiplier *= 0.6;
-      console.log('⚡ High confidence (≥87%) - 40% cooldown reduction');
-    } else if (confidence >= 0.80) {
-      cooldownMultiplier *= 0.8;
-      console.log('⚡ Strong confidence (≥80%) - 20% cooldown reduction');
+    if (confidence >= 0.90) {
+      cooldownMultiplier *= 0.45;
+      console.log('🚀 Ultra-high confidence (≥90%) - 55% cooldown reduction');
+    } else if (confidence >= 0.84) {
+      cooldownMultiplier *= 0.65;
+      console.log('⚡ High confidence (≥84%) - 35% cooldown reduction');
+    } else if (confidence >= 0.76) {
+      cooldownMultiplier *= 0.82;
+      console.log('⚡ Strong confidence (≥76%) - 18% cooldown reduction');
     }
     
     const calculatedCooldown = BASE_COOLDOWN * cooldownMultiplier;
@@ -4062,17 +4090,17 @@ class SignalGenerationEngine {
     let tp2Distance = settings.tp2Pips;
     let tp3Distance = settings.tp3Pips;
     
-    if (analysis.confidence >= 0.92) {
-      tp3Distance = settings.tp3Pips * 1.2;
-      tp2Distance = settings.tp2Pips * 1.1;
+    if (analysis.confidence >= 0.89) {
+      tp3Distance = settings.tp3Pips * 1.15;
+      tp2Distance = settings.tp2Pips * 1.08;
       console.log(`🎯 Ultra-high confidence (${(analysis.confidence * 100).toFixed(0)}%): TP targets widened (TP3: ${tp3Distance.toFixed(0)} pips)`);
-    } else if (analysis.confidence >= 0.85) {
-      tp3Distance = settings.tp3Pips * 1.1;
+    } else if (analysis.confidence >= 0.82) {
+      tp3Distance = settings.tp3Pips * 1.05;
       console.log(`🎯 High confidence (${(analysis.confidence * 100).toFixed(0)}%): TP3 widened slightly (${tp3Distance.toFixed(0)} pips)`);
-    } else if (analysis.confidence < 0.75) {
-      tp1Distance = settings.tp1Pips * 0.90;
-      tp2Distance = settings.tp2Pips * 0.85;
-      tp3Distance = settings.tp3Pips * 0.75;
+    } else if (analysis.confidence < 0.70) {
+      tp1Distance = settings.tp1Pips * 0.92;
+      tp2Distance = settings.tp2Pips * 0.88;
+      tp3Distance = settings.tp3Pips * 0.80;
       console.log(`⚠️ Lower confidence (${(analysis.confidence * 100).toFixed(0)}%): TP targets tightened`);
     }
     

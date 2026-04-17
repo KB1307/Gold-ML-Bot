@@ -24,7 +24,7 @@ const DEFAULT_SETTINGS: Settings = {
   tp3Pips: 65,
   slPips: 70,
   numberOfTPs: 3,
-  minConfidence: 0.72,
+  minConfidence: 0.68,
   enableNotifications: true,
   basePositionSize: 0.01,
   maxRiskPercentage: 2.0,
@@ -64,7 +64,9 @@ const GUIDE_PRICE_STALE_THRESHOLD_MS = 12000;
 const MIN_MEANINGFUL_PRICE_CHANGE = 0.03;
 const HISTORICAL_RECONCILIATION_INTERVAL_MS = 30000;
 const TERMINAL_SIGNAL_STATUSES: SignalStatus[] = ["CLOSED", "SL_HIT", "ALL_TARGETS_HIT", "PARTIAL_WIN_SL_HIT"];
-const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.72;
+const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;
+const ACTIVE_SIGNAL_LOCK_RELEASE_MS = 45 * 60 * 1000;
+const SIGNAL_GENERATION_INTERVAL_MS = 20000;
 
 function clampSignalConfidenceThreshold(value: number): number {
   return Number(Math.min(0.98, Math.max(ENFORCED_MIN_SIGNAL_CONFIDENCE, value)).toFixed(2));
@@ -1400,13 +1402,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     if (fullyActiveSignals.length > 0) {
       const activeSignal = fullyActiveSignals[0];
       const signalAgeMs = Date.now() - new Date(activeSignal.timestamp).getTime();
-      const twoHoursMs = 2 * 60 * 60 * 1000;
+      const activeSignalLockReleaseMs = ACTIVE_SIGNAL_LOCK_RELEASE_MS;
       
       const lockReleased = activeSignal.targetsHit >= 2;
       
       const canGenerateNewSignal = (
         lockReleased || 
-        signalAgeMs > twoHoursMs
+        signalAgeMs > activeSignalLockReleaseMs
       );
       
       if (!canGenerateNewSignal) {
@@ -1423,8 +1425,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         console.log(`   - TP2 hit (${activeSignal.targetsHit}/3 targets) - Lock released`);
         console.log(`   - Previous signal continues to be monitored until terminal status`);
       }
-      if (signalAgeMs > twoHoursMs) {
-        console.log(`   - Signal age exceeds 2 hours (${(signalAgeMs / 1000 / 60).toFixed(1)}m)`);
+      if (signalAgeMs > activeSignalLockReleaseMs) {
+        console.log(`   - Signal age exceeds ${(ACTIVE_SIGNAL_LOCK_RELEASE_MS / 1000 / 60).toFixed(0)} minutes (${(signalAgeMs / 1000 / 60).toFixed(1)}m)`);
       }
     }
 
@@ -1803,14 +1805,14 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       return;
     }
 
-    console.log('✅ Signal generation system activated - checking every 30s');
+    console.log(`✅ Signal generation system activated - checking every ${(SIGNAL_GENERATION_INTERVAL_MS / 1000).toFixed(0)}s`);
     console.log(`   Data loaded: ${signalHistory.length} signals in history`);
     console.log(`   Launch cooldown: 5 seconds (prevents duplicate signals at startup)`);
     
     const signalInterval = setInterval(() => {
-      console.log('⏰ 30s interval - checking for signal generation...');
+      console.log(`⏰ ${(SIGNAL_GENERATION_INTERVAL_MS / 1000).toFixed(0)}s interval - checking for signal generation...`);
       void checkAndGenerateSignal();
-    }, 30000);
+    }, SIGNAL_GENERATION_INTERVAL_MS);
 
     console.log('🚀 Scheduling initial signal generation check (after 5s cooldown)...');
     const initialSignalCheckTimeout = setTimeout(() => {

@@ -175,7 +175,7 @@ function getIndicatorInfo(feature: string, signalType: string): { description: s
   };
 }
 
-const MIN_VISIBLE_SIGNAL_CONFIDENCE = 0.9;
+const ACTIVE_SIGNAL_STATUSES = ["ACTIVE", "PARTIALLY_MANAGED", "TP1_HIT", "TP2_HIT"] as const;
 
 export default function DashboardScreen() {
   const {
@@ -192,12 +192,12 @@ export default function DashboardScreen() {
     signalUpdateTrigger,
   } = useTrading();
   
-  const visibleSignalHistory = useMemo(() => (
-    signalHistory.filter((signal) => signal.confidence >= MIN_VISIBLE_SIGNAL_CONFIDENCE)
+  const sortedSignalHistory = useMemo(() => (
+    [...signalHistory].sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
   ), [signalHistory]);
 
-  const currentSignal = visibleSignalHistory.find((signal) => (
-    signal.status === "ACTIVE" || signal.status === "PARTIALLY_MANAGED" || signal.status === "TP1_HIT" || signal.status === "TP2_HIT"
+  const currentSignal = sortedSignalHistory.find((signal) => (
+    ACTIVE_SIGNAL_STATUSES.includes(signal.status as typeof ACTIVE_SIGNAL_STATUSES[number])
   )) || null;
   const [refreshing, setRefreshing] = useState(false);
 
