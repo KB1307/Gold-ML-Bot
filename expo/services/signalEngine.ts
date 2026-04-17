@@ -1,4 +1,4 @@
-import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC } from "@/types/trading";
+import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC, SignalLearningContext } from "@/types/trading";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { fetchHistoricalData, trpcClient } from "@/lib/trpc";
 import { Platform } from "react-native";
@@ -32,7 +32,7 @@ interface TradeOutcome {
   result: 'WIN' | 'LOSS';
   pnl: number;
   confidence: number;
-  features: MarketFeatures;
+  features: SignalLearningContext;
   timestamp: Date;
   misleadingFeatures?: FeatureConfidence[];
   signalDuration?: number;
@@ -167,8 +167,8 @@ const LEARNING_STORAGE_KEY = 'trade_outcomes_learning';
 const MODEL_WEIGHTS_KEY = 'model_weights_v1';
 const DAILY_OHLC_STORAGE_KEY = 'daily_ohlc_history_v1';
 
-const TRAINING_WINDOW_DAYS = 30;
-const MIN_CONFIDENCE_FOR_RETRAINING = 0.75;
+const TRAINING_WINDOW_DAYS = 14;
+const MIN_CONFIDENCE_FOR_RETRAINING = 0.72;
 const BASE_SLIPPAGE_BUFFER_PIPS = 0.5;
 const CONFIDENCE_SMOOTHING_WINDOW = 5;
 const LATENCY_WARNING_THRESHOLD_MS = 100;
@@ -182,10 +182,10 @@ const DAILY_OHLC_REFRESH_LOOKBACK_MS = 72 * 60 * 60 * 1000;
 const MIN_VALID_DAILY_RANGE = 6;
 
 const HYPOTHETICAL_TRADE_HISTORY_LIMIT = 100;
-const MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL = 15;
-const MIN_PIP_DIFFERENCE_FOR_PARTIALLY_MANAGED = 25;
-const MAX_RECENT_SIGNAL_TIME_MINUTES = 5;
-const POST_TP1_COOLDOWN_MS = 5 * 60 * 1000;
+const MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL = 12;
+const MIN_PIP_DIFFERENCE_FOR_PARTIALLY_MANAGED = 20;
+const MAX_RECENT_SIGNAL_TIME_MINUTES = 4;
+const POST_TP1_COOLDOWN_MS = 3 * 60 * 1000;
 const DRIFT_CHECK_INTERVAL = 24 * 60 * 60 * 1000;
 const FEATURE_DRIFT_STORAGE_KEY = 'feature_drift_history_v1';
 const MIN_SIGNAL_CONVICTION_THRESHOLD = 0.62;
@@ -205,6 +205,21 @@ const TIME_WEIGHTS = {
   EUROPE_OPEN: 1.5,
   POWER_HOUR: 2.0,
 };
+
+function createDefaultLearningContext(): SignalLearningContext {
+  return {
+    rsi: 50,
+    atr: 10,
+    volumeRatio: 1,
+    dxyChange: 0,
+    timeWindowFactor: 1,
+    sentiment: {
+      score: 0,
+      confidence: 0,
+      source: 'record-fallback',
+    },
+  };
+}
 
 const UTC_HOURS = {
   EUROPE_OPEN_START: 7,
@@ -3456,8 +3471,18 @@ class SignalGenerationEngine {
     return false;
   }
   
-  async recordTradeOutcome(signalId: string, entryPrice: number, exitPrice: number, result: 'WIN' | 'LOSS', features: MarketFeatures, misleadingFeatures?: FeatureConfidence[], signalDuration?: number): Promise<void> {
+  async recordTradeOutcome(signalId: string, entryPrice: number, exitPrice: number, result: 'WIN' | 'LOSS', features?: Partial<SignalLearningContext>, misleadingFeatures?: FeatureConfidence[], signalDuration?: number, confidence?: number): Promise<void> {
     const pnl = result === 'WIN' ? Math.abs(exitPrice - entryPrice) : -Math.abs(exitPrice - entryPrice);
+    const normalizedConfidence = Math.max(0.42, Math.min(0.95, confidence ?? this.performanceMetrics.avgConfidence ?? 0.72));
+    const defaultContext = createDefaultLearningContext();
+    const normalizedFeatures: SignalLearningContext = {
+      rsi: typeof features?.rsi === 'number' ? features.rsi : defaultContext.rsi,
+      atr: typeof features?.atr === 'number' ? features.atr : defaultContext.atr,
+      volumeRatio: typeof features?.volumeRatio === 'number' ? features.volumeRatio : defaultContext.volumeRatio,
+      dxyChange: typeof features?.dxyChange === 'number' ? features.dxyChange : defaultContext.dxyChange,
+      timeWindowFactor: typeof features?.timeWindowFactor === 'number' ? features.timeWindowFactor : defaultContext.timeWindowFactor,
+      sentiment: features?.sentiment ?? defaultContext.sentiment,
+    };
     
     const outcome: TradeOutcome = {
       signalId,
@@ -3465,8 +3490,8 @@ class SignalGenerationEngine {
       exitPrice,
       result,
       pnl,
-      confidence: 0.75,
-      features,
+      confidence: parseFloat(normalizedConfidence.toFixed(2)),
+      features: normalizedFeatures,
       timestamp: new Date(),
       misleadingFeatures,
       signalDuration,
@@ -3622,45 +3647,51 @@ class SignalGenerationEngine {
     
     const winningData = normalizedData.filter(d => d.outcome.result === 'WIN');
     const losingData = normalizedData.filter(d => d.outcome.result === 'LOSS');
+    const weightedWinningData = winningData.length > 0 ? winningData : normalizedData;
+    const weightedLosingData = losingData.length > 0 ? losingData : normalizedData;
+
+    if (winningData.length === 0 || losingData.length === 0) {
+      console.log('⚠️ Retrain class diversity is limited - applying neutral fallback weighting to avoid unstable model weights');
+    }
     
     this.modelWeights.clear();
     
     const rawWeights: { [key: string]: number } = {};
     
-    const weightedAvgWinRSI = winningData.reduce((sum, d) => sum + d.outcome.features.rsi * d.weight, 0) / 
-      winningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossRSI = losingData.reduce((sum, d) => sum + d.outcome.features.rsi * d.weight, 0) / 
-      losingData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgWinRSI = weightedWinningData.reduce((sum, d) => sum + d.outcome.features.rsi * d.weight, 0) / 
+      weightedWinningData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgLossRSI = weightedLosingData.reduce((sum, d) => sum + d.outcome.features.rsi * d.weight, 0) / 
+      weightedLosingData.reduce((sum, d) => sum + d.weight, 0);
     rawWeights['rsi_weight'] = (weightedAvgWinRSI - weightedAvgLossRSI) / 100;
     
-    const weightedAvgWinTimeWindow = winningData.reduce((sum, d) => sum + d.outcome.features.timeWindowFactor * d.weight, 0) / 
-      winningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossTimeWindow = losingData.reduce((sum, d) => sum + d.outcome.features.timeWindowFactor * d.weight, 0) / 
-      losingData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgWinTimeWindow = weightedWinningData.reduce((sum, d) => sum + d.outcome.features.timeWindowFactor * d.weight, 0) / 
+      weightedWinningData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgLossTimeWindow = weightedLosingData.reduce((sum, d) => sum + d.outcome.features.timeWindowFactor * d.weight, 0) / 
+      weightedLosingData.reduce((sum, d) => sum + d.weight, 0);
     rawWeights['timeWindow_weight'] = (weightedAvgWinTimeWindow - weightedAvgLossTimeWindow) * 0.5;
     
-    const weightedAvgWinVolume = winningData.reduce((sum, d) => sum + d.outcome.features.volumeRatio * d.weight, 0) / 
-      winningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossVolume = losingData.reduce((sum, d) => sum + d.outcome.features.volumeRatio * d.weight, 0) / 
-      losingData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgWinVolume = weightedWinningData.reduce((sum, d) => sum + d.outcome.features.volumeRatio * d.weight, 0) / 
+      weightedWinningData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgLossVolume = weightedLosingData.reduce((sum, d) => sum + d.outcome.features.volumeRatio * d.weight, 0) / 
+      weightedLosingData.reduce((sum, d) => sum + d.weight, 0);
     rawWeights['volume_weight'] = weightedAvgWinVolume - weightedAvgLossVolume;
     
-    const weightedAvgWinSentiment = winningData.reduce((sum, d) => sum + (d.outcome.features.sentiment?.score ?? 0) * d.weight, 0) / 
-      winningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossSentiment = losingData.reduce((sum, d) => sum + (d.outcome.features.sentiment?.score ?? 0) * d.weight, 0) / 
-      losingData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgWinSentiment = weightedWinningData.reduce((sum, d) => sum + (d.outcome.features.sentiment?.score ?? 0) * d.weight, 0) / 
+      weightedWinningData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgLossSentiment = weightedLosingData.reduce((sum, d) => sum + (d.outcome.features.sentiment?.score ?? 0) * d.weight, 0) / 
+      weightedLosingData.reduce((sum, d) => sum + d.weight, 0);
     rawWeights['sentiment_weight'] = (weightedAvgWinSentiment - weightedAvgLossSentiment) * 2;
     
-    const weightedAvgWinATR = winningData.reduce((sum, d) => sum + d.outcome.features.atr * d.weight, 0) / 
-      winningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossATR = losingData.reduce((sum, d) => sum + d.outcome.features.atr * d.weight, 0) / 
-      losingData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgWinATR = weightedWinningData.reduce((sum, d) => sum + d.outcome.features.atr * d.weight, 0) / 
+      weightedWinningData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgLossATR = weightedLosingData.reduce((sum, d) => sum + d.outcome.features.atr * d.weight, 0) / 
+      weightedLosingData.reduce((sum, d) => sum + d.weight, 0);
     rawWeights['atr_weight'] = (weightedAvgWinATR - weightedAvgLossATR) / 10;
     
-    const weightedAvgWinDXY = winningData.reduce((sum, d) => sum + d.outcome.features.dxyChange * d.weight, 0) / 
-      winningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossDXY = losingData.reduce((sum, d) => sum + d.outcome.features.dxyChange * d.weight, 0) / 
-      losingData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgWinDXY = weightedWinningData.reduce((sum, d) => sum + d.outcome.features.dxyChange * d.weight, 0) / 
+      weightedWinningData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgLossDXY = weightedLosingData.reduce((sum, d) => sum + d.outcome.features.dxyChange * d.weight, 0) / 
+      weightedLosingData.reduce((sum, d) => sum + d.weight, 0);
     rawWeights['dxy_weight'] = (weightedAvgWinDXY - weightedAvgLossDXY) * 2;
     
     console.log('\n📐 WEIGHT NORMALIZATION:');
@@ -4190,6 +4221,14 @@ class SignalGenerationEngine {
       topFeatures,
       macroWarning: macroEvent,
       riskJustification,
+      learningContext: {
+        rsi: features.rsi,
+        atr: features.atr,
+        volumeRatio: features.volumeRatio,
+        dxyChange: features.dxyChange,
+        timeWindowFactor: features.timeWindowFactor,
+        sentiment: features.sentiment ?? { score: 0, confidence: 0, source: 'engine-default' },
+      },
       timeToLive: timeToLiveMinutes,
       nextMoveContext,
       latencyWarning,
@@ -4631,8 +4670,8 @@ class SignalGenerationEngine {
     const retrainingRecommended = (
       this.driftAlertLevel === 'HIGH' ||
       this.conceptDriftScore > 0.5 ||
-      confidenceDegradation > 0.10 ||
-      daysSinceRetrain > 10
+      confidenceDegradation > 0.08 ||
+      daysSinceRetrain > 5
     );
     
     return {

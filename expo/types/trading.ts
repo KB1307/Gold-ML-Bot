@@ -44,6 +44,7 @@ export interface TradingSignal {
   breakevenTime?: string;
   trailingSLPrice?: number;
   trailingSLLevel?: 'ENTRY' | 'TP1' | 'TP2';
+  learningContext?: SignalLearningContext;
 }
 
 export interface MarketSession {
@@ -78,6 +79,15 @@ export interface SentimentData {
   score: number;
   confidence: number;
   source: string;
+}
+
+export interface SignalLearningContext {
+  rsi: number;
+  atr: number;
+  volumeRatio: number;
+  dxyChange: number;
+  timeWindowFactor: number;
+  sentiment: SentimentData;
 }
 
 export interface PerformanceMetrics {

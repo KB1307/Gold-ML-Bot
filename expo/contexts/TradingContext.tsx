@@ -154,6 +154,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const chartPriceLastMeaningfulMoveRef = useRef<number>(0);
   const historicalReconciliationInFlightRef = useRef<boolean>(false);
   const signalHistoryRef = useRef<TradingSignal[]>([]);
+  const signalTrackingSnapshotRef = useRef<SignalTrackingSnapshot>({
+    price: 0,
+    source: '🔴 no live price',
+    updatedAt: 0,
+  });
   const historicalFallbackPriceRef = useRef<number>(0);
   const guidePriceRef = useRef<number>(0);
   const guidePriceUpdatedAtRef = useRef<number>(0);
@@ -1329,12 +1334,15 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   }, [signalHistory]);
 
   useEffect(() => {
+    signalTrackingSnapshotRef.current = signalTrackingSnapshot;
     historicalFallbackPriceRef.current = signalTrackingSnapshot.price;
-  }, [signalTrackingSnapshot.price]);
+  }, [signalTrackingSnapshot]);
 
   const checkAndGenerateSignal = useCallback(async () => {
     const timeSinceLaunch = Date.now() - appLaunchTime;
     const LAUNCH_COOLDOWN_MS = 5000;
+    const currentSignalTrackingSnapshot = signalTrackingSnapshotRef.current;
+    const currentSignalHistory = signalHistoryRef.current;
     
     if (timeSinceLaunch < LAUNCH_COOLDOWN_MS) {
       const remainingCooldown = ((LAUNCH_COOLDOWN_MS - timeSinceLaunch) / 1000).toFixed(1);
@@ -1343,13 +1351,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       return;
     }
 
-    if (signalTrackingSnapshot.price > 0) {
-      if (signalTrackingSnapshot.source.includes('chart-failover')) {
-        console.warn(`⚠️ Signal generation running on chart failover price ${signalTrackingSnapshot.price.toFixed(2)} from ${signalTrackingSnapshot.source}`);
+    if (currentSignalTrackingSnapshot.price > 0) {
+      if (currentSignalTrackingSnapshot.source.includes('chart-failover')) {
+        console.warn(`⚠️ Signal generation running on chart failover price ${currentSignalTrackingSnapshot.price.toFixed(2)} from ${currentSignalTrackingSnapshot.source}`);
       }
 
-      setExternalPrice(signalTrackingSnapshot.price, signalTrackingSnapshot.source);
-      syncSignalPriceFromEngine(signalTrackingSnapshot.price);
+      setExternalPrice(currentSignalTrackingSnapshot.price, currentSignalTrackingSnapshot.source);
+      syncSignalPriceFromEngine(currentSignalTrackingSnapshot.price);
     } else {
       console.warn('⚠️ [SignalGen] No tracking price available — force-fetching via REST...');
       try {
@@ -1379,7 +1387,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     console.log(`Market Open: ${outlook.isMarketOpen}`);
     console.log(`Current Session: ${outlook.currentSession}`);
     
-    const fullyActiveSignals = signalHistory.filter((signal) => (
+    const fullyActiveSignals = currentSignalHistory.filter((signal) => (
       signal.status === "ACTIVE" && signal.confidence >= ENFORCED_MIN_SIGNAL_CONFIDENCE
     ));
     
@@ -1435,7 +1443,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log(`   Settings: minConfidence=${(settings.minConfidence * 100).toFixed(0)}%`);
       console.log(`   Account Balance: ${accountBalance}`);
       
-      const signal = await signalEngine.generateSignal(settings, accountBalance, signalHistory);
+      const signal = await signalEngine.generateSignal(settings, accountBalance, currentSignalHistory);
       syncSignalPriceFromEngine();
       
       if (signal) {
@@ -1485,7 +1493,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.error("Error:", error);
       console.error("Stack:", error instanceof Error ? error.stack : 'No stack trace');
     }
-  }, [settings, accountBalance, signalHistory, appLaunchTime, signalTrackingSnapshot, syncSignalPriceFromEngine, commitGuidePrice]);
+  }, [settings, accountBalance, appLaunchTime, syncSignalPriceFromEngine, commitGuidePrice]);
 
   const updateAllSignalsStatus = useCallback(() => {
     const price = signalTrackingSnapshot.price;
@@ -1806,7 +1814,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     }
 
     console.log(`✅ Signal generation system activated - checking every ${(SIGNAL_GENERATION_INTERVAL_MS / 1000).toFixed(0)}s`);
-    console.log(`   Data loaded: ${signalHistory.length} signals in history`);
+    console.log(`   Data loaded: ${signalHistoryRef.current.length} signals in history`);
     console.log(`   Launch cooldown: 5 seconds (prevents duplicate signals at startup)`);
     
     const signalInterval = setInterval(() => {
@@ -1825,7 +1833,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       clearInterval(signalInterval);
       clearTimeout(initialSignalCheckTimeout);
     };
-  }, [isLoggedIn, isLoading, checkAndGenerateSignal, signalHistory.length]);
+  }, [isLoggedIn, isLoading, checkAndGenerateSignal]);
 
   const login = useCallback(async (username: string) => {
     setIsLoggedIn(true);
