@@ -58,6 +58,8 @@ const trpcClient = {
 
 const Platform = { OS: "web" as const };
 
+import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC, SignalLearningContext } from "@/types/trading";
+import { fetchHistoricalData, trpcClient } from "@/lib/trpc";
 
 interface OrderFlowData {
   bidVolume: number;
@@ -88,7 +90,7 @@ interface TradeOutcome {
   result: 'WIN' | 'LOSS';
   pnl: number;
   confidence: number;
-  features: MarketFeatures;
+  features: SignalLearningContext;
   timestamp: Date;
   misleadingFeatures?: FeatureConfidence[];
   signalDuration?: number;
@@ -152,6 +154,24 @@ interface SessionSweep {
   strength: number;
 }
 
+interface SRZone {
+  price: number;
+  type: 'SUPPORT' | 'RESISTANCE';
+  touches: number;
+  lastTouch: number;
+  rejectionWicks: number;
+  avgRejectionSize: number;
+  reactionStrength: number;
+  source: 'PRICE_ACTION' | 'PIVOT' | 'FIBONACCI' | 'VOLUME_NODE';
+}
+
+interface SRZoneReaction {
+  zone: SRZone;
+  reactionType: 'BOUNCE' | 'REJECTION_WICK' | 'STRONG_REVERSAL';
+  strength: number;
+  confirmed: boolean;
+}
+
 interface MarketFeatures {
   asianHigh: number;
   asianLow: number;
@@ -181,6 +201,8 @@ interface MarketFeatures {
   priceActionPattern: string;
   supportStrength: number;
   resistanceStrength: number;
+  srZones: SRZone[];
+  activeSRReaction: SRZoneReaction | null;
   intermarketData: IntermarketData;
   liquidityWindow: LiquidityWindow;
   timeWindowFactor: number;
@@ -203,8 +225,8 @@ const LEARNING_STORAGE_KEY = 'trade_outcomes_learning';
 const MODEL_WEIGHTS_KEY = 'model_weights_v1';
 const DAILY_OHLC_STORAGE_KEY = 'daily_ohlc_history_v1';
 
-const TRAINING_WINDOW_DAYS = 30;
-const MIN_CONFIDENCE_FOR_RETRAINING = 0.75;
+const TRAINING_WINDOW_DAYS = 14;
+const MIN_CONFIDENCE_FOR_RETRAINING = 0.72;
 const BASE_SLIPPAGE_BUFFER_PIPS = 0.5;
 const CONFIDENCE_SMOOTHING_WINDOW = 5;
 const LATENCY_WARNING_THRESHOLD_MS = 100;
@@ -213,19 +235,27 @@ const INTERMARKET_CACHE_DURATION = 10000;
 const EXTERNAL_PRICE_MAX_AGE_MS = 15000;
 const MIN_PRICE_HISTORY_SAMPLE_INTERVAL_MS = 5000;
 const MIN_PRICE_HISTORY_CHANGE = 0.03;
+const DAILY_OHLC_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+const DAILY_OHLC_REFRESH_LOOKBACK_MS = 72 * 60 * 60 * 1000;
+const MIN_VALID_DAILY_RANGE = 6;
 
 const HYPOTHETICAL_TRADE_HISTORY_LIMIT = 100;
-const MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL = 15;
-const MIN_PIP_DIFFERENCE_FOR_PARTIALLY_MANAGED = 25;
-const MAX_RECENT_SIGNAL_TIME_MINUTES = 5;
-const POST_TP1_COOLDOWN_MS = 5 * 60 * 1000;
+const MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL = 12;
+const MIN_PIP_DIFFERENCE_FOR_PARTIALLY_MANAGED = 20;
+const MAX_RECENT_SIGNAL_TIME_MINUTES = 4;
+const POST_TP1_COOLDOWN_MS = 3 * 60 * 1000;
 const DRIFT_CHECK_INTERVAL = 24 * 60 * 60 * 1000;
 const FEATURE_DRIFT_STORAGE_KEY = 'feature_drift_history_v1';
 const MIN_SIGNAL_CONVICTION_THRESHOLD = 0.62;
 const MIN_SIGNAL_STRENGTH_DIFFERENCE = 0.12;
-const ABSOLUTE_MIN_SIGNAL_CONFIDENCE = 0.72;
-const SIGNAL_STARVATION_RELIEF_ATTEMPTS = 10;
-const SIGNAL_STARVATION_RELIEF_CONFIDENCE = 0.78;
+const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;
+const ABSOLUTE_MIN_SIGNAL_CONFIDENCE = 0.64;
+const SIGNAL_STARVATION_RELIEF_ATTEMPTS = 8;
+const SIGNAL_STARVATION_RELIEF_CONFIDENCE = 0.66;
+const SYNTHETIC_DATA_PENALTY = 0.06;
+const _BIDIRECTIONAL_INFLATION_PENALTY = 0.04;
+const LOW_DATA_QUALITY_PENALTY = 0.05;
+const MAX_CONFIDENCE_CAP = 0.91;
 
 const TIME_WEIGHTS = {
   LOW_LIQUIDITY: 0.5,
@@ -233,6 +263,21 @@ const TIME_WEIGHTS = {
   EUROPE_OPEN: 1.5,
   POWER_HOUR: 2.0,
 };
+
+function createDefaultLearningContext(): SignalLearningContext {
+  return {
+    rsi: 50,
+    atr: 10,
+    volumeRatio: 1,
+    dxyChange: 0,
+    timeWindowFactor: 1,
+    sentiment: {
+      score: 0,
+      confidence: 0,
+      source: 'record-fallback',
+    },
+  };
+}
 
 const UTC_HOURS = {
   EUROPE_OPEN_START: 7,
@@ -739,6 +784,8 @@ class SignalGenerationEngine {
   private lastFiveMinCandleClose: number = 0;
   private quasimodolLevels: QuasimodolLevel[] = [];
   private sessionSweeps: SessionSweep[] = [];
+  private srZones: SRZone[] = [];
+  private srZoneProximityThreshold: number = 5;
   private asianSessionHigh: number = 0;
   private asianSessionLow: number = Infinity;
   private londonSessionHigh: number = 0;
@@ -748,6 +795,7 @@ class SignalGenerationEngine {
   private lastSessionUpdate: number = 0;
   private lastOHLCFetchTime: number = 0;
   private ohlcDataSource: string = 'estimated';
+  private lastDailyOHLCRefreshAt: number = 0;
   
   private async fetchAndUpdateOHLCHistory(): Promise<void> {
     const now = Date.now();
@@ -762,14 +810,11 @@ class SignalGenerationEngine {
       const toTime = now;
       const fromTime = now - (100 * 60 * 1000);
       
-      const bars = await withTimeout(
-        trpcClient.goldPrice.getHistoricalData.query({
-          fromTime,
-          toTime,
-        }),
-        10000,
-        'getHistoricalData'
-      );
+      const bars = await fetchHistoricalData({
+        fromTime,
+        toTime,
+        timeoutMs: 10000,
+      });
       
       if (bars && bars.length > 0) {
         this.highHistory = bars.map((b: { high: number }) => b.high);
@@ -921,12 +966,10 @@ class SignalGenerationEngine {
 
   async updateDailyOHLC(currentPrice: number): Promise<DailyOHLC | null> {
     const now = new Date();
-    const NY_CLOSE_HOUR_UTC = 21;
-    
     const dateKey = this.getNYTradingDayKey(now);
-    
-    if (!this.currentDayOHLC || this.currentDayOHLC.date !== dateKey) {
-      console.log(`📅 Starting new trading day: ${dateKey}`);
+
+    if (!this.currentDayOHLC) {
+      console.log(`📅 Starting tracked trading day: ${dateKey}`);
       this.currentDayOHLC = {
         date: dateKey,
         open: currentPrice,
@@ -934,46 +977,26 @@ class SignalGenerationEngine {
         low: currentPrice,
         close: currentPrice,
       };
-    } else {
-      this.currentDayOHLC.high = Math.max(this.currentDayOHLC.high, currentPrice);
-      this.currentDayOHLC.low = Math.min(this.currentDayOHLC.low, currentPrice);
-      this.currentDayOHLC.close = currentPrice;
+      return null;
     }
-    
-    const nowUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours(), now.getUTCMinutes());
-    const todayNYClose = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), NY_CLOSE_HOUR_UTC, 0, 0);
-    const timeSinceNYClose = Math.abs(nowUTC - todayNYClose);
-    const fiveMinutesMs = 5 * 60 * 1000;
-    
-    if (timeSinceNYClose < fiveMinutesMs && Date.now() - this.lastNYCloseCheck > 60000) {
-      this.lastNYCloseCheck = Date.now();
-      
-      const completedBar: DailyOHLC = {
-        date: this.currentDayOHLC.date,
-        open: this.currentDayOHLC.open,
-        high: this.currentDayOHLC.high,
-        low: this.currentDayOHLC.low,
-        close: this.currentDayOHLC.close,
-        timestamp: todayNYClose,
+
+    if (this.currentDayOHLC.date !== dateKey) {
+      const completedBar = await this.persistCompletedTradingDayBar(this.currentDayOHLC, 'day-rollover');
+      console.log(`📅 Trading day rollover: ${this.currentDayOHLC.date} → ${dateKey}`);
+      this.currentDayOHLC = {
+        date: dateKey,
+        open: currentPrice,
+        high: currentPrice,
+        low: currentPrice,
+        close: currentPrice,
       };
-      
-      const existingIndex = this.dailyOHLCHistory.findIndex(d => d.date === completedBar.date);
-      if (existingIndex >= 0) {
-        this.dailyOHLCHistory[existingIndex] = completedBar;
-      } else {
-        this.dailyOHLCHistory.push(completedBar);
-        if (this.dailyOHLCHistory.length > 30) {
-          this.dailyOHLCHistory = this.dailyOHLCHistory.slice(-30);
-        }
-      }
-      
-      console.log(`📊 NY Close Snapshot: ${completedBar.date} | O: ${completedBar.open.toFixed(1)} H: ${completedBar.high.toFixed(1)} L: ${completedBar.low.toFixed(1)} C: ${completedBar.close.toFixed(1)}`);
-      
-      await this.saveDailyOHLCHistory();
-      
       return completedBar;
     }
-    
+
+    this.currentDayOHLC.high = Math.max(this.currentDayOHLC.high, currentPrice);
+    this.currentDayOHLC.low = Math.min(this.currentDayOHLC.low, currentPrice);
+    this.currentDayOHLC.close = currentPrice;
+
     return null;
   }
   
@@ -991,6 +1014,176 @@ class SignalGenerationEngine {
     const day = String(tradingDate.getUTCDate()).padStart(2, '0');
     
     return `${year}-${month}-${day}`;
+  }
+
+  private getNYTradingDayCloseTimestamp(dateKey: string): number {
+    const [yearString, monthString, dayString] = dateKey.split('-');
+    const year = Number.parseInt(yearString ?? '', 10);
+    const month = Number.parseInt(monthString ?? '', 10);
+    const day = Number.parseInt(dayString ?? '', 10);
+
+    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+      console.warn(`⚠️ Invalid NY trading day key received for close timestamp: ${dateKey}`);
+      return Date.now();
+    }
+
+    return Date.UTC(year, month - 1, day, 21, 0, 0, 0);
+  }
+
+  private async persistCompletedTradingDayBar(
+    tradingDay: { open: number; high: number; low: number; close: number; date: string },
+    reason: 'day-rollover' | 'historical-refresh',
+  ): Promise<DailyOHLC> {
+    const completedBar: DailyOHLC = {
+      date: tradingDay.date,
+      open: tradingDay.open,
+      high: tradingDay.high,
+      low: tradingDay.low,
+      close: tradingDay.close,
+      timestamp: this.getNYTradingDayCloseTimestamp(tradingDay.date),
+    };
+
+    const existingIndex = this.dailyOHLCHistory.findIndex((bar) => bar.date === completedBar.date);
+    if (existingIndex >= 0) {
+      this.dailyOHLCHistory[existingIndex] = completedBar;
+    } else {
+      this.dailyOHLCHistory.push(completedBar);
+    }
+
+    this.dailyOHLCHistory = [...this.dailyOHLCHistory]
+      .sort((left, right) => left.timestamp - right.timestamp)
+      .slice(-30);
+
+    console.log(`📊 Daily OHLC persisted (${reason}): ${completedBar.date} | O: ${completedBar.open.toFixed(1)} H: ${completedBar.high.toFixed(1)} L: ${completedBar.low.toFixed(1)} C: ${completedBar.close.toFixed(1)}`);
+
+    await this.saveDailyOHLCHistory();
+
+    return completedBar;
+  }
+
+  private buildDailyOHLCBarsFromHistoricalBars(
+    bars: { timestamp: number; open: number; high: number; low: number; close: number }[],
+    now: number,
+  ): DailyOHLC[] {
+    const groupedBars = new Map<string, DailyOHLC>();
+    const orderedBars = [...bars].sort((left, right) => left.timestamp - right.timestamp);
+
+    orderedBars.forEach((bar) => {
+      const dateKey = this.getNYTradingDayKey(new Date(bar.timestamp));
+      const closeTimestamp = this.getNYTradingDayCloseTimestamp(dateKey);
+      const existingBar = groupedBars.get(dateKey);
+
+      if (!existingBar) {
+        groupedBars.set(dateKey, {
+          date: dateKey,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          timestamp: closeTimestamp,
+        });
+        return;
+      }
+
+      existingBar.high = Math.max(existingBar.high, bar.high);
+      existingBar.low = Math.min(existingBar.low, bar.low);
+      existingBar.close = bar.close;
+    });
+
+    return Array.from(groupedBars.values())
+      .filter((bar) => bar.timestamp <= now)
+      .sort((left, right) => left.timestamp - right.timestamp);
+  }
+
+  private mergeDailyOHLCBars(bars: DailyOHLC[]): boolean {
+    const existingSnapshot = JSON.stringify(
+      [...this.dailyOHLCHistory].sort((left, right) => left.timestamp - right.timestamp),
+    );
+    const mergedBars = new Map<string, DailyOHLC>();
+
+    this.dailyOHLCHistory.forEach((bar) => {
+      mergedBars.set(bar.date, bar);
+    });
+
+    bars.forEach((bar) => {
+      mergedBars.set(bar.date, bar);
+    });
+
+    const nextHistory = Array.from(mergedBars.values())
+      .sort((left, right) => left.timestamp - right.timestamp)
+      .slice(-30);
+
+    const nextSnapshot = JSON.stringify(nextHistory);
+    if (nextSnapshot === existingSnapshot) {
+      return false;
+    }
+
+    this.dailyOHLCHistory = nextHistory;
+    return true;
+  }
+
+  private shouldRefreshDailyOHLCFromHistory(now: number): boolean {
+    if (this.dailyOHLCHistory.length === 0) {
+      return true;
+    }
+
+    const latestCompletedBar = [...this.dailyOHLCHistory].sort((left, right) => right.timestamp - left.timestamp)[0];
+    if (!latestCompletedBar) {
+      return true;
+    }
+
+    const expectedTimestamp = this.getNYTradingDayCloseTimestamp(latestCompletedBar.date);
+    const range = latestCompletedBar.high - latestCompletedBar.low;
+    const timestampLooksWrong = !Number.isFinite(latestCompletedBar.timestamp) || Math.abs(latestCompletedBar.timestamp - expectedTimestamp) > 60_000;
+    const rangeLooksBroken = !Number.isFinite(range) || range < MIN_VALID_DAILY_RANGE;
+    const dataIsStale = (now - latestCompletedBar.timestamp) > DAILY_OHLC_REFRESH_LOOKBACK_MS;
+
+    return timestampLooksWrong || rangeLooksBroken || dataIsStale;
+  }
+
+  private async refreshRecentDailyOHLCFromHistory(force: boolean = false): Promise<void> {
+    const now = Date.now();
+
+    if (!force && (now - this.lastDailyOHLCRefreshAt) < DAILY_OHLC_REFRESH_INTERVAL_MS) {
+      return;
+    }
+
+    if (!force && !this.shouldRefreshDailyOHLCFromHistory(now)) {
+      return;
+    }
+
+    this.lastDailyOHLCRefreshAt = now;
+    console.log('📊 Refreshing daily OHLC cache from recent historical minute bars...');
+
+    try {
+      const minuteBars = await fetchHistoricalData({
+        fromTime: now - DAILY_OHLC_REFRESH_LOOKBACK_MS,
+        toTime: now,
+        timeoutMs: 20000,
+      });
+
+      if (minuteBars.length === 0) {
+        console.warn('⚠️ Daily OHLC refresh returned no historical minute bars');
+        return;
+      }
+
+      const rebuiltDailyBars = this.buildDailyOHLCBarsFromHistoricalBars(minuteBars, now);
+      if (rebuiltDailyBars.length === 0) {
+        console.warn('⚠️ Daily OHLC refresh could not derive any completed daily bars');
+        return;
+      }
+
+      const historyChanged = this.mergeDailyOHLCBars(rebuiltDailyBars);
+      if (!historyChanged) {
+        console.log('ℹ️ Daily OHLC refresh found no changes');
+        return;
+      }
+
+      await this.saveDailyOHLCHistory();
+      console.log(`✅ Daily OHLC refresh rebuilt ${rebuiltDailyBars.length} completed trading day bar(s)`);
+    } catch (error) {
+      console.warn('⚠️ Daily OHLC refresh failed:', error instanceof Error ? error.message : 'Unknown');
+    }
   }
   
   getCurrentPrice(): number {
@@ -1612,6 +1805,207 @@ class SignalGenerationEngine {
     };
   }
 
+  private detectSRZones(): SRZone[] {
+    const now = Date.now();
+    const currentPrice = this.currentPrice;
+    const zones: SRZone[] = [];
+    const atr = this.calculateRealATR(14);
+    const zoneWidth = Math.max(2, atr * 0.3);
+
+    if (this.priceHistory.length < 20 || this.highHistory.length < 20 || this.lowHistory.length < 20) {
+      console.log('⚠️ S/R Zones: Insufficient data for zone detection');
+      return this.srZones;
+    }
+
+    const candidateLevels: { price: number; source: 'PRICE_ACTION' | 'PIVOT' | 'FIBONACCI' | 'VOLUME_NODE' }[] = [];
+
+    const recentHighs = this.highHistory.slice(-50);
+    const recentLows = this.lowHistory.slice(-50);
+    for (let i = 2; i < recentHighs.length - 2; i++) {
+      if (recentHighs[i] > recentHighs[i - 1] && recentHighs[i] > recentHighs[i - 2] &&
+          recentHighs[i] > recentHighs[i + 1] && recentHighs[i] > recentHighs[i + 2]) {
+        candidateLevels.push({ price: recentHighs[i], source: 'PRICE_ACTION' });
+      }
+    }
+    for (let i = 2; i < recentLows.length - 2; i++) {
+      if (recentLows[i] < recentLows[i - 1] && recentLows[i] < recentLows[i - 2] &&
+          recentLows[i] < recentLows[i + 1] && recentLows[i] < recentLows[i + 2]) {
+        candidateLevels.push({ price: recentLows[i], source: 'PRICE_ACTION' });
+      }
+    }
+
+    const ohlc = this.getDerivedDailyOHLC();
+    const dailyPivot = (ohlc.yesterdayHigh + ohlc.yesterdayLow + ohlc.yesterdayClose) / 3;
+    const dailyRange = Math.max(ohlc.yesterdayHigh - ohlc.yesterdayLow, atr);
+    const zoneStep = dailyRange / 12;
+    candidateLevels.push({ price: dailyPivot, source: 'PIVOT' });
+    candidateLevels.push({ price: ohlc.yesterdayClose + zoneStep, source: 'PIVOT' });
+    candidateLevels.push({ price: ohlc.yesterdayClose - zoneStep, source: 'PIVOT' });
+    candidateLevels.push({ price: ohlc.yesterdayClose + zoneStep * 2, source: 'PIVOT' });
+    candidateLevels.push({ price: ohlc.yesterdayClose - zoneStep * 2, source: 'PIVOT' });
+
+    const clustered: { price: number; source: 'PRICE_ACTION' | 'PIVOT' | 'FIBONACCI' | 'VOLUME_NODE'; count: number }[] = [];
+    for (const level of candidateLevels) {
+      const existing = clustered.find(c => Math.abs(c.price - level.price) < zoneWidth);
+      if (existing) {
+        existing.count++;
+        existing.price = (existing.price + level.price) / 2;
+        if (level.source === 'PRICE_ACTION') existing.source = level.source;
+      } else {
+        clustered.push({ ...level, count: 1 });
+      }
+    }
+
+    for (const cluster of clustered) {
+      let touches = 0;
+      let rejectionWicks = 0;
+      let totalRejectionSize = 0;
+      let lastTouch = 0;
+      const isResistance = cluster.price > currentPrice;
+
+      for (let i = 0; i < this.priceHistory.length; i++) {
+        const price = this.priceHistory[i];
+        const high = this.highHistory[i] ?? price;
+        const low = this.lowHistory[i] ?? price;
+
+        if (Math.abs(price - cluster.price) < zoneWidth) {
+          touches++;
+          lastTouch = now - ((this.priceHistory.length - i) * 5000);
+        }
+
+        if (isResistance && high >= cluster.price - zoneWidth && price < cluster.price) {
+          const wickSize = high - Math.max(price, this.priceHistory[Math.max(0, i - 1)] ?? price);
+          if (wickSize > zoneWidth * 0.3) {
+            rejectionWicks++;
+            totalRejectionSize += wickSize;
+          }
+        }
+
+        if (!isResistance && low <= cluster.price + zoneWidth && price > cluster.price) {
+          const wickSize = Math.min(price, this.priceHistory[Math.max(0, i - 1)] ?? price) - low;
+          if (wickSize > zoneWidth * 0.3) {
+            rejectionWicks++;
+            totalRejectionSize += wickSize;
+          }
+        }
+      }
+
+      const touchScore = Math.min(1, touches / 6);
+      const rejectionScore = Math.min(1, rejectionWicks / 4);
+      const avgRejectionSize = rejectionWicks > 0 ? totalRejectionSize / rejectionWicks : 0;
+      const rejectionSizeScore = Math.min(1, avgRejectionSize / (atr * 0.5));
+      const clusterScore = Math.min(1, cluster.count / 3);
+      const reactionStrength = (touchScore * 0.30) + (rejectionScore * 0.30) + (rejectionSizeScore * 0.20) + (clusterScore * 0.20);
+
+      if (touches >= 2 || rejectionWicks >= 1 || cluster.count >= 2) {
+        zones.push({
+          price: parseFloat(cluster.price.toFixed(1)),
+          type: isResistance ? 'RESISTANCE' : 'SUPPORT',
+          touches,
+          lastTouch,
+          rejectionWicks,
+          avgRejectionSize: parseFloat(avgRejectionSize.toFixed(2)),
+          reactionStrength: parseFloat(reactionStrength.toFixed(3)),
+          source: cluster.source,
+        });
+      }
+    }
+
+    zones.sort((a, b) => b.reactionStrength - a.reactionStrength);
+    this.srZones = zones.slice(0, 12);
+
+    if (this.srZones.length > 0) {
+      console.log('\n📊 S/R ZONE DETECTION:');
+      console.log('='.repeat(60));
+      for (const zone of this.srZones.slice(0, 6)) {
+        console.log(`   ${zone.type} @ ${zone.price.toFixed(1)} | Touches: ${zone.touches} | Wick Rejections: ${zone.rejectionWicks} | Reaction: ${(zone.reactionStrength * 100).toFixed(0)}% | Source: ${zone.source}`);
+      }
+      console.log('='.repeat(60));
+    }
+
+    return this.srZones;
+  }
+
+  private detectActiveSRReaction(features: MarketFeatures): SRZoneReaction | null {
+    const currentPrice = this.currentPrice;
+    const atr = features.atr || this.calculateRealATR(14);
+    const proximityThreshold = Math.max(3, atr * 0.25);
+
+    for (const zone of this.srZones) {
+      const distance = Math.abs(currentPrice - zone.price);
+      if (distance > proximityThreshold) continue;
+
+      if (zone.reactionStrength < 0.3) continue;
+
+      const recentPrices = this.priceHistory.slice(-5);
+      const recentHighs = this.highHistory.slice(-5);
+      const recentLows = this.lowHistory.slice(-5);
+      if (recentPrices.length < 3) continue;
+
+      let reactionType: 'BOUNCE' | 'REJECTION_WICK' | 'STRONG_REVERSAL' = 'BOUNCE';
+      let reactionConfirmed = false;
+      let reactionBoost = 0;
+
+      if (zone.type === 'SUPPORT') {
+        const touchedZone = recentLows.some(l => l <= zone.price + proximityThreshold * 0.5);
+        const priceAboveZone = currentPrice > zone.price;
+        const movingAway = recentPrices.length >= 3 && recentPrices[recentPrices.length - 1] > recentPrices[recentPrices.length - 3];
+
+        if (touchedZone && priceAboveZone && movingAway) {
+          reactionConfirmed = true;
+          const bounceSize = currentPrice - zone.price;
+          if (bounceSize > atr * 0.4) {
+            reactionType = 'STRONG_REVERSAL';
+            reactionBoost = 0.25;
+          } else if (recentLows.some(l => l < zone.price) && currentPrice > zone.price) {
+            reactionType = 'REJECTION_WICK';
+            reactionBoost = 0.20;
+          } else {
+            reactionBoost = 0.15;
+          }
+        }
+      } else {
+        const touchedZone = recentHighs.some(h => h >= zone.price - proximityThreshold * 0.5);
+        const priceBelowZone = currentPrice < zone.price;
+        const movingAway = recentPrices.length >= 3 && recentPrices[recentPrices.length - 1] < recentPrices[recentPrices.length - 3];
+
+        if (touchedZone && priceBelowZone && movingAway) {
+          reactionConfirmed = true;
+          const rejectionSize = zone.price - currentPrice;
+          if (rejectionSize > atr * 0.4) {
+            reactionType = 'STRONG_REVERSAL';
+            reactionBoost = 0.25;
+          } else if (recentHighs.some(h => h > zone.price) && currentPrice < zone.price) {
+            reactionType = 'REJECTION_WICK';
+            reactionBoost = 0.20;
+          } else {
+            reactionBoost = 0.15;
+          }
+        }
+      }
+
+      if (reactionConfirmed) {
+        const zoneMultiplier = Math.min(1.5, 0.8 + zone.reactionStrength);
+        const finalStrength = reactionBoost * zoneMultiplier;
+
+        console.log(`\n🎯 S/R ZONE REACTION DETECTED:`);
+        console.log(`   Zone: ${zone.type} @ ${zone.price.toFixed(1)} (Reaction Strength: ${(zone.reactionStrength * 100).toFixed(0)}%)`);
+        console.log(`   Reaction Type: ${reactionType}`);
+        console.log(`   Touches: ${zone.touches} | Rejection Wicks: ${zone.rejectionWicks}`);
+        console.log(`   Signal Boost: +${(finalStrength * 100).toFixed(1)}% (base: ${(reactionBoost * 100).toFixed(0)}% × zone multiplier: ${zoneMultiplier.toFixed(2)})`);
+
+        return {
+          zone,
+          reactionType,
+          strength: parseFloat(finalStrength.toFixed(3)),
+          confirmed: true,
+        };
+      }
+    }
+
+    return null;
+  }
+
   private generateSentimentAnalysis(): SentimentData {
     const rsi = this.calculateRealRSI(14);
     const trendStrength = this.calculateTrendStrength();
@@ -1713,44 +2107,79 @@ class SignalGenerationEngine {
   }
   
   private getDerivedDailyOHLC(): { yesterdayHigh: number; yesterdayLow: number; yesterdayClose: number; yesterdayOpen: number } {
-    if (this.dailyOHLCHistory.length === 0) {
-      const currentPrice = this.currentPrice;
-      const volatilityRange = currentPrice * 0.015;
+    if (this.dailyOHLCHistory.length > 0) {
+      const sortedHistory = [...this.dailyOHLCHistory].sort((left, right) => right.timestamp - left.timestamp);
+      const mostRecentBar = sortedHistory[0];
+
+      console.log(`📊 Using Latest Completed Daily Bar: ${mostRecentBar.date}`);
+      console.log(`   Open: ${mostRecentBar.open.toFixed(1)} | High: ${mostRecentBar.high.toFixed(1)} | Low: ${mostRecentBar.low.toFixed(1)} | Close: ${mostRecentBar.close.toFixed(1)}`);
+
       return {
-        yesterdayHigh: currentPrice + (volatilityRange / 2),
-        yesterdayLow: currentPrice - (volatilityRange / 2),
-        yesterdayClose: currentPrice,
-        yesterdayOpen: currentPrice - (volatilityRange * 0.3),
+        yesterdayHigh: mostRecentBar.high,
+        yesterdayLow: mostRecentBar.low,
+        yesterdayClose: mostRecentBar.close,
+        yesterdayOpen: mostRecentBar.open,
       };
     }
-    
-    const sortedHistory = [...this.dailyOHLCHistory].sort((a, b) => b.timestamp - a.timestamp);
-    const mostRecentBar = sortedHistory[0];
-    const now = Date.now();
-    const timeSinceBar = now - mostRecentBar.timestamp;
-    const sixHoursMs = 6 * 60 * 60 * 1000;
-    
-    if (timeSinceBar < sixHoursMs && sortedHistory.length > 1) {
-      const previousBar = sortedHistory[1];
-      console.log(`📊 Using Previous Day's Completed Bar: ${previousBar.date}`);
-      console.log(`   Open: ${previousBar.open.toFixed(1)} | High: ${previousBar.high.toFixed(1)} | Low: ${previousBar.low.toFixed(1)} | Close: ${previousBar.close.toFixed(1)}`);
-      
+
+    if (this.currentDayOHLC) {
+      console.log(`📊 Using Developing Trading Day Fallback: ${this.currentDayOHLC.date}`);
+      console.log(`   Open: ${this.currentDayOHLC.open.toFixed(1)} | High: ${this.currentDayOHLC.high.toFixed(1)} | Low: ${this.currentDayOHLC.low.toFixed(1)} | Close: ${this.currentDayOHLC.close.toFixed(1)}`);
+
       return {
-        yesterdayHigh: previousBar.high,
-        yesterdayLow: previousBar.low,
-        yesterdayClose: previousBar.close,
-        yesterdayOpen: previousBar.open,
+        yesterdayHigh: this.currentDayOHLC.high,
+        yesterdayLow: this.currentDayOHLC.low,
+        yesterdayClose: this.currentDayOHLC.close,
+        yesterdayOpen: this.currentDayOHLC.open,
       };
     }
-    
-    console.log(`📊 Using Most Recent Completed Bar: ${mostRecentBar.date}`);
-    console.log(`   Open: ${mostRecentBar.open.toFixed(1)} | High: ${mostRecentBar.high.toFixed(1)} | Low: ${mostRecentBar.low.toFixed(1)} | Close: ${mostRecentBar.close.toFixed(1)}`);
-    
+
+    const currentPrice = this.currentPrice;
+    const volatilityRange = currentPrice * 0.015;
     return {
-      yesterdayHigh: mostRecentBar.high,
-      yesterdayLow: mostRecentBar.low,
-      yesterdayClose: mostRecentBar.close,
-      yesterdayOpen: mostRecentBar.open,
+      yesterdayHigh: currentPrice + (volatilityRange / 2),
+      yesterdayLow: currentPrice - (volatilityRange / 2),
+      yesterdayClose: currentPrice,
+      yesterdayOpen: currentPrice - (volatilityRange * 0.3),
+    };
+  }
+
+  private calculateDashboardPivotLevels(): {
+    dailyPivot: number;
+    r1: number;
+    r2: number;
+    r3: number;
+    s1: number;
+    s2: number;
+    s3: number;
+  } {
+    const ohlc = this.getDerivedDailyOHLC();
+    const observedDailyRange = Math.max(ohlc.yesterdayHigh - ohlc.yesterdayLow, 0);
+    const atrFloor = Math.max(this.calculateRealATR(14), 2);
+    const dailyRange = Math.max(observedDailyRange, atrFloor);
+    const zoneStep = dailyRange / 12;
+    const dailyPivot = (ohlc.yesterdayHigh + ohlc.yesterdayLow + ohlc.yesterdayClose) / 3;
+    const r1 = ohlc.yesterdayClose + zoneStep;
+    const s1 = ohlc.yesterdayClose - zoneStep;
+    const r2 = ohlc.yesterdayClose + (zoneStep * 2);
+    const s2 = ohlc.yesterdayClose - (zoneStep * 2);
+    const r3 = ohlc.yesterdayClose + (zoneStep * 3);
+    const s3 = ohlc.yesterdayClose - (zoneStep * 3);
+
+    console.log(`📊 Dashboard Daily Intraday Zones:`);
+    console.log(`   Completed Day OHLC -> H: ${ohlc.yesterdayHigh.toFixed(1)} | L: ${ohlc.yesterdayLow.toFixed(1)} | C: ${ohlc.yesterdayClose.toFixed(1)}`);
+    console.log(`   Range: ${dailyRange.toFixed(1)} | Zone Step: ${zoneStep.toFixed(2)} | Pivot: ${dailyPivot.toFixed(1)}`);
+    console.log(`   Resistance Anchors -> R1: ${r1.toFixed(1)} | R2: ${r2.toFixed(1)} | R3: ${r3.toFixed(1)}`);
+    console.log(`   Support Anchors -> S1: ${s1.toFixed(1)} | S2: ${s2.toFixed(1)} | S3: ${s3.toFixed(1)}`);
+
+    return {
+      dailyPivot: parseFloat(dailyPivot.toFixed(1)),
+      r1: parseFloat(r1.toFixed(1)),
+      r2: parseFloat(r2.toFixed(1)),
+      r3: parseFloat(r3.toFixed(1)),
+      s1: parseFloat(s1.toFixed(1)),
+      s2: parseFloat(s2.toFixed(1)),
+      s3: parseFloat(s3.toFixed(1)),
     };
   }
 
@@ -1849,6 +2278,7 @@ class SignalGenerationEngine {
     const marketRegime = await this.detectMarketRegime();
     const priceActionPattern = this.detectPriceActionPattern();
     const srStrength = this.calculateSupportResistanceStrength();
+    const srZones = this.detectSRZones();
     
     const intermarketData = await fetchIntermarketData();
     const liquidityWindow = this.calculateLiquidityWindow();
@@ -1896,6 +2326,8 @@ class SignalGenerationEngine {
       priceActionPattern,
       supportStrength: srStrength.supportStrength,
       resistanceStrength: srStrength.resistanceStrength,
+      srZones,
+      activeSRReaction: null,
       intermarketData,
       liquidityWindow,
       timeWindowFactor,
@@ -1948,23 +2380,26 @@ class SignalGenerationEngine {
       this.confidenceHistory.shift();
     }
     
-    const weights = [0.1, 0.15, 0.2, 0.25, 0.3];
     const recentHistory = this.confidenceHistory.slice(-CONFIDENCE_SMOOTHING_WINDOW);
     
-    let smoothedConfidence = 0;
-    let totalWeight = 0;
-    
-    for (let i = 0; i < recentHistory.length; i++) {
-      const weight = weights[i] || weights[weights.length - 1];
-      smoothedConfidence += recentHistory[i] * weight;
-      totalWeight += weight;
+    if (recentHistory.length <= 1) {
+      console.log(`🔄 Confidence: Raw ${(rawConfidence * 100).toFixed(1)}% (no smoothing - insufficient history)`);
+      return rawConfidence;
     }
     
-    const finalConfidence = totalWeight > 0 ? smoothedConfidence / totalWeight : rawConfidence;
+    const currentWeight = 0.65;
+    const historyWeight = 0.35;
+    const historyAvg = recentHistory.slice(0, -1).reduce((a, b) => a + b, 0) / (recentHistory.length - 1);
     
-    console.log(`🔄 Confidence Smoothing: Raw ${(rawConfidence * 100).toFixed(1)}% -> Smoothed ${(finalConfidence * 100).toFixed(1)}% (${recentHistory.length}-tick EMA)`);
+    let finalConfidence = rawConfidence * currentWeight + historyAvg * historyWeight;
     
-    return finalConfidence;
+    finalConfidence = Math.min(finalConfidence, rawConfidence + 0.03);
+    
+    finalConfidence = Math.min(finalConfidence, MAX_CONFIDENCE_CAP);
+    
+    console.log(`🔄 Confidence Smoothing: Raw ${(rawConfidence * 100).toFixed(1)}% -> Smoothed ${(finalConfidence * 100).toFixed(1)}% (history avg: ${(historyAvg * 100).toFixed(1)}%, cap: raw+3%)`);
+    
+    return parseFloat(finalConfidence.toFixed(3));
   }
   
   private calculateFeatureCorrelation(): void {
@@ -2414,10 +2849,8 @@ class SignalGenerationEngine {
     }
     
     if (isLondonSession || isNYSession) {
-      buySignalStrength += 0.15;
-      sellSignalStrength += 0.15;
-      attentionScores.set('high_liquidity_session', 0.15);
-      console.log(`✅ High Liquidity Session (${isLondonSession ? 'LONDON' : 'NY'})`);
+      attentionScores.set('high_liquidity_session', 0.10);
+      console.log(`✅ High Liquidity Session (${isLondonSession ? 'LONDON' : 'NY'}) - context factor, not directional boost`);
     }
     
     if (features.orderFlow.largeOrdersDetected) {
@@ -2449,10 +2882,8 @@ class SignalGenerationEngine {
       node => Math.abs(this.currentPrice - node) < 3
     );
     if (nearHighVolumeNode) {
-      buySignalStrength += 0.08;
-      sellSignalStrength += 0.08;
-      attentionScores.set('volume_node_support_resistance', 0.08);
-      console.log('✅ Price near High Volume Node (potential S/R)');
+      attentionScores.set('volume_node_support_resistance', 0.05);
+      console.log('ℹ️ Price near High Volume Node (context only, no directional boost)');
     }
     
     if (features.marketRegime.type === 'TRENDING' && features.marketRegime.strength > 0.75) {
@@ -2466,10 +2897,8 @@ class SignalGenerationEngine {
         console.log('🔴 SELL: Strong Downtrend Confirmed');
       }
     } else if (features.marketRegime.type === 'VOLATILE') {
-      buySignalStrength += 0.05;
-      sellSignalStrength += 0.05;
-      attentionScores.set('volatile_opportunities', 0.05);
-      console.log('⚡ Volatile regime - Both directions active');
+      attentionScores.set('volatile_regime_context', 0.03);
+      console.log('⚡ Volatile regime - Context noted, no directional boost (noise risk)');
     }
     
     if (features.priceActionPattern === 'BULLISH_REVERSAL') {
@@ -2492,14 +2921,40 @@ class SignalGenerationEngine {
     
     if (features.supportStrength > 0.8) {
       buySignalStrength += 0.10;
-      attentionScores.set('strong_support_bounce', 0.10);
-      console.log('✅ BUY: Strong Support Zone');
+      attentionScores.set('strong_support_proximity', 0.10);
+      console.log('✅ BUY: Strong Support Proximity');
     }
     
     if (features.resistanceStrength > 0.8) {
       sellSignalStrength += 0.10;
-      attentionScores.set('strong_resistance_rejection', 0.10);
-      console.log('🔴 SELL: Strong Resistance Zone');
+      attentionScores.set('strong_resistance_proximity', 0.10);
+      console.log('🔴 SELL: Strong Resistance Proximity');
+    }
+
+    const srReaction = this.detectActiveSRReaction(features);
+    if (srReaction && srReaction.confirmed) {
+      features.activeSRReaction = srReaction;
+      if (srReaction.zone.type === 'SUPPORT') {
+        buySignalStrength += srReaction.strength;
+        attentionScores.set(`sr_zone_${srReaction.reactionType.toLowerCase()}`, srReaction.strength);
+        console.log(`✅ BUY: S/R Zone ${srReaction.reactionType} @ ${srReaction.zone.price.toFixed(1)} (+${(srReaction.strength * 100).toFixed(1)}%)`);
+      } else {
+        sellSignalStrength += srReaction.strength;
+        attentionScores.set(`sr_zone_${srReaction.reactionType.toLowerCase()}`, srReaction.strength);
+        console.log(`🔴 SELL: S/R Zone ${srReaction.reactionType} @ ${srReaction.zone.price.toFixed(1)} (+${(srReaction.strength * 100).toFixed(1)}%)`);
+      }
+
+      if (srReaction.zone.touches >= 3 && srReaction.zone.rejectionWicks >= 2) {
+        const multiTouchBonus = 0.08;
+        if (srReaction.zone.type === 'SUPPORT') {
+          buySignalStrength += multiTouchBonus;
+          attentionScores.set('multi_touch_sr_confirmation', multiTouchBonus);
+        } else {
+          sellSignalStrength += multiTouchBonus;
+          attentionScores.set('multi_touch_sr_confirmation', multiTouchBonus);
+        }
+        console.log(`   🔥 Multi-touch S/R Confirmation: ${srReaction.zone.touches} touches, ${srReaction.zone.rejectionWicks} rejection wicks (+${(multiTouchBonus * 100).toFixed(0)}%)`);
+      }
     }
     
     let sentimentImpact = 0;
@@ -2526,10 +2981,14 @@ class SignalGenerationEngine {
     
     const fibonacciAlignment = nearFibLevel;
     if (fibonacciAlignment) {
-      buySignalStrength += 0.20; // Increased boost for high accuracy mode
-      sellSignalStrength += 0.20; // Increased boost for high accuracy mode
-      attentionScores.set('fibonacci_alignment', 0.20);
-      console.log('✅ Price near Fibonacci Level (Boosted for High Accuracy)');
+      const fibDirectionalBoost = 0.08;
+      if (buySignalStrength > sellSignalStrength) {
+        buySignalStrength += fibDirectionalBoost;
+      } else if (sellSignalStrength > buySignalStrength) {
+        sellSignalStrength += fibDirectionalBoost;
+      }
+      attentionScores.set('fibonacci_alignment', fibDirectionalBoost);
+      console.log(`✅ Price near Fibonacci Level (+${(fibDirectionalBoost * 100).toFixed(0)}% to dominant direction only)`);
     }
     
     if (features.emaCrossover > 0.5) {
@@ -2664,35 +3123,96 @@ class SignalGenerationEngine {
       console.log('   Signal allowed but confidence may be reduced');
     }
     
-    let baseConfidence = 0.55 + signalStrength * 0.35;
+    let baseConfidence = 0.40 + signalStrength * 0.30;
     
-    baseConfidence += Math.abs(sentimentImpact) * 0.1;
+    baseConfidence += Math.abs(sentimentImpact) * 0.05;
     
     if (fibonacciAlignment) {
-      baseConfidence += 0.10; // Increased boost
+      baseConfidence += 0.04;
+    }
+
+    if (features.activeSRReaction && features.activeSRReaction.confirmed) {
+      const srConfBoost = features.activeSRReaction.strength * 0.15;
+      baseConfidence += srConfBoost;
+      console.log(`🎯 S/R Zone Reaction Confidence Boost: +${(srConfBoost * 100).toFixed(1)}% (${features.activeSRReaction.reactionType} @ ${features.activeSRReaction.zone.price.toFixed(1)})`);
     }
     
     if (features.marketRegime.confidence > 0.85) {
-      baseConfidence += 0.03;
+      baseConfidence += 0.02;
     }
     
-    const timeBoost = (features.timeWindowFactor - 1.0) * 0.08;
+    const timeBoost = (features.timeWindowFactor - 1.0) * 0.04;
     baseConfidence += timeBoost;
     
     if (timeBoost > 0) {
       console.log(`⏰ Time Window Boost: +${(timeBoost * 100).toFixed(1)}% confidence (Factor: ${features.timeWindowFactor.toFixed(1)}x)`);
     }
     
-    const learningAdjustment = (this.performanceMetrics.profitFactor - 1.5) * 0.05;
+    const learningAdjustment = Math.max(-0.05, Math.min(0.03, (this.performanceMetrics.profitFactor - 1.5) * 0.03));
     baseConfidence += learningAdjustment;
     
     if (strengthDifference < 0.15) {
-      baseConfidence *= 0.85;
-      console.log(`⚠️ Weak directional conviction - Confidence reduced by 15%`);
+      baseConfidence *= 0.80;
+      console.log(`⚠️ Weak directional conviction - Confidence reduced by 20%`);
     }
     
-    const dataQualityPenalty = this.priceHistory.length < 30 ? -0.02 : 0;
-    let rawConfidence = Math.max(0.55, Math.min(0.98, baseConfidence + dataQualityPenalty));
+    if (strengthDifference < 0.20) {
+      baseConfidence *= 0.92;
+      console.log(`⚠️ Moderate directional conviction - Confidence reduced by 8%`);
+    }
+    
+    const losingStrength = isBullish ? sellSignalStrength : buySignalStrength;
+    if (losingStrength > 0.3) {
+      const conflictPenalty = losingStrength * 0.12;
+      baseConfidence -= conflictPenalty;
+      console.log(`⚠️ Opposing signal strength penalty: -${(conflictPenalty * 100).toFixed(1)}% (opposing: ${(losingStrength * 100).toFixed(1)}%)`);
+    }
+    
+    let dataQualityPenalty = 0;
+    if (this.priceHistory.length < 30) {
+      dataQualityPenalty += LOW_DATA_QUALITY_PENALTY;
+      console.log(`⚠️ Low data quality penalty: -${(LOW_DATA_QUALITY_PENALTY * 100).toFixed(1)}% (only ${this.priceHistory.length} price samples)`);
+    }
+    if (this.ohlcDataSource === 'estimated') {
+      dataQualityPenalty += SYNTHETIC_DATA_PENALTY;
+      console.log(`⚠️ Synthetic OHLC data penalty: -${(SYNTHETIC_DATA_PENALTY * 100).toFixed(1)}% (using estimated H/L)`);
+    }
+    if (this.priceHistory.length < 50) {
+      dataQualityPenalty += 0.03;
+      console.log(`⚠️ Insufficient history penalty: -3% (need 50+ samples for reliable indicators)`);
+    }
+    
+    let rawConfidence = Math.max(0.45, Math.min(MAX_CONFIDENCE_CAP, baseConfidence - dataQualityPenalty));
+    let calibrationPenalty = 0;
+
+    if (strengthDifference < 0.25) {
+      calibrationPenalty += 0.07;
+      console.log(`⚠️ Confidence calibration penalty: -7.0% (directional spread only ${(strengthDifference * 100).toFixed(1)}%)`);
+    }
+
+    if (signalStrength < 0.74) {
+      calibrationPenalty += 0.04;
+      console.log(`⚠️ Confidence calibration penalty: -4.0% (signal strength ${signalStrength.toFixed(3)})`);
+    }
+
+    if (features.marketRegime.confidence < 0.7) {
+      calibrationPenalty += 0.03;
+      console.log(`⚠️ Confidence calibration penalty: -3.0% (regime confidence ${(features.marketRegime.confidence * 100).toFixed(1)}%)`);
+    }
+
+    if (losingStrength > 0.22) {
+      calibrationPenalty += 0.03;
+      console.log(`⚠️ Confidence calibration penalty: -3.0% (opposing pressure ${(losingStrength * 100).toFixed(1)}%)`);
+    }
+
+    if (this.priceHistory.length < 60) {
+      calibrationPenalty += 0.02;
+      console.log(`⚠️ Confidence calibration penalty: -2.0% (${this.priceHistory.length} samples available)`);
+    }
+
+    rawConfidence = Math.max(0.42, Math.min(MAX_CONFIDENCE_CAP, rawConfidence - calibrationPenalty));
+    
+    console.log(`📊 Confidence Breakdown: base=${(0.40 + signalStrength * 0.30).toFixed(3)}, bonuses=${(baseConfidence - 0.40 - signalStrength * 0.30).toFixed(3)}, penalties=-${dataQualityPenalty.toFixed(3)}, calibration=-${calibrationPenalty.toFixed(3)}, raw=${rawConfidence.toFixed(3)}`);
     
     const smoothedConfidence = this.smoothConfidence(rawConfidence);
     
@@ -3009,8 +3529,18 @@ class SignalGenerationEngine {
     return false;
   }
   
-  async recordTradeOutcome(signalId: string, entryPrice: number, exitPrice: number, result: 'WIN' | 'LOSS', features: MarketFeatures, misleadingFeatures?: FeatureConfidence[], signalDuration?: number): Promise<void> {
+  async recordTradeOutcome(signalId: string, entryPrice: number, exitPrice: number, result: 'WIN' | 'LOSS', features?: Partial<SignalLearningContext>, misleadingFeatures?: FeatureConfidence[], signalDuration?: number, confidence?: number): Promise<void> {
     const pnl = result === 'WIN' ? Math.abs(exitPrice - entryPrice) : -Math.abs(exitPrice - entryPrice);
+    const normalizedConfidence = Math.max(0.42, Math.min(0.95, confidence ?? this.performanceMetrics.avgConfidence ?? 0.72));
+    const defaultContext = createDefaultLearningContext();
+    const normalizedFeatures: SignalLearningContext = {
+      rsi: typeof features?.rsi === 'number' ? features.rsi : defaultContext.rsi,
+      atr: typeof features?.atr === 'number' ? features.atr : defaultContext.atr,
+      volumeRatio: typeof features?.volumeRatio === 'number' ? features.volumeRatio : defaultContext.volumeRatio,
+      dxyChange: typeof features?.dxyChange === 'number' ? features.dxyChange : defaultContext.dxyChange,
+      timeWindowFactor: typeof features?.timeWindowFactor === 'number' ? features.timeWindowFactor : defaultContext.timeWindowFactor,
+      sentiment: features?.sentiment ?? defaultContext.sentiment,
+    };
     
     const outcome: TradeOutcome = {
       signalId,
@@ -3018,8 +3548,8 @@ class SignalGenerationEngine {
       exitPrice,
       result,
       pnl,
-      confidence: 0.75,
-      features,
+      confidence: parseFloat(normalizedConfidence.toFixed(2)),
+      features: normalizedFeatures,
       timestamp: new Date(),
       misleadingFeatures,
       signalDuration,
@@ -3175,45 +3705,51 @@ class SignalGenerationEngine {
     
     const winningData = normalizedData.filter(d => d.outcome.result === 'WIN');
     const losingData = normalizedData.filter(d => d.outcome.result === 'LOSS');
+    const weightedWinningData = winningData.length > 0 ? winningData : normalizedData;
+    const weightedLosingData = losingData.length > 0 ? losingData : normalizedData;
+
+    if (winningData.length === 0 || losingData.length === 0) {
+      console.log('⚠️ Retrain class diversity is limited - applying neutral fallback weighting to avoid unstable model weights');
+    }
     
     this.modelWeights.clear();
     
     const rawWeights: { [key: string]: number } = {};
     
-    const weightedAvgWinRSI = winningData.reduce((sum, d) => sum + d.outcome.features.rsi * d.weight, 0) / 
-      winningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossRSI = losingData.reduce((sum, d) => sum + d.outcome.features.rsi * d.weight, 0) / 
-      losingData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgWinRSI = weightedWinningData.reduce((sum, d) => sum + d.outcome.features.rsi * d.weight, 0) / 
+      weightedWinningData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgLossRSI = weightedLosingData.reduce((sum, d) => sum + d.outcome.features.rsi * d.weight, 0) / 
+      weightedLosingData.reduce((sum, d) => sum + d.weight, 0);
     rawWeights['rsi_weight'] = (weightedAvgWinRSI - weightedAvgLossRSI) / 100;
     
-    const weightedAvgWinTimeWindow = winningData.reduce((sum, d) => sum + d.outcome.features.timeWindowFactor * d.weight, 0) / 
-      winningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossTimeWindow = losingData.reduce((sum, d) => sum + d.outcome.features.timeWindowFactor * d.weight, 0) / 
-      losingData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgWinTimeWindow = weightedWinningData.reduce((sum, d) => sum + d.outcome.features.timeWindowFactor * d.weight, 0) / 
+      weightedWinningData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgLossTimeWindow = weightedLosingData.reduce((sum, d) => sum + d.outcome.features.timeWindowFactor * d.weight, 0) / 
+      weightedLosingData.reduce((sum, d) => sum + d.weight, 0);
     rawWeights['timeWindow_weight'] = (weightedAvgWinTimeWindow - weightedAvgLossTimeWindow) * 0.5;
     
-    const weightedAvgWinVolume = winningData.reduce((sum, d) => sum + d.outcome.features.volumeRatio * d.weight, 0) / 
-      winningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossVolume = losingData.reduce((sum, d) => sum + d.outcome.features.volumeRatio * d.weight, 0) / 
-      losingData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgWinVolume = weightedWinningData.reduce((sum, d) => sum + d.outcome.features.volumeRatio * d.weight, 0) / 
+      weightedWinningData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgLossVolume = weightedLosingData.reduce((sum, d) => sum + d.outcome.features.volumeRatio * d.weight, 0) / 
+      weightedLosingData.reduce((sum, d) => sum + d.weight, 0);
     rawWeights['volume_weight'] = weightedAvgWinVolume - weightedAvgLossVolume;
     
-    const weightedAvgWinSentiment = winningData.reduce((sum, d) => sum + (d.outcome.features.sentiment?.score ?? 0) * d.weight, 0) / 
-      winningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossSentiment = losingData.reduce((sum, d) => sum + (d.outcome.features.sentiment?.score ?? 0) * d.weight, 0) / 
-      losingData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgWinSentiment = weightedWinningData.reduce((sum, d) => sum + (d.outcome.features.sentiment?.score ?? 0) * d.weight, 0) / 
+      weightedWinningData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgLossSentiment = weightedLosingData.reduce((sum, d) => sum + (d.outcome.features.sentiment?.score ?? 0) * d.weight, 0) / 
+      weightedLosingData.reduce((sum, d) => sum + d.weight, 0);
     rawWeights['sentiment_weight'] = (weightedAvgWinSentiment - weightedAvgLossSentiment) * 2;
     
-    const weightedAvgWinATR = winningData.reduce((sum, d) => sum + d.outcome.features.atr * d.weight, 0) / 
-      winningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossATR = losingData.reduce((sum, d) => sum + d.outcome.features.atr * d.weight, 0) / 
-      losingData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgWinATR = weightedWinningData.reduce((sum, d) => sum + d.outcome.features.atr * d.weight, 0) / 
+      weightedWinningData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgLossATR = weightedLosingData.reduce((sum, d) => sum + d.outcome.features.atr * d.weight, 0) / 
+      weightedLosingData.reduce((sum, d) => sum + d.weight, 0);
     rawWeights['atr_weight'] = (weightedAvgWinATR - weightedAvgLossATR) / 10;
     
-    const weightedAvgWinDXY = winningData.reduce((sum, d) => sum + d.outcome.features.dxyChange * d.weight, 0) / 
-      winningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossDXY = losingData.reduce((sum, d) => sum + d.outcome.features.dxyChange * d.weight, 0) / 
-      losingData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgWinDXY = weightedWinningData.reduce((sum, d) => sum + d.outcome.features.dxyChange * d.weight, 0) / 
+      weightedWinningData.reduce((sum, d) => sum + d.weight, 0);
+    const weightedAvgLossDXY = weightedLosingData.reduce((sum, d) => sum + d.outcome.features.dxyChange * d.weight, 0) / 
+      weightedLosingData.reduce((sum, d) => sum + d.weight, 0);
     rawWeights['dxy_weight'] = (weightedAvgWinDXY - weightedAvgLossDXY) * 2;
     
     console.log('\n📐 WEIGHT NORMALIZATION:');
@@ -3361,15 +3897,15 @@ class SignalGenerationEngine {
       console.log('📊 Regime: QUIET - Cooldown extended to 90s (Low opportunity)');
     }
     
-    if (confidence >= 0.95) {
-      console.log('🚀 ULTRA-HIGH CONFIDENCE (≥95%) - COOLDOWN CANCELLED');
-      return 0;
-    } else if (confidence >= 0.90) {
-      cooldownMultiplier *= 0.5;
-      console.log('⚡ High confidence (≥90%) - Additional 50% cooldown reduction');
-    } else if (confidence >= 0.85) {
-      cooldownMultiplier *= 0.7;
-      console.log('⚡ Strong confidence (≥85%) - Additional 30% cooldown reduction');
+    if (confidence >= 0.90) {
+      cooldownMultiplier *= 0.45;
+      console.log('🚀 Ultra-high confidence (≥90%) - 55% cooldown reduction');
+    } else if (confidence >= 0.84) {
+      cooldownMultiplier *= 0.65;
+      console.log('⚡ High confidence (≥84%) - 35% cooldown reduction');
+    } else if (confidence >= 0.76) {
+      cooldownMultiplier *= 0.82;
+      console.log('⚡ Strong confidence (≥76%) - 18% cooldown reduction');
     }
     
     const calculatedCooldown = BASE_COOLDOWN * cooldownMultiplier;
@@ -3415,7 +3951,9 @@ class SignalGenerationEngine {
     console.log(`📊 SIGNAL GENERATION ATTEMPT #${this.signalGenerationAttempts}`);
     console.log(`${'='.repeat(80)}`);
     
-    const fullyActiveSignals = activeSignals.filter(s => s.status === "ACTIVE");
+    const fullyActiveSignals = activeSignals.filter((signal) => (
+      signal.status === "ACTIVE" && signal.confidence >= ENFORCED_MIN_SIGNAL_CONFIDENCE
+    ));
     
     console.log(`🔍 Signal Status Check:`);
     console.log(`   Active Signals: ${fullyActiveSignals.length}`);
@@ -3503,9 +4041,11 @@ class SignalGenerationEngine {
       console.log(`   ${requires5MinConfirmation.reason}`);
     }
     
+    const requestedMinConfidence = Math.max(ENFORCED_MIN_SIGNAL_CONFIDENCE, settings.minConfidence);
+
     console.log(`🎯 Preliminary Analysis:`);
     console.log(`   Signal Type: ${analysis.signalType}`);
-    console.log(`   Confidence: ${(analysis.confidence * 100).toFixed(1)}% (Min Required: ${(settings.minConfidence * 100).toFixed(0)}%)`);
+    console.log(`   Confidence: ${(analysis.confidence * 100).toFixed(1)}% (Min Required: ${(requestedMinConfidence * 100).toFixed(0)}%)`);
     console.log(`   Market Regime: ${features.marketRegime.type} (Strength: ${(features.marketRegime.strength * 100).toFixed(0)}%)`);
     console.log(`   Final Cooldown: ${(dynamicCooldown / 1000).toFixed(1)}s`);
     
@@ -3523,11 +4063,11 @@ class SignalGenerationEngine {
       return null;
     }
     
-    let effectiveMinConfidence = settings.minConfidence;
+    let effectiveMinConfidence = requestedMinConfidence;
     const starvationReliefActive = this.successfulSignalsGenerated === 0 && this.signalGenerationAttempts >= SIGNAL_STARVATION_RELIEF_ATTEMPTS;
     
     if (this.driftAlertLevel === 'HIGH') {
-      effectiveMinConfidence = Math.max(settings.minConfidence, 0.80);
+      effectiveMinConfidence = Math.max(requestedMinConfidence, 0.80);
       console.log(`🔶 HIGH DRIFT DETECTED: Confidence threshold temporarily elevated`);
       console.log(`   Base Threshold: ${(settings.minConfidence * 100).toFixed(0)}%`);
       console.log(`   Elevated Threshold: ${(effectiveMinConfidence * 100).toFixed(0)}%`);
@@ -3550,7 +4090,7 @@ class SignalGenerationEngine {
       if (this.driftAlertLevel === 'HIGH') {
         console.log(`   ⚠️ Elevated threshold active due to HIGH CONCEPT DRIFT`);
       }
-      console.log(`   💡 TIP: Lower minConfidence in settings to ${Math.max(60, Math.floor(analysis.confidence * 100))}% or wait for better setup`);
+      console.log(`   💡 TIP: Confidence ${(analysis.confidence * 100).toFixed(1)}% below ${(effectiveMinConfidence * 100).toFixed(0)}% threshold. Wait for stronger alignment or adjust threshold in settings.`);
       console.log(`${'='.repeat(80)}\n`);
       return null;
     }
@@ -3639,17 +4179,17 @@ class SignalGenerationEngine {
     let tp2Distance = settings.tp2Pips;
     let tp3Distance = settings.tp3Pips;
     
-    if (analysis.confidence >= 0.95) {
-      tp3Distance = settings.tp3Pips * 1.3;
-      tp2Distance = settings.tp2Pips * 1.15;
-      console.log(`🎯 Ultra-high confidence (${(analysis.confidence * 100).toFixed(0)}%): TP targets widened (TP3: ${tp3Distance.toFixed(0)} pips)`);
-    } else if (analysis.confidence >= 0.85) {
+    if (analysis.confidence >= 0.89) {
       tp3Distance = settings.tp3Pips * 1.15;
+      tp2Distance = settings.tp2Pips * 1.08;
+      console.log(`🎯 Ultra-high confidence (${(analysis.confidence * 100).toFixed(0)}%): TP targets widened (TP3: ${tp3Distance.toFixed(0)} pips)`);
+    } else if (analysis.confidence >= 0.82) {
+      tp3Distance = settings.tp3Pips * 1.05;
       console.log(`🎯 High confidence (${(analysis.confidence * 100).toFixed(0)}%): TP3 widened slightly (${tp3Distance.toFixed(0)} pips)`);
     } else if (analysis.confidence < 0.70) {
-      tp1Distance = settings.tp1Pips * 0.85;
-      tp2Distance = settings.tp2Pips * 0.85;
-      tp3Distance = settings.tp3Pips * 0.7;
+      tp1Distance = settings.tp1Pips * 0.92;
+      tp2Distance = settings.tp2Pips * 0.88;
+      tp3Distance = settings.tp3Pips * 0.80;
       console.log(`⚠️ Lower confidence (${(analysis.confidence * 100).toFixed(0)}%): TP targets tightened`);
     }
     
@@ -3739,6 +4279,14 @@ class SignalGenerationEngine {
       topFeatures,
       macroWarning: macroEvent,
       riskJustification,
+      learningContext: {
+        rsi: features.rsi,
+        atr: features.atr,
+        volumeRatio: features.volumeRatio,
+        dxyChange: features.dxyChange,
+        timeWindowFactor: features.timeWindowFactor,
+        sentiment: features.sentiment ?? { score: 0, confidence: 0, source: 'engine-default' },
+      },
       timeToLive: timeToLiveMinutes,
       nextMoveContext,
       latencyWarning,
@@ -4118,15 +4666,15 @@ class SignalGenerationEngine {
   ): PositionSizing {
     let confidenceMultiplier = 1.0;
     
-    if (confidence >= 0.90) {
-      confidenceMultiplier = 2.0;
-    } else if (confidence >= 0.85) {
+    if (confidence >= 0.92) {
       confidenceMultiplier = 1.75;
-    } else if (confidence >= 0.80) {
+    } else if (confidence >= 0.87) {
       confidenceMultiplier = 1.5;
-    } else if (confidence >= 0.75) {
+    } else if (confidence >= 0.82) {
       confidenceMultiplier = 1.25;
-    } else if (confidence >= 0.70) {
+    } else if (confidence >= 0.77) {
+      confidenceMultiplier = 1.1;
+    } else if (confidence >= 0.72) {
       confidenceMultiplier = 1.0;
     } else {
       confidenceMultiplier = 0.75;
@@ -4180,8 +4728,8 @@ class SignalGenerationEngine {
     const retrainingRecommended = (
       this.driftAlertLevel === 'HIGH' ||
       this.conceptDriftScore > 0.5 ||
-      confidenceDegradation > 0.10 ||
-      daysSinceRetrain > 10
+      confidenceDegradation > 0.08 ||
+      daysSinceRetrain > 5
     );
     
     return {
@@ -4198,19 +4746,24 @@ class SignalGenerationEngine {
   }
 
   async getMarketOutlook(): Promise<MarketOutlook> {
+    await this.refreshRecentDailyOHLCFromHistory();
+
     const now = new Date();
     const hour = now.getUTCHours();
+    const minute = now.getUTCMinutes();
     const dayOfWeek = now.getUTCDay();
     
-    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+    const isSaturday = dayOfWeek === 6;
     const isFridayClose = dayOfWeek === 5 && hour >= 21;
     const isSundayBeforeOpen = dayOfWeek === 0 && hour < 22;
     
-    const isMarketOpen = !isWeekend && !isFridayClose && !isSundayBeforeOpen;
+    const isMarketOpen = !isSaturday && !isFridayClose && !isSundayBeforeOpen;
+    
+    console.log(`[MarketStatus] UTC ${dayOfWeek} ${hour}:${minute} | open=${isMarketOpen} | sat=${isSaturday} friClose=${isFridayClose} sunBefore=${isSundayBeforeOpen}`);
     
     const isLondonActive = hour >= 6 && hour < 13 && isMarketOpen;
     const isNYActive = hour >= 13 && hour < 21 && isMarketOpen;
-    const isAsianActive = (hour >= 0 && hour < 6) || (hour >= 21 && hour < 24) && isMarketOpen;
+    const isAsianActive = ((hour >= 0 && hour < 6) || (hour >= 21 && hour < 24)) && isMarketOpen;
     
     let currentSession = "MARKET_CLOSED";
     if (isLondonActive) currentSession = "LONDON";
@@ -4218,11 +4771,13 @@ class SignalGenerationEngine {
     else if (isAsianActive) currentSession = "ASIAN";
     
     const features = await this.calculateMarketFeatures();
+    const pivotLevels = this.calculateDashboardPivotLevels();
     const currentPrice = this.getCurrentPrice();
     
+    const trendBuffer = Math.max(2.5, Math.abs(pivotLevels.r2 - pivotLevels.dailyPivot));
     let trend: "BULLISH" | "BEARISH" | "NEUTRAL" = "NEUTRAL";
-    if (currentPrice > features.dailyPivot + 10) trend = "BULLISH";
-    else if (currentPrice < features.dailyPivot - 10) trend = "BEARISH";
+    if (currentPrice > pivotLevels.dailyPivot + trendBuffer) trend = "BULLISH";
+    else if (currentPrice < pivotLevels.dailyPivot - trendBuffer) trend = "BEARISH";
     
     const volatility: "LOW" | "MEDIUM" | "HIGH" = 
       features.atr < 9 ? "LOW" : features.atr < 11 ? "MEDIUM" : "HIGH";
@@ -4237,13 +4792,13 @@ class SignalGenerationEngine {
       ],
       trend,
       volatility,
-      dailyPivot: parseFloat(features.dailyPivot.toFixed(1)),
-      r1: parseFloat(features.r1.toFixed(1)),
-      r2: parseFloat(features.r2.toFixed(1)),
-      r3: parseFloat(features.r3.toFixed(1)),
-      s1: parseFloat(features.s1.toFixed(1)),
-      s2: parseFloat(features.s2.toFixed(1)),
-      s3: parseFloat(features.s3.toFixed(1)),
+      dailyPivot: pivotLevels.dailyPivot,
+      r1: pivotLevels.r1,
+      r2: pivotLevels.r2,
+      r3: pivotLevels.r3,
+      s1: pivotLevels.s1,
+      s2: pivotLevels.s2,
+      s3: pivotLevels.s3,
     };
   }
   

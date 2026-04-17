@@ -188,15 +188,15 @@ const MAX_RECENT_SIGNAL_TIME_MINUTES = 4;
 const POST_TP1_COOLDOWN_MS = 3 * 60 * 1000;
 const DRIFT_CHECK_INTERVAL = 24 * 60 * 60 * 1000;
 const FEATURE_DRIFT_STORAGE_KEY = 'feature_drift_history_v1';
-const MIN_SIGNAL_CONVICTION_THRESHOLD = 0.62;
-const MIN_SIGNAL_STRENGTH_DIFFERENCE = 0.12;
+const MIN_SIGNAL_CONVICTION_THRESHOLD = 0.56;
+const MIN_SIGNAL_STRENGTH_DIFFERENCE = 0.08;
 const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;
-const ABSOLUTE_MIN_SIGNAL_CONFIDENCE = 0.64;
-const SIGNAL_STARVATION_RELIEF_ATTEMPTS = 8;
-const SIGNAL_STARVATION_RELIEF_CONFIDENCE = 0.66;
-const SYNTHETIC_DATA_PENALTY = 0.06;
+const ABSOLUTE_MIN_SIGNAL_CONFIDENCE = 0.62;
+const SIGNAL_STARVATION_RELIEF_ATTEMPTS = 4;
+const SIGNAL_STARVATION_RELIEF_CONFIDENCE = 0.64;
+const SYNTHETIC_DATA_PENALTY = 0.03;
 const _BIDIRECTIONAL_INFLATION_PENALTY = 0.04;
-const LOW_DATA_QUALITY_PENALTY = 0.05;
+const LOW_DATA_QUALITY_PENALTY = 0.03;
 const MAX_CONFIDENCE_CAP = 0.91;
 
 const TIME_WEIGHTS = {
@@ -4362,12 +4362,13 @@ class SignalGenerationEngine {
 
       const tp2Distance = settings.tp2Pips;
       const tp3Distance = settings.tp3Pips;
-      const requiredRunway = Math.max(tp3Distance * 1.05, settings.slPips * 0.9);
+      const requiredRunway = Math.max(tp2Distance * 0.95, settings.slPips * 0.7);
       const tp2Target = signalType === 'BUY' ? currentPrice + (tp2Distance * pipValue) : currentPrice - (tp2Distance * pipValue);
 
       console.log(`   Fixed SL Risk: ${settings.slPips} pips`);
       console.log(`   TP2 Target: ${tp2Target.toFixed(1)} (${tp2Distance} pips away)`);
-      console.log(`   Required Runway: ${requiredRunway.toFixed(0)} pips (TP3 clearance + SL protection)`);
+      console.log(`   TP3 Stretch Target: ${tp3Distance.toFixed(0)} pips`);
+      console.log(`   Required Runway: ${requiredRunway.toFixed(0)} pips (TP2 clearance + managed-runner protection)`);
 
       let nearestBarrierDistance = Infinity;
       let barrierType = 'None';
@@ -4416,7 +4417,7 @@ class SignalGenerationEngine {
 
       if (nearestBarrierDistance < requiredRunway) {
         const reason = `PRIMARY TREND REJECTED: Insufficient runway (${nearestBarrierDistance.toFixed(0)} pips < ${requiredRunway.toFixed(0)} pips required)`;
-        const tip = `Price must have ${requiredRunway.toFixed(0)} pips clear space to ${barrierType} for 3:1 R:R. Market in consolidation.`;
+        const tip = `Price must have ${requiredRunway.toFixed(0)} pips clear space to ${barrierType} so TP2 remains achievable before the next barrier. Market is still too compressed.`;
         console.log(`   ❌ ${reason}`);
         console.log(`   💡 ${tip}`);
         console.log('='.repeat(60) + '\n');

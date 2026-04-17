@@ -22,6 +22,57 @@ interface ChartBridgeMessage {
 
 let sharedWebIframe: HTMLIFrameElement | null = null;
 let sharedWebIframeHtml = "";
+let sharedWebParkingLot: HTMLDivElement | null = null;
+
+function getSharedWebParkingLot(): HTMLDivElement | null {
+  if (typeof document === "undefined") {
+    return null;
+  }
+
+  if (!sharedWebParkingLot) {
+    sharedWebParkingLot = document.createElement("div");
+    sharedWebParkingLot.style.position = "fixed";
+    sharedWebParkingLot.style.left = "-9999px";
+    sharedWebParkingLot.style.top = "-9999px";
+    sharedWebParkingLot.style.width = "0";
+    sharedWebParkingLot.style.height = "0";
+    sharedWebParkingLot.style.opacity = "0";
+    sharedWebParkingLot.style.pointerEvents = "none";
+    sharedWebParkingLot.style.overflow = "hidden";
+    sharedWebParkingLot.setAttribute("aria-hidden", "true");
+    document.body.appendChild(sharedWebParkingLot);
+    console.log("[PriceChart] Created shared web iframe parking lot");
+  }
+
+  return sharedWebParkingLot;
+}
+
+function parkSharedWebIframe(): void {
+  const parkingLot = getSharedWebParkingLot();
+  if (!parkingLot || !sharedWebIframe) {
+    return;
+  }
+
+  if (sharedWebIframe.parentNode !== parkingLot) {
+    parkingLot.appendChild(sharedWebIframe);
+    console.log("[PriceChart] Parked shared web iframe without destroying it");
+  }
+}
+
+function attachSharedWebIframe(host: HTMLDivElement, html: string): HTMLIFrameElement {
+  const iframe = getOrCreateSharedWebIframe(html);
+
+  if (iframe.parentNode !== host) {
+    host.appendChild(iframe);
+    console.log("[PriceChart] Attached shared web iframe to chart host");
+  }
+
+  return iframe;
+}
+
+if (typeof document !== "undefined") {
+  void getSharedWebParkingLot();
+}
 
 function getOrCreateSharedWebIframe(html: string): HTMLIFrameElement {
   if (!sharedWebIframe) {
@@ -270,20 +321,14 @@ const WebChartFrame = React.memo(({ html, onLoad }: { html: string; onLoad: () =
       return;
     }
 
-    const iframe = getOrCreateSharedWebIframe(html);
+    const iframe = attachSharedWebIframe(host, html);
     iframe.addEventListener('load', onLoad);
-
-    if (!host.contains(iframe)) {
-      host.appendChild(iframe);
-      console.log('[PriceChart] Attached shared web iframe to chart host');
-    }
 
     return () => {
       iframe.removeEventListener('load', onLoad);
 
       if (iframe.parentNode === host) {
-        host.removeChild(iframe);
-        console.log('[PriceChart] Detached shared web iframe without destroying it');
+        parkSharedWebIframe();
       }
     };
   }, [html, onLoad]);
@@ -442,12 +487,19 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
       return true;
     }
 
-    if (isTradingViewHost && !chartReadyRef.current) {
-      console.log(`[PriceChart] Allowing TradingView bootstrap navigation: ${requestUrl}`);
+    if (isTradingViewHost) {
+      console.log(chartReadyRef.current
+        ? `[PriceChart] Allowing TradingView runtime navigation: ${requestUrl}`
+        : `[PriceChart] Allowing TradingView bootstrap navigation: ${requestUrl}`);
       return true;
     }
 
-    console.warn(`[PriceChart] Blocking post-bootstrap navigation to keep chart stable: ${requestUrl}`);
+    if (!chartReadyRef.current) {
+      console.log(`[PriceChart] Allowing pre-ready navigation to avoid interrupting bootstrap: ${requestUrl}`);
+      return true;
+    }
+
+    console.warn(`[PriceChart] Blocking external navigation after bootstrap: ${requestUrl}`);
     return false;
   }, []);
 
@@ -462,6 +514,30 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
   const handleWebIframeLoad = useCallback(() => {
     console.log("[PriceChart] Web iframe loaded");
   }, []);
+
+  const nativeWebView = useMemo(() => (
+    <WebView
+      ref={webViewRef}
+      source={htmlSource}
+      style={styles.webview}
+      javaScriptEnabled={true}
+      domStorageEnabled={true}
+      startInLoadingState={false}
+      scalesPageToFit={true}
+      allowsInlineMediaPlayback={true}
+      mediaPlaybackRequiresUserAction={false}
+      mixedContentMode="always"
+      originWhitelist={["*"]}
+      setSupportMultipleWindows={false}
+      onShouldStartLoadWithRequest={handleShouldStartLoadWithRequest}
+      onLoadStart={handleLoadStart}
+      onLoadEnd={handleLoadEnd}
+      onError={handleError}
+      onHttpError={handleHttpError}
+      onMessage={handleMessage}
+      testID="tradingview-chart"
+    />
+  ), [handleError, handleHttpError, handleLoadEnd, handleLoadStart, handleMessage, handleShouldStartLoadWithRequest, htmlSource]);
 
   return (
     <View style={styles.container} testID="price-chart-container" collapsable={false}>
@@ -486,27 +562,7 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
           </View>
         ) : (
           <View style={[styles.webview, isLoading ? styles.hidden : null]} collapsable={false}>
-            <WebView
-              ref={webViewRef}
-              source={htmlSource}
-              style={styles.webview}
-              javaScriptEnabled={true}
-              domStorageEnabled={true}
-              startInLoadingState={false}
-              scalesPageToFit={true}
-              allowsInlineMediaPlayback={true}
-              mediaPlaybackRequiresUserAction={false}
-              mixedContentMode="always"
-              originWhitelist={["*"]}
-              setSupportMultipleWindows={false}
-              onShouldStartLoadWithRequest={handleShouldStartLoadWithRequest}
-              onLoadStart={handleLoadStart}
-              onLoadEnd={handleLoadEnd}
-              onError={handleError}
-              onHttpError={handleHttpError}
-              onMessage={handleMessage}
-              testID="tradingview-chart"
-            />
+            {nativeWebView}
           </View>
         )
       ) : (
