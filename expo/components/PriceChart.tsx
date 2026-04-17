@@ -438,11 +438,16 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
     const isInlineDocument = normalizedUrl === "about:blank" || normalizedUrl.startsWith("about:srcdoc") || normalizedUrl.startsWith("data:text/html") || normalizedUrl.startsWith("blob:") || normalizedUrl.startsWith("javascript:");
     const isTradingViewHost = normalizedUrl.includes("tradingview.com") || normalizedUrl.includes("tradingview-widget.com");
 
-    if (isInlineDocument || isTradingViewHost) {
+    if (isInlineDocument) {
       return true;
     }
 
-    console.warn(`[PriceChart] Blocking unexpected navigation: ${requestUrl}`);
+    if (isTradingViewHost && !chartReadyRef.current) {
+      console.log(`[PriceChart] Allowing TradingView bootstrap navigation: ${requestUrl}`);
+      return true;
+    }
+
+    console.warn(`[PriceChart] Blocking post-bootstrap navigation to keep chart stable: ${requestUrl}`);
     return false;
   }, []);
 
@@ -459,7 +464,7 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
   }, []);
 
   return (
-    <View style={styles.container} testID="price-chart-container">
+    <View style={styles.container} testID="price-chart-container" collapsable={false}>
       {isLoading ? (
         <View style={styles.loadingOverlay} pointerEvents="none">
           <ActivityIndicator size="large" color="#FFD700" />
@@ -476,31 +481,33 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
 
       {isActive ? (
         Platform.OS === "web" ? (
-          <View style={[styles.webview, isLoading ? styles.hidden : null]} testID="tradingview-chart-web-wrapper">
+          <View style={[styles.webview, isLoading ? styles.hidden : null]} testID="tradingview-chart-web-wrapper" collapsable={false}>
             <WebChartFrame html={htmlSource.html} onLoad={handleWebIframeLoad} />
           </View>
         ) : (
-          <WebView
-            ref={webViewRef}
-            source={htmlSource}
-            style={[styles.webview, isLoading ? styles.hidden : null]}
-            javaScriptEnabled={true}
-            domStorageEnabled={true}
-            startInLoadingState={false}
-            scalesPageToFit={true}
-            allowsInlineMediaPlayback={true}
-            mediaPlaybackRequiresUserAction={false}
-            mixedContentMode="always"
-            originWhitelist={["*"]}
-            setSupportMultipleWindows={false}
-            onShouldStartLoadWithRequest={handleShouldStartLoadWithRequest}
-            onLoadStart={handleLoadStart}
-            onLoadEnd={handleLoadEnd}
-            onError={handleError}
-            onHttpError={handleHttpError}
-            onMessage={handleMessage}
-            testID="tradingview-chart"
-          />
+          <View style={[styles.webview, isLoading ? styles.hidden : null]} collapsable={false}>
+            <WebView
+              ref={webViewRef}
+              source={htmlSource}
+              style={styles.webview}
+              javaScriptEnabled={true}
+              domStorageEnabled={true}
+              startInLoadingState={false}
+              scalesPageToFit={true}
+              allowsInlineMediaPlayback={true}
+              mediaPlaybackRequiresUserAction={false}
+              mixedContentMode="always"
+              originWhitelist={["*"]}
+              setSupportMultipleWindows={false}
+              onShouldStartLoadWithRequest={handleShouldStartLoadWithRequest}
+              onLoadStart={handleLoadStart}
+              onLoadEnd={handleLoadEnd}
+              onError={handleError}
+              onHttpError={handleHttpError}
+              onMessage={handleMessage}
+              testID="tradingview-chart"
+            />
+          </View>
         )
       ) : (
         <View style={styles.inactiveState} testID="price-chart-inactive" />
