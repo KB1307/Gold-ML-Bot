@@ -7,6 +7,9 @@ const CHART_HEIGHT = 350;
 const CHART_READY_TIMEOUT_MS = 8000;
 const SHARED_CHART_INSTANCE_ID = "price-chart-shared";
 
+let hasEverLoadedGlobal = false;
+let sharedHtmlSource: { html: string } | null = null;
+
 interface PriceChartProps {
   onPriceUpdate?: (price: number) => void;
   isActive?: boolean;
@@ -23,6 +26,7 @@ interface ChartBridgeMessage {
 let sharedWebIframe: HTMLIFrameElement | null = null;
 let sharedWebIframeHtml = "";
 let sharedWebParkingLot: HTMLDivElement | null = null;
+let sharedWebIframeAttachedHost: HTMLDivElement | null = null;
 
 function getSharedWebParkingLot(): HTMLDivElement | null {
   if (typeof document === "undefined") {
@@ -62,10 +66,19 @@ function parkSharedWebIframe(): void {
 function attachSharedWebIframe(host: HTMLDivElement, html: string): HTMLIFrameElement {
   const iframe = getOrCreateSharedWebIframe(html);
 
-  if (iframe.parentNode !== host) {
-    host.appendChild(iframe);
-    console.log("[PriceChart] Attached shared web iframe to chart host");
+  if (iframe.parentNode === host) {
+    sharedWebIframeAttachedHost = host;
+    return iframe;
   }
+
+  if (sharedWebIframeAttachedHost && sharedWebIframeAttachedHost.isConnected && iframe.parentNode === sharedWebIframeAttachedHost) {
+    console.log("[PriceChart] Shared iframe already mounted in a connected host, skipping re-attach to avoid reload");
+    return iframe;
+  }
+
+  host.appendChild(iframe);
+  sharedWebIframeAttachedHost = host;
+  console.log("[PriceChart] Attached shared web iframe to chart host");
 
   return iframe;
 }
@@ -348,9 +361,7 @@ const WebChartFrame = React.memo(({ html, onLoad }: { html: string; onLoad: () =
         clearTimeout(readyFrameTimer);
       }
 
-      if (iframe.parentNode === host) {
-        parkSharedWebIframe();
-      }
+      console.log('[PriceChart] WebChartFrame unmounting — leaving iframe in place to avoid reload');
     };
   }, [html, onLoad]);
 
@@ -375,7 +386,12 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [hasError, setHasError] = useState<boolean>(false);
 
-  const htmlSource = useMemo(() => ({ html: buildTradingViewHTML(instanceIdRef.current) }), []);
+  const htmlSource = useMemo(() => {
+    if (!sharedHtmlSource) {
+      sharedHtmlSource = { html: buildTradingViewHTML(instanceIdRef.current) };
+    }
+    return sharedHtmlSource;
+  }, []);
 
   const handleBridgePayload = useCallback((payload: ChartBridgeMessage) => {
     if (payload.instanceId !== instanceIdRef.current) {
@@ -385,6 +401,7 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
     if (payload.type === "chartBootstrap") {
       console.log("[PriceChart] TradingView chart bootstrapped");
       initialLoadHandledRef.current = true;
+      hasEverLoadedGlobal = true;
       setHasError(false);
       setIsLoading(false);
       return;
@@ -394,6 +411,7 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
       console.log("[PriceChart] TradingView chart ready");
       chartReadyRef.current = true;
       initialLoadHandledRef.current = true;
+      hasEverLoadedGlobal = true;
       setHasError(false);
       setIsLoading(false);
       return;
@@ -420,8 +438,15 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
 
   useEffect(() => {
     if (!isActive) {
-      chartReadyRef.current = false;
-      initialLoadHandledRef.current = false;
+      setIsLoading(false);
+      setHasError(false);
+      return;
+    }
+
+    if (hasEverLoadedGlobal) {
+      console.log("[PriceChart] Chart already loaded globally, skipping loading state");
+      chartReadyRef.current = true;
+      initialLoadHandledRef.current = true;
       setIsLoading(false);
       setHasError(false);
       return;
@@ -436,6 +461,7 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
       setIsLoading((previousValue) => {
         if (previousValue) {
           console.warn("[PriceChart] Chart ready signal timed out, revealing container");
+          hasEverLoadedGlobal = true;
           return false;
         }
 
@@ -480,7 +506,7 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
   const handleLoadStart = useCallback((syntheticEvent: { nativeEvent: { url?: string } }) => {
     const requestUrl = syntheticEvent.nativeEvent.url ?? "unknown";
 
-    if (chartReadyRef.current || initialLoadHandledRef.current) {
+    if (hasEverLoadedGlobal || chartReadyRef.current || initialLoadHandledRef.current) {
       console.log(`[PriceChart] Ignoring follow-up navigation start: ${requestUrl}`);
       return;
     }
@@ -493,7 +519,9 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
   const handleLoadEnd = useCallback((syntheticEvent?: { nativeEvent?: { url?: string } }) => {
     const requestUrl = syntheticEvent?.nativeEvent?.url ?? "unknown";
     initialLoadHandledRef.current = true;
+    hasEverLoadedGlobal = true;
     console.log(`[PriceChart] Chart document loaded: ${requestUrl}`);
+    setIsLoading((previousValue) => (previousValue ? false : previousValue));
   }, []);
 
   const handleError = useCallback((syntheticEvent: { nativeEvent: unknown }) => {
@@ -543,6 +571,7 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
   const handleWebIframeLoad = useCallback(() => {
     console.log("[PriceChart] Web iframe loaded");
     initialLoadHandledRef.current = true;
+    hasEverLoadedGlobal = true;
     setHasError(false);
     setIsLoading((previousValue) => {
       if (!previousValue) {
