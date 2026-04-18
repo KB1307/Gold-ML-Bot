@@ -1012,7 +1012,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           timestamp: new Date(s.timestamp),
         }));
         
+        signalHistoryRef.current = parsedHistory;
+        setSignalHistory(parsedHistory);
         const evaluatedHistory = await catchUpAndEvaluateSignals(parsedHistory);
+        signalHistoryRef.current = evaluatedHistory;
         setSignalHistory(evaluatedHistory);
         
         if (JSON.stringify(evaluatedHistory) !== JSON.stringify(parsedHistory)) {

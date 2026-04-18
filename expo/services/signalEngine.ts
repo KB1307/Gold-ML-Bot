@@ -3816,9 +3816,9 @@ class SignalGenerationEngine {
   }
   
   private calculateDynamicCooldown(marketRegime: MarketRegime, confidence: number): number {
-    const BASE_COOLDOWN = 60000;
-    const MIN_COOLDOWN = 15000;
-    const MAX_COOLDOWN = 120000;
+    const BASE_COOLDOWN = 90000;
+    const MIN_COOLDOWN = 45000;
+    const MAX_COOLDOWN = 180000;
     
     let cooldownMultiplier = 1.0;
     
@@ -3917,18 +3917,10 @@ class SignalGenerationEngine {
       console.log(`   ⚠️  IMPORTANT: Structural validation STILL REQUIRED\n`);
       exceptionConditionActive = true;
     } else {
-      const marketRegimePreCheck = await this.detectMarketRegime();
-      const preliminaryConfidence = 0.75;
-      const preliminaryCooldown = this.calculateDynamicCooldown(marketRegimePreCheck, preliminaryConfidence);
-      
-      console.log(`⏱️ EARLY COOLDOWN CHECK:`);
-      console.log(`   Cooldown Elapsed: ${(cooldownElapsed / 1000).toFixed(1)}s / Required: ${(preliminaryCooldown / 1000).toFixed(1)}s`);
-      console.log(`   Market Regime: ${marketRegimePreCheck.type}`);
-      
-      if (this.lastSignalTime > 0 && cooldownElapsed < preliminaryCooldown) {
-        const remainingCooldown = ((preliminaryCooldown - cooldownElapsed) / 1000).toFixed(1);
-        console.log(`❌ REJECTED (EARLY): Dynamic cooldown active: ${remainingCooldown}s remaining (Regime: ${marketRegimePreCheck.type})`);
-        console.log(`💡 TIP: Skipping expensive transformer analysis to save resources`);
+      const MIN_GLOBAL_COOLDOWN_MS = 45000;
+      if (this.lastSignalTime > 0 && cooldownElapsed < MIN_GLOBAL_COOLDOWN_MS) {
+        const remainingCooldown = ((MIN_GLOBAL_COOLDOWN_MS - cooldownElapsed) / 1000).toFixed(1);
+        console.log(`⏱️ EARLY COOLDOWN: ${remainingCooldown}s min cooldown remaining — deferring expensive analysis`);
         console.log(`${'='.repeat(80)}\n`);
         return null;
       }
@@ -4048,6 +4040,15 @@ class SignalGenerationEngine {
       return null;
     }
     
+    const qualityGate = this.evaluateQualityGate(analysis, features);
+    if (!qualityGate.passed) {
+      console.log(`❌ REJECTED: Quality Gate — ${qualityGate.reason}`);
+      console.log(`   💡 ${qualityGate.tip}`);
+      console.log(`${'='.repeat(80)}\n`);
+      return null;
+    }
+    console.log(`✅ QUALITY GATE PASSED: ${qualityGate.summary}`);
+
     const structuralValidation = this.validateStructuralConditions(analysis.signalType, features, settings);
     if (!structuralValidation.valid) {
       console.log(`❌ REJECTED: Structural Validation Failed`);
@@ -4324,6 +4325,79 @@ class SignalGenerationEngine {
     }
     
     return false;
+  }
+
+  private evaluateQualityGate(
+    analysis: { signalType: SignalType; confidence: number },
+    features: MarketFeatures,
+  ): { passed: boolean; reason?: string; tip?: string; summary?: string } {
+    const { signalType, confidence } = analysis;
+    const regime = features.marketRegime;
+    const volumeRatio = features.volumeRatio;
+    const atr = features.atr;
+    const srReaction = features.activeSRReaction;
+
+    const minVolume = regime.type === 'QUIET' ? 0.55 : 0.75;
+    if (volumeRatio < minVolume && confidence < 0.82) {
+      return {
+        passed: false,
+        reason: `Low participation (volume ratio ${volumeRatio.toFixed(2)} < ${minVolume})`,
+        tip: 'Avoiding dead-tape breakouts. Wait for volume expansion or ultra-high conviction (≥82%).',
+      };
+    }
+
+    if (regime.type === 'QUIET' && regime.strength < 0.35 && confidence < 0.80) {
+      return {
+        passed: false,
+        reason: 'QUIET regime with weak directional strength',
+        tip: 'Price is compressed and directionless. Skip until volatility expands or a strong S/R bounce appears.',
+      };
+    }
+
+    if (regime.type === 'RANGING' && !srReaction && confidence < 0.78) {
+      return {
+        passed: false,
+        reason: 'RANGING regime with no confirmed S/R reaction',
+        tip: 'In a range, only trade confirmed bounces off support/resistance. No S/R touch detected.',
+      };
+    }
+
+    if (srReaction && !srReaction.confirmed && confidence < 0.80) {
+      return {
+        passed: false,
+        reason: `S/R interaction present but reaction not confirmed (${srReaction.reactionType})`,
+        tip: 'Wait for the rejection candle to close outside the S/R zone before entering.',
+      };
+    }
+
+    if (signalType === 'BUY' && features.rsi > 72 && regime.type !== 'TRENDING') {
+      return {
+        passed: false,
+        reason: `BUY blocked at RSI ${features.rsi.toFixed(1)} outside a trending regime`,
+        tip: 'Overbought without trend strength — high chance of mean-reversion failure.',
+      };
+    }
+
+    if (signalType === 'SELL' && features.rsi < 28 && regime.type !== 'TRENDING') {
+      return {
+        passed: false,
+        reason: `SELL blocked at RSI ${features.rsi.toFixed(1)} outside a trending regime`,
+        tip: 'Oversold without trend strength — high chance of mean-reversion failure.',
+      };
+    }
+
+    if (atr < 4 && confidence < 0.82) {
+      return {
+        passed: false,
+        reason: `ATR too low (${atr.toFixed(1)} pips) — insufficient volatility for target chase`,
+        tip: 'Market is too quiet for TP2/TP3 to realistically hit. Wait for volatility to expand.',
+      };
+    }
+
+    return {
+      passed: true,
+      summary: `Regime ${regime.type} | Vol ${volumeRatio.toFixed(2)} | ATR ${atr.toFixed(1)} | SR ${srReaction?.confirmed ? 'confirmed' : 'n/a'}`,
+    };
   }
 
   private validateStructuralConditions(

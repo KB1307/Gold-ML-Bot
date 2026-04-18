@@ -9,9 +9,7 @@ import {
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import {
-  Apple,
   BadgeCheck,
-  Globe,
   KeyRound,
   LogIn,
   LogOut,
@@ -20,6 +18,7 @@ import {
   ShieldCheck,
   UserRound,
 } from "lucide-react-native";
+import { AppleLogo, GoogleLogo } from "@/components/BrandLogos";
 
 export type AccountMode = "sign_in" | "create_account";
 
@@ -357,7 +356,7 @@ export function AccountSettingsCard({
 
             <View style={styles.oauthRow}>
               <TouchableOpacity
-                style={[styles.oauthButton, (!isConfigured || isSubmittingOAuth) && styles.buttonDisabled]}
+                style={[styles.oauthButtonGoogle, (!isConfigured || isSubmittingOAuth) && styles.buttonDisabled]}
                 onPress={() => {
                   void handleOAuth("google");
                 }}
@@ -365,14 +364,14 @@ export function AccountSettingsCard({
                 testID="account-google-sign-in"
               >
                 {isSubmittingOAuth && activeOAuthProvider === "google" ? (
-                  <ActivityIndicator size="small" color="#fff" />
+                  <ActivityIndicator size="small" color="#1f1f1f" />
                 ) : (
-                  <Globe size={18} color="#fff" />
+                  <GoogleLogo size={18} />
                 )}
-                <Text style={styles.oauthButtonText}>Google</Text>
+                <Text style={styles.oauthButtonGoogleText}>Sign in with Google</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.oauthButton, (!isConfigured || isSubmittingOAuth) && styles.buttonDisabled]}
+                style={[styles.oauthButtonApple, (!isConfigured || isSubmittingOAuth) && styles.buttonDisabled]}
                 onPress={() => {
                   void handleOAuth("apple");
                 }}
@@ -382,9 +381,9 @@ export function AccountSettingsCard({
                 {isSubmittingOAuth && activeOAuthProvider === "apple" ? (
                   <ActivityIndicator size="small" color="#fff" />
                 ) : (
-                  <Apple size={18} color="#fff" />
+                  <AppleLogo size={18} />
                 )}
-                <Text style={styles.oauthButtonText}>Apple</Text>
+                <Text style={styles.oauthButtonAppleText}>Sign in with Apple</Text>
               </TouchableOpacity>
             </View>
           </>
@@ -574,22 +573,41 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 12,
   },
-  oauthButton: {
+  oauthButtonGoogle: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
+    gap: 10,
     borderRadius: 16,
-    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    backgroundColor: "#ffffff",
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.08)",
+    borderColor: "rgba(0, 0, 0, 0.08)",
     paddingVertical: 15,
   },
-  oauthButtonText: {
-    fontSize: 15,
-    fontWeight: "700" as const,
-    color: "#fff",
+  oauthButtonGoogleText: {
+    fontSize: 14,
+    fontWeight: "600" as const,
+    color: "#1f1f1f",
+    letterSpacing: 0.1,
+  },
+  oauthButtonApple: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    borderRadius: 16,
+    backgroundColor: "#000000",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.12)",
+    paddingVertical: 15,
+  },
+  oauthButtonAppleText: {
+    fontSize: 14,
+    fontWeight: "600" as const,
+    color: "#ffffff",
+    letterSpacing: 0.1,
   },
   identityPanel: {
     gap: 16,
