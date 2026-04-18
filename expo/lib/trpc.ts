@@ -461,6 +461,7 @@ export const fetchHistoricalData = async (
   const attemptUrls = buildAttemptUrls(requestUrl);
   let lastError: unknown = null;
   let backendReachable = false;
+  let backendReturnedEmpty = false;
 
   for (let retry = 0; retry < MAX_RETRIES; retry += 1) {
     if (retry > 0) {
@@ -498,9 +499,15 @@ export const fetchHistoricalData = async (
         const payload = recoverJsonPayload(rawBody);
         const bars = extractHistoricalBars(payload);
 
-        if (bars.length > 0 || rawBody.includes("[]")) {
+        if (bars.length > 0) {
           console.log(`✅ [History] Parsed ${bars.length} historical bar(s)`);
           return bars;
+        }
+
+        if (rawBody.includes("\"json\":[]") || /\[\s*\]/.test(rawBody)) {
+          console.warn(`⚠️ [History] Backend returned empty bars array — will try direct fallback`);
+          backendReturnedEmpty = true;
+          break;
         }
 
         console.warn(
@@ -524,8 +531,10 @@ export const fetchHistoricalData = async (
     console.warn("⚠️ [History] Backend fetch failed:", lastError instanceof Error ? lastError.message : "Unknown");
   }
 
-  if (!backendReachable) {
-    console.log("🔄 [History] Backend was unreachable — falling back to direct client-side APIs");
+  if (!backendReachable || backendReturnedEmpty) {
+    console.log(
+      `🔄 [History] ${!backendReachable ? "Backend unreachable" : "Backend returned empty"} — falling back to direct client-side APIs`,
+    );
     const directBars = await fetchDirectHistoricalFallback(fromTime, toTime);
     if (directBars.length > 0) {
       return directBars;
