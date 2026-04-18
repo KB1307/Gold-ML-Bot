@@ -531,17 +531,28 @@ export const fetchHistoricalData = async (
     console.warn("⚠️ [History] Backend fetch failed:", lastError instanceof Error ? lastError.message : "Unknown");
   }
 
-  if (!backendReachable || backendReturnedEmpty) {
-    console.log(
-      `🔄 [History] ${!backendReachable ? "Backend unreachable" : "Backend returned empty"} — falling back to direct client-side APIs`,
-    );
-    const directBars = await fetchDirectHistoricalFallback(fromTime, toTime);
-    if (directBars.length > 0) {
-      return directBars;
-    }
+  const reason = !backendReachable
+    ? "Backend unreachable"
+    : backendReturnedEmpty
+      ? "Backend returned empty"
+      : "Backend returned no parseable bars";
+  console.log(`🔄 [History] ${reason} — falling back to direct client-side APIs`);
+  const directBars = await fetchDirectHistoricalFallback(fromTime, toTime);
+  if (directBars.length > 0) {
+    return directBars;
   }
 
-  console.error("❌ [History] All historical data sources exhausted (backend + direct)");
+  const syntheticBars = await fetchSwissquoteSyntheticBars(fromTime, toTime);
+  if (syntheticBars.length > 0) {
+    console.log(
+      `✅ [History] Using Swissquote synthetic bar as last-resort fallback (${syntheticBars.length} point)`,
+    );
+    return syntheticBars;
+  }
+
+  console.warn(
+    "⚠️ [History] All historical data sources exhausted (backend + direct) — returning empty set; UI should keep showing last known data",
+  );
   return [];
 };
 
