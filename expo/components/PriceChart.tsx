@@ -25,66 +25,144 @@ interface ChartBridgeMessage {
 
 let sharedWebIframe: HTMLIFrameElement | null = null;
 let sharedWebIframeHtml = "";
-let sharedWebParkingLot: HTMLDivElement | null = null;
-let sharedWebIframeAttachedHost: HTMLDivElement | null = null;
+let persistentChartLayer: HTMLDivElement | null = null;
+let activePlaceholder: HTMLDivElement | null = null;
+let layerResizeObserver: ResizeObserver | null = null;
+let layerRafHandle: number | null = null;
 
-function getSharedWebParkingLot(): HTMLDivElement | null {
+function getPersistentChartLayer(): HTMLDivElement | null {
   if (typeof document === "undefined") {
     return null;
   }
 
-  if (!sharedWebParkingLot) {
-    sharedWebParkingLot = document.createElement("div");
-    sharedWebParkingLot.style.position = "fixed";
-    sharedWebParkingLot.style.left = "-9999px";
-    sharedWebParkingLot.style.top = "-9999px";
-    sharedWebParkingLot.style.width = "0";
-    sharedWebParkingLot.style.height = "0";
-    sharedWebParkingLot.style.opacity = "0";
-    sharedWebParkingLot.style.pointerEvents = "none";
-    sharedWebParkingLot.style.overflow = "hidden";
-    sharedWebParkingLot.setAttribute("aria-hidden", "true");
-    document.body.appendChild(sharedWebParkingLot);
-    console.log("[PriceChart] Created shared web iframe parking lot");
+  if (!persistentChartLayer) {
+    persistentChartLayer = document.createElement("div");
+    persistentChartLayer.setAttribute("data-testid", "tradingview-persistent-layer");
+    persistentChartLayer.style.position = "fixed";
+    persistentChartLayer.style.left = "0";
+    persistentChartLayer.style.top = "0";
+    persistentChartLayer.style.width = "0";
+    persistentChartLayer.style.height = "0";
+    persistentChartLayer.style.pointerEvents = "none";
+    persistentChartLayer.style.zIndex = "1";
+    persistentChartLayer.style.overflow = "hidden";
+    persistentChartLayer.style.backgroundColor = "#0F0F0F";
+    persistentChartLayer.style.borderRadius = "8px";
+    persistentChartLayer.style.visibility = "hidden";
+    document.body.appendChild(persistentChartLayer);
+    console.log("[PriceChart] Created persistent chart layer at document.body");
   }
 
-  return sharedWebParkingLot;
+  return persistentChartLayer;
 }
 
-function parkSharedWebIframe(): void {
-  const parkingLot = getSharedWebParkingLot();
-  if (!parkingLot || !sharedWebIframe) {
+function syncLayerToPlaceholder(): void {
+  if (typeof window === "undefined") {
     return;
   }
 
-  if (sharedWebIframe.parentNode !== parkingLot) {
-    parkingLot.appendChild(sharedWebIframe);
-    console.log("[PriceChart] Parked shared web iframe without destroying it");
+  const layer = persistentChartLayer;
+  const placeholder = activePlaceholder;
+
+  if (!layer) {
+    return;
+  }
+
+  if (!placeholder || !placeholder.isConnected) {
+    layer.style.visibility = "hidden";
+    layer.style.pointerEvents = "none";
+    return;
+  }
+
+  const rect = placeholder.getBoundingClientRect();
+
+  if (rect.width <= 0 || rect.height <= 0) {
+    layer.style.visibility = "hidden";
+    layer.style.pointerEvents = "none";
+    return;
+  }
+
+  layer.style.visibility = "visible";
+  layer.style.pointerEvents = "auto";
+  layer.style.transform = `translate3d(${rect.left}px, ${rect.top}px, 0)`;
+  layer.style.width = `${rect.width}px`;
+  layer.style.height = `${rect.height}px`;
+}
+
+function scheduleLayerSync(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  if (layerRafHandle !== null) {
+    return;
+  }
+
+  layerRafHandle = window.requestAnimationFrame(() => {
+    layerRafHandle = null;
+    syncLayerToPlaceholder();
+  });
+}
+
+function ensureLayerObservers(): void {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return;
+  }
+
+  if (!layerResizeObserver && typeof ResizeObserver !== "undefined") {
+    layerResizeObserver = new ResizeObserver(() => {
+      scheduleLayerSync();
+    });
+  }
+
+  const globalWindow = window as Window & { __priceChartLayerBound?: boolean };
+  if (!globalWindow.__priceChartLayerBound) {
+    globalWindow.__priceChartLayerBound = true;
+    window.addEventListener("scroll", scheduleLayerSync, true);
+    window.addEventListener("resize", scheduleLayerSync);
   }
 }
 
-function attachSharedWebIframe(host: HTMLDivElement, html: string): HTMLIFrameElement {
+function bindPlaceholder(placeholder: HTMLDivElement | null): void {
+  if (typeof document === "undefined") {
+    return;
+  }
+
+  ensureLayerObservers();
+
+  if (activePlaceholder && layerResizeObserver) {
+    try {
+      layerResizeObserver.unobserve(activePlaceholder);
+    } catch {
+    }
+  }
+
+  activePlaceholder = placeholder;
+
+  if (placeholder && layerResizeObserver) {
+    try {
+      layerResizeObserver.observe(placeholder);
+    } catch {
+    }
+  }
+
+  scheduleLayerSync();
+}
+
+function attachIframeToPersistentLayer(html: string): HTMLIFrameElement | null {
+  const layer = getPersistentChartLayer();
+  if (!layer) {
+    return null;
+  }
+
   const iframe = getOrCreateSharedWebIframe(html);
 
-  if (iframe.parentNode === host) {
-    sharedWebIframeAttachedHost = host;
-    return iframe;
+  if (iframe.parentNode !== layer) {
+    layer.appendChild(iframe);
+    console.log("[PriceChart] Mounted iframe into persistent chart layer (one-time)");
   }
-
-  if (sharedWebIframeAttachedHost && sharedWebIframeAttachedHost.isConnected && iframe.parentNode === sharedWebIframeAttachedHost) {
-    console.log("[PriceChart] Shared iframe already mounted in a connected host, skipping re-attach to avoid reload");
-    return iframe;
-  }
-
-  host.appendChild(iframe);
-  sharedWebIframeAttachedHost = host;
-  console.log("[PriceChart] Attached shared web iframe to chart host");
 
   return iframe;
-}
-
-if (typeof document !== "undefined") {
-  void getSharedWebParkingLot();
 }
 
 function getOrCreateSharedWebIframe(html: string): HTMLIFrameElement {
@@ -103,12 +181,6 @@ function getOrCreateSharedWebIframe(html: string): HTMLIFrameElement {
     sharedWebIframeHtml = html;
     console.log('[PriceChart] Created shared persistent web iframe');
     return sharedWebIframe;
-  }
-
-  if (sharedWebIframeHtml !== html) {
-    sharedWebIframe.srcdoc = html;
-    sharedWebIframeHtml = html;
-    console.log('[PriceChart] Refreshed shared web iframe document');
   }
 
   return sharedWebIframe;
@@ -321,29 +393,26 @@ function buildTradingViewHTML(instanceId: string): string {
 }
 
 const WebChartFrame = React.memo(({ html, onLoad }: { html: string; onLoad: () => void }) => {
-  const hostRef = useRef<HTMLDivElement | null>(null);
+  const placeholderRef = useRef<HTMLDivElement | null>(null);
 
-  const handleHostRef = useCallback((node: HTMLDivElement | null) => {
-    hostRef.current = node;
+  const handlePlaceholderRef = useCallback((node: HTMLDivElement | null) => {
+    placeholderRef.current = node;
+    bindPlaceholder(node);
   }, []);
 
   useEffect(() => {
-    const host = hostRef.current;
-
-    if (!host) {
+    const iframe = attachIframeToPersistentLayer(html);
+    if (!iframe) {
       return;
     }
 
-    const iframe = getOrCreateSharedWebIframe(html);
     const handleIframeLoad = () => {
       onLoad();
     };
 
     iframe.addEventListener('load', handleIframeLoad);
-    attachSharedWebIframe(host, html);
 
     let readyFrameTimer: ReturnType<typeof setTimeout> | null = null;
-
     try {
       if (iframe.contentDocument?.readyState === 'complete') {
         readyFrameTimer = setTimeout(() => {
@@ -354,19 +423,27 @@ const WebChartFrame = React.memo(({ html, onLoad }: { html: string; onLoad: () =
       console.warn('[PriceChart] Unable to inspect shared iframe readiness:', error);
     }
 
+    scheduleLayerSync();
+
     return () => {
       iframe.removeEventListener('load', handleIframeLoad);
-
       if (readyFrameTimer) {
         clearTimeout(readyFrameTimer);
       }
-
-      console.log('[PriceChart] WebChartFrame unmounting — leaving iframe in place to avoid reload');
+      console.log('[PriceChart] WebChartFrame unmounting — iframe remains in persistent layer');
     };
   }, [html, onLoad]);
 
+  useEffect(() => {
+    return () => {
+      if (placeholderRef.current && activePlaceholder === placeholderRef.current) {
+        bindPlaceholder(null);
+      }
+    };
+  }, []);
+
   return React.createElement('div', {
-    ref: handleHostRef,
+    ref: handlePlaceholderRef,
     style: {
       width: '100%',
       height: '100%',
@@ -383,7 +460,7 @@ const PriceChart = React.memo(({ onPriceUpdate, isActive = true }: PriceChartPro
   const instanceIdRef = useRef<string>(SHARED_CHART_INSTANCE_ID);
   const chartReadyRef = useRef<boolean>(false);
   const initialLoadHandledRef = useRef<boolean>(false);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isLoading, setIsLoading] = useState<boolean>(!hasEverLoadedGlobal);
   const [hasError, setHasError] = useState<boolean>(false);
 
   const htmlSource = useMemo(() => {
