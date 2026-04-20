@@ -172,7 +172,7 @@ export default function HistoryScreen() {
           </Text>
         </View>
 
-        {signal.breakevenReached && signal.breakevenTime ? (
+        {signal.breakevenReached && signal.breakevenTime && signal.status !== "ALL_TARGETS_HIT" ? (
           <View style={styles.breakevenMarker}>
             <View style={styles.breakevenIcon}>
               <Text style={styles.breakevenIconText}>⚖️</Text>
