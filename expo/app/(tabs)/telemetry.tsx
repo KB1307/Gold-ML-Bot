@@ -75,7 +75,7 @@ export default function TelemetryScreen() {
     for (const s of todaySignals) {
       if (s.type === "BUY") buys++;
       else sells++;
-      if (s.status === "ALL_TARGETS_HIT" || s.status === "TP3_HIT" || s.status === "PARTIAL_WIN_SL_HIT") wins++;
+      if (s.status === "ALL_TARGETS_HIT" || s.status === "TP3_HIT" || s.status === "PARTIAL_WIN_SL_HIT" || s.status === "SL_AFTER_BE") wins++;
       else if (s.status === "SL_HIT" || s.status === "EXPIRED_MISSED_ENTRY") losses++;
       else active++;
     }
@@ -346,6 +346,7 @@ export default function TelemetryScreen() {
 
 function statusColorFor(status: TradingSignal["status"]): string {
   if (status === "ALL_TARGETS_HIT" || status === "TP3_HIT" || status === "PARTIAL_WIN_SL_HIT") return "#22c55e";
+  if (status === "SL_AFTER_BE") return "#FFD700";
   if (status === "TP2_HIT" || status === "TP1_HIT") return "#FFA500";
   if (status === "SL_HIT" || status === "EXPIRED_MISSED_ENTRY") return "#ef4444";
   if (status === "ACTIVE" || status === "PARTIALLY_MANAGED") return "#38bdf8";
@@ -361,6 +362,7 @@ function shortStatus(status: TradingSignal["status"], targetsHit: number): strin
     case "TP3_HIT":
     case "ALL_TARGETS_HIT": return "Full Win";
     case "PARTIAL_WIN_SL_HIT": return "Partial Win";
+    case "SL_AFTER_BE": return "SL After BE";
     case "SL_HIT": return "SL Hit";
     case "EXPIRED_MISSED_ENTRY": return "Missed";
     case "CLOSED": return "Closed";

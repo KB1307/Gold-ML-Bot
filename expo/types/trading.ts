@@ -1,6 +1,6 @@
 export type SignalType = "BUY" | "SELL";
 
-export type SignalStatus = "ACTIVE" | "TP1_HIT" | "TP2_HIT" | "TP3_HIT" | "ALL_TARGETS_HIT" | "SL_HIT" | "CLOSED" | "PARTIALLY_MANAGED" | "EXPIRED_MISSED_ENTRY" | "PARTIAL_WIN_SL_HIT";
+export type SignalStatus = "ACTIVE" | "TP1_HIT" | "TP2_HIT" | "TP3_HIT" | "ALL_TARGETS_HIT" | "SL_HIT" | "SL_AFTER_BE" | "CLOSED" | "PARTIALLY_MANAGED" | "EXPIRED_MISSED_ENTRY" | "PARTIAL_WIN_SL_HIT";
 
 export interface FeatureConfidence {
   feature: string;

@@ -56,6 +56,8 @@ export default function HistoryScreen() {
       case "TP3_HIT":
       case "PARTIAL_WIN_SL_HIT":
         return "#22c55e";
+      case "SL_AFTER_BE":
+        return "#FFD700";
       case "SL_HIT":
       case "EXPIRED_MISSED_ENTRY":
         return "#ef4444";
@@ -75,6 +77,7 @@ export default function HistoryScreen() {
     if (status === "ACTIVE") return "Live Setup";
     if (status === "PARTIALLY_MANAGED") return "Managed Position";
     if (status === "SL_HIT") return "Stop Loss Hit";
+    if (status === "SL_AFTER_BE") return "SL After Breakeven • TP1 Banked • No Capital Loss";
     if (status === "EXPIRED_MISSED_ENTRY") return "Missed Entry";
     if (status === "PARTIAL_WIN_SL_HIT") return "TP1 + TP2 Banked • Runner Breakeven";
     if (status === "ALL_TARGETS_HIT" || status === "TP3_HIT" || targetsHit === 3) return "All Targets Acquired";
@@ -150,20 +153,20 @@ export default function HistoryScreen() {
         <View style={[
           styles.slRow,
           signal.status === "SL_HIT" && styles.slRowLoss,
-          signal.status === "PARTIAL_WIN_SL_HIT" && styles.slRowWin,
+          (signal.status === "PARTIAL_WIN_SL_HIT" || signal.status === "SL_AFTER_BE") && styles.slRowWin,
         ]}>
-          <Text style={styles.slLabel}>{signal.status === "PARTIAL_WIN_SL_HIT" ? "Protected Exit" : "Stop Loss"}</Text>
+          <Text style={styles.slLabel}>{(signal.status === "PARTIAL_WIN_SL_HIT" || signal.status === "SL_AFTER_BE") ? "Protected Exit" : "Stop Loss"}</Text>
           <Text
             style={[
               styles.slValue,
               signal.status === "SL_HIT"
                 ? styles.slValueLoss
-                : signal.status === "PARTIAL_WIN_SL_HIT"
+                : (signal.status === "PARTIAL_WIN_SL_HIT" || signal.status === "SL_AFTER_BE")
                   ? styles.slValueWin
                   : styles.slValueNeutral,
             ]}
           >
-            {signal.status === "PARTIAL_WIN_SL_HIT"
+            {(signal.status === "PARTIAL_WIN_SL_HIT" || signal.status === "SL_AFTER_BE")
               ? `${(signal.exitPrice ?? signal.entryPrice).toFixed(1)}`
               : `${signal.sl.toFixed(1)}`}
           </Text>

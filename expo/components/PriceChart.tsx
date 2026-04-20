@@ -56,6 +56,34 @@ function getPersistentChartLayer(): HTMLDivElement | null {
   return persistentChartLayer;
 }
 
+function isPlaceholderActuallyVisible(placeholder: HTMLDivElement): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  if (!placeholder.isConnected) {
+    return false;
+  }
+
+  if (placeholder.offsetParent === null) {
+    const computed = window.getComputedStyle(placeholder);
+    if (computed.position !== "fixed") {
+      return false;
+    }
+  }
+
+  let node: HTMLElement | null = placeholder;
+  while (node) {
+    const computed = window.getComputedStyle(node);
+    if (computed.display === "none" || computed.visibility === "hidden" || computed.opacity === "0") {
+      return false;
+    }
+    node = node.parentElement;
+  }
+
+  return true;
+}
+
 function syncLayerToPlaceholder(): void {
   if (typeof window === "undefined") {
     return;
@@ -68,9 +96,11 @@ function syncLayerToPlaceholder(): void {
     return;
   }
 
-  if (!placeholder || !placeholder.isConnected) {
+  if (!placeholder || !placeholder.isConnected || !isPlaceholderActuallyVisible(placeholder)) {
     layer.style.visibility = "hidden";
     layer.style.pointerEvents = "none";
+    layer.style.width = "0";
+    layer.style.height = "0";
     return;
   }
 
@@ -79,6 +109,8 @@ function syncLayerToPlaceholder(): void {
   if (rect.width <= 0 || rect.height <= 0) {
     layer.style.visibility = "hidden";
     layer.style.pointerEvents = "none";
+    layer.style.width = "0";
+    layer.style.height = "0";
     return;
   }
 
@@ -115,11 +147,17 @@ function ensureLayerObservers(): void {
     });
   }
 
-  const globalWindow = window as Window & { __priceChartLayerBound?: boolean };
+  const globalWindow = window as Window & { __priceChartLayerBound?: boolean; __priceChartLayerPoller?: number };
   if (!globalWindow.__priceChartLayerBound) {
     globalWindow.__priceChartLayerBound = true;
     window.addEventListener("scroll", scheduleLayerSync, true);
     window.addEventListener("resize", scheduleLayerSync);
+
+    if (!globalWindow.__priceChartLayerPoller) {
+      globalWindow.__priceChartLayerPoller = window.setInterval(() => {
+        scheduleLayerSync();
+      }, 400);
+    }
   }
 }
 
