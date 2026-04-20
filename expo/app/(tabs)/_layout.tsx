@@ -1,5 +1,5 @@
 import { Tabs } from "expo-router";
-import { TrendingUp, Globe, History, Settings } from "lucide-react-native";
+import { TrendingUp, Globe, History, Settings, Activity } from "lucide-react-native";
 import React from "react";
 
 export default function TabLayout() {
@@ -15,7 +15,7 @@ export default function TabLayout() {
           borderTopColor: "rgba(255, 255, 255, 0.1)",
         },
         tabBarLabelStyle: {
-          fontSize: 11,
+          fontSize: 10,
           fontWeight: "600",
         },
       }}
@@ -39,6 +39,13 @@ export default function TabLayout() {
         options={{
           title: "History",
           tabBarIcon: ({ color }) => <History size={24} color={color} strokeWidth={2} />,
+        }}
+      />
+      <Tabs.Screen
+        name="telemetry"
+        options={{
+          title: "Telemetry",
+          tabBarIcon: ({ color }) => <Activity size={24} color={color} strokeWidth={2} />,
         }}
       />
       <Tabs.Screen
