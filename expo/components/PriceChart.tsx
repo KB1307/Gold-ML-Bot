@@ -28,6 +28,8 @@ let sharedWebIframeHtml = "";
 let persistentChartLayer: HTMLDivElement | null = null;
 let activePlaceholder: HTMLDivElement | null = null;
 let layerResizeObserver: ResizeObserver | null = null;
+let layerIntersectionObserver: IntersectionObserver | null = null;
+let placeholderIsIntersecting: boolean = false;
 let layerRafHandle: number | null = null;
 
 function getPersistentChartLayer(): HTMLDivElement | null {
@@ -78,9 +80,28 @@ function isPlaceholderActuallyVisible(placeholder: HTMLDivElement): boolean {
     if (computed.display === "none" || computed.visibility === "hidden" || computed.opacity === "0") {
       return false;
     }
+    if (node.getAttribute && (node.getAttribute("aria-hidden") === "true" || node.getAttribute("hidden") !== null)) {
+      return false;
+    }
     node = node.parentElement;
   }
 
+  return true;
+}
+
+function isPlaceholderInViewport(placeholder: HTMLDivElement): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const rect = placeholder.getBoundingClientRect();
+  const vw = window.innerWidth || document.documentElement.clientWidth;
+  const vh = window.innerHeight || document.documentElement.clientHeight;
+  if (rect.width <= 0 || rect.height <= 0) {
+    return false;
+  }
+  if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= vw || rect.top >= vh) {
+    return false;
+  }
   return true;
 }
 
@@ -96,7 +117,7 @@ function syncLayerToPlaceholder(): void {
     return;
   }
 
-  if (!placeholder || !placeholder.isConnected || !isPlaceholderActuallyVisible(placeholder)) {
+  if (!placeholder || !placeholder.isConnected || !isPlaceholderActuallyVisible(placeholder) || !isPlaceholderInViewport(placeholder) || !placeholderIsIntersecting) {
     layer.style.visibility = "hidden";
     layer.style.pointerEvents = "none";
     layer.style.width = "0";
@@ -147,6 +168,17 @@ function ensureLayerObservers(): void {
     });
   }
 
+  if (!layerIntersectionObserver && typeof IntersectionObserver !== "undefined") {
+    layerIntersectionObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.target === activePlaceholder) {
+          placeholderIsIntersecting = entry.isIntersecting && entry.intersectionRatio > 0;
+          scheduleLayerSync();
+        }
+      }
+    }, { threshold: [0, 0.01, 0.1] });
+  }
+
   const globalWindow = window as Window & { __priceChartLayerBound?: boolean; __priceChartLayerPoller?: number };
   if (!globalWindow.__priceChartLayerBound) {
     globalWindow.__priceChartLayerBound = true;
@@ -174,12 +206,25 @@ function bindPlaceholder(placeholder: HTMLDivElement | null): void {
     } catch {
     }
   }
+  if (activePlaceholder && layerIntersectionObserver) {
+    try {
+      layerIntersectionObserver.unobserve(activePlaceholder);
+    } catch {
+    }
+  }
 
   activePlaceholder = placeholder;
+  placeholderIsIntersecting = placeholder ? false : false;
 
   if (placeholder && layerResizeObserver) {
     try {
       layerResizeObserver.observe(placeholder);
+    } catch {
+    }
+  }
+  if (placeholder && layerIntersectionObserver) {
+    try {
+      layerIntersectionObserver.observe(placeholder);
     } catch {
     }
   }
