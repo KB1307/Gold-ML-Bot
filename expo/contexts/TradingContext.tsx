@@ -93,6 +93,44 @@ function getProtectedExitPrice(signal: TradingSignal, targetsHit: number): numbe
   return signal.entryPrice;
 }
 
+export function getEffectiveExitPrice(signal: TradingSignal): number {
+  switch (signal.status) {
+    case "ALL_TARGETS_HIT":
+    case "TP3_HIT":
+      return Number(((signal.tp1 + signal.tp2 + signal.tp3) / 3).toFixed(2));
+    case "PARTIAL_WIN_SL_HIT":
+      return getProtectedExitPrice(signal, Math.max(signal.targetsHit, 2));
+    case "SL_AFTER_BE":
+      return getProtectedExitPrice(signal, Math.max(signal.targetsHit, 1));
+    case "SL_HIT":
+      return signal.sl;
+    case "CLOSED":
+      return signal.exitPrice ?? signal.entryPrice;
+    case "EXPIRED_MISSED_ENTRY":
+      return signal.entryPrice;
+    default:
+      return signal.exitPrice ?? signal.entryPrice;
+  }
+}
+
+export function computeSignalPnL(signal: TradingSignal, basePositionSize: number): number {
+  const terminalStatuses: SignalStatus[] = [
+    "ALL_TARGETS_HIT",
+    "TP3_HIT",
+    "PARTIAL_WIN_SL_HIT",
+    "SL_AFTER_BE",
+    "SL_HIT",
+    "CLOSED",
+    "EXPIRED_MISSED_ENTRY",
+  ];
+  if (!terminalStatuses.includes(signal.status)) return 0;
+
+  const exit = getEffectiveExitPrice(signal);
+  const contractSize = 100;
+  const directional = signal.type === "BUY" ? exit - signal.entryPrice : signal.entryPrice - exit;
+  return directional * basePositionSize * contractSize;
+}
+
 function areMarketSessionsEqual(left: MarketOutlook["sessions"], right: MarketOutlook["sessions"]): boolean {
   if (left.length !== right.length) {
     return false;
@@ -1132,30 +1170,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const losses: number[] = [];
 
     closedTrades.forEach(signal => {
-      let pnl = 0;
-      
-      let exitPrice: number;
-      
-      if (signal.exitPrice !== undefined) {
-        exitPrice = signal.exitPrice;
-      } else if (signal.status === "ALL_TARGETS_HIT") {
-        exitPrice = signal.tp3;
-      } else if (signal.status === "SL_HIT") {
-        exitPrice = signal.sl;
-      } else if (signal.status === "CLOSED") {
-        exitPrice = signal.entryPrice;
-      } else if (signal.status === "SL_AFTER_BE" || signal.status === "PARTIAL_WIN_SL_HIT") {
-        exitPrice = getProtectedExitPrice(signal, signal.targetsHit);
-      } else {
-        exitPrice = signal.entryPrice;
-      }
-
-      const contractSize = 100;
-      if (signal.type === "BUY") {
-        pnl = (exitPrice - signal.entryPrice) * settings.basePositionSize * contractSize;
-      } else {
-        pnl = (signal.entryPrice - exitPrice) * settings.basePositionSize * contractSize;
-      }
+      const pnl = computeSignalPnL(signal, settings.basePositionSize);
 
       if (signal.status === "ALL_TARGETS_HIT" || pnl > 0) {
         winningTrades++;
@@ -1181,30 +1196,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     let maxDrawdown = 0;
     
     closedTrades.forEach(signal => {
-      let pnl = 0;
-      
-      let exitPriceForDD: number;
-      
-      if (signal.exitPrice !== undefined) {
-        exitPriceForDD = signal.exitPrice;
-      } else if (signal.status === "ALL_TARGETS_HIT") {
-        exitPriceForDD = signal.tp3;
-      } else if (signal.status === "SL_HIT") {
-        exitPriceForDD = signal.sl;
-      } else if (signal.status === "CLOSED") {
-        exitPriceForDD = signal.entryPrice;
-      } else if (signal.status === "SL_AFTER_BE" || signal.status === "PARTIAL_WIN_SL_HIT") {
-        exitPriceForDD = getProtectedExitPrice(signal, signal.targetsHit);
-      } else {
-        exitPriceForDD = signal.entryPrice;
-      }
-      
-      const contractSizeDD = 100;
-      if (signal.type === "BUY") {
-        pnl = (exitPriceForDD - signal.entryPrice) * settings.basePositionSize * contractSizeDD;
-      } else {
-        pnl = (signal.entryPrice - exitPriceForDD) * settings.basePositionSize * contractSizeDD;
-      }
+      const pnl = computeSignalPnL(signal, settings.basePositionSize);
 
       runningBalance += pnl;
       if (runningBalance > peak) {

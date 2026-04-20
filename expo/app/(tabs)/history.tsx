@@ -2,14 +2,16 @@ import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Alert }
 import { useEffect, useMemo } from "react";
 import { LinearGradient } from "expo-linear-gradient";
 import { History, TrendingUp, TrendingDown, Trash2, CheckCircle, XCircle } from "lucide-react-native";
-import { useTrading } from "@/contexts/TradingContext";
+import { useTrading, computeSignalPnL, getEffectiveExitPrice } from "@/contexts/TradingContext";
 import { Stack } from "expo-router";
 import { TradingSignal } from "@/types/trading";
 
 const ACTIVE_SIGNAL_STATUSES: TradingSignal["status"][] = ["ACTIVE", "PARTIALLY_MANAGED", "TP1_HIT", "TP2_HIT"];
 
+const TERMINAL_PNL_STATUSES: TradingSignal["status"][] = ["ALL_TARGETS_HIT", "TP3_HIT", "PARTIAL_WIN_SL_HIT", "SL_AFTER_BE", "SL_HIT", "CLOSED", "EXPIRED_MISSED_ENTRY"];
+
 export default function HistoryScreen() {
-  const { signalHistory, deleteSignalFromHistory, signalUpdateTrigger, isLoading } = useTrading();
+  const { signalHistory, deleteSignalFromHistory, signalUpdateTrigger, isLoading, settings } = useTrading();
 
   const sortedSignalHistory = useMemo(() => (
     [...signalHistory].sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
@@ -183,6 +185,28 @@ export default function HistoryScreen() {
             </View>
           </View>
         ) : null}
+
+        {TERMINAL_PNL_STATUSES.includes(signal.status) ? (() => {
+          const pnl = computeSignalPnL(signal, settings.basePositionSize);
+          const effectiveExit = getEffectiveExitPrice(signal);
+          const isWin = pnl > 0.01;
+          const isLoss = pnl < -0.01;
+          const color = isWin ? "#22c55e" : isLoss ? "#ef4444" : "#999";
+          return (
+            <View style={styles.pnlRow} testID={`history-pnl-${signal.id}`}>
+              <View style={styles.pnlBlock}>
+                <Text style={styles.pnlLabel}>Effective Exit</Text>
+                <Text style={styles.pnlExit}>${effectiveExit.toFixed(2)}</Text>
+              </View>
+              <View style={styles.pnlBlock}>
+                <Text style={styles.pnlLabel}>Net P/L</Text>
+                <Text style={[styles.pnlValue, { color }]}>
+                  {isWin ? "+" : ""}${pnl.toFixed(2)}
+                </Text>
+              </View>
+            </View>
+          );
+        })() : null}
 
         {signal.exitTime ? (
           <View style={styles.exitInfo}>
@@ -532,6 +556,36 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#999",
   },
+  pnlRow: {
+    flexDirection: "row",
+    gap: 12,
+    marginBottom: 12,
+  },
+  pnlBlock: {
+    flex: 1,
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.06)",
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  pnlLabel: {
+    fontSize: 11,
+    color: "#888",
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+    marginBottom: 4,
+  },
+  pnlExit: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#fff",
+  } as const,
+  pnlValue: {
+    fontSize: 16,
+    fontWeight: "700",
+  } as const,
   infoCard: {
     backgroundColor: "rgba(59, 130, 246, 0.08)",
     padding: 16,
