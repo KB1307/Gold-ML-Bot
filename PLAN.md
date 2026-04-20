@@ -1,42 +1,58 @@
-# Fix signals, history, live price, and OAuth logos + full audit
+# Signal engine full overhaul (40 improvements A-H)
 
 ## Progress
 
-### 1. Live price — Swissquote as primary
-- [x] Swissquote already top-priority in `goldPrice.getLivePrice` (verified)
-- [x] Backend polling watchdog already in place (`goldWebSocketService.ts`)
-- [x] Yahoo / TwelveData / goldprice.org / metals.live kept as backups
+### A: Confidence calibration
+- [x] A1 Cap calibration penalties at 8%
+- [x] A2 EMA smoothing replaces +3% cap
+- [x] A3 Raise base confidence to 0.45 + strength*0.40
+- [x] A4 Raise MAX_CONFIDENCE_CAP to 0.95
+- [x] A5 Weight data-quality penalty by ohlcDataSource
 
-### 2. Historical data — combined approach
-- [x] Backend Yahoo → TwelveData → Tiingo chain verified (goldPrice.ts)
-- [x] Client direct fallback + Swissquote synthetic bar fallback verified (lib/trpc.ts)
-- [x] Every historical fetch guarded with AbortController + try/catch — no throws to UI
+### B: Conviction gates
+- [x] B6 MIN_SIGNAL_CONVICTION_THRESHOLD 0.50
+- [x] B7 Regime-scaled MIN_SIGNAL_STRENGTH_DIFFERENCE
+- [x] B8 OB/QM/sweep alt counter-trend confirmation
+- [x] B9 Merged conviction penalties into tiered check
 
-### 3. Signal generation — quality-first, 5+/day target
-- [x] Kept 62% absolute floor, tightened entry validation with new `evaluateQualityGate`:
-  - Volume ratio minimum per regime
-  - QUIET regime + weak strength blocked
-  - RANGING regime requires confirmed S/R reaction
-  - Unconfirmed S/R reactions require ≥80% confidence
-  - RSI extremes blocked outside trending regimes
-  - ATR minimum to ensure targets are reachable
-- [x] Removed duplicate early cooldown check (replaced with simple 45s min gate)
-- [x] Tightened dynamic cooldown (base 90s, min 45s, max 180s)
-- [x] Starvation relief still active (unchanged)
+### C: Features
+- [x] C10 Synthetic order-flow -> context only
+- [x] C11 Kept price-count volume profile as context only (POC still displayed, no directional boost)
+- [x] C12 Trend feature stack capped at 0.50
+- [x] C13 Sentiment feature neutralized (telemetry only)
+- [x] C14 VWAP added
+- [x] C15 ADX added
+- [x] C16 Bollinger squeeze/expansion added
+- [x] C17 DXY correlation gate added
 
-### 4. History tab — show active + closed signals
-- [x] Hydrate `signalHistoryRef` + `setSignalHistory` BEFORE running catch-up reconciliation so UI shows signals immediately on cold start
-- [x] History screen reads from same `useTrading` context (single source of truth, already was)
+### D: Regime logic
+- [x] D18 QUIET mean-reversion (Bollinger squeeze + S/R)
+- [x] D19 Cold-start RANGING relief (0.72 threshold)
+- [x] D21 Regime-scaled cooldown (TRENDING 30-45s, RANGING 90s, VOLATILE 180s, QUIET 150s)
 
-### 5. Chart stability
-- [x] TradingView HTML already memoized with stable instance id (`SHARED_CHART_INSTANCE_ID`) — verified no remount per price tick
+### E: Learning
+- [x] E22 Retrain seeds from persisted baseline (70/30 blend)
+- [x] E23 4h drift check + rolling win-rate trigger
+- [x] E24 MIN_CONFIDENCE_FOR_RETRAINING 0.68
+- [x] E25 Critical feature-drift auto-halves weights
+- [x] E26 Bayesian Beta prior on weight updates
+- [x] E27 Learning adjustment range ±0.08
 
-### 6. Google / Apple sign-in logos
-- [x] Created `components/BrandLogos.tsx` with authentic Google multi-color "G" and white Apple SVGs via `react-native-svg`
-- [x] Replaced generic icons in `AccountSettingsCard.tsx`
-- [x] White Google button, black Apple button per brand guidelines
+### F: Entries/Exits
+- [x] F28 Real bid/ask spread layered into slippage
+- [x] F29 TP widening scaled by ATR-to-SR room
+- [x] F30 Continuous ATR-to-SL mapping
+- [x] F31 Opposite-direction signals bypass proximity
 
-### 7. Full codebase audit
-- [x] Deleted `scripts/__sandbox__/signalEngine.sandbox.ts` (3900+ line stale duplicate)
-- [x] Verified Swissquote fetchers in signalEngine/trpc/goldPrice are each purpose-specific (client live, client synthetic history, backend live) — not true duplicates
-- [x] Removed duplicate cooldown gate in `generateSignal`
+### G: OHLC data
+- [x] G32 5-min candles built from minute bars when available
+- [x] G33 OHLC merge on refresh (already via mergeDailyOHLCBars)
+- [x] G34 Block signals when OHLC estimated (strong penalty or starvation path only)
+- [x] G35 Null-guard intermarket fallbacks
+
+### H: Pipeline/EV/Cooldowns
+- [x] H36 Gate pipeline typed results (structural + quality gates typed)
+- [x] H37 EV scoring added
+- [x] H38 Separate BUY/SELL cooldown timers
+- [x] H39 Rolling-window attempt reset (recentAttemptTimestamps)
+- [x] H40 Starvation metric based on recent gap

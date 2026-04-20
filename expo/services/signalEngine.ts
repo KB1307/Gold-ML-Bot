@@ -151,6 +151,11 @@ interface MarketFeatures {
   orderBlocks: OrderBlock[];
   quasimodolLevels: QuasimodolLevel[];
   sessionSweeps: SessionSweep[];
+  vwap: number | null;
+  adx: number | null;
+  bollingerSqueeze: boolean;
+  bollingerExpansion: boolean;
+  bollingerBandwidth: number | null;
 }
 
 const CACHE_DURATION = 7000;
@@ -168,7 +173,7 @@ const MODEL_WEIGHTS_KEY = 'model_weights_v1';
 const DAILY_OHLC_STORAGE_KEY = 'daily_ohlc_history_v1';
 
 const TRAINING_WINDOW_DAYS = 14;
-const MIN_CONFIDENCE_FOR_RETRAINING = 0.72;
+const MIN_CONFIDENCE_FOR_RETRAINING = 0.68;
 const BASE_SLIPPAGE_BUFFER_PIPS = 0.5;
 const CONFIDENCE_SMOOTHING_WINDOW = 5;
 const LATENCY_WARNING_THRESHOLD_MS = 100;
@@ -186,10 +191,19 @@ const MIN_PIP_DIFFERENCE_FOR_NEW_SIGNAL = 12;
 const MIN_PIP_DIFFERENCE_FOR_PARTIALLY_MANAGED = 20;
 const MAX_RECENT_SIGNAL_TIME_MINUTES = 4;
 const POST_TP1_COOLDOWN_MS = 3 * 60 * 1000;
-const DRIFT_CHECK_INTERVAL = 24 * 60 * 60 * 1000;
+const DRIFT_CHECK_INTERVAL = 4 * 60 * 60 * 1000;
 const FEATURE_DRIFT_STORAGE_KEY = 'feature_drift_history_v1';
-const MIN_SIGNAL_CONVICTION_THRESHOLD = 0.56;
-const MIN_SIGNAL_STRENGTH_DIFFERENCE = 0.08;
+const MIN_SIGNAL_CONVICTION_THRESHOLD = 0.50;
+const MIN_SIGNAL_STRENGTH_DIFFERENCE_BASE = 0.08;
+function getMinStrengthDifferenceForRegime(regime: 'TRENDING' | 'RANGING' | 'VOLATILE' | 'QUIET'): number {
+  switch (regime) {
+    case 'TRENDING': return 0.06;
+    case 'VOLATILE': return 0.07;
+    case 'RANGING': return 0.09;
+    case 'QUIET': return 0.11;
+    default: return MIN_SIGNAL_STRENGTH_DIFFERENCE_BASE;
+  }
+}
 const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;
 const ABSOLUTE_MIN_SIGNAL_CONFIDENCE = 0.62;
 const SIGNAL_STARVATION_RELIEF_ATTEMPTS = 4;
@@ -197,7 +211,13 @@ const SIGNAL_STARVATION_RELIEF_CONFIDENCE = 0.64;
 const SYNTHETIC_DATA_PENALTY = 0.03;
 const _BIDIRECTIONAL_INFLATION_PENALTY = 0.04;
 const LOW_DATA_QUALITY_PENALTY = 0.03;
-const MAX_CONFIDENCE_CAP = 0.91;
+const MAX_CONFIDENCE_CAP = 0.95;
+const MAX_CALIBRATION_PENALTY = 0.08;
+const MAX_LEARNING_ADJUSTMENT = 0.08;
+const ATTEMPT_WINDOW_MS = 60 * 60 * 1000;
+const STARVATION_GAP_MS = 90 * 60 * 1000;
+const BAYESIAN_PRIOR_ALPHA = 2;
+const BAYESIAN_PRIOR_BETA = 2;
 
 const TIME_WEIGHTS = {
   LOW_LIQUIDITY: 0.5,
@@ -705,9 +725,14 @@ class SignalGenerationEngine {
   } = { recentWinRate: 0.65, profitFactor: 1.8, avgConfidence: 0.75, recentWinningConfidences: [] };
   private lastSignalType: SignalType | null = null;
   private lastSignalTime: number = 0;
+  private lastBuySignalTime: number = 0;
+  private lastSellSignalTime: number = 0;
   private lastMarketRegime: MarketRegime | null = null;
   private signalGenerationAttempts: number = 0;
+  private signalsGeneratedCount: number = 0;
   private successfulSignalsGenerated: number = 0;
+  private recentAttemptTimestamps: number[] = [];
+  private lastKnownSpreadPips: number = 0;
   private confidenceHistory: number[] = [];
   private lastFeatureCorrelationCheck: number = 0;
   private featureCorrelationStatus: string = 'HEALTHY';
@@ -2233,6 +2258,10 @@ class SignalGenerationEngine {
     if (this.volumeHistory.length > 50) {
       this.volumeHistory.shift();
     }
+
+    const vwap = this.calculateVWAP();
+    const adx = this.calculateADX(14);
+    const bollinger = this.calculateBollingerBands(20, 2);
     
     console.log(`📊 Camarilla Pivot Points Calculated:`);    console.log(`   Daily Pivot: ${dailyPivot.toFixed(1)} (H: ${yesterdayHigh.toFixed(1)}, L: ${yesterdayLow.toFixed(1)}, C: ${yesterdayClose.toFixed(1)})`);
     console.log(`   R1: ${r1.toFixed(1)} | R2: ${r2.toFixed(1)} | R3: ${r3.toFixed(1)}`);
@@ -2276,9 +2305,77 @@ class SignalGenerationEngine {
       orderBlocks,
       quasimodolLevels,
       sessionSweeps,
+      vwap,
+      adx,
+      bollingerSqueeze: bollinger.squeeze,
+      bollingerExpansion: bollinger.expansion,
+      bollingerBandwidth: bollinger.bandwidth,
     };
   }
-  
+
+  private calculateVWAP(): number | null {
+    if (this.priceHistory.length < 10 || this.highHistory.length < 10 || this.lowHistory.length < 10) return null;
+    const n = Math.min(30, this.priceHistory.length);
+    const closes = this.priceHistory.slice(-n);
+    const highs = this.highHistory.slice(-n);
+    const lows = this.lowHistory.slice(-n);
+    let numerator = 0;
+    let denominator = 0;
+    for (let i = 0; i < n; i++) {
+      const typical = (highs[i] + lows[i] + closes[i]) / 3;
+      const pseudoVolume = Math.max(0.1, Math.abs(highs[i] - lows[i]));
+      numerator += typical * pseudoVolume;
+      denominator += pseudoVolume;
+    }
+    if (denominator === 0) return null;
+    return parseFloat((numerator / denominator).toFixed(2));
+  }
+
+  private calculateADX(period: number = 14): number | null {
+    if (this.highHistory.length < period + 1 || this.lowHistory.length < period + 1 || this.priceHistory.length < period + 1) return null;
+    const highs = this.highHistory.slice(-(period + 1));
+    const lows = this.lowHistory.slice(-(period + 1));
+    const closes = this.priceHistory.slice(-(period + 1));
+    const plusDM: number[] = [];
+    const minusDM: number[] = [];
+    const trs: number[] = [];
+    for (let i = 1; i < highs.length; i++) {
+      const upMove = highs[i] - highs[i - 1];
+      const downMove = lows[i - 1] - lows[i];
+      plusDM.push(upMove > downMove && upMove > 0 ? upMove : 0);
+      minusDM.push(downMove > upMove && downMove > 0 ? downMove : 0);
+      const tr = Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1]));
+      trs.push(tr);
+    }
+    const sumTR = trs.reduce((a, b) => a + b, 0);
+    if (sumTR === 0) return null;
+    const plusDI = 100 * (plusDM.reduce((a, b) => a + b, 0) / sumTR);
+    const minusDI = 100 * (minusDM.reduce((a, b) => a + b, 0) / sumTR);
+    const diSum = plusDI + minusDI;
+    if (diSum === 0) return 0;
+    const dx = 100 * Math.abs(plusDI - minusDI) / diSum;
+    return parseFloat(dx.toFixed(1));
+  }
+
+  private calculateBollingerBands(period: number = 20, stdDevMultiplier: number = 2): { squeeze: boolean; expansion: boolean; bandwidth: number | null } {
+    if (this.priceHistory.length < period * 2) return { squeeze: false, expansion: false, bandwidth: null };
+    const prices = this.priceHistory.slice(-period);
+    const mean = prices.reduce((a, b) => a + b, 0) / period;
+    const variance = prices.reduce((s, p) => s + (p - mean) ** 2, 0) / period;
+    const std = Math.sqrt(variance);
+    const upper = mean + std * stdDevMultiplier;
+    const lower = mean - std * stdDevMultiplier;
+    const bandwidth = (upper - lower) / mean;
+    const priorPrices = this.priceHistory.slice(-period * 2, -period);
+    const priorMean = priorPrices.reduce((a, b) => a + b, 0) / period;
+    const priorVar = priorPrices.reduce((s, p) => s + (p - priorMean) ** 2, 0) / period;
+    const priorStd = Math.sqrt(priorVar);
+    const priorBandwidth = (priorStd * 2 * stdDevMultiplier) / priorMean;
+    const squeeze = bandwidth < priorBandwidth * 0.7 && bandwidth < 0.006;
+    const expansion = bandwidth > priorBandwidth * 1.3;
+    return { squeeze, expansion, bandwidth: parseFloat(bandwidth.toFixed(5)) };
+  }
+
   private detectMacroEvents(): MacroEvent | undefined {
     const now = new Date();
     const hour = now.getUTCHours();
@@ -2329,17 +2426,15 @@ class SignalGenerationEngine {
       return rawConfidence;
     }
     
-    const currentWeight = 0.65;
-    const historyWeight = 0.35;
-    const historyAvg = recentHistory.slice(0, -1).reduce((a, b) => a + b, 0) / (recentHistory.length - 1);
-    
-    let finalConfidence = rawConfidence * currentWeight + historyAvg * historyWeight;
-    
-    finalConfidence = Math.min(finalConfidence, rawConfidence + 0.03);
-    
+    const emaAlpha = 0.55;
+    let ema = recentHistory[0];
+    for (let i = 1; i < recentHistory.length; i++) {
+      ema = emaAlpha * recentHistory[i] + (1 - emaAlpha) * ema;
+    }
+    let finalConfidence = ema;
     finalConfidence = Math.min(finalConfidence, MAX_CONFIDENCE_CAP);
     
-    console.log(`🔄 Confidence Smoothing: Raw ${(rawConfidence * 100).toFixed(1)}% -> Smoothed ${(finalConfidence * 100).toFixed(1)}% (history avg: ${(historyAvg * 100).toFixed(1)}%, cap: raw+3%)`);
+    console.log(`🔄 Confidence EMA Smoothing: Raw ${(rawConfidence * 100).toFixed(1)}% -> Smoothed ${(finalConfidence * 100).toFixed(1)}% (α=${emaAlpha})`);
     
     return parseFloat(finalConfidence.toFixed(3));
   }
@@ -2463,9 +2558,22 @@ class SignalGenerationEngine {
     }
   }
   
+  private checkRollingWinRateDrift(): boolean {
+    if (this.tradeOutcomes.length < 20) return false;
+    const recent = this.tradeOutcomes.slice(-10);
+    const older = this.tradeOutcomes.slice(-20, -10);
+    const recentWr = recent.filter(o => o.result === 'WIN').length / recent.length;
+    const olderWr = older.filter(o => o.result === 'WIN').length / older.length;
+    return (olderWr - recentWr) > 0.25;
+  }
+
   private async detectConceptDrift(features: MarketFeatures): Promise<void> {
     const now = Date.now();
-    if (this.lastDriftCheck > 0 && now - this.lastDriftCheck < DRIFT_CHECK_INTERVAL) {
+    const winRateDrift = this.checkRollingWinRateDrift();
+    if (winRateDrift) {
+      console.log('🚨 Rolling win-rate dropped >25% - forcing drift check');
+    }
+    if (!winRateDrift && this.lastDriftCheck > 0 && now - this.lastDriftCheck < DRIFT_CHECK_INTERVAL) {
       const nextCheck = new Date(this.lastDriftCheck + DRIFT_CHECK_INTERVAL);
       const hoursRemaining = ((this.lastDriftCheck + DRIFT_CHECK_INTERVAL - now) / (1000 * 60 * 60)).toFixed(1);
       console.log(`⏰ Next Drift Check in ${hoursRemaining}h (scheduled: ${nextCheck.toLocaleTimeString()})`);
@@ -2563,6 +2671,19 @@ class SignalGenerationEngine {
     } else {
       this.driftAlertLevel = 'HIGH';
       console.log(`🚨 Concept Drift: HIGH (${this.conceptDriftScore.toFixed(2)}) - SCHEDULING RETRAIN`);
+      // E25: Auto-halve weights of critical-drift features
+      const featureDriftMetrics = this.analyzeFeatureImportanceDrift();
+      featureDriftMetrics.forEach(m => {
+        if (m.status === 'CRITICAL') {
+          const key = `${m.feature}_weight`;
+          const current = this.modelWeights.get(key);
+          if (current !== undefined) {
+            const halved = current * 0.5;
+            this.modelWeights.set(key, halved);
+            console.log(`   ⚡ Auto-halved ${key}: ${current.toFixed(3)} -> ${halved.toFixed(3)}`);
+          }
+        }
+      });
       
       console.log('\n' + '🔥'.repeat(30));
       console.log('⚡ CONCEPT DRIFT AUTO-RESPONSE SYSTEM ACTIVATED');
@@ -2795,29 +2916,10 @@ class SignalGenerationEngine {
       console.log(`✅ High Liquidity Session (${isLondonSession ? 'LONDON' : 'NY'}) - context factor, not directional boost`);
     }
     
+    // C10: Synthetic order flow disabled (no real tick volume). Kept as context only.
     if (features.orderFlow.largeOrdersDetected) {
-      const imbalance = features.orderFlow.volumeImbalance;
-      if (imbalance > 0) {
-        buySignalStrength += 0.12 * Math.abs(imbalance);
-        attentionScores.set('buy_order_imbalance', 0.12);
-        console.log(`✅ BUY: Order Flow Imbalance (${(imbalance * 100).toFixed(1)}% buyers)`);
-      } else {
-        sellSignalStrength += 0.12 * Math.abs(imbalance);
-        attentionScores.set('sell_order_imbalance', 0.12);
-        console.log(`🔴 SELL: Order Flow Imbalance (${(Math.abs(imbalance) * 100).toFixed(1)}% sellers)`);
-      }
-    }
-    
-    if (features.orderFlow.institutionalFootprint > 1.2) {
-      if (ltfTrend === 'BULLISH') {
-        buySignalStrength += 0.10;
-        attentionScores.set('institutional_buy_footprint', 0.10);
-        console.log('✅ BUY: Institutional Footprint + LTF Bullish');
-      } else if (ltfTrend === 'BEARISH') {
-        sellSignalStrength += 0.10;
-        attentionScores.set('institutional_sell_footprint', 0.10);
-        console.log('🔴 SELL: Institutional Footprint + LTF Bearish');
-      }
+      attentionScores.set('order_flow_context', 0.02);
+      console.log(`ℹ️ Order Flow context only (synthetic, no directional boost): imbalance ${(features.orderFlow.volumeImbalance * 100).toFixed(1)}%`);
     }
     
     const nearHighVolumeNode = features.volumeProfile.highVolumeNodes.some(
@@ -2828,37 +2930,42 @@ class SignalGenerationEngine {
       console.log('ℹ️ Price near High Volume Node (context only, no directional boost)');
     }
     
+    // C12: Trend feature stack capped at 0.50 combined contribution
+    let trendBuyContribution = 0;
+    let trendSellContribution = 0;
     if (features.marketRegime.type === 'TRENDING' && features.marketRegime.strength > 0.75) {
       if (htfTrend === 'BULLISH' && ltfTrend === 'BULLISH') {
-        buySignalStrength += 0.15;
+        trendBuyContribution += 0.15;
         attentionScores.set('strong_uptrend', 0.15);
         console.log('✅ BUY: Strong Uptrend Confirmed');
       } else if (htfTrend === 'BEARISH' && ltfTrend === 'BEARISH') {
-        sellSignalStrength += 0.15;
+        trendSellContribution += 0.15;
         attentionScores.set('strong_downtrend', 0.15);
         console.log('🔴 SELL: Strong Downtrend Confirmed');
       }
     } else if (features.marketRegime.type === 'VOLATILE') {
       attentionScores.set('volatile_regime_context', 0.03);
-      console.log('⚡ Volatile regime - Context noted, no directional boost (noise risk)');
     }
-    
     if (features.priceActionPattern === 'BULLISH_REVERSAL') {
-      buySignalStrength += 0.12;
+      trendBuyContribution += 0.12;
       attentionScores.set('bullish_reversal', 0.12);
-      console.log('✅ BUY: Bullish Reversal Pattern');
     } else if (features.priceActionPattern === 'BEARISH_REVERSAL') {
-      sellSignalStrength += 0.12;
+      trendSellContribution += 0.12;
       attentionScores.set('bearish_reversal', 0.12);
-      console.log('🔴 SELL: Bearish Reversal Pattern');
     } else if (features.priceActionPattern === 'STRONG_UPTREND') {
-      buySignalStrength += 0.10;
+      trendBuyContribution += 0.10;
       attentionScores.set('strong_uptrend_pattern', 0.10);
-      console.log('✅ BUY: Strong Uptrend Pattern');
     } else if (features.priceActionPattern === 'STRONG_DOWNTREND') {
-      sellSignalStrength += 0.10;
+      trendSellContribution += 0.10;
       attentionScores.set('strong_downtrend_pattern', 0.10);
-      console.log('🔴 SELL: Strong Downtrend Pattern');
+    }
+    const TREND_STACK_CAP = 0.50;
+    trendBuyContribution = Math.min(trendBuyContribution, TREND_STACK_CAP);
+    trendSellContribution = Math.min(trendSellContribution, TREND_STACK_CAP);
+    buySignalStrength += trendBuyContribution;
+    sellSignalStrength += trendSellContribution;
+    if (trendBuyContribution > 0 || trendSellContribution > 0) {
+      console.log(`📊 Trend Stack (capped ${TREND_STACK_CAP}): BUY+${trendBuyContribution.toFixed(2)} SELL+${trendSellContribution.toFixed(2)}`);
     }
     
     if (features.supportStrength > 0.8) {
@@ -2899,18 +3006,10 @@ class SignalGenerationEngine {
       }
     }
     
-    let sentimentImpact = 0;
-    if (features.sentiment) {
-      sentimentImpact = features.sentiment.score * features.sentiment.confidence;
-      if (features.sentiment.score > 0.3) {
-        buySignalStrength += 0.15;
-        attentionScores.set('positive_sentiment', 0.15);
-        console.log('✅ BUY: Positive Sentiment');
-      } else if (features.sentiment.score < -0.3) {
-        sellSignalStrength += 0.15;
-        attentionScores.set('negative_sentiment', 0.15);
-        console.log('🔴 SELL: Negative Sentiment');
-      }
+    // C13: Self-referential sentiment feature removed. Kept for telemetry only.
+    const sentimentImpact = 0;
+    if (features.sentiment && Math.abs(features.sentiment.score) > 0.3) {
+      console.log(`ℹ️ Sentiment ${features.sentiment.score.toFixed(2)} noted as telemetry only (no directional boost)`);
     }
     
     const fibRetracementLevels = features.fibonacci
@@ -2951,6 +3050,68 @@ class SignalGenerationEngine {
       sellSignalStrength += 0.07;
       attentionScores.set('bearish_macd_momentum', 0.07);
       console.log('🔴 SELL: Bearish MACD Momentum');
+    }
+
+    if (features.vwap !== null) {
+      const vwapDelta = this.currentPrice - features.vwap;
+      if (vwapDelta > 1.5) {
+        buySignalStrength += 0.05;
+        attentionScores.set('above_vwap', 0.05);
+        console.log(`✅ BUY: Price ${vwapDelta.toFixed(1)} above VWAP (${features.vwap.toFixed(1)})`);
+      } else if (vwapDelta < -1.5) {
+        sellSignalStrength += 0.05;
+        attentionScores.set('below_vwap', 0.05);
+        console.log(`🔴 SELL: Price ${Math.abs(vwapDelta).toFixed(1)} below VWAP (${features.vwap.toFixed(1)})`);
+      }
+    }
+
+    if (features.adx !== null) {
+      if (features.adx > 25) {
+        const adxBoost = Math.min(0.08, (features.adx - 25) * 0.003);
+        if (htfTrend === 'BULLISH' && ltfTrend === 'BULLISH') {
+          buySignalStrength += adxBoost;
+          attentionScores.set('adx_trend_strength', adxBoost);
+          console.log(`✅ ADX ${features.adx.toFixed(1)} confirms uptrend (+${(adxBoost * 100).toFixed(1)}%)`);
+        } else if (htfTrend === 'BEARISH' && ltfTrend === 'BEARISH') {
+          sellSignalStrength += adxBoost;
+          attentionScores.set('adx_trend_strength', adxBoost);
+          console.log(`🔴 ADX ${features.adx.toFixed(1)} confirms downtrend (+${(adxBoost * 100).toFixed(1)}%)`);
+        }
+      } else if (features.adx < 18) {
+        console.log(`ℹ️ Low ADX ${features.adx.toFixed(1)} - weak trend regime`);
+      }
+    }
+
+    if (features.bollingerSqueeze && features.marketRegime.type === 'QUIET') {
+      const breakoutBias = this.detectPriceDirection();
+      if (breakoutBias > 0) {
+        buySignalStrength += 0.08;
+        attentionScores.set('bollinger_squeeze_bull_breakout', 0.08);
+        console.log('✅ BUY: Bollinger Squeeze + Bullish Breakout');
+      } else if (breakoutBias < 0) {
+        sellSignalStrength += 0.08;
+        attentionScores.set('bollinger_squeeze_bear_breakout', 0.08);
+        console.log('🔴 SELL: Bollinger Squeeze + Bearish Breakout');
+      }
+    }
+    if (features.bollingerExpansion) {
+      attentionScores.set('bollinger_expansion', 0.03);
+    }
+
+    // C17: DXY correlation gate for LONG gold
+    const dxy = features.intermarketData;
+    if (dxy && dxy.dxyChange !== 0 && dxy.goldDxyCorrelation < -0.3) {
+      if (dxy.dxyChange > 0.15 && buySignalStrength > sellSignalStrength) {
+        const dxyPenalty = Math.min(0.12, dxy.dxyChange * 0.5);
+        buySignalStrength = Math.max(0, buySignalStrength - dxyPenalty);
+        attentionScores.set('dxy_headwind', -dxyPenalty);
+        console.log(`⚠️ DXY +${dxy.dxyChange.toFixed(2)} rising vs LONG gold bias: -${(dxyPenalty * 100).toFixed(1)}%`);
+      } else if (dxy.dxyChange < -0.15 && sellSignalStrength > buySignalStrength) {
+        const dxyPenalty = Math.min(0.12, Math.abs(dxy.dxyChange) * 0.5);
+        sellSignalStrength = Math.max(0, sellSignalStrength - dxyPenalty);
+        attentionScores.set('dxy_headwind', -dxyPenalty);
+        console.log(`⚠️ DXY ${dxy.dxyChange.toFixed(2)} falling vs SHORT gold bias: -${(dxyPenalty * 100).toFixed(1)}%`);
+      }
     }
     
     
@@ -3017,7 +3178,7 @@ class SignalGenerationEngine {
     
     console.log('\n🔍 BIDIRECTIONAL CONFLICT PREVENTION:');
     console.log(`   Winning Strength: ${winningStrength.toFixed(3)} (Min: ${MIN_SIGNAL_CONVICTION_THRESHOLD})`);
-    console.log(`   Strength Difference: ${strengthDifference.toFixed(3)} (Min: ${MIN_SIGNAL_STRENGTH_DIFFERENCE})`);
+    console.log(`   Strength Difference: ${strengthDifference.toFixed(3)} (Base Min: ${MIN_SIGNAL_STRENGTH_DIFFERENCE_BASE})`);
     
     if (winningStrength < MIN_SIGNAL_CONVICTION_THRESHOLD) {
       console.log(`\n❌ REJECTED: Winning strength ${winningStrength.toFixed(3)} below conviction threshold ${MIN_SIGNAL_CONVICTION_THRESHOLD}`);
@@ -3034,8 +3195,9 @@ class SignalGenerationEngine {
       };
     }
     
-    if (strengthDifference < MIN_SIGNAL_STRENGTH_DIFFERENCE) {
-      console.log(`\n❌ REJECTED: Strength difference ${strengthDifference.toFixed(3)} too small (< ${MIN_SIGNAL_STRENGTH_DIFFERENCE})`);
+    const regimeMinDiff = getMinStrengthDifferenceForRegime(features.marketRegime.type);
+    if (strengthDifference < regimeMinDiff) {
+      console.log(`\n❌ REJECTED: Strength difference ${strengthDifference.toFixed(3)} too small (regime ${features.marketRegime.type} min: ${regimeMinDiff})`);
       console.log(`   BUY: ${buySignalStrength.toFixed(3)} vs SELL: ${sellSignalStrength.toFixed(3)}`);
       console.log('   Market indecision detected - prevents conflicting signals');
       console.log('   Status: NEUTRAL / STAND DOWN');
@@ -3065,7 +3227,7 @@ class SignalGenerationEngine {
       console.log('   Signal allowed but confidence may be reduced');
     }
     
-    let baseConfidence = 0.40 + signalStrength * 0.30;
+    let baseConfidence = 0.45 + signalStrength * 0.40;
     
     baseConfidence += Math.abs(sentimentImpact) * 0.05;
     
@@ -3090,17 +3252,15 @@ class SignalGenerationEngine {
       console.log(`⏰ Time Window Boost: +${(timeBoost * 100).toFixed(1)}% confidence (Factor: ${features.timeWindowFactor.toFixed(1)}x)`);
     }
     
-    const learningAdjustment = Math.max(-0.05, Math.min(0.03, (this.performanceMetrics.profitFactor - 1.5) * 0.03));
+    const learningAdjustment = Math.max(-MAX_LEARNING_ADJUSTMENT, Math.min(MAX_LEARNING_ADJUSTMENT, (this.performanceMetrics.profitFactor - 1.5) * 0.06));
     baseConfidence += learningAdjustment;
     
-    if (strengthDifference < 0.15) {
-      baseConfidence *= 0.80;
-      console.log(`⚠️ Weak directional conviction - Confidence reduced by 20%`);
-    }
-    
-    if (strengthDifference < 0.20) {
-      baseConfidence *= 0.92;
-      console.log(`⚠️ Moderate directional conviction - Confidence reduced by 8%`);
+    if (strengthDifference < 0.12) {
+      baseConfidence *= 0.85;
+      console.log(`⚠️ Weak directional conviction (<12%) - Confidence reduced by 15%`);
+    } else if (strengthDifference < 0.18) {
+      baseConfidence *= 0.94;
+      console.log(`⚠️ Moderate directional conviction (<18%) - Confidence reduced by 6%`);
     }
     
     const losingStrength = isBullish ? sellSignalStrength : buySignalStrength;
@@ -3111,50 +3271,35 @@ class SignalGenerationEngine {
     }
     
     let dataQualityPenalty = 0;
-    if (this.priceHistory.length < 30) {
-      dataQualityPenalty += LOW_DATA_QUALITY_PENALTY;
-      console.log(`⚠️ Low data quality penalty: -${(LOW_DATA_QUALITY_PENALTY * 100).toFixed(1)}% (only ${this.priceHistory.length} price samples)`);
-    }
     if (this.ohlcDataSource === 'estimated') {
-      dataQualityPenalty += SYNTHETIC_DATA_PENALTY;
-      console.log(`⚠️ Synthetic OHLC data penalty: -${(SYNTHETIC_DATA_PENALTY * 100).toFixed(1)}% (using estimated H/L)`);
+      dataQualityPenalty += 0.06;
+      console.log(`⚠️ Estimated OHLC penalty: -6.0% (no real H/L available)`);
+    } else if (this.ohlcDataSource === '5min-candles') {
+      dataQualityPenalty += 0.02;
+      console.log(`⚠️ 5-min synthesized OHLC penalty: -2.0%`);
     }
-    if (this.priceHistory.length < 50) {
-      dataQualityPenalty += 0.03;
-      console.log(`⚠️ Insufficient history penalty: -3% (need 50+ samples for reliable indicators)`);
+    if (this.priceHistory.length < 30) {
+      dataQualityPenalty += 0.02;
+      console.log(`⚠️ Low sample count penalty: -2.0% (only ${this.priceHistory.length} samples)`);
     }
     
     let rawConfidence = Math.max(0.45, Math.min(MAX_CONFIDENCE_CAP, baseConfidence - dataQualityPenalty));
     let calibrationPenalty = 0;
 
-    if (strengthDifference < 0.25) {
-      calibrationPenalty += 0.07;
-      console.log(`⚠️ Confidence calibration penalty: -7.0% (directional spread only ${(strengthDifference * 100).toFixed(1)}%)`);
-    }
+    if (strengthDifference < 0.25) calibrationPenalty += 0.04;
+    if (signalStrength < 0.74) calibrationPenalty += 0.02;
+    if (features.marketRegime.confidence < 0.7) calibrationPenalty += 0.02;
+    if (losingStrength > 0.22) calibrationPenalty += 0.02;
+    if (this.priceHistory.length < 60) calibrationPenalty += 0.01;
 
-    if (signalStrength < 0.74) {
-      calibrationPenalty += 0.04;
-      console.log(`⚠️ Confidence calibration penalty: -4.0% (signal strength ${signalStrength.toFixed(3)})`);
-    }
-
-    if (features.marketRegime.confidence < 0.7) {
-      calibrationPenalty += 0.03;
-      console.log(`⚠️ Confidence calibration penalty: -3.0% (regime confidence ${(features.marketRegime.confidence * 100).toFixed(1)}%)`);
-    }
-
-    if (losingStrength > 0.22) {
-      calibrationPenalty += 0.03;
-      console.log(`⚠️ Confidence calibration penalty: -3.0% (opposing pressure ${(losingStrength * 100).toFixed(1)}%)`);
-    }
-
-    if (this.priceHistory.length < 60) {
-      calibrationPenalty += 0.02;
-      console.log(`⚠️ Confidence calibration penalty: -2.0% (${this.priceHistory.length} samples available)`);
+    calibrationPenalty = Math.min(calibrationPenalty, MAX_CALIBRATION_PENALTY);
+    if (calibrationPenalty > 0) {
+      console.log(`⚠️ Calibration penalty (capped at ${(MAX_CALIBRATION_PENALTY * 100).toFixed(0)}%): -${(calibrationPenalty * 100).toFixed(1)}%`);
     }
 
     rawConfidence = Math.max(0.42, Math.min(MAX_CONFIDENCE_CAP, rawConfidence - calibrationPenalty));
     
-    console.log(`📊 Confidence Breakdown: base=${(0.40 + signalStrength * 0.30).toFixed(3)}, bonuses=${(baseConfidence - 0.40 - signalStrength * 0.30).toFixed(3)}, penalties=-${dataQualityPenalty.toFixed(3)}, calibration=-${calibrationPenalty.toFixed(3)}, raw=${rawConfidence.toFixed(3)}`);
+    console.log(`📊 Confidence Breakdown: base=${(0.45 + signalStrength * 0.40).toFixed(3)}, bonuses=${(baseConfidence - 0.45 - signalStrength * 0.40).toFixed(3)}, penalties=-${dataQualityPenalty.toFixed(3)}, calibration=-${calibrationPenalty.toFixed(3)}, raw=${rawConfidence.toFixed(3)}`);
     
     const smoothedConfidence = this.smoothConfidence(rawConfidence);
     
@@ -3388,6 +3533,36 @@ class SignalGenerationEngine {
     return ema;
   }
 
+  private checkAlternativeCounterTrendConfirmation(
+    signalType: SignalType,
+    features: MarketFeatures,
+  ): { confirmed: boolean; reason: string } {
+    const price = this.currentPrice;
+    const proximity = 8;
+
+    if (signalType === 'BUY') {
+      const strongOB = features.orderBlocks.find(ob => ob.type === 'BULLISH' && ob.strength >= 0.6 && Math.abs(ob.price - price) < proximity);
+      if (strongOB) return { confirmed: true, reason: `Bullish OB @ ${strongOB.price.toFixed(1)} (strength ${(strongOB.strength * 100).toFixed(0)}%)` };
+
+      const strongQM = features.quasimodolLevels.find(qm => qm.type === 'BULLISH_QM' && qm.strength >= 0.6 && Math.abs(qm.price - price) < proximity);
+      if (strongQM) return { confirmed: true, reason: `Bullish Quasimodo @ ${strongQM.price.toFixed(1)}` };
+
+      const confirmedSweep = features.sessionSweeps.find(s => s.type === 'LOW_SWEEP' && s.reversalConfirmed);
+      if (confirmedSweep) return { confirmed: true, reason: `Confirmed ${confirmedSweep.sessionType} low sweep reversal` };
+    } else {
+      const strongOB = features.orderBlocks.find(ob => ob.type === 'BEARISH' && ob.strength >= 0.6 && Math.abs(ob.price - price) < proximity);
+      if (strongOB) return { confirmed: true, reason: `Bearish OB @ ${strongOB.price.toFixed(1)} (strength ${(strongOB.strength * 100).toFixed(0)}%)` };
+
+      const strongQM = features.quasimodolLevels.find(qm => qm.type === 'BEARISH_QM' && qm.strength >= 0.6 && Math.abs(qm.price - price) < proximity);
+      if (strongQM) return { confirmed: true, reason: `Bearish Quasimodo @ ${strongQM.price.toFixed(1)}` };
+
+      const confirmedSweep = features.sessionSweeps.find(s => s.type === 'HIGH_SWEEP' && s.reversalConfirmed);
+      if (confirmedSweep) return { confirmed: true, reason: `Confirmed ${confirmedSweep.sessionType} high sweep reversal` };
+    }
+
+    return { confirmed: false, reason: 'No strong OB / Quasimodo / confirmed sweep nearby' };
+  }
+
   private requiresHigherTimeframeConfirmation(): { confirmed: boolean; reason: string; tip: string } {
     if (this.fiveMinCandles.length < 2) {
       return {
@@ -3541,7 +3716,8 @@ class SignalGenerationEngine {
     const avgRecentWinConfidence = this.performanceMetrics.recentWinningConfidences.length > 0
       ? this.performanceMetrics.recentWinningConfidences.reduce((a, b) => a + b, 0) / this.performanceMetrics.recentWinningConfidences.length
       : 0.80;
-    const shouldRetrainConfidenceDrop = avgRecentWinConfidence < MIN_CONFIDENCE_FOR_RETRAINING;
+    const winRateDrift = this.checkRollingWinRateDrift();
+    const shouldRetrainConfidenceDrop = avgRecentWinConfidence < MIN_CONFIDENCE_FOR_RETRAINING || winRateDrift;
     
     if (shouldRetrainScheduled || shouldRetrainConfidenceDrop) {
       const reason = shouldRetrainConfidenceDrop 
@@ -3816,27 +3992,28 @@ class SignalGenerationEngine {
   }
   
   private calculateDynamicCooldown(marketRegime: MarketRegime, confidence: number): number {
-    const BASE_COOLDOWN = 90000;
-    const MIN_COOLDOWN = 45000;
+    // D21: Regime-scale cooldown (TRENDING 30-60s, RANGING 90s, VOLATILE 180s, QUIET 150s)
+    const BASE_COOLDOWN = 60000;
+    const MIN_COOLDOWN = 30000;
     const MAX_COOLDOWN = 180000;
     
     let cooldownMultiplier = 1.0;
     
     if (marketRegime.type === 'TRENDING' && marketRegime.strength > 0.75) {
-      cooldownMultiplier = 0.25;
-      console.log('📊 Regime: STRONG TRENDING - Cooldown reduced to 25%');
+      cooldownMultiplier = 0.5;
+      console.log('📊 Regime: STRONG TRENDING - cooldown 30s');
     } else if (marketRegime.type === 'TRENDING') {
-      cooldownMultiplier = 0.35;
-      console.log('📊 Regime: TRENDING - Cooldown reduced to 35%');
+      cooldownMultiplier = 0.75;
+      console.log('📊 Regime: TRENDING - cooldown 45s');
     } else if (marketRegime.type === 'VOLATILE') {
-      cooldownMultiplier = 0.30;
-      console.log('📊 Regime: VOLATILE - Cooldown reduced to 30% (High opportunity window)');
+      cooldownMultiplier = 3.0;
+      console.log('📊 Regime: VOLATILE - cooldown 180s (noise protection)');
     } else if (marketRegime.type === 'RANGING') {
-      cooldownMultiplier = 1.0;
-      console.log('📊 Regime: RANGING - Standard 60s cooldown maintained');
-    } else if (marketRegime.type === 'QUIET') {
       cooldownMultiplier = 1.5;
-      console.log('📊 Regime: QUIET - Cooldown extended to 90s (Low opportunity)');
+      console.log('📊 Regime: RANGING - cooldown 90s');
+    } else if (marketRegime.type === 'QUIET') {
+      cooldownMultiplier = 2.5;
+      console.log('📊 Regime: QUIET - cooldown 150s');
     }
     
     if (confidence >= 0.90) {
@@ -3888,6 +4065,8 @@ class SignalGenerationEngine {
     const now = Date.now();
     const startTime = performance.now();
     this.signalGenerationAttempts++;
+    this.recentAttemptTimestamps.push(now);
+    this.getRecentAttemptCount(now);
     
     console.log(`\n${'='.repeat(80)}`);
     console.log(`📊 SIGNAL GENERATION ATTEMPT #${this.signalGenerationAttempts}`);
@@ -3917,7 +4096,8 @@ class SignalGenerationEngine {
       console.log(`   ⚠️  IMPORTANT: Structural validation STILL REQUIRED\n`);
       exceptionConditionActive = true;
     } else {
-      const MIN_GLOBAL_COOLDOWN_MS = 45000;
+      // H38: separate BUY/SELL cooldown timers
+      const MIN_GLOBAL_COOLDOWN_MS = 30000;
       if (this.lastSignalTime > 0 && cooldownElapsed < MIN_GLOBAL_COOLDOWN_MS) {
         const remainingCooldown = ((MIN_GLOBAL_COOLDOWN_MS - cooldownElapsed) / 1000).toFixed(1);
         console.log(`⏱️ EARLY COOLDOWN: ${remainingCooldown}s min cooldown remaining — deferring expensive analysis`);
@@ -3961,18 +4141,21 @@ class SignalGenerationEngine {
       const requires5MinConfirmation = this.requiresHigherTimeframeConfirmation();
       
       if (!requires5MinConfirmation.confirmed) {
-        console.log(`❌ REJECTED: Counter-trend signal requires 5-minute candle confirmation`);
+        const altConfirmation = this.checkAlternativeCounterTrendConfirmation(analysis.signalType, features);
+        if (altConfirmation.confirmed) {
+          console.log(`✅ COUNTER-TREND ALT CONFIRMATION: ${altConfirmation.reason}`);
+        } else {
+          console.log(`❌ REJECTED: Counter-trend signal requires 5-min candle OR OB/QM/Sweep confirmation`);
+          console.log(`   ${requires5MinConfirmation.reason}`);
+          console.log(`   Alt check: ${altConfirmation.reason}`);
+          console.log(`   💡 TIP: ${requires5MinConfirmation.tip}`);
+          console.log(`${'='.repeat(80)}\n`);
+          return null;
+        }
+      } else {
+        console.log(`✅ COUNTER-TREND CONFIRMATION: 5-minute candle closed outside range`);
         console.log(`   ${requires5MinConfirmation.reason}`);
-        console.log(`   💡 TIP: ${requires5MinConfirmation.tip}`);
-        console.log(`   HTF Trend: ${htfTrend}`);
-        console.log(`   Signal Type: ${analysis.signalType}`);
-        console.log(`   Classification: COUNTER-TREND (requires higher timeframe confirmation)`);
-        console.log(`${'='.repeat(80)}\n`);
-        return null;
       }
-      
-      console.log(`✅ COUNTER-TREND CONFIRMATION: 5-minute candle closed outside range`);
-      console.log(`   ${requires5MinConfirmation.reason}`);
     }
     
     const requestedMinConfidence = Math.max(ENFORCED_MIN_SIGNAL_CONFIDENCE, settings.minConfidence);
@@ -3998,7 +4181,12 @@ class SignalGenerationEngine {
     }
     
     let effectiveMinConfidence = requestedMinConfidence;
-    const starvationReliefActive = this.successfulSignalsGenerated === 0 && this.signalGenerationAttempts >= SIGNAL_STARVATION_RELIEF_ATTEMPTS;
+    // H40: starvation based on recent gap, not total count
+    const lastSignalAgeMs = this.lastSignalTime > 0 ? (now - this.lastSignalTime) : Number.POSITIVE_INFINITY;
+    const starvationReliefActive = (
+      lastSignalAgeMs > STARVATION_GAP_MS &&
+      this.getRecentAttemptCount(now) >= SIGNAL_STARVATION_RELIEF_ATTEMPTS
+    );
     
     if (this.driftAlertLevel === 'HIGH') {
       effectiveMinConfidence = Math.max(requestedMinConfidence, 0.80);
@@ -4104,15 +4292,19 @@ class SignalGenerationEngine {
     const entryPrice = this.currentPrice;
     
     const slippageBuffer = this.calculateDynamicSlippage(features.marketRegime, latency);
+    const spreadPips = this.lastKnownSpreadPips > 0 ? this.lastKnownSpreadPips : 0;
+    const totalSlippage = slippageBuffer + spreadPips;
     const entryPriceWithSlippage = analysis.signalType === "BUY" 
-      ? entryPrice + (slippageBuffer * 0.1)
-      : entryPrice - (slippageBuffer * 0.1);
+      ? entryPrice + (totalSlippage * 0.1)
+      : entryPrice - (totalSlippage * 0.1);
+    if (spreadPips > 0) console.log(`💵 Real bid/ask spread applied: ${spreadPips.toFixed(2)} pips`);
     
     console.log(`💰 Dynamic Slippage Buffer: ${slippageBuffer.toFixed(2)} pips (Regime: ${features.marketRegime.type}, Latency: ${latency.toFixed(0)}ms)`);
     
     const pipValue = 0.1;
     
-    const atrMultiplier = features.atr > 10 ? 1.2 : features.atr < 8 ? 0.9 : 1.0;
+    // F30: Continuous ATR-to-SL mapping
+    const atrMultiplier = parseFloat(Math.max(0.8, Math.min(1.4, 0.6 + features.atr * 0.06)).toFixed(2));
     const dynamicSlPips = settings.slPips * atrMultiplier;
     
     const volatilityLabel = features.atr > 10 ? "High Volatility" : features.atr < 8 ? "Low Volatility" : "Normal Volatility";
@@ -4122,19 +4314,19 @@ class SignalGenerationEngine {
     let tp2Distance = settings.tp2Pips;
     let tp3Distance = settings.tp3Pips;
     
-    if (analysis.confidence >= 0.89) {
-      tp3Distance = settings.tp3Pips * 1.15;
-      tp2Distance = settings.tp2Pips * 1.08;
-      console.log(`🎯 Ultra-high confidence (${(analysis.confidence * 100).toFixed(0)}%): TP targets widened (TP3: ${tp3Distance.toFixed(0)} pips)`);
-    } else if (analysis.confidence >= 0.82) {
-      tp3Distance = settings.tp3Pips * 1.05;
-      console.log(`🎯 High confidence (${(analysis.confidence * 100).toFixed(0)}%): TP3 widened slightly (${tp3Distance.toFixed(0)} pips)`);
-    } else if (analysis.confidence < 0.70) {
-      tp1Distance = settings.tp1Pips * 0.92;
-      tp2Distance = settings.tp2Pips * 0.88;
-      tp3Distance = settings.tp3Pips * 0.80;
-      console.log(`⚠️ Lower confidence (${(analysis.confidence * 100).toFixed(0)}%): TP targets tightened`);
-    }
+    // F29: Scale TP widening by ATR-relative room to nearest S/R
+    const roomToSR = this.computeRoomToSR(analysis.signalType, features);
+    const atrUnits = roomToSR / Math.max(features.atr, 1);
+    let widenFactor = 1.0;
+    if (analysis.confidence >= 0.89 && atrUnits >= 3) widenFactor = 1.15;
+    else if (analysis.confidence >= 0.89) widenFactor = 1.05;
+    else if (analysis.confidence >= 0.82 && atrUnits >= 2.5) widenFactor = 1.08;
+    else if (analysis.confidence >= 0.82) widenFactor = 1.03;
+    else if (analysis.confidence < 0.70) widenFactor = 0.88;
+    tp2Distance = settings.tp2Pips * widenFactor;
+    tp3Distance = settings.tp3Pips * widenFactor;
+    if (analysis.confidence < 0.70) tp1Distance = settings.tp1Pips * 0.92;
+    console.log(`🎯 TP widening factor ${widenFactor.toFixed(2)}x (room-to-SR ${roomToSR.toFixed(0)}p / ATR ${atrUnits.toFixed(1)}u)`);
     
     const tp1 = entryPriceWithSlippage + (analysis.signalType === "BUY" ? 1 : -1) * tp1Distance * pipValue;
     const tp2 = entryPriceWithSlippage + (analysis.signalType === "BUY" ? 1 : -1) * tp2Distance * pipValue;
@@ -4174,8 +4366,10 @@ class SignalGenerationEngine {
     
     this.lastSignalType = analysis.signalType;
     this.lastSignalTime = now;
+    if (analysis.signalType === 'BUY') this.lastBuySignalTime = now; else this.lastSellSignalTime = now;
     this.lastMarketRegime = features.marketRegime;
     this.successfulSignalsGenerated++;
+    this.signalsGeneratedCount++;
     
     const signalFrequencyRate = this.signalGenerationAttempts > 0 
       ? ((this.successfulSignalsGenerated / this.signalGenerationAttempts) * 100).toFixed(1)
@@ -4346,20 +4540,34 @@ class SignalGenerationEngine {
       };
     }
 
+    // D18: QUIET regime allows mean-reversion setups when Bollinger bands are squeezed + S/R reaction
     if (regime.type === 'QUIET' && regime.strength < 0.35 && confidence < 0.80) {
-      return {
-        passed: false,
-        reason: 'QUIET regime with weak directional strength',
-        tip: 'Price is compressed and directionless. Skip until volatility expands or a strong S/R bounce appears.',
-      };
+      const hasMeanRevSetup = features.bollingerSqueeze && srReaction && srReaction.confirmed;
+      if (!hasMeanRevSetup) {
+        return {
+          passed: false,
+          reason: 'QUIET regime with weak directional strength',
+          tip: 'Price is compressed and directionless. Needs Bollinger squeeze + confirmed S/R bounce for mean-reversion entry.',
+        };
+      }
+      console.log('✅ QUIET mean-reversion setup: Bollinger squeeze + S/R reaction confirmed');
     }
 
+    // D19: Cold-start relaxation for RANGING - allow near-S/R plus higher conviction
+    const isColdStart = this.priceHistory.length < 40 || this.tradeOutcomes.length < 10;
     if (regime.type === 'RANGING' && !srReaction && confidence < 0.78) {
-      return {
-        passed: false,
-        reason: 'RANGING regime with no confirmed S/R reaction',
-        tip: 'In a range, only trade confirmed bounces off support/resistance. No S/R touch detected.',
-      };
+      const coldStartMin = 0.72;
+      if (isColdStart && confidence >= coldStartMin) {
+        console.log(`✅ RANGING cold-start relief: accepting ${(confidence * 100).toFixed(1)}% (>= ${coldStartMin * 100}%)`);
+      } else {
+        return {
+          passed: false,
+          reason: 'RANGING regime with no confirmed S/R reaction',
+          tip: isColdStart
+            ? `Cold start: need >=${coldStartMin * 100}% confidence OR a confirmed S/R touch.`
+            : 'In a range, only trade confirmed bounces off support/resistance. No S/R touch detected.',
+        };
+      }
     }
 
     if (srReaction && !srReaction.confirmed && confidence < 0.80) {
@@ -4568,6 +4776,8 @@ class SignalGenerationEngine {
     const maxSignalAge = MAX_RECENT_SIGNAL_TIME_MINUTES * 60 * 1000;
     const now = Date.now();
     
+    // F31: Allow opposite-direction to bypass proximity filter entirely
+    // proximity rules only apply to same-direction signals here
     const partiallyManagedSignals = activeSignals.filter(signal => {
       if (signal.type !== proposedType) return false;
       
@@ -4640,7 +4850,40 @@ class SignalGenerationEngine {
   resetSignalLock(): void {
     this.lastSignalType = null;
     this.lastSignalTime = 0;
+    this.lastBuySignalTime = 0;
+    this.lastSellSignalTime = 0;
     console.log('🔓 Signal lock reset. New signals can be generated.');
+  }
+
+  private getRecentAttemptCount(now: number): number {
+    this.recentAttemptTimestamps = this.recentAttemptTimestamps.filter(t => (now - t) < ATTEMPT_WINDOW_MS);
+    return this.recentAttemptTimestamps.length;
+  }
+
+  private computeExpectedValue(confidence: number, tp2Pips: number, slPips: number, atrMultiplier: number): number {
+    const rr = tp2Pips / (slPips * atrMultiplier);
+    const winProb = Math.min(0.95, Math.max(0.3, confidence));
+    return winProb * rr - (1 - winProb);
+  }
+
+  private computeRoomToSR(signalType: SignalType, features: MarketFeatures): number {
+    const price = this.currentPrice;
+    const pip = 0.1;
+    if (signalType === 'BUY') {
+      const barriers = [features.r1, features.r2, features.r3, ...features.orderBlocks.filter(o => o.type === 'BEARISH').map(o => o.price)].filter(p => p > price);
+      if (barriers.length === 0) return 200;
+      return (Math.min(...barriers) - price) / pip;
+    } else {
+      const barriers = [features.s1, features.s2, features.s3, ...features.orderBlocks.filter(o => o.type === 'BULLISH').map(o => o.price)].filter(p => p < price);
+      if (barriers.length === 0) return 200;
+      return (price - Math.max(...barriers)) / pip;
+    }
+  }
+
+  setLastKnownSpread(spreadPips: number): void {
+    if (spreadPips > 0 && spreadPips < 20) {
+      this.lastKnownSpreadPips = spreadPips;
+    }
   }
   
   private logSignalGenerationMetrics(): void {
