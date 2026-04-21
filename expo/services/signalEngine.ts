@@ -2174,16 +2174,17 @@ class SignalGenerationEngine {
     }
 
     const dailyPivot = (H + L + C) / 3;
-    const r1 = 2 * dailyPivot - L;
-    const s1 = 2 * dailyPivot - H;
-    const r2 = dailyPivot + (H - L);
-    const s2 = dailyPivot - (H - L);
-    const r3 = H + 2 * (dailyPivot - L);
-    const s3 = L - 2 * (H - dailyPivot);
+    const range = H - L;
+    const r1 = C + (range * 1.1) / 12;
+    const s1 = C - (range * 1.1) / 12;
+    const r2 = C + (range * 1.1) / 6;
+    const s2 = C - (range * 1.1) / 6;
+    const r3 = C + (range * 1.1) / 4;
+    const s3 = C - (range * 1.1) / 4;
 
-    console.log(`📊 Dashboard Daily Pivot Levels (Classic):`);
+    console.log(`📊 Dashboard Daily Pivot Levels (Camarilla - intraday):`);
     console.log(`   OHLC used -> H: ${H.toFixed(1)} | L: ${L.toFixed(1)} | C: ${C.toFixed(1)} | Current: ${currentPrice.toFixed(1)}`);
-    console.log(`   Range: ${dailyRange.toFixed(1)} | Pivot: ${dailyPivot.toFixed(1)}`);
+    console.log(`   Range: ${dailyRange.toFixed(1)} | Pivot (ref): ${dailyPivot.toFixed(1)}`);
     console.log(`   Resistance -> R1: ${r1.toFixed(1)} | R2: ${r2.toFixed(1)} | R3: ${r3.toFixed(1)}`);
     console.log(`   Support    -> S1: ${s1.toFixed(1)} | S2: ${s2.toFixed(1)} | S3: ${s3.toFixed(1)}`);
 
@@ -2246,12 +2247,13 @@ class SignalGenerationEngine {
     const dailyPivot = (pivotH + pivotL + pivotC) / 3;
     const dailyRange = pivotH - pivotL;
 
-    const r1 = 2 * dailyPivot - pivotL;
-    const s1 = 2 * dailyPivot - pivotH;
-    const r2 = dailyPivot + (pivotH - pivotL);
-    const s2 = dailyPivot - (pivotH - pivotL);
-    const r3 = pivotH + 2 * (dailyPivot - pivotL);
-    const s3 = pivotL - 2 * (pivotH - dailyPivot);
+    const camRange = pivotH - pivotL;
+    const r1 = pivotC + (camRange * 1.1) / 12;
+    const s1 = pivotC - (camRange * 1.1) / 12;
+    const r2 = pivotC + (camRange * 1.1) / 6;
+    const s2 = pivotC - (camRange * 1.1) / 6;
+    const r3 = pivotC + (camRange * 1.1) / 4;
+    const s3 = pivotC - (camRange * 1.1) / 4;
     
     const rsi = this.calculateRealRSI(14);
     const atr = this.calculateRealATR(14);
