@@ -97,11 +97,15 @@ export function getEffectiveExitPrice(signal: TradingSignal): number {
   switch (signal.status) {
     case "ALL_TARGETS_HIT":
     case "TP3_HIT":
-      return Number(((signal.tp1 + signal.tp2 + signal.tp3) / 3).toFixed(2));
+      return signal.tp3;
     case "PARTIAL_WIN_SL_HIT":
       return getProtectedExitPrice(signal, Math.max(signal.targetsHit, 2));
     case "SL_AFTER_BE":
       return getProtectedExitPrice(signal, Math.max(signal.targetsHit, 1));
+    case "TP2_HIT":
+      return signal.exitPrice ?? getProtectedExitPrice(signal, 2);
+    case "TP1_HIT":
+      return signal.exitPrice ?? getProtectedExitPrice(signal, 1);
     case "SL_HIT":
       return signal.sl;
     case "CLOSED":
