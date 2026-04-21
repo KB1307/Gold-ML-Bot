@@ -101,9 +101,9 @@ TaskManager.defineTask(SIGNAL_GENERATION_TASK, async () => {
     const settings: Settings = savedSettings 
       ? JSON.parse(savedSettings)
       : {
-          tp1Pips: 20,
-          tp2Pips: 40,
-          tp3Pips: 65,
+          tp1Pips: 30,
+          tp2Pips: 60,
+          tp3Pips: 90,
           slPips: 70,
           numberOfTPs: 3,
           minConfidence: 0.90,
@@ -111,6 +111,8 @@ TaskManager.defineTask(SIGNAL_GENERATION_TASK, async () => {
           basePositionSize: 0.01,
           maxRiskPercentage: 2.0,
           useKellyCriterion: true,
+          useDynamicSL: true,
+          maxSLPips: 70,
         };
 
     if (!settings.enableNotifications) {

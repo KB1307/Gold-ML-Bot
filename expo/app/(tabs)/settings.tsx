@@ -84,6 +84,8 @@ export default function SettingsScreen() {
   const [tp2Pips, setTp2Pips] = useState<string>(settings.tp2Pips.toString());
   const [tp3Pips, setTp3Pips] = useState<string>(settings.tp3Pips.toString());
   const [slPips, setSlPips] = useState<string>(settings.slPips.toString());
+  const [maxSLPips, setMaxSLPips] = useState<string>(settings.maxSLPips.toString());
+  const [useDynamicSL, setUseDynamicSL] = useState<boolean>(settings.useDynamicSL);
   const [minConfidence, setMinConfidence] = useState<string>((settings.minConfidence * 100).toFixed(0));
   const [numberOfTPs, setNumberOfTPs] = useState<1 | 2 | 3>(settings.numberOfTPs);
 
@@ -104,6 +106,8 @@ export default function SettingsScreen() {
     setTp2Pips(settings.tp2Pips.toString());
     setTp3Pips(settings.tp3Pips.toString());
     setSlPips(settings.slPips.toString());
+    setMaxSLPips(settings.maxSLPips.toString());
+    setUseDynamicSL(settings.useDynamicSL);
     setMinConfidence((settings.minConfidence * 100).toFixed(0));
     setNumberOfTPs(settings.numberOfTPs);
   }, [settings]);
@@ -123,6 +127,8 @@ export default function SettingsScreen() {
       tp2Pips: parseFloat(tp2Pips) || settings.tp2Pips,
       tp3Pips: parseFloat(tp3Pips) || settings.tp3Pips,
       slPips: parseFloat(slPips) || settings.slPips,
+      maxSLPips: Math.min(70, parseFloat(maxSLPips) || settings.maxSLPips),
+      useDynamicSL,
       minConfidence: normalizedMinConfidence,
       numberOfTPs,
     });
@@ -448,20 +454,49 @@ export default function SettingsScreen() {
                 <Text style={styles.sectionTitle}>Stop Loss (Pips)</Text>
               </View>
               
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Stop Loss Distance</Text>
-                <TextInput
-                  style={[styles.input, styles.inputFull]}
-                  value={slPips}
-                  onChangeText={setSlPips}
-                  keyboardType="decimal-pad"
-                  placeholder="120"
-                  placeholderTextColor="#666"
+              <View style={styles.inputRow}>
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Base SL</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={slPips}
+                    onChangeText={setSlPips}
+                    keyboardType="decimal-pad"
+                    placeholder="70"
+                    placeholderTextColor="#666"
+                  />
+                </View>
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Max SL Cap</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={maxSLPips}
+                    onChangeText={setMaxSLPips}
+                    keyboardType="decimal-pad"
+                    placeholder="70"
+                    placeholderTextColor="#666"
+                  />
+                </View>
+              </View>
+
+              <View style={styles.switchRow}>
+                <View style={styles.switchInfo}>
+                  <Text style={styles.switchLabel}>Dynamic Stop Loss</Text>
+                  <Text style={styles.switchHelper}>
+                    Auto-adjust SL by ATR volatility (capped at Max SL). Off = fixed Base SL.
+                  </Text>
+                </View>
+                <Switch
+                  value={useDynamicSL}
+                  onValueChange={setUseDynamicSL}
+                  trackColor={{ false: "#333", true: "rgba(239, 68, 68, 0.3)" }}
+                  thumbColor={useDynamicSL ? "#ef4444" : "#666"}
+                  ios_backgroundColor="#333"
                 />
               </View>
 
               <Text style={styles.helperText}>
-                Maximum loss tolerance from entry price.
+                Max SL cap enforces a hard draw-down ceiling (default 70 pips). TP zones default 30 pips apart.
               </Text>
             </View>
 

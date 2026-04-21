@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 
 import type { Settings, SignalStatus, TradingSignal } from "../types/trading";
 
-type SimulationSettings = Pick<Settings, "tp1Pips" | "tp2Pips" | "tp3Pips" | "slPips" | "minConfidence">;
+type SimulationSettings = Pick<Settings, "tp1Pips" | "tp2Pips" | "tp3Pips" | "slPips" | "minConfidence" | "useDynamicSL" | "maxSLPips">;
 type TerminalStatus = Extract<SignalStatus, "CLOSED" | "SL_HIT" | "ALL_TARGETS_HIT" | "PARTIAL_WIN_SL_HIT">;
 
 interface SimulationBar {
@@ -73,11 +73,13 @@ const TERMINAL_STATUSES: TerminalStatus[] = ["CLOSED", "SL_HIT", "ALL_TARGETS_HI
 const OBSERVED_HOURS = Math.max(1, Number(process.env.SIGNAL_SIM_HOURS ?? "24"));
 const VERBOSE_SIMULATION = process.env.SIGNAL_SIM_VERBOSE === "1";
 const DEFAULT_SETTINGS: SimulationSettings = {
-  tp1Pips: 20,
-  tp2Pips: 40,
-  tp3Pips: 65,
+  tp1Pips: 30,
+  tp2Pips: 60,
+  tp3Pips: 90,
   slPips: 70,
   minConfidence: 0.85,
+  useDynamicSL: true,
+  maxSLPips: 70,
 };
 const ACCOUNT_BALANCE = 10_000;
 const STEP_MS = 30_000;

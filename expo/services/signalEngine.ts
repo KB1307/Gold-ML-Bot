@@ -4160,7 +4160,7 @@ class SignalGenerationEngine {
   }
   
   async generateSignal(
-    settings: { tp1Pips: number; tp2Pips: number; tp3Pips: number; slPips: number; minConfidence: number },
+    settings: { tp1Pips: number; tp2Pips: number; tp3Pips: number; slPips: number; minConfidence: number; useDynamicSL?: boolean; maxSLPips?: number },
     accountBalance: number = 10000,
     activeSignals: TradingSignal[] = []
   ): Promise<TradingSignal | null> {
@@ -4472,8 +4472,16 @@ class SignalGenerationEngine {
     const pipValue = 0.1;
     
     // F30: Continuous ATR-to-SL mapping
-    const atrMultiplier = parseFloat(Math.max(0.8, Math.min(1.4, 0.6 + features.atr * 0.06)).toFixed(2));
-    const dynamicSlPips = settings.slPips * atrMultiplier;
+    const useDynamicSL = settings.useDynamicSL !== false;
+    const maxSLPips = settings.maxSLPips ?? 70;
+    const atrMultiplier = useDynamicSL
+      ? parseFloat(Math.max(0.8, Math.min(1.4, 0.6 + features.atr * 0.06)).toFixed(2))
+      : 1.0;
+    const rawSlPips = settings.slPips * atrMultiplier;
+    const dynamicSlPips = Math.min(rawSlPips, maxSLPips);
+    if (rawSlPips > maxSLPips) {
+      console.log(`🛡️ SL capped at maxSLPips ${maxSLPips} (would have been ${rawSlPips.toFixed(1)})`);
+    }
     
     const volatilityLabel = features.atr > 10 ? "High Volatility" : features.atr < 8 ? "Low Volatility" : "Normal Volatility";
     const riskJustification = `SL Multiplier: ${atrMultiplier.toFixed(2)}x (${volatilityLabel} | ATR: ${features.atr.toFixed(1)})`;

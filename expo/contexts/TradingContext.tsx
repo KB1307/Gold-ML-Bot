@@ -19,9 +19,9 @@ const INDEPENDENT_POLL_NO_PRICE_INTERVAL_MS = 5000;
 const PRICE_STALE_THRESHOLD_FOR_POLL_MS = 20000;
 
 const DEFAULT_SETTINGS: Settings = {
-  tp1Pips: 20,
-  tp2Pips: 40,
-  tp3Pips: 65,
+  tp1Pips: 30,
+  tp2Pips: 60,
+  tp3Pips: 90,
   slPips: 70,
   numberOfTPs: 3,
   minConfidence: 0.68,
@@ -29,6 +29,8 @@ const DEFAULT_SETTINGS: Settings = {
   basePositionSize: 0.01,
   maxRiskPercentage: 2.0,
   useKellyCriterion: true,
+  useDynamicSL: true,
+  maxSLPips: 70,
 };
 
 const DEFAULT_METRICS: PerformanceMetrics = {

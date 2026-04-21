@@ -154,4 +154,6 @@ export interface Settings {
   basePositionSize: number;
   maxRiskPercentage: number;
   useKellyCriterion: boolean;
+  useDynamicSL: boolean;
+  maxSLPips: number;
 }
