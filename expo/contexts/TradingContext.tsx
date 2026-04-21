@@ -76,8 +76,11 @@ function clampSignalConfidenceThreshold(value: number): number {
 
 function sanitizeSettings(settings: Settings): Settings {
   return {
+    ...DEFAULT_SETTINGS,
     ...settings,
-    minConfidence: clampSignalConfidenceThreshold(settings.minConfidence),
+    minConfidence: clampSignalConfidenceThreshold(settings.minConfidence ?? DEFAULT_SETTINGS.minConfidence),
+    maxSLPips: typeof settings.maxSLPips === 'number' && Number.isFinite(settings.maxSLPips) ? settings.maxSLPips : DEFAULT_SETTINGS.maxSLPips,
+    useDynamicSL: typeof settings.useDynamicSL === 'boolean' ? settings.useDynamicSL : DEFAULT_SETTINGS.useDynamicSL,
   };
 }
 
