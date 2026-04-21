@@ -2090,19 +2090,32 @@ class SignalGenerationEngine {
   }
   
   private getDerivedDailyOHLC(): { yesterdayHigh: number; yesterdayLow: number; yesterdayClose: number; yesterdayOpen: number } {
+    const currentPrice = this.currentPrice;
+    const STALENESS_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
     if (this.dailyOHLCHistory.length > 0) {
       const sortedHistory = [...this.dailyOHLCHistory].sort((left, right) => right.timestamp - left.timestamp);
       const mostRecentBar = sortedHistory[0];
+      const barAge = now - mostRecentBar.timestamp;
+      const priceDrift = currentPrice > 0
+        ? Math.abs(currentPrice - mostRecentBar.close) / mostRecentBar.close
+        : 0;
+      const isStale = barAge > STALENESS_THRESHOLD_MS || priceDrift > 0.025;
 
-      console.log(`📊 Using Latest Completed Daily Bar: ${mostRecentBar.date}`);
-      console.log(`   Open: ${mostRecentBar.open.toFixed(1)} | High: ${mostRecentBar.high.toFixed(1)} | Low: ${mostRecentBar.low.toFixed(1)} | Close: ${mostRecentBar.close.toFixed(1)}`);
+      if (!isStale) {
+        console.log(`📊 Using Latest Completed Daily Bar: ${mostRecentBar.date}`);
+        console.log(`   Open: ${mostRecentBar.open.toFixed(1)} | High: ${mostRecentBar.high.toFixed(1)} | Low: ${mostRecentBar.low.toFixed(1)} | Close: ${mostRecentBar.close.toFixed(1)}`);
 
-      return {
-        yesterdayHigh: mostRecentBar.high,
-        yesterdayLow: mostRecentBar.low,
-        yesterdayClose: mostRecentBar.close,
-        yesterdayOpen: mostRecentBar.open,
-      };
+        return {
+          yesterdayHigh: mostRecentBar.high,
+          yesterdayLow: mostRecentBar.low,
+          yesterdayClose: mostRecentBar.close,
+          yesterdayOpen: mostRecentBar.open,
+        };
+      }
+
+      console.log(`⚠️ Stored daily bar is stale (age ${(barAge / 3600000).toFixed(1)}h, drift ${(priceDrift * 100).toFixed(2)}%) - preferring developing day or live data`);
     }
 
     if (this.currentDayOHLC) {
@@ -2117,13 +2130,18 @@ class SignalGenerationEngine {
       };
     }
 
-    const currentPrice = this.currentPrice;
-    const volatilityRange = currentPrice * 0.015;
+    const fallbackPrice = currentPrice > 0 ? currentPrice : 2000;
+    const atrFloor = Math.max(this.calculateRealATR(14), fallbackPrice * 0.008);
+    const sessionHigh = this.highHistory.length > 0 ? Math.max(...this.highHistory.slice(-480)) : fallbackPrice + atrFloor;
+    const sessionLow = this.lowHistory.length > 0 ? Math.min(...this.lowHistory.slice(-480)) : fallbackPrice - atrFloor;
+    const derivedHigh = Math.max(sessionHigh, fallbackPrice + atrFloor * 0.5);
+    const derivedLow = Math.min(sessionLow, fallbackPrice - atrFloor * 0.5);
+    console.log(`📊 OHLC fallback from live session range: H ${derivedHigh.toFixed(1)} L ${derivedLow.toFixed(1)} C ${fallbackPrice.toFixed(1)}`);
     return {
-      yesterdayHigh: currentPrice + (volatilityRange / 2),
-      yesterdayLow: currentPrice - (volatilityRange / 2),
-      yesterdayClose: currentPrice,
-      yesterdayOpen: currentPrice - (volatilityRange * 0.3),
+      yesterdayHigh: derivedHigh,
+      yesterdayLow: derivedLow,
+      yesterdayClose: fallbackPrice,
+      yesterdayOpen: (derivedHigh + derivedLow) / 2,
     };
   }
 
@@ -2137,23 +2155,37 @@ class SignalGenerationEngine {
     s3: number;
   } {
     const ohlc = this.getDerivedDailyOHLC();
+    const currentPrice = this.currentPrice > 0 ? this.currentPrice : ohlc.yesterdayClose;
     const observedDailyRange = Math.max(ohlc.yesterdayHigh - ohlc.yesterdayLow, 0);
     const atrFloor = Math.max(this.calculateRealATR(14), 2);
     const dailyRange = Math.max(observedDailyRange, atrFloor);
-    const zoneStep = dailyRange / 12;
-    const dailyPivot = (ohlc.yesterdayHigh + ohlc.yesterdayLow + ohlc.yesterdayClose) / 3;
-    const r1 = ohlc.yesterdayClose + zoneStep;
-    const s1 = ohlc.yesterdayClose - zoneStep;
-    const r2 = ohlc.yesterdayClose + (zoneStep * 2);
-    const s2 = ohlc.yesterdayClose - (zoneStep * 2);
-    const r3 = ohlc.yesterdayClose + (zoneStep * 3);
-    const s3 = ohlc.yesterdayClose - (zoneStep * 3);
 
-    console.log(`📊 Dashboard Daily Intraday Zones:`);
-    console.log(`   Completed Day OHLC -> H: ${ohlc.yesterdayHigh.toFixed(1)} | L: ${ohlc.yesterdayLow.toFixed(1)} | C: ${ohlc.yesterdayClose.toFixed(1)}`);
-    console.log(`   Range: ${dailyRange.toFixed(1)} | Zone Step: ${zoneStep.toFixed(2)} | Pivot: ${dailyPivot.toFixed(1)}`);
-    console.log(`   Resistance Anchors -> R1: ${r1.toFixed(1)} | R2: ${r2.toFixed(1)} | R3: ${r3.toFixed(1)}`);
-    console.log(`   Support Anchors -> S1: ${s1.toFixed(1)} | S2: ${s2.toFixed(1)} | S3: ${s3.toFixed(1)}`);
+    let H = ohlc.yesterdayHigh;
+    let L = ohlc.yesterdayLow;
+    let C = ohlc.yesterdayClose;
+
+    const priceOutsideRange = currentPrice > H + dailyRange * 0.5 || currentPrice < L - dailyRange * 0.5;
+    if (priceOutsideRange) {
+      console.log(`⚠️ Current price ${currentPrice.toFixed(1)} far outside prior day range [${L.toFixed(1)}-${H.toFixed(1)}] - re-centering pivots around live price`);
+      const halfRange = dailyRange / 2;
+      H = currentPrice + halfRange;
+      L = currentPrice - halfRange;
+      C = currentPrice;
+    }
+
+    const dailyPivot = (H + L + C) / 3;
+    const r1 = 2 * dailyPivot - L;
+    const s1 = 2 * dailyPivot - H;
+    const r2 = dailyPivot + (H - L);
+    const s2 = dailyPivot - (H - L);
+    const r3 = H + 2 * (dailyPivot - L);
+    const s3 = L - 2 * (H - dailyPivot);
+
+    console.log(`📊 Dashboard Daily Pivot Levels (Classic):`);
+    console.log(`   OHLC used -> H: ${H.toFixed(1)} | L: ${L.toFixed(1)} | C: ${C.toFixed(1)} | Current: ${currentPrice.toFixed(1)}`);
+    console.log(`   Range: ${dailyRange.toFixed(1)} | Pivot: ${dailyPivot.toFixed(1)}`);
+    console.log(`   Resistance -> R1: ${r1.toFixed(1)} | R2: ${r2.toFixed(1)} | R3: ${r3.toFixed(1)}`);
+    console.log(`   Support    -> S1: ${s1.toFixed(1)} | S2: ${s2.toFixed(1)} | S3: ${s3.toFixed(1)}`);
 
     return {
       dailyPivot: parseFloat(dailyPivot.toFixed(1)),
@@ -2196,15 +2228,30 @@ class SignalGenerationEngine {
     const yesterdayLow = ohlc.yesterdayLow;
     const yesterdayClose = ohlc.yesterdayClose;
     
-    const dailyPivot = (yesterdayHigh + yesterdayLow + yesterdayClose) / 3;
-    const dailyRange = yesterdayHigh - yesterdayLow;
-    
-    const r1 = yesterdayClose + (dailyRange / 12);
-    const s1 = yesterdayClose - (dailyRange / 12);
-    const r2 = yesterdayClose + (dailyRange / 6);
-    const s2 = yesterdayClose - (dailyRange / 6);
-    const r3 = yesterdayClose + (dailyRange / 4);
-    const s3 = yesterdayClose - (dailyRange / 4);
+    let pivotH = yesterdayHigh;
+    let pivotL = yesterdayLow;
+    let pivotC = yesterdayClose;
+    const rawRange = Math.max(pivotH - pivotL, 0);
+    const atrFloorFeatures = Math.max(this.calculateRealATR(14), 2);
+    const effectiveRange = Math.max(rawRange, atrFloorFeatures);
+
+    const priceOutsidePivotRange = currentPrice > pivotH + effectiveRange * 0.5 || currentPrice < pivotL - effectiveRange * 0.5;
+    if (priceOutsidePivotRange) {
+      const halfRange = effectiveRange / 2;
+      pivotH = currentPrice + halfRange;
+      pivotL = currentPrice - halfRange;
+      pivotC = currentPrice;
+    }
+
+    const dailyPivot = (pivotH + pivotL + pivotC) / 3;
+    const dailyRange = pivotH - pivotL;
+
+    const r1 = 2 * dailyPivot - pivotL;
+    const s1 = 2 * dailyPivot - pivotH;
+    const r2 = dailyPivot + (pivotH - pivotL);
+    const s2 = dailyPivot - (pivotH - pivotL);
+    const r3 = pivotH + 2 * (dailyPivot - pivotL);
+    const s3 = pivotL - 2 * (pivotH - dailyPivot);
     
     const rsi = this.calculateRealRSI(14);
     const atr = this.calculateRealATR(14);

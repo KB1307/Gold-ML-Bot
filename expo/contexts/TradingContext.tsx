@@ -580,9 +580,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const entryMin = Math.min(signal.entryPrice, signal.entryPriceWithSlippage);
     const entryMax = Math.max(signal.entryPrice, signal.entryPriceWithSlippage);
     const ENTRY_TOLERANCE = 1.0;
+    const EXTENDED_ENTRY_TOLERANCE = 3.0;
+    
+    if (signal.targetsHit >= 1 || signal.status === "TP1_HIT" || signal.status === "TP2_HIT" || signal.status === "TP3_HIT" || signal.status === "ALL_TARGETS_HIT") {
+      entryConfirmed = true;
+      console.log(`   ✅ ENTRY AUTO-CONFIRMED: signal already reached TP${signal.targetsHit} - entry was obviously filled`);
+    }
     
     console.log(`\n🔍 STEP 1: Entry Validation (${signal.type})`);
-    console.log(`   Entry Zone: ${(entryMin - ENTRY_TOLERANCE).toFixed(1)} - ${(entryMax + ENTRY_TOLERANCE).toFixed(1)}`);
+    console.log(`   Entry Zone (strict): ${(entryMin - ENTRY_TOLERANCE).toFixed(1)} - ${(entryMax + ENTRY_TOLERANCE).toFixed(1)}`);
+    console.log(`   Entry Zone (extended): ${(entryMin - EXTENDED_ENTRY_TOLERANCE).toFixed(1)} - ${(entryMax + EXTENDED_ENTRY_TOLERANCE).toFixed(1)}`);
     
     for (let i = 0; i < historicalBars.length; i++) {
       const bar = historicalBars[i];
@@ -592,13 +599,35 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           ? bar.low <= (entryMax + ENTRY_TOLERANCE) && bar.high >= (entryMin - ENTRY_TOLERANCE)
           : bar.high >= (entryMin - ENTRY_TOLERANCE) && bar.low <= (entryMax + ENTRY_TOLERANCE);
         
+        const tpReachedFromEntry = signal.type === "BUY"
+          ? bar.high >= signal.tp1
+          : bar.low <= signal.tp1;
+        
+        const slReachedFromEntry = signal.type === "BUY"
+          ? bar.low <= signal.sl
+          : bar.high >= signal.sl;
+        
+        const crossedEntryByExtendedZone = signal.type === "BUY"
+          ? bar.low <= (entryMax + EXTENDED_ENTRY_TOLERANCE) && bar.high >= (entryMin - EXTENDED_ENTRY_TOLERANCE)
+          : bar.high >= (entryMin - EXTENDED_ENTRY_TOLERANCE) && bar.low <= (entryMax + EXTENDED_ENTRY_TOLERANCE);
+        
         if (touchedEntryZone) {
           entryConfirmed = true;
           console.log(`   ✅ ENTRY CONFIRMED on bar ${i + 1}/${historicalBars.length}`);
           console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
           console.log(`      Bar H/L: ${bar.high.toFixed(1)}/${bar.low.toFixed(1)}`);
+        } else if (tpReachedFromEntry || slReachedFromEntry) {
+          entryConfirmed = true;
+          console.log(`   ✅ ENTRY AUTO-CONFIRMED on bar ${i + 1}: price reached ${tpReachedFromEntry ? 'TP1' : 'SL'} so must have traversed entry zone`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+        } else if (crossedEntryByExtendedZone) {
+          entryConfirmed = true;
+          console.log(`   ✅ ENTRY CONFIRMED (extended ±${EXTENDED_ENTRY_TOLERANCE} tolerance) on bar ${i + 1} - gapped fill`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Bar H/L: ${bar.high.toFixed(1)}/${bar.low.toFixed(1)}`);
+        } else {
+          continue;
         }
-        continue;
       }
       
       console.log(`   [Bar ${i+1}] ${new Date(bar.timestamp).toLocaleTimeString()} - H:${bar.high.toFixed(1)} L:${bar.low.toFixed(1)} C:${bar.close.toFixed(1)}`);
@@ -755,10 +784,22 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     }
     
     if (!entryConfirmed) {
-      console.log(`   ❌ ENTRY VALIDATION FAILED: Price never entered the entry zone`);
-      console.log(`      Signal marked as EXPIRED_MISSED_ENTRY`);
-      currentStatus = "EXPIRED_MISSED_ENTRY";
-      outcomeResult = null;
+      const anyTargetHit = currentTargetsHit > 0
+        || currentStatus === "TP1_HIT"
+        || currentStatus === "TP2_HIT"
+        || currentStatus === "TP3_HIT"
+        || currentStatus === "ALL_TARGETS_HIT"
+        || currentStatus === "PARTIAL_WIN_SL_HIT"
+        || currentStatus === "SL_AFTER_BE";
+      
+      if (anyTargetHit) {
+        console.log(`   ⚠️ Entry not flagged within zone but signal already reached targets - keeping status ${currentStatus}`);
+      } else {
+        console.log(`   ❌ ENTRY VALIDATION FAILED: Price never entered the entry zone`);
+        console.log(`      Signal marked as EXPIRED_MISSED_ENTRY`);
+        currentStatus = "EXPIRED_MISSED_ENTRY";
+        outcomeResult = null;
+      }
     }
     
     console.log(`\n✅ Analysis Complete:`);
