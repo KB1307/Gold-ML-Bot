@@ -578,7 +578,23 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     let tp1HitTime: number | null = null;
     let breakevenReached = signal.breakevenReached || false;
     let breakevenTime = signal.breakevenTime;
-    
+
+    // CRITICAL FIX: Filter out bars that overlap the signal creation time.
+    // A 1-minute bar with timestamp 11:08:00 covers 11:08:00 - 11:08:59. If the
+    // signal was created at 11:08:30, any pre-signal wick inside that bar's
+    // high/low would falsely trigger an SL hit "1 minute after" the signal.
+    // We skip the partial bar that contains (or precedes) the signal timestamp
+    // and only evaluate bars that fully start AFTER the signal was generated.
+    const signalCreatedAtMs = signal.createdAt ?? new Date(signal.timestamp).getTime();
+    const oneMinuteMs = 60 * 1000;
+    const safeBarStart = signalCreatedAtMs + oneMinuteMs;
+    const originalBarCount = historicalBars.length;
+    historicalBars = historicalBars.filter(b => b.timestamp >= safeBarStart);
+    if (originalBarCount !== historicalBars.length) {
+      console.log(`   🛡️ Filtered ${originalBarCount - historicalBars.length} bar(s) that overlap signal creation time (${new Date(signalCreatedAtMs).toISOString()})`);
+      console.log(`      Only evaluating bars with timestamp >= ${new Date(safeBarStart).toISOString()}`);
+    }
+
     const entryMin = Math.min(signal.entryPrice, signal.entryPriceWithSlippage);
     const entryMax = Math.max(signal.entryPrice, signal.entryPriceWithSlippage);
     const ENTRY_TOLERANCE = 1.0;

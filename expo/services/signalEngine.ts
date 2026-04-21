@@ -2483,24 +2483,18 @@ class SignalGenerationEngine {
     if (this.confidenceHistory.length > CONFIDENCE_SMOOTHING_WINDOW) {
       this.confidenceHistory.shift();
     }
-    
-    const recentHistory = this.confidenceHistory.slice(-CONFIDENCE_SMOOTHING_WINDOW);
-    
-    if (recentHistory.length <= 1) {
-      console.log(`🔄 Confidence: Raw ${(rawConfidence * 100).toFixed(1)}% (no smoothing - insufficient history)`);
-      return rawConfidence;
-    }
-    
-    const emaAlpha = 0.55;
-    let ema = recentHistory[0];
-    for (let i = 1; i < recentHistory.length; i++) {
-      ema = emaAlpha * recentHistory[i] + (1 - emaAlpha) * ema;
-    }
-    let finalConfidence = ema;
-    finalConfidence = Math.min(finalConfidence, MAX_CONFIDENCE_CAP);
-    
-    console.log(`🔄 Confidence EMA Smoothing: Raw ${(rawConfidence * 100).toFixed(1)}% -> Smoothed ${(finalConfidence * 100).toFixed(1)}% (α=${emaAlpha})`);
-    
+
+    // Minimal smoothing: blend 85% raw + 15% previous to preserve true signal confidence
+    // while avoiding frame-to-frame jitter. Previous aggressive EMA was clustering all
+    // signals near the 66% mean regardless of actual setup quality.
+    const prev = this.confidenceHistory.length >= 2
+      ? this.confidenceHistory[this.confidenceHistory.length - 2]
+      : rawConfidence;
+    const blended = 0.85 * rawConfidence + 0.15 * prev;
+    const finalConfidence = Math.min(blended, MAX_CONFIDENCE_CAP);
+
+    console.log(`🔄 Confidence (light blend): Raw ${(rawConfidence * 100).toFixed(1)}% -> Final ${(finalConfidence * 100).toFixed(1)}% (prev ${(prev * 100).toFixed(1)}%)`);
+
     return parseFloat(finalConfidence.toFixed(3));
   }
   
