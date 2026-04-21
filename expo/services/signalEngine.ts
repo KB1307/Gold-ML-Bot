@@ -205,9 +205,22 @@ function getMinStrengthDifferenceForRegime(regime: 'TRENDING' | 'RANGING' | 'VOL
   }
 }
 const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;
+const ENFORCED_MIN_CONFIDENCE_POWER_HOUR = 0.65;
+const ENFORCED_MIN_CONFIDENCE_LOW_LIQUIDITY = 0.72;
 const ABSOLUTE_MIN_SIGNAL_CONFIDENCE = 0.62;
 const SIGNAL_STARVATION_RELIEF_ATTEMPTS = 4;
 const SIGNAL_STARVATION_RELIEF_CONFIDENCE = 0.64;
+const EV_RELIEF_THRESHOLD = 1.5;
+const EV_RELIEF_CONFIDENCE_FLOOR = 0.64;
+const TREND_FAST_PATH_CONFIDENCE = 0.66;
+const MOMENTUM_BREAKOUT_CONFIDENCE = 0.70;
+const MOMENTUM_BREAKOUT_PIPS = 30;
+const MOMENTUM_BREAKOUT_MAX_BARS = 3;
+const NEAR_MISS_CONFIDENCE_LOW = 0.60;
+const NEAR_MISS_CONFIDENCE_HIGH = 0.68;
+const NEAR_MISS_DIFF_LOW = 0.04;
+const NEAR_MISS_DIFF_HIGH = 0.06;
+const NEAR_MISS_MAX_ENTRIES = 40;
 const SYNTHETIC_DATA_PENALTY = 0.03;
 const _BIDIRECTIONAL_INFLATION_PENALTY = 0.04;
 const LOW_DATA_QUALITY_PENALTY = 0.03;
@@ -725,6 +738,9 @@ class SignalGenerationEngine {
   } = { recentWinRate: 0.65, profitFactor: 1.8, avgConfidence: 0.75, recentWinningConfidences: [] };
   private lastSignalType: SignalType | null = null;
   private lastSignalTime: number = 0;
+  private nearMisses: { timestamp: number; signalType: SignalType; confidence: number; strengthDiff: number; reason: string }[] = [];
+  private diffBucketStats: { low: { wins: number; losses: number }; mid: { wins: number; losses: number }; high: { wins: number; losses: number } } = { low: { wins: 0, losses: 0 }, mid: { wins: 0, losses: 0 }, high: { wins: 0, losses: 0 } };
+  private lastSignalStrengthDifference: number = 0;
   private lastBuySignalTime: number = 0;
   private lastSellSignalTime: number = 0;
   private lastMarketRegime: MarketRegime | null = null;
@@ -3195,7 +3211,11 @@ class SignalGenerationEngine {
       };
     }
     
-    const regimeMinDiff = getMinStrengthDifferenceForRegime(features.marketRegime.type);
+    const adaptiveAdjust = this.getAdaptiveDiffAdjustment(features.marketRegime.type);
+    const regimeMinDiff = Math.max(0.04, getMinStrengthDifferenceForRegime(features.marketRegime.type) + adaptiveAdjust);
+    if (adaptiveAdjust !== 0) {
+      console.log(`📉 Adaptive diff gate: ${adaptiveAdjust.toFixed(3)} (low-bucket EV positive)`);
+    }
     if (strengthDifference < regimeMinDiff) {
       console.log(`\n❌ REJECTED: Strength difference ${strengthDifference.toFixed(3)} too small (regime ${features.marketRegime.type} min: ${regimeMinDiff})`);
       console.log(`   BUY: ${buySignalStrength.toFixed(3)} vs SELL: ${sellSignalStrength.toFixed(3)}`);
@@ -3227,7 +3247,27 @@ class SignalGenerationEngine {
       console.log('   Signal allowed but confidence may be reduced');
     }
     
-    let baseConfidence = 0.45 + signalStrength * 0.40;
+    // Proposal #4: Scale confidence with alignment count
+    const alignmentKeys = [
+      'htf_ltf_bullish_alignment', 'htf_ltf_bearish_alignment',
+      'strong_uptrend', 'strong_downtrend',
+      'strong_uptrend_pattern', 'strong_downtrend_pattern',
+      'bullish_ema_crossover', 'bearish_ema_crossover',
+      'adx_trend_strength',
+      'above_vwap', 'below_vwap',
+    ];
+    const alignmentCount = alignmentKeys.reduce((acc, k) => acc + (attentionScores.has(k) ? 1 : 0), 0);
+    const dxyAligned = (
+      features.intermarketData &&
+      ((isBullish && features.intermarketData.dxyChange < -0.05) ||
+       (!isBullish && features.intermarketData.dxyChange > 0.05))
+    ) ? 1 : 0;
+    const totalAlignment = alignmentCount + dxyAligned;
+    const alignmentBonus = Math.min(0.18, totalAlignment * 0.03);
+    let baseConfidence = 0.40 + signalStrength * 0.40 + alignmentBonus;
+    if (alignmentBonus > 0) {
+      console.log(`🧩 Alignment bonus: +${(alignmentBonus * 100).toFixed(1)}% (${totalAlignment} confluence factors)`);
+    }
     
     baseConfidence += Math.abs(sentimentImpact) * 0.05;
     
@@ -3264,10 +3304,13 @@ class SignalGenerationEngine {
     }
     
     const losingStrength = isBullish ? sellSignalStrength : buySignalStrength;
-    if (losingStrength > 0.3) {
+    // Proposal #13: Skip losing-strength penalty when winning side is very strong (>0.75) - opposing is noise
+    if (losingStrength > 0.3 && signalStrength <= 0.75) {
       const conflictPenalty = losingStrength * 0.12;
       baseConfidence -= conflictPenalty;
       console.log(`⚠️ Opposing signal strength penalty: -${(conflictPenalty * 100).toFixed(1)}% (opposing: ${(losingStrength * 100).toFixed(1)}%)`);
+    } else if (losingStrength > 0.3) {
+      console.log(`ℹ️ Skipping opposing penalty - winning strength ${signalStrength.toFixed(2)} > 0.75 (opposing treated as noise)`);
     }
     
     let dataQualityPenalty = 0;
@@ -3299,7 +3342,8 @@ class SignalGenerationEngine {
 
     rawConfidence = Math.max(0.42, Math.min(MAX_CONFIDENCE_CAP, rawConfidence - calibrationPenalty));
     
-    console.log(`📊 Confidence Breakdown: base=${(0.45 + signalStrength * 0.40).toFixed(3)}, bonuses=${(baseConfidence - 0.45 - signalStrength * 0.40).toFixed(3)}, penalties=-${dataQualityPenalty.toFixed(3)}, calibration=-${calibrationPenalty.toFixed(3)}, raw=${rawConfidence.toFixed(3)}`);
+    console.log(`📊 Confidence Breakdown: base=${(0.40 + signalStrength * 0.40).toFixed(3)}, alignment=+${alignmentBonus.toFixed(3)}, bonuses=${(baseConfidence - 0.40 - signalStrength * 0.40 - alignmentBonus).toFixed(3)}, penalties=-${dataQualityPenalty.toFixed(3)}, calibration=-${calibrationPenalty.toFixed(3)}, raw=${rawConfidence.toFixed(3)}`);
+    this.lastSignalStrengthDifference = strengthDifference;
     
     const smoothedConfidence = this.smoothConfidence(rawConfidence);
     
@@ -3991,7 +4035,7 @@ class SignalGenerationEngine {
     }
   }
   
-  private calculateDynamicCooldown(marketRegime: MarketRegime, confidence: number): number {
+  private calculateDynamicCooldown(marketRegime: MarketRegime, confidence: number, adx: number | null = null): number {
     // D21: Regime-scale cooldown (TRENDING 30-60s, RANGING 90s, VOLATILE 180s, QUIET 150s)
     const BASE_COOLDOWN = 60000;
     const MIN_COOLDOWN = 30000;
@@ -3999,7 +4043,15 @@ class SignalGenerationEngine {
     
     let cooldownMultiplier = 1.0;
     
-    if (marketRegime.type === 'TRENDING' && marketRegime.strength > 0.75) {
+    // Proposal #14: Drop TRENDING cooldown to 15-25s when ADX>30
+    const strongAdx = adx !== null && adx > 30;
+    if (marketRegime.type === 'TRENDING' && marketRegime.strength > 0.75 && strongAdx) {
+      cooldownMultiplier = 0.25;
+      console.log(`📊 Regime: STRONG TRENDING + ADX ${adx?.toFixed(1)}>30 - cooldown 15s`);
+    } else if (marketRegime.type === 'TRENDING' && strongAdx) {
+      cooldownMultiplier = 0.4;
+      console.log(`📊 Regime: TRENDING + ADX ${adx?.toFixed(1)}>30 - cooldown 24s`);
+    } else if (marketRegime.type === 'TRENDING' && marketRegime.strength > 0.75) {
       cooldownMultiplier = 0.5;
       console.log('📊 Regime: STRONG TRENDING - cooldown 30s');
     } else if (marketRegime.type === 'TRENDING') {
@@ -4028,7 +4080,8 @@ class SignalGenerationEngine {
     }
     
     const calculatedCooldown = BASE_COOLDOWN * cooldownMultiplier;
-    const finalCooldown = Math.max(MIN_COOLDOWN, Math.min(MAX_COOLDOWN, calculatedCooldown));
+    const EFFECTIVE_MIN_COOLDOWN = (marketRegime.type === 'TRENDING' && strongAdx) ? 15000 : MIN_COOLDOWN;
+    const finalCooldown = Math.max(EFFECTIVE_MIN_COOLDOWN, Math.min(MAX_COOLDOWN, calculatedCooldown));
     
     console.log(`⏱️ Dynamic Cooldown: ${(finalCooldown / 1000).toFixed(1)}s (Base: ${BASE_COOLDOWN / 1000}s, Multiplier: ${cooldownMultiplier.toFixed(2)}x)`);
     
@@ -4127,7 +4180,15 @@ class SignalGenerationEngine {
     const latency = endTime - startTime;
     
     const analysis = this.enhancedTransformerAnalysis(features);
-    const dynamicCooldown = this.calculateDynamicCooldown(features.marketRegime, analysis.confidence);
+    const dynamicCooldown = this.calculateDynamicCooldown(features.marketRegime, analysis.confidence, features.adx);
+    
+    // Proposal #1 + #3 + #10: Fast-path signals
+    const fastPath = this.detectFastPathSignal(features, analysis);
+    if (fastPath.active) {
+      console.log(`⚡ FAST-PATH ACTIVATED: ${fastPath.reason}`);
+      analysis.confidence = Math.max(analysis.confidence, fastPath.minConfidence);
+      analysis.signalType = fastPath.signalType ?? analysis.signalType;
+    }
     
     const htfTrend = this.detectHTFTrend(features);
     const isCounterTrendSignal = (
@@ -4138,27 +4199,51 @@ class SignalGenerationEngine {
     );
     
     if (isCounterTrendSignal && !trendChangeDetected && !largePriceMovement) {
-      const requires5MinConfirmation = this.requiresHigherTimeframeConfirmation();
+      // Proposal #5: Asymmetric gate - RSI extreme with confirmed sweep bypasses 5-min requirement
+      const rsiExtreme = features.rsi < 25 || features.rsi > 75;
+      const rsiMidRange = features.rsi >= 40 && features.rsi <= 60;
+      const hasConfirmedSweep = features.sessionSweeps.some(s => s.reversalConfirmed);
       
-      if (!requires5MinConfirmation.confirmed) {
-        const altConfirmation = this.checkAlternativeCounterTrendConfirmation(analysis.signalType, features);
-        if (altConfirmation.confirmed) {
-          console.log(`✅ COUNTER-TREND ALT CONFIRMATION: ${altConfirmation.reason}`);
-        } else {
-          console.log(`❌ REJECTED: Counter-trend signal requires 5-min candle OR OB/QM/Sweep confirmation`);
-          console.log(`   ${requires5MinConfirmation.reason}`);
-          console.log(`   Alt check: ${altConfirmation.reason}`);
-          console.log(`   💡 TIP: ${requires5MinConfirmation.tip}`);
-          console.log(`${'='.repeat(80)}\n`);
-          return null;
-        }
+      if (rsiExtreme && hasConfirmedSweep) {
+        console.log(`✅ COUNTER-TREND RSI EXTREME + SWEEP: bypassing 5-min gate (RSI ${features.rsi.toFixed(1)})`);
       } else {
-        console.log(`✅ COUNTER-TREND CONFIRMATION: 5-minute candle closed outside range`);
-        console.log(`   ${requires5MinConfirmation.reason}`);
+        const requires5MinConfirmation = this.requiresHigherTimeframeConfirmation();
+        
+        if (!requires5MinConfirmation.confirmed) {
+          const altConfirmation = this.checkAlternativeCounterTrendConfirmation(analysis.signalType, features);
+          if (altConfirmation.confirmed) {
+            console.log(`✅ COUNTER-TREND ALT CONFIRMATION: ${altConfirmation.reason}`);
+          } else if (rsiMidRange) {
+            console.log(`❌ REJECTED: Counter-trend signal at mid-range RSI requires 5-min candle OR OB/QM/Sweep confirmation`);
+            console.log(`   ${requires5MinConfirmation.reason}`);
+            console.log(`   Alt check: ${altConfirmation.reason}`);
+            console.log(`   💡 TIP: ${requires5MinConfirmation.tip}`);
+            console.log(`${'='.repeat(80)}\n`);
+            this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'counter-trend mid-RSI unconfirmed');
+            return null;
+          } else {
+            console.log(`✅ COUNTER-TREND ASYMMETRIC: RSI ${features.rsi.toFixed(1)} not mid-range, accepting without 5-min gate`);
+          }
+        } else {
+          console.log(`✅ COUNTER-TREND CONFIRMATION: 5-minute candle closed outside range`);
+          console.log(`   ${requires5MinConfirmation.reason}`);
+        }
       }
     }
     
-    const requestedMinConfidence = Math.max(ENFORCED_MIN_SIGNAL_CONFIDENCE, settings.minConfidence);
+    // Proposal #6: Session-aware threshold
+    const utcHour = new Date().getUTCHours();
+    const isPowerHour = utcHour >= UTC_HOURS.NY_LONDON_START && utcHour < UTC_HOURS.NY_LONDON_END;
+    const isLowLiquidity = (utcHour >= 22 || utcHour < 6);
+    let sessionFloor = ENFORCED_MIN_SIGNAL_CONFIDENCE;
+    if (isPowerHour) {
+      sessionFloor = ENFORCED_MIN_CONFIDENCE_POWER_HOUR;
+      console.log(`⏰ POWER HOUR: lowering enforced floor to ${(sessionFloor * 100).toFixed(0)}%`);
+    } else if (isLowLiquidity) {
+      sessionFloor = ENFORCED_MIN_CONFIDENCE_LOW_LIQUIDITY;
+      console.log(`⏰ LOW LIQUIDITY: raising enforced floor to ${(sessionFloor * 100).toFixed(0)}%`);
+    }
+    const requestedMinConfidence = Math.max(sessionFloor, settings.minConfidence);
 
     console.log(`🎯 Preliminary Analysis:`);
     console.log(`   Signal Type: ${analysis.signalType}`);
@@ -4181,12 +4266,20 @@ class SignalGenerationEngine {
     }
     
     let effectiveMinConfidence = requestedMinConfidence;
-    // H40: starvation based on recent gap, not total count
+    // H40 + Proposal #2: Tighten starvation relief - require TRENDING regime + ADX>20
     const lastSignalAgeMs = this.lastSignalTime > 0 ? (now - this.lastSignalTime) : Number.POSITIVE_INFINITY;
+    const starvationEligibleRegime = (
+      features.marketRegime.type === 'TRENDING' &&
+      features.adx !== null && features.adx > 20
+    );
     const starvationReliefActive = (
       lastSignalAgeMs > STARVATION_GAP_MS &&
-      this.getRecentAttemptCount(now) >= SIGNAL_STARVATION_RELIEF_ATTEMPTS
+      this.getRecentAttemptCount(now) >= SIGNAL_STARVATION_RELIEF_ATTEMPTS &&
+      starvationEligibleRegime
     );
+    if (lastSignalAgeMs > STARVATION_GAP_MS && !starvationEligibleRegime) {
+      console.log(`ℹ️ Starvation gap reached but regime ${features.marketRegime.type} / ADX ${features.adx?.toFixed(1) ?? 'n/a'} not eligible - relief suppressed`);
+    }
     
     if (this.driftAlertLevel === 'HIGH') {
       effectiveMinConfidence = Math.max(requestedMinConfidence, 0.80);
@@ -4207,13 +4300,28 @@ class SignalGenerationEngine {
       }
     }
     
+    // Proposal #12: EV-weighted acceptance
+    const tentativeAtrMultiplier = Math.max(0.8, Math.min(1.4, 0.6 + features.atr * 0.06));
+    const evScore = this.computeExpectedValue(analysis.confidence, settings.tp2Pips, settings.slPips, tentativeAtrMultiplier);
+    const evReliefEligible = (
+      analysis.confidence >= EV_RELIEF_CONFIDENCE_FLOOR &&
+      analysis.confidence < effectiveMinConfidence &&
+      evScore >= EV_RELIEF_THRESHOLD &&
+      this.driftAlertLevel !== 'HIGH'
+    );
+    if (evReliefEligible) {
+      console.log(`💰 EV RELIEF: confidence ${(analysis.confidence * 100).toFixed(1)}% with EV ${evScore.toFixed(2)}R (>= ${EV_RELIEF_THRESHOLD}R) allows below ${(effectiveMinConfidence * 100).toFixed(0)}% floor`);
+      effectiveMinConfidence = EV_RELIEF_CONFIDENCE_FLOOR;
+    }
+    
     if (analysis.confidence < effectiveMinConfidence) {
-      console.log(`❌ REJECTED: Confidence ${(analysis.confidence * 100).toFixed(1)}% below threshold ${(effectiveMinConfidence * 100).toFixed(0)}%`);
+      console.log(`❌ REJECTED: Confidence ${(analysis.confidence * 100).toFixed(1)}% below threshold ${(effectiveMinConfidence * 100).toFixed(0)}% (EV ${evScore.toFixed(2)}R)`);
       if (this.driftAlertLevel === 'HIGH') {
         console.log(`   ⚠️ Elevated threshold active due to HIGH CONCEPT DRIFT`);
       }
       console.log(`   💡 TIP: Confidence ${(analysis.confidence * 100).toFixed(1)}% below ${(effectiveMinConfidence * 100).toFixed(0)}% threshold. Wait for stronger alignment or adjust threshold in settings.`);
       console.log(`${'='.repeat(80)}\n`);
+      this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, `below threshold ${(effectiveMinConfidence * 100).toFixed(0)}%`);
       return null;
     }
     
@@ -4270,16 +4378,27 @@ class SignalGenerationEngine {
     }
     
     if (this.lastSignalType !== null && this.lastSignalType !== analysis.signalType) {
+      // Proposal #9: Allow reversal if previous signal already resolved (TP1+ or SL)
+      const previousResolved = activeSignals.some(s =>
+        s.type === this.lastSignalType &&
+        (s.targetsHit >= 1 || s.status === 'SL_HIT' || s.status === 'SL_AFTER_BE' ||
+         s.status === 'ALL_TARGETS_HIT' || s.status === 'TP3_HIT' || s.status === 'PARTIAL_WIN_SL_HIT' ||
+         s.status === 'CLOSED')
+      ) || !activeSignals.some(s => s.type === this.lastSignalType && s.status === 'ACTIVE');
       const MIN_OVERRIDE_CONFIDENCE = 0.55;
       const opposingStrength = analysis.signalType === 'BUY' ? analysis.attentionScores.get('htf_ltf_bearish_alignment') || 0 : analysis.attentionScores.get('htf_ltf_bullish_alignment') || 0;
       
-      if (analysis.confidence < MIN_OVERRIDE_CONFIDENCE || opposingStrength > 0.15) {
+      if (previousResolved) {
+        console.log(`✅ PRIOR SIGNAL RESOLVED: ${this.lastSignalType} already managed/closed - reversal allowed`);
+        this.resetSignalLock();
+      } else if (analysis.confidence < MIN_OVERRIDE_CONFIDENCE || opposingStrength > 0.15) {
         console.log(`❌ REJECTED: Signal conflict prevention`);
         console.log(`   Last Signal: ${this.lastSignalType}, New Signal: ${analysis.signalType}`);
         console.log(`   New Signal Confidence: ${(analysis.confidence * 100).toFixed(1)}% (Min: ${(MIN_OVERRIDE_CONFIDENCE * 100).toFixed(0)}%)`);
         console.log(`   Opposing Signal Strength: ${(opposingStrength * 100).toFixed(1)}% (Max: 15%)`);
         console.log(`   💡 CONFLICT RESOLUTION: New signal must be >55% confident AND opposing signal <15% strength`);
         console.log(`${'='.repeat(80)}\n`);
+        this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'conflict with last signal type');
         return null;
       } else {
         console.log(`✅ SIGNAL OVERRIDE APPROVED: Conflict check passed`);
@@ -4858,6 +4977,107 @@ class SignalGenerationEngine {
   private getRecentAttemptCount(now: number): number {
     this.recentAttemptTimestamps = this.recentAttemptTimestamps.filter(t => (now - t) < ATTEMPT_WINDOW_MS);
     return this.recentAttemptTimestamps.length;
+  }
+
+  private detectFastPathSignal(
+    features: MarketFeatures,
+    analysis: { signalType: SignalType; confidence: number; attentionScores: Map<string, number> }
+  ): { active: boolean; reason: string; minConfidence: number; signalType?: SignalType } {
+    const adx = features.adx ?? 0;
+    const htf = this.detectHTFTrend(features);
+    const ltf = this.detectLTFTrend();
+    const aligned = (htf === 'BULLISH' && ltf === 'BULLISH') || (htf === 'BEARISH' && ltf === 'BEARISH');
+    const emaBoost = analysis.attentionScores.has('bullish_ema_crossover') || analysis.attentionScores.has('bearish_ema_crossover');
+    // Proposal #1: Trend-continuation fast path
+    if (adx > 25 && aligned && emaBoost) {
+      const vwap = features.vwap;
+      const pullback = vwap !== null && Math.abs(this.currentPrice - vwap) < Math.max(2, features.atr * 0.5);
+      if (pullback) {
+        return {
+          active: true,
+          reason: `Trend continuation: ADX ${adx.toFixed(1)}, HTF+LTF ${htf}, pullback to VWAP`,
+          minConfidence: TREND_FAST_PATH_CONFIDENCE,
+          signalType: htf === 'BULLISH' ? 'BUY' : 'SELL',
+        };
+      }
+    }
+    // Proposal #3: Momentum breakout trigger
+    if (this.priceHistory.length >= MOMENTUM_BREAKOUT_MAX_BARS + 1 && features.bollingerExpansion) {
+      const recent = this.priceHistory.slice(-(MOMENTUM_BREAKOUT_MAX_BARS + 1));
+      const impulse = recent[recent.length - 1] - recent[0];
+      const impulsePips = Math.abs(impulse) / 0.1;
+      if (impulsePips >= MOMENTUM_BREAKOUT_PIPS) {
+        return {
+          active: true,
+          reason: `Momentum impulse: ${impulsePips.toFixed(0)} pips in ${MOMENTUM_BREAKOUT_MAX_BARS} bars + Bollinger expansion`,
+          minConfidence: MOMENTUM_BREAKOUT_CONFIDENCE,
+          signalType: impulse > 0 ? 'BUY' : 'SELL',
+        };
+      }
+    }
+    // Proposal #10: Pre-signal impulse detection (5min candle > 2x ATR)
+    if (this.fiveMinCandles.length >= 2 && features.atr > 0) {
+      const lastCandle = this.fiveMinCandles[this.fiveMinCandles.length - 2];
+      const candleRangePips = Math.abs(lastCandle.high - lastCandle.low) / 0.1;
+      if (candleRangePips > features.atr * 2) {
+        const direction: SignalType = lastCandle.close > lastCandle.open ? 'BUY' : 'SELL';
+        return {
+          active: true,
+          reason: `5-min impulse candle ${candleRangePips.toFixed(0)}p > 2xATR ${(features.atr * 2).toFixed(0)}p`,
+          minConfidence: TREND_FAST_PATH_CONFIDENCE,
+          signalType: direction,
+        };
+      }
+    }
+    return { active: false, reason: '', minConfidence: 0 };
+  }
+
+  private recordNearMiss(signalType: SignalType, confidence: number, strengthDiff: number, reason: string): void {
+    // Proposal #11: Setup brewing telemetry
+    const inConfBand = confidence >= NEAR_MISS_CONFIDENCE_LOW && confidence < NEAR_MISS_CONFIDENCE_HIGH;
+    const inDiffBand = strengthDiff >= NEAR_MISS_DIFF_LOW && strengthDiff < NEAR_MISS_DIFF_HIGH;
+    if (!inConfBand && !inDiffBand) return;
+    this.nearMisses.push({ timestamp: Date.now(), signalType, confidence, strengthDiff, reason });
+    if (this.nearMisses.length > NEAR_MISS_MAX_ENTRIES) {
+      this.nearMisses = this.nearMisses.slice(-NEAR_MISS_MAX_ENTRIES);
+    }
+    console.log(`🔍 NEAR-MISS logged: ${signalType} conf ${(confidence * 100).toFixed(1)}% diff ${strengthDiff.toFixed(3)} - ${reason}`);
+  }
+
+  getRecentNearMisses(): { timestamp: number; signalType: SignalType; confidence: number; strengthDiff: number; reason: string }[] {
+    return [...this.nearMisses].reverse();
+  }
+
+  getDiffBucketStats(): { low: { wins: number; losses: number; ev: number }; mid: { wins: number; losses: number; ev: number }; high: { wins: number; losses: number; ev: number } } {
+    const computeEv = (b: { wins: number; losses: number }): number => {
+      const total = b.wins + b.losses;
+      if (total === 0) return 0;
+      return b.wins / total;
+    };
+    return {
+      low: { ...this.diffBucketStats.low, ev: computeEv(this.diffBucketStats.low) },
+      mid: { ...this.diffBucketStats.mid, ev: computeEv(this.diffBucketStats.mid) },
+      high: { ...this.diffBucketStats.high, ev: computeEv(this.diffBucketStats.high) },
+    };
+  }
+
+  getAdaptiveDiffAdjustment(regime: 'TRENDING' | 'RANGING' | 'VOLATILE' | 'QUIET'): number {
+    // Proposal #8: Adaptive conviction threshold
+    const stats = this.diffBucketStats.low;
+    const total = stats.wins + stats.losses;
+    if (total < 10) return 0;
+    const winRate = stats.wins / total;
+    if (winRate >= 0.55) {
+      const relaxedBy = regime === 'RANGING' ? 0.02 : 0.015;
+      return -relaxedBy;
+    }
+    return 0;
+  }
+
+  recordDiffOutcome(strengthDiff: number, result: 'WIN' | 'LOSS'): void {
+    const bucket: 'low' | 'mid' | 'high' = strengthDiff < 0.09 ? 'low' : strengthDiff < 0.15 ? 'mid' : 'high';
+    if (result === 'WIN') this.diffBucketStats[bucket].wins++;
+    else this.diffBucketStats[bucket].losses++;
   }
 
   private computeExpectedValue(confidence: number, tp2Pips: number, slPips: number, atrMultiplier: number): number {

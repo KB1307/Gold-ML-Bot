@@ -1691,6 +1691,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
               console.error(`Failed to record trade outcome for ${signal.id}:`, err);
             });
             
+            // Proposal #7: Reset cooldown on resolution so opposite-direction signals aren't blocked
+            signalEngine.resetSignalLock();
+            
             console.log(`📊 Learning System: Recorded ${result} outcome for signal ${signal.id.slice(-6)}`);
             
             return {

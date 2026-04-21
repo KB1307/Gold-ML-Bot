@@ -1,7 +1,7 @@
 import { View, Text, StyleSheet, ScrollView, Platform, RefreshControl, ActivityIndicator } from "react-native";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { LinearGradient } from "expo-linear-gradient";
-import { Activity, Brain, Zap, TrendingUp, Target, AlertTriangle, BarChart3, Clock, CheckCircle2, XCircle, Radio, Cpu, Gauge } from "lucide-react-native";
+import { Activity, Brain, Zap, TrendingUp, Target, AlertTriangle, BarChart3, Clock, CheckCircle2, XCircle, Radio, Cpu, Gauge, Eye } from "lucide-react-native";
 import { Stack } from "expo-router";
 import { useTrading } from "@/contexts/TradingContext";
 import { signalEngine } from "@/services/signalEngine";
@@ -12,6 +12,8 @@ interface TelemetrySnapshot {
   modelHealth: ReturnType<typeof signalEngine.getModelHealthMetrics>;
   hypoStats: ReturnType<typeof signalEngine.getHypotheticalTradeStats>;
   perfMetrics: ReturnType<typeof signalEngine.getPerformanceMetrics>;
+  nearMisses: ReturnType<typeof signalEngine.getRecentNearMisses>;
+  diffBuckets: ReturnType<typeof signalEngine.getDiffBucketStats>;
   currentPrice: number;
   priceSource: string;
   capturedAt: number;
@@ -23,6 +25,8 @@ function captureTelemetry(): TelemetrySnapshot {
     modelHealth: signalEngine.getModelHealthMetrics(),
     hypoStats: signalEngine.getHypotheticalTradeStats(),
     perfMetrics: signalEngine.getPerformanceMetrics(),
+    nearMisses: signalEngine.getRecentNearMisses(),
+    diffBuckets: signalEngine.getDiffBucketStats(),
     currentPrice: signalEngine.getCurrentPrice(),
     priceSource: signalEngine.getPriceSource(),
     capturedAt: Date.now(),
@@ -331,6 +335,43 @@ export default function TelemetryScreen() {
                 ) : null}
               </View>
             )}
+
+            <View style={styles.sectionTitleRow}>
+              <Eye size={16} color="#9ca3af" />
+              <Text style={styles.sectionTitle}>Setup Brewing ({snapshot.nearMisses.length})</Text>
+            </View>
+
+            {snapshot.nearMisses.length === 0 ? (
+              <View style={styles.emptyToday}>
+                <Text style={styles.emptyTodayText}>No near-misses yet - engine has no filtered setups to show</Text>
+              </View>
+            ) : (
+              <View style={styles.todayList}>
+                {snapshot.nearMisses.slice(0, 8).map((nm, idx) => (
+                  <View key={`nm-${nm.timestamp}-${idx}`} style={styles.todayItem} testID={`telemetry-nearmiss-${idx}`}>
+                    <View style={[styles.todayBadge, { backgroundColor: nm.signalType === "BUY" ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)" }]}>
+                      <Text style={[styles.todayBadgeText, { color: nm.signalType === "BUY" ? "#22c55e" : "#ef4444" }]}>{nm.signalType}</Text>
+                    </View>
+                    <View style={styles.todayItemBody}>
+                      <Text style={styles.todayItemPrice}>{(nm.confidence * 100).toFixed(1)}% · diff {nm.strengthDiff.toFixed(3)}</Text>
+                      <Text style={styles.todayItemMeta} numberOfLines={1}>
+                        {new Date(nm.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · {nm.reason}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            <View style={styles.sectionTitleRow}>
+              <BarChart3 size={16} color="#9ca3af" />
+              <Text style={styles.sectionTitle}>Diff Bucket EV</Text>
+            </View>
+            <View style={styles.card}>
+              <StatRow label="Low (0.06-0.09)" value={`${snapshot.diffBuckets.low.wins}W/${snapshot.diffBuckets.low.losses}L · ${(snapshot.diffBuckets.low.ev * 100).toFixed(0)}%`} valueColor={snapshot.diffBuckets.low.ev >= 0.55 ? "#22c55e" : "#f59e0b"} />
+              <StatRow label="Mid (0.09-0.15)" value={`${snapshot.diffBuckets.mid.wins}W/${snapshot.diffBuckets.mid.losses}L · ${(snapshot.diffBuckets.mid.ev * 100).toFixed(0)}%`} valueColor={snapshot.diffBuckets.mid.ev >= 0.55 ? "#22c55e" : "#f59e0b"} />
+              <StatRow label="High (0.15+)" value={`${snapshot.diffBuckets.high.wins}W/${snapshot.diffBuckets.high.losses}L · ${(snapshot.diffBuckets.high.ev * 100).toFixed(0)}%`} valueColor={snapshot.diffBuckets.high.ev >= 0.55 ? "#22c55e" : "#f59e0b"} />
+            </View>
 
             <View style={styles.footerNote}>
               <Text style={styles.footerText}>
