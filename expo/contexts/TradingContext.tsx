@@ -67,6 +67,19 @@ const MIN_MEANINGFUL_PRICE_CHANGE = 0.03;
 const HISTORICAL_RECONCILIATION_INTERVAL_MS = 30000;
 const TERMINAL_SIGNAL_STATUSES: SignalStatus[] = ["CLOSED", "SL_HIT", "SL_AFTER_BE", "ALL_TARGETS_HIT", "PARTIAL_WIN_SL_HIT"];
 const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;
+
+// False-SL protection thresholds.
+// A single bad tick / spike / stale price reading can cause SL to trigger when
+// the real market never traded at that level. We require:
+//   1. A minimum penetration beyond SL (pips) before considering it a hit
+//   2. Two consecutive confirming ticks (or >1.2s of sustained price) to avoid
+//      single-tick spikes from illiquid feed moments
+//   3. Rejection of outlier ticks that jump >TICK_SPIKE_REJECT_PIPS vs the last
+//      accepted tracking price within <500ms (obvious feed glitch)
+const SL_CONFIRMATION_MIN_PENETRATION_PIPS = 0.3;
+const SL_CONFIRMATION_MIN_DURATION_MS = 1200;
+const TICK_SPIKE_REJECT_PIPS = 8.0;
+const TICK_SPIKE_WINDOW_MS = 500;
 const ACTIVE_SIGNAL_LOCK_RELEASE_MS = 45 * 60 * 1000;
 const SIGNAL_GENERATION_INTERVAL_MS = 20000;
 
@@ -210,6 +223,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const guidePriceRef = useRef<number>(0);
   const guidePriceUpdatedAtRef = useRef<number>(0);
   const wsConnectedRef = useRef<boolean>(false);
+  // Per-signal SL breach tracking (in-memory). Key = signal.id.
+  // Tracks when price first broke the SL; we only confirm SL_HIT after the
+  // required duration AND minimum penetration are satisfied.
+  const slBreachTrackerRef = useRef<Map<string, { firstBreachAt: number; maxPenetrationPips: number; lastPrice: number }>>(new Map());
+  // Last accepted signal-tracking price/time, used for spike rejection.
+  const lastAcceptedTickRef = useRef<{ price: number; at: number }>({ price: 0, at: 0 });
 
   useEffect(() => {
     const init = async () => {
@@ -866,7 +885,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       if (signal.status === "CLOSED" || signal.status === "SL_HIT" || signal.status === "SL_AFTER_BE" || signal.status === "ALL_TARGETS_HIT" || signal.status === "PARTIAL_WIN_SL_HIT") {
         continue;
       }
-      
+
+      // Clear any in-flight SL breach tracker while we do the authoritative
+      // historical reconciliation - the historical path is truthful and must
+      // not be short-circuited by stale tick-level breach state.
+      slBreachTrackerRef.current.delete(signal.id);
+
       const signalAge = now - new Date(signal.timestamp).getTime();
       console.log(`\n🔍 Evaluating Signal ${signal.id.slice(-6)}:`);
       console.log(`   Type: ${signal.type}`);
@@ -925,8 +949,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             outcomeResult = 'WIN';
             exitPrice = getProtectedExitPrice(signal, targetsHit);
             shouldRecord = true;
-          } else if (currentPrice <= signal.sl) {
-            console.log(`   🚨 CATCH-UP (Fallback): Original SL hit @ ${currentPrice.toFixed(1)} (SL: ${signal.sl.toFixed(1)})`);
+          } else if (currentPrice <= signal.sl - SL_CONFIRMATION_MIN_PENETRATION_PIPS) {
+            console.log(`   🚨 CATCH-UP (Fallback): Original SL hit @ ${currentPrice.toFixed(1)} (SL: ${signal.sl.toFixed(1)}) - penetration ${(signal.sl - currentPrice).toFixed(2)} pips meets confirmation threshold`);
             if (targetsHit >= 2) {
               newStatus = "PARTIAL_WIN_SL_HIT";
               targetsHit = Math.max(targetsHit, 2);
@@ -969,8 +993,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             outcomeResult = 'WIN';
             exitPrice = getProtectedExitPrice(signal, targetsHit);
             shouldRecord = true;
-          } else if (currentPrice >= signal.sl) {
-            console.log(`   🚨 CATCH-UP (Fallback): Original SL hit @ ${currentPrice.toFixed(1)} (SL: ${signal.sl.toFixed(1)})`);
+          } else if (currentPrice >= signal.sl + SL_CONFIRMATION_MIN_PENETRATION_PIPS) {
+            console.log(`   🚨 CATCH-UP (Fallback): Original SL hit @ ${currentPrice.toFixed(1)} (SL: ${signal.sl.toFixed(1)}) - penetration ${(currentPrice - signal.sl).toFixed(2)} pips meets confirmation threshold`);
             if (targetsHit >= 2) {
               newStatus = "PARTIAL_WIN_SL_HIT";
               targetsHit = Math.max(targetsHit, 2);
@@ -1582,6 +1606,20 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     
     console.log(`🔄 [${Platform.OS}] Checking signal status updates - Tracking Price: ${price.toFixed(1)} from ${signalPriceSource}`);
 
+    // SPIKE FILTER: reject clearly-outlier ticks (feed glitches) that jump >8 pips
+    // from the last accepted tracking price within <500ms. These readings were
+    // the root cause of false SL hits recorded "1 minute after" signal creation.
+    const lastAccepted = lastAcceptedTickRef.current;
+    if (lastAccepted.price > 0 && lastAccepted.at > 0) {
+      const dtMs = now - lastAccepted.at;
+      const gapPips = Math.abs(price - lastAccepted.price);
+      if (dtMs < TICK_SPIKE_WINDOW_MS && gapPips > TICK_SPIKE_REJECT_PIPS) {
+        console.warn(`🛡️ SPIKE REJECTED: tick ${price.toFixed(1)} jumped ${gapPips.toFixed(1)} pips in ${dtMs}ms from last accepted ${lastAccepted.price.toFixed(1)} - not evaluating signals on this tick`);
+        return;
+      }
+    }
+    lastAcceptedTickRef.current = { price, at: now };
+
     setSignalHistory((prevHistory) => {
       let updated = false;
       let immediateUpdate = false;
@@ -1619,6 +1657,47 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
         console.log(`🔍 Monitoring Signal ${signal.id.slice(-6)}: Type=${signal.type}, Status=${signal.status}, Targets=${targetsHit}/3, Price=${price.toFixed(1)}, TP1=${signal.tp1.toFixed(1)}, TP2=${signal.tp2.toFixed(1)}, TP3=${signal.tp3.toFixed(1)}, SL=${signal.sl.toFixed(1)}, TrailingSL=${trailingSLPrice.toFixed(1)} (${trailingSLLevel || 'ORIGINAL'}), Breakeven=${breakevenReached}`);
 
+        // SL-hit confirmation helper: returns true only if SL breach is genuine
+        // (sustained > SL_CONFIRMATION_MIN_DURATION_MS AND penetrated past SL
+        // by > SL_CONFIRMATION_MIN_PENETRATION_PIPS). Otherwise it tracks the
+        // breach attempt in memory and returns false, preventing a single-tick
+        // spike from closing the trade.
+        const confirmSLHit = (): boolean => {
+          const penetrationPips = signal.type === "BUY"
+            ? signal.sl - price
+            : price - signal.sl;
+          if (penetrationPips < 0) {
+            // Price recovered above/below SL -> reset any prior breach tracking
+            if (slBreachTrackerRef.current.has(signal.id)) {
+              console.log(`🛡️ SL breach for ${signal.id.slice(-6)} reset - price recovered`);
+              slBreachTrackerRef.current.delete(signal.id);
+            }
+            return false;
+          }
+          const existing = slBreachTrackerRef.current.get(signal.id);
+          if (!existing) {
+            slBreachTrackerRef.current.set(signal.id, {
+              firstBreachAt: now,
+              maxPenetrationPips: penetrationPips,
+              lastPrice: price,
+            });
+            console.log(`🛡️ SL BREACH DETECTED (pending confirmation): ${signal.id.slice(-6)} penetration=${penetrationPips.toFixed(2)} pips @ ${price.toFixed(1)} - awaiting ${SL_CONFIRMATION_MIN_DURATION_MS}ms & ${SL_CONFIRMATION_MIN_PENETRATION_PIPS} pip penetration before confirming`);
+            return false;
+          }
+          existing.maxPenetrationPips = Math.max(existing.maxPenetrationPips, penetrationPips);
+          existing.lastPrice = price;
+          const elapsed = now - existing.firstBreachAt;
+          const confirmed = elapsed >= SL_CONFIRMATION_MIN_DURATION_MS
+            && existing.maxPenetrationPips >= SL_CONFIRMATION_MIN_PENETRATION_PIPS;
+          if (!confirmed) {
+            console.log(`🛡️ SL breach ongoing for ${signal.id.slice(-6)}: elapsed=${elapsed}ms (need ${SL_CONFIRMATION_MIN_DURATION_MS}ms), maxPen=${existing.maxPenetrationPips.toFixed(2)}pips (need ${SL_CONFIRMATION_MIN_PENETRATION_PIPS})`);
+            return false;
+          }
+          console.log(`✅ SL HIT CONFIRMED for ${signal.id.slice(-6)}: sustained ${elapsed}ms, max penetration ${existing.maxPenetrationPips.toFixed(2)} pips`);
+          slBreachTrackerRef.current.delete(signal.id);
+          return true;
+        };
+
         if (signal.type === "BUY") {
           if (targetsHit >= 2 && price <= signal.entryPrice) {
             console.log(`✅ TP2 runner returned to entry: BUY signal ${signal.id.slice(-6)} closing as protected partial win @ ${price.toFixed(1)}`);
@@ -1626,8 +1705,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             targetsHit = Math.max(targetsHit, 2);
             updated = true;
             immediateUpdate = true;
-          } else if (price <= signal.sl) {
-            console.log(`🚨 ORIGINAL SL HIT: BUY signal @ Entry=${signal.entryPrice.toFixed(1)}, Original SL=${signal.sl.toFixed(1)}, Current=${price.toFixed(1)}`);
+          } else if (price <= signal.sl && confirmSLHit()) {
+            console.log(`🚨 ORIGINAL SL HIT (CONFIRMED): BUY signal @ Entry=${signal.entryPrice.toFixed(1)}, Original SL=${signal.sl.toFixed(1)}, Current=${price.toFixed(1)}`);
             if (breakevenReached || targetsHit >= 1) {
               newStatus = "SL_AFTER_BE";
               targetsHit = Math.max(targetsHit, 1);
@@ -1674,8 +1753,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             targetsHit = Math.max(targetsHit, 2);
             updated = true;
             immediateUpdate = true;
-          } else if (price >= signal.sl) {
-            console.log(`🚨 ORIGINAL SL HIT: SELL signal @ Entry=${signal.entryPrice.toFixed(1)}, Original SL=${signal.sl.toFixed(1)}, Current=${price.toFixed(1)}`);
+          } else if (price >= signal.sl && confirmSLHit()) {
+            console.log(`🚨 ORIGINAL SL HIT (CONFIRMED): SELL signal @ Entry=${signal.entryPrice.toFixed(1)}, Original SL=${signal.sl.toFixed(1)}, Current=${price.toFixed(1)}`);
             if (breakevenReached || targetsHit >= 1) {
               newStatus = "SL_AFTER_BE";
               targetsHit = Math.max(targetsHit, 1);
