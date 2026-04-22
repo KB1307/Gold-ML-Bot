@@ -112,7 +112,7 @@ TaskManager.defineTask(SIGNAL_GENERATION_TASK, async () => {
           maxRiskPercentage: 2.0,
           useKellyCriterion: true,
           useDynamicSL: true,
-          maxSLPips: 70,
+          maxSLPips: 90,
         };
 
     if (!settings.enableNotifications) {

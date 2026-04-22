@@ -127,7 +127,7 @@ export default function SettingsScreen() {
       tp2Pips: parseFloat(tp2Pips) || settings.tp2Pips,
       tp3Pips: parseFloat(tp3Pips) || settings.tp3Pips,
       slPips: parseFloat(slPips) || settings.slPips,
-      maxSLPips: Math.min(70, parseFloat(maxSLPips) || settings.maxSLPips),
+      maxSLPips: Math.min(90, parseFloat(maxSLPips) || settings.maxSLPips),
       useDynamicSL,
       minConfidence: normalizedMinConfidence,
       numberOfTPs,

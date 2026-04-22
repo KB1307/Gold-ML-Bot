@@ -79,7 +79,7 @@ const DEFAULT_SETTINGS: SimulationSettings = {
   slPips: 70,
   minConfidence: 0.85,
   useDynamicSL: true,
-  maxSLPips: 70,
+  maxSLPips: 90,
 };
 const ACCOUNT_BALANCE = 10_000;
 const STEP_MS = 30_000;

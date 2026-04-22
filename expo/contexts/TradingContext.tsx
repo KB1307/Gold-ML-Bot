@@ -30,7 +30,7 @@ const DEFAULT_SETTINGS: Settings = {
   maxRiskPercentage: 2.0,
   useKellyCriterion: true,
   useDynamicSL: true,
-  maxSLPips: 70,
+  maxSLPips: 90,
 };
 
 const DEFAULT_METRICS: PerformanceMetrics = {
@@ -69,15 +69,13 @@ const TERMINAL_SIGNAL_STATUSES: SignalStatus[] = ["CLOSED", "SL_HIT", "SL_AFTER_
 const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;
 
 // False-SL protection thresholds.
-// A single bad tick / spike / stale price reading can cause SL to trigger when
-// the real market never traded at that level. We require:
-//   1. A minimum penetration beyond SL (pips) before considering it a hit
-//   2. Two consecutive confirming ticks (or >1.2s of sustained price) to avoid
-//      single-tick spikes from illiquid feed moments
-//   3. Rejection of outlier ticks that jump >TICK_SPIKE_REJECT_PIPS vs the last
-//      accepted tracking price within <500ms (obvious feed glitch)
-const SL_CONFIRMATION_MIN_PENETRATION_PIPS = 0.3;
-const SL_CONFIRMATION_MIN_DURATION_MS = 1200;
+// Per user request: a wick through the SL price by 0.1 pip OR more triggers
+// an immediate SL hit (no duration requirement). Feed-glitch protection is
+// preserved only through the outlier-tick spike rejector, which drops ticks
+// that jump more than TICK_SPIKE_REJECT_PIPS vs the last accepted tracking
+// price inside TICK_SPIKE_WINDOW_MS (obvious feed glitch).
+const SL_CONFIRMATION_MIN_PENETRATION_PIPS = 0.1;
+const SL_CONFIRMATION_MIN_DURATION_MS = 0;
 const TICK_SPIKE_REJECT_PIPS = 8.0;
 const TICK_SPIKE_WINDOW_MS = 500;
 const ACTIVE_SIGNAL_LOCK_RELEASE_MS = 45 * 60 * 1000;
@@ -1117,6 +1115,97 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     return updatedHistory;
   }, [analyzeSignalWithHistoricalData, fetchPriceHistory]);
 
+  const auditTerminalSLSignals = useCallback(async (history: TradingSignal[]): Promise<TradingSignal[]> => {
+    console.log('\n' + '='.repeat(80));
+    console.log('🔬 FALSE-SL AUDIT: re-evaluating terminal SL signals against 1-min bars');
+    console.log('='.repeat(80));
+
+    const SL_AUDIT_VERSION = 'v2-wick-0p1';
+    const now = Date.now();
+    const twoHoursInMs = 2 * 60 * 60 * 1000;
+    let corrected = 0;
+    const updated: TradingSignal[] = [];
+
+    for (const signal of history) {
+      const isTerminalSL = signal.status === 'SL_HIT' || signal.status === 'SL_AFTER_BE' || signal.status === 'PARTIAL_WIN_SL_HIT';
+      const alreadyAudited = (signal as TradingSignal & { slAuditVersion?: string }).slAuditVersion === SL_AUDIT_VERSION;
+      if (!isTerminalSL || alreadyAudited) {
+        updated.push(signal);
+        continue;
+      }
+
+      const signalTs = new Date(signal.timestamp).getTime();
+      const fromTime = signalTs;
+      const toTime = Math.min(now, signalTs + twoHoursInMs);
+
+      console.log(`\n🔍 Auditing ${signal.id.slice(-6)} (${signal.type}, status=${signal.status}) entry=${signal.entryPrice.toFixed(1)} SL=${signal.sl.toFixed(1)} TP1=${signal.tp1.toFixed(1)} TP3=${signal.tp3.toFixed(1)}`);
+
+      const bars = await fetchPriceHistory(fromTime, toTime);
+      if (bars.length === 0) {
+        console.log(`   ⚠️ No 1-min bars returned - leaving signal unchanged and marking audited`);
+        updated.push({ ...signal, slAuditVersion: SL_AUDIT_VERSION } as TradingSignal);
+        continue;
+      }
+
+      const analysis = await analyzeSignalWithHistoricalData(signal, bars);
+
+      const originalOutcomeWasLoss = signal.status === 'SL_HIT';
+      const newOutcomeIsWin = analysis.newStatus === 'ALL_TARGETS_HIT' || analysis.newStatus === 'TP3_HIT' || analysis.newStatus === 'TP2_HIT' || analysis.newStatus === 'TP1_HIT' || analysis.newStatus === 'PARTIAL_WIN_SL_HIT' || analysis.newStatus === 'SL_AFTER_BE';
+      const statusChanged = analysis.newStatus !== signal.status;
+      const targetsChanged = analysis.targetsHit !== signal.targetsHit;
+
+      if (statusChanged || targetsChanged) {
+        corrected++;
+        const exitDate = new Date();
+        const patched: TradingSignal = {
+          ...signal,
+          status: analysis.newStatus,
+          targetsHit: analysis.targetsHit,
+          breakevenReached: analysis.breakevenReached ?? signal.breakevenReached,
+          breakevenTime: analysis.breakevenTime ?? signal.breakevenTime,
+          exitPrice: analysis.exitPrice,
+          exitTime: signal.exitTime ?? exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+        };
+        (patched as TradingSignal & { slAuditVersion?: string }).slAuditVersion = SL_AUDIT_VERSION;
+        updated.push(patched);
+
+        console.log(`   🔧 CORRECTED: ${signal.status} -> ${analysis.newStatus} (targets ${signal.targetsHit} -> ${analysis.targetsHit})`);
+        console.log(`      exitPrice ${signal.exitPrice?.toFixed(1) ?? 'n/a'} -> ${analysis.exitPrice.toFixed(1)}`);
+
+        if (originalOutcomeWasLoss && newOutcomeIsWin) {
+          console.log(`   🧠 Submitting corrected WIN outcome to learning engine`);
+          await signalEngine.recordTradeOutcome(
+            signal.id,
+            signal.entryPrice,
+            analysis.exitPrice,
+            'WIN',
+            {} as any,
+            undefined,
+            now - signalTs
+          ).catch(err => console.error('Failed to record corrected WIN outcome:', err));
+        } else if (!originalOutcomeWasLoss && analysis.newStatus === 'SL_HIT') {
+          console.log(`   🧠 Submitting corrected LOSS outcome to learning engine`);
+          await signalEngine.recordTradeOutcome(
+            signal.id,
+            signal.entryPrice,
+            analysis.exitPrice,
+            'LOSS',
+            {} as any,
+            undefined,
+            now - signalTs
+          ).catch(err => console.error('Failed to record corrected LOSS outcome:', err));
+        }
+      } else {
+        console.log(`   ✅ Audit confirms original status - marking audited`);
+        updated.push({ ...signal, slAuditVersion: SL_AUDIT_VERSION } as TradingSignal);
+      }
+    }
+
+    console.log(`\n✅ FALSE-SL AUDIT COMPLETE: ${corrected} signal(s) corrected`);
+    console.log('='.repeat(80) + '\n');
+    return updated;
+  }, [analyzeSignalWithHistoricalData, fetchPriceHistory]);
+
   const loadPersistedData = async () => {
     try {
       console.log('🔄 Loading persisted data from AsyncStorage...');
@@ -1155,16 +1244,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         signalHistoryRef.current = parsedHistory;
         setSignalHistory(parsedHistory);
         const evaluatedHistory = await catchUpAndEvaluateSignals(parsedHistory);
-        signalHistoryRef.current = evaluatedHistory;
-        setSignalHistory(evaluatedHistory);
-        
-        if (JSON.stringify(evaluatedHistory) !== JSON.stringify(parsedHistory)) {
-          await AsyncStorage.setItem("signal_history", JSON.stringify(evaluatedHistory));
-          console.log('💾 Updated signal history saved after catch-up evaluation');
+        const auditedHistory = await auditTerminalSLSignals(evaluatedHistory);
+        signalHistoryRef.current = auditedHistory;
+        setSignalHistory(auditedHistory);
+
+        if (JSON.stringify(auditedHistory) !== JSON.stringify(parsedHistory)) {
+          await AsyncStorage.setItem("signal_history", JSON.stringify(auditedHistory));
+          console.log('💾 Updated signal history saved after catch-up + false-SL audit');
         }
         
-        console.log(`✅ History loaded: ${evaluatedHistory.length} signals`);
-        console.log('📊 First 2 signals:', evaluatedHistory.slice(0, 2).map((s: TradingSignal) => ({
+        console.log(`✅ History loaded: ${auditedHistory.length} signals`);
+        console.log('📊 First 2 signals:', auditedHistory.slice(0, 2).map((s: TradingSignal) => ({
           id: s.id.slice(-6),
           type: s.type,
           status: s.status,

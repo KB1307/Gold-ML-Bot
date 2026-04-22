@@ -45,6 +45,7 @@ export interface TradingSignal {
   trailingSLPrice?: number;
   trailingSLLevel?: 'ENTRY' | 'TP1' | 'TP2';
   learningContext?: SignalLearningContext;
+  slAuditVersion?: string;
 }
 
 export interface MarketSession {

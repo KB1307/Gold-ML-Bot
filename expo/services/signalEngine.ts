@@ -4467,7 +4467,7 @@ class SignalGenerationEngine {
     
     // F30: Continuous ATR-to-SL mapping
     const useDynamicSL = settings.useDynamicSL !== false;
-    const maxSLPips = settings.maxSLPips ?? 70;
+    const maxSLPips = settings.maxSLPips ?? 90;
     const atrMultiplier = useDynamicSL
       ? parseFloat(Math.max(0.8, Math.min(1.4, 0.6 + features.atr * 0.06)).toFixed(2))
       : 1.0;
