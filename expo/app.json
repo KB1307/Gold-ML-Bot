@@ -59,7 +59,8 @@
         }
       ],
       "expo-background-fetch",
-      "expo-task-manager"
+      "expo-task-manager",
+      "expo-sqlite"
     ],
     "experiments": {
       "typedRoutes": true

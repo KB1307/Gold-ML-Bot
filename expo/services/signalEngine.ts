@@ -4472,9 +4472,15 @@ class SignalGenerationEngine {
       ? parseFloat(Math.max(0.8, Math.min(1.4, 0.6 + features.atr * 0.06)).toFixed(2))
       : 1.0;
     const rawSlPips = settings.slPips * atrMultiplier;
-    const dynamicSlPips = Math.min(rawSlPips, maxSLPips);
+    let dynamicSlPips = Math.min(rawSlPips, maxSLPips);
     if (rawSlPips > maxSLPips) {
       console.log(`🛡️ SL capped at maxSLPips ${maxSLPips} (would have been ${rawSlPips.toFixed(1)})`);
+    }
+    // Enforce minimum 1:1 RR — SL risk must never exceed TP3 reward.
+    const maxSlByRR = Math.max(1, settings.tp3Pips);
+    if (dynamicSlPips > maxSlByRR) {
+      console.log(`🛡️ SL tightened to ${maxSlByRR} pips to preserve 1:1 RR vs TP3 ${settings.tp3Pips} (was ${dynamicSlPips.toFixed(1)})`);
+      dynamicSlPips = maxSlByRR;
     }
     
     const volatilityLabel = features.atr > 10 ? "High Volatility" : features.atr < 8 ? "Low Volatility" : "Normal Volatility";

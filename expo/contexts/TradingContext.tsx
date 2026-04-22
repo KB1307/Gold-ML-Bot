@@ -13,6 +13,8 @@ import {
   sendSignalNotification
 } from "@/services/backgroundTaskService";
 import { subscribeToChartPrice, subscribeToChartHeartbeat } from "@/services/chartPriceBridge";
+import { ensureBarStoreReady, ingestTickAllTimeframes, upsertBars, getBars, getBarStoreStats, pruneOldBars, getLatestBarTimestamp } from "@/services/barStore";
+import { resolveSignalWithBars } from "@/services/signalResolver";
 
 const INDEPENDENT_POLL_INTERVAL_MS = 12000;
 const INDEPENDENT_POLL_NO_PRICE_INTERVAL_MS = 5000;
@@ -232,6 +234,14 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const init = async () => {
       console.log('🚀 Initializing Trading Context...');
       try {
+        await ensureBarStoreReady();
+        await pruneOldBars();
+        try {
+          const stats = await getBarStoreStats();
+          console.log('🗄️ [BarStore] stats at init:', stats);
+        } catch (err) {
+          console.warn('⚠️ [BarStore] stats lookup failed:', err);
+        }
         const loadedDailyOHLC = await signalEngine.loadPersistedLearningData();
         await loadPersistedData();
         if (loadedDailyOHLC && loadedDailyOHLC.length > 0) {
@@ -287,6 +297,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         return newHistory.slice(newHistory.length - maxPoints);
       }
       return newHistory;
+    });
+
+    void ingestTickAllTimeframes(price, now).catch(err => {
+      console.warn('⚠️ [BarStore] tick ingest failed (non-blocking):', err instanceof Error ? err.message : 'Unknown');
     });
 
     signalEngine.updateDailyOHLC(price).then(updatedOHLC => {
@@ -557,17 +571,34 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log(`   From: ${new Date(fromTime).toISOString()}`);
       console.log(`   To: ${new Date(toTime).toISOString()}`);
 
+      const localBars = await getBars('1m', fromTime, toTime);
+      const latestLocalTs = localBars.length > 0 ? localBars[localBars.length - 1].timestamp : null;
+      const now = Date.now();
+      const localCoversWindow = latestLocalTs !== null && (toTime - latestLocalTs) <= 90_000 && localBars.length > 0;
+      if (localCoversWindow) {
+        console.log(`✅ [BarStore] Serving ${localBars.length} 1-min bars from sqlite ring buffer (covers window)`);
+        return localBars;
+      }
+
       const bars = await fetchHistoricalData({
         fromTime,
         toTime,
         timeoutMs: 15000,
       });
 
-      console.log(`✅ Fetched ${bars.length} historical 1-MINUTE bars`);
+      console.log(`✅ Fetched ${bars.length} historical 1-MINUTE bars (remote)`);
 
       if (bars.length > 0) {
         console.log(`   First bar: ${new Date(bars[0].timestamp).toISOString()} - Close: ${bars[0].close.toFixed(2)}`);
         console.log(`   Last bar: ${new Date(bars[bars.length - 1].timestamp).toISOString()} - Close: ${bars[bars.length - 1].close.toFixed(2)}`);
+        void upsertBars('1m', bars).catch(err => {
+          console.warn('⚠️ [BarStore] persisting fetched bars failed:', err instanceof Error ? err.message : 'Unknown');
+        });
+        if (latestLocalTs !== null && bars.length > 0) {
+          void getLatestBarTimestamp('1m').then(newestTs => {
+            console.log(`🗄️ [BarStore] merged remote bars; newest local ts now ${newestTs ? new Date(newestTs).toISOString() : 'n/a'}`);
+          });
+        }
       }
 
       return bars;
@@ -1063,7 +1094,23 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           console.log(`   ✅ Signal still valid - no changes needed`);
         }
       } else {
-        const analysis = await analyzeSignalWithHistoricalData(signal, historicalBars);
+        const barResolution = resolveSignalWithBars(signal, historicalBars, { logPrefix: `   [Resolver ${signal.id.slice(-6)}]` });
+        const legacy = await analyzeSignalWithHistoricalData(signal, historicalBars);
+        // Prefer bar-based resolver when it converts a prior SL into a TP
+        // (i.e. detects a false SL hit). Otherwise trust legacy analysis.
+        const barFlippedSlToWin = (signal.status === 'SL_HIT' || signal.status === 'SL_AFTER_BE')
+          && (barResolution.newStatus === 'ALL_TARGETS_HIT' || barResolution.newStatus === 'TP3_HIT' || barResolution.newStatus === 'TP2_HIT' || barResolution.newStatus === 'TP1_HIT' || barResolution.newStatus === 'PARTIAL_WIN_SL_HIT');
+        const analysis = barFlippedSlToWin ? {
+          newStatus: barResolution.newStatus,
+          targetsHit: barResolution.targetsHit,
+          exitPrice: barResolution.exitPrice,
+          outcomeResult: barResolution.outcomeResult,
+          breakevenReached: barResolution.breakevenReached,
+          breakevenTime: barResolution.breakevenTime,
+        } : legacy;
+        if (barFlippedSlToWin) {
+          console.log(`   🔧 Bar-based resolver overrode legacy path: ${signal.status} -> ${analysis.newStatus}`);
+        }
         
         if (analysis.newStatus !== signal.status || analysis.targetsHit !== signal.targetsHit || analysis.breakevenReached !== signal.breakevenReached) {
           hasChanges = true;
@@ -1120,7 +1167,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     console.log('🔬 FALSE-SL AUDIT: re-evaluating terminal SL signals against 1-min bars');
     console.log('='.repeat(80));
 
-    const SL_AUDIT_VERSION = 'v2-wick-0p1';
+    const SL_AUDIT_VERSION = 'v3-bar-wick-0p1';
     const now = Date.now();
     const twoHoursInMs = 2 * 60 * 60 * 1000;
     let corrected = 0;
@@ -1147,7 +1194,21 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         continue;
       }
 
-      const analysis = await analyzeSignalWithHistoricalData(signal, bars);
+      const barOutcome = resolveSignalWithBars(signal, bars, { logPrefix: `   [Audit ${signal.id.slice(-6)}]` });
+      const legacyOutcome = await analyzeSignalWithHistoricalData(signal, bars);
+      const barFlippedSlToWin = (signal.status === 'SL_HIT' || signal.status === 'SL_AFTER_BE')
+        && (barOutcome.newStatus === 'ALL_TARGETS_HIT' || barOutcome.newStatus === 'TP3_HIT' || barOutcome.newStatus === 'TP2_HIT' || barOutcome.newStatus === 'TP1_HIT' || barOutcome.newStatus === 'PARTIAL_WIN_SL_HIT');
+      const analysis = barFlippedSlToWin ? {
+        newStatus: barOutcome.newStatus,
+        targetsHit: barOutcome.targetsHit,
+        exitPrice: barOutcome.exitPrice,
+        outcomeResult: barOutcome.outcomeResult,
+        breakevenReached: barOutcome.breakevenReached,
+        breakevenTime: barOutcome.breakevenTime,
+      } : legacyOutcome;
+      if (barFlippedSlToWin) {
+        console.log(`   🔧 Bar resolver overrode audit: ${signal.status} -> ${analysis.newStatus}`);
+      }
 
       const originalOutcomeWasLoss = signal.status === 'SL_HIT';
       const newOutcomeIsWin = analysis.newStatus === 'ALL_TARGETS_HIT' || analysis.newStatus === 'TP3_HIT' || analysis.newStatus === 'TP2_HIT' || analysis.newStatus === 'TP1_HIT' || analysis.newStatus === 'PARTIAL_WIN_SL_HIT' || analysis.newStatus === 'SL_AFTER_BE';
