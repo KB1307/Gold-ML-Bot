@@ -1176,20 +1176,32 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     console.log('🔬 FULL OUTCOME AUDIT: re-evaluating every terminal signal against 1-min bars (catches false SL AND false TP)');
     console.log('='.repeat(80));
 
-    // v4 expands the audit to ALL terminal signals (wins and losses) so that
-    // false-TP outcomes (where a signal actually went straight to SL but got
-    // mis-recorded as TP/ALL_TARGETS_HIT) are corrected the same way false-SL
-    // outcomes are corrected. Tick-by-wick 1m bar resolution is authoritative.
-    const SL_AUDIT_VERSION = 'v4-full-outcome-audit';
+    // v5 expands the audit in two critical ways beyond v4:
+    //   1. NEVER apply a permanent one-shot audit lock to signals that may
+    //      still benefit from additional 1m bars (i.e. signals < 24h old,
+    //      which is our sqlite ring-buffer retention). This means if a false
+    //      TP3 was recorded because the live tick monitor missed the SL-side
+    //      wick, every subsequent audit pass will keep rechecking until the
+    //      bar-based resolver converges. v4's lock caused wrong-direction
+    //      outcomes (BUY recorded as TP3 but actually SL, SELL recorded as
+    //      SL but actually TP) to be frozen after the first unsuccessful audit.
+    //   2. DO NOT mark a signal audited when no bars were available — that
+    //      silently locked in whatever the live monitor committed.
+    const SL_AUDIT_VERSION = 'v5-rolling-full-outcome-audit';
     const now = Date.now();
     const twoHoursInMs = 2 * 60 * 60 * 1000;
+    const twentyFourHoursInMs = 24 * 60 * 60 * 1000;
     let corrected = 0;
     const updated: TradingSignal[] = [];
 
     for (const signal of history) {
       const isTerminal = TERMINAL_SIGNAL_STATUSES.includes(signal.status);
+      const signalAgeMs = now - new Date(signal.timestamp).getTime();
       const alreadyAudited = (signal as TradingSignal & { slAuditVersion?: string }).slAuditVersion === SL_AUDIT_VERSION;
-      if (!isTerminal || alreadyAudited) {
+      // Bars retention is 24h. If the signal is older and already audited, we
+      // cannot do better than the prior pass - safe to skip to save CPU.
+      const tooOldForBars = signalAgeMs > twentyFourHoursInMs;
+      if (!isTerminal || (alreadyAudited && tooOldForBars)) {
         updated.push(signal);
         continue;
       }
@@ -1198,12 +1210,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       const fromTime = signalTs;
       const toTime = Math.min(now, signalTs + twoHoursInMs);
 
-      console.log(`\n🔍 Auditing ${signal.id.slice(-6)} (${signal.type}, status=${signal.status}) entry=${signal.entryPrice.toFixed(1)} SL=${signal.sl.toFixed(1)} TP1=${signal.tp1.toFixed(1)} TP3=${signal.tp3.toFixed(1)}`);
+      console.log(`\n🔍 Auditing ${signal.id.slice(-6)} (${signal.type}, status=${signal.status}) entry=${signal.entryPrice.toFixed(1)} SL=${signal.sl.toFixed(1)} TP1=${signal.tp1.toFixed(1)} TP3=${signal.tp3.toFixed(1)}${alreadyAudited ? ' [RE-AUDIT]' : ''}`);
 
       const bars = await fetchPriceHistory(fromTime, toTime);
       if (bars.length === 0) {
-        console.log(`   ⚠️ No 1-min bars returned - leaving signal unchanged and marking audited`);
-        updated.push({ ...signal, slAuditVersion: SL_AUDIT_VERSION } as TradingSignal);
+        // IMPORTANT: do NOT mark audited - we want to retry once bars arrive.
+        console.log(`   ⚠️ No 1-min bars returned - leaving signal unchanged, will retry next audit pass`);
+        updated.push(signal);
         continue;
       }
 
@@ -2096,32 +2109,53 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       const currentHistory = signalHistoryRef.current;
       const openSignals = currentHistory.filter(signal => !TERMINAL_SIGNAL_STATUSES.includes(signal.status));
+      const now = Date.now();
+      const twentyFourHoursInMs = 24 * 60 * 60 * 1000;
+      const recentTerminals = currentHistory.filter(signal => {
+        if (!TERMINAL_SIGNAL_STATUSES.includes(signal.status)) return false;
+        const signalTs = new Date(signal.timestamp).getTime();
+        return (now - signalTs) <= twentyFourHoursInMs;
+      });
 
-      if (openSignals.length === 0) {
+      if (openSignals.length === 0 && recentTerminals.length === 0) {
         return;
       }
 
       historicalReconciliationInFlightRef.current = true;
-      console.log(`🧭 Historical reconciliation triggered (${reason}) for ${openSignals.length} open signal(s)`);
+      console.log(`🧭 Historical reconciliation triggered (${reason}) for ${openSignals.length} open + ${recentTerminals.length} recent-terminal signal(s)`);
 
       try {
+        // 1. Reconcile open signals (catch-up detects TP/SL hits the live tick
+        //    monitor may have missed).
         const reconciledHistory = await catchUpAndEvaluateSignals(currentHistory, historicalFallbackPriceRef.current);
 
         if (!isMounted) {
           return;
         }
 
+        // 2. Re-audit every terminal signal from the last 24h against 1m bars.
+        //    This catches the reverse failure mode: the live tick monitor
+        //    committed a wrong-direction terminal (e.g. BUY → TP3 when price
+        //    actually went straight to SL) because it missed ticks on the
+        //    SL side. The bar-based resolver is authoritative and will flip
+        //    these back to the correct status.
+        const auditedHistory = await auditTerminalSLSignals(reconciledHistory);
+
+        if (!isMounted) {
+          return;
+        }
+
         const previousSerialized = JSON.stringify(currentHistory);
-        const nextSerialized = JSON.stringify(reconciledHistory);
+        const nextSerialized = JSON.stringify(auditedHistory);
 
         if (previousSerialized !== nextSerialized) {
-          signalHistoryRef.current = reconciledHistory;
-          setSignalHistory(reconciledHistory);
-          await AsyncStorage.setItem("signal_history", JSON.stringify(reconciledHistory));
+          signalHistoryRef.current = auditedHistory;
+          setSignalHistory(auditedHistory);
+          await AsyncStorage.setItem("signal_history", JSON.stringify(auditedHistory));
           setSignalUpdateTrigger(prev => prev + 1);
-          console.log('✅ Historical reconciliation applied missed TP/SL updates');
+          console.log('✅ Historical reconciliation + audit applied missed/wrong TP/SL updates');
         } else {
-          console.log('✅ Historical reconciliation found no missed TP/SL events');
+          console.log('✅ Historical reconciliation + audit found no missed/wrong TP/SL events');
         }
       } catch (error) {
         console.error('❌ Historical reconciliation failed:', error);
@@ -2140,7 +2174,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       isMounted = false;
       clearInterval(historicalReconciliationInterval);
     };
-  }, [catchUpAndEvaluateSignals, isLoading]);
+  }, [catchUpAndEvaluateSignals, auditTerminalSLSignals, isLoading]);
 
   useEffect(() => {
     if (!isLoggedIn) {
