@@ -4476,11 +4476,13 @@ class SignalGenerationEngine {
     if (rawSlPips > maxSLPips) {
       console.log(`🛡️ SL capped at maxSLPips ${maxSLPips} (would have been ${rawSlPips.toFixed(1)})`);
     }
-    // Enforce minimum 1:1 RR — SL risk must never exceed TP3 reward.
-    const maxSlByRR = Math.max(1, settings.tp3Pips);
-    if (dynamicSlPips > maxSlByRR) {
-      console.log(`🛡️ SL tightened to ${maxSlByRR} pips to preserve 1:1 RR vs TP3 ${settings.tp3Pips} (was ${dynamicSlPips.toFixed(1)})`);
-      dynamicSlPips = maxSlByRR;
+    // Preliminary RR guard against the configured TP3 setting. Final RR is
+    // re-checked below against the actual (widened) TP3 distance so the live
+    // reward-to-risk ratio is never < 1:1 regardless of the TP widen factor.
+    const preliminaryMaxSlByRR = Math.max(1, settings.tp3Pips);
+    if (dynamicSlPips > preliminaryMaxSlByRR) {
+      console.log(`🛡️ SL tightened to ${preliminaryMaxSlByRR} pips to preserve 1:1 RR vs base TP3 ${settings.tp3Pips} (was ${dynamicSlPips.toFixed(1)})`);
+      dynamicSlPips = preliminaryMaxSlByRR;
     }
     
     const volatilityLabel = features.atr > 10 ? "High Volatility" : features.atr < 8 ? "Low Volatility" : "Normal Volatility";
@@ -4503,6 +4505,15 @@ class SignalGenerationEngine {
     tp3Distance = settings.tp3Pips * widenFactor;
     if (analysis.confidence < 0.70) tp1Distance = settings.tp1Pips * 0.92;
     console.log(`🎯 TP widening factor ${widenFactor.toFixed(2)}x (room-to-SR ${roomToSR.toFixed(0)}p / ATR ${atrUnits.toFixed(1)}u)`);
+
+    // Final 1:1 RR enforcement against the ACTUAL widened TP3 distance. If the
+    // widen factor shrank TP3 below the current SL, tighten SL so reward >= risk.
+    if (dynamicSlPips > tp3Distance) {
+      const tightened = Math.max(1, Math.floor(tp3Distance));
+      console.log(`🛡️ Post-widen SL tightened from ${dynamicSlPips.toFixed(1)} -> ${tightened} pips to preserve >=1:1 RR vs actual TP3 ${tp3Distance.toFixed(1)}`);
+      dynamicSlPips = tightened;
+    }
+    console.log(`⚖️ Final RR check: TP1 ${tp1Distance.toFixed(1)}p | TP2 ${tp2Distance.toFixed(1)}p | TP3 ${tp3Distance.toFixed(1)}p | SL ${dynamicSlPips.toFixed(1)}p -> RR@TP3 ${(tp3Distance / Math.max(dynamicSlPips, 1)).toFixed(2)}:1`);
     
     const tp1 = entryPriceWithSlippage + (analysis.signalType === "BUY" ? 1 : -1) * tp1Distance * pipValue;
     const tp2 = entryPriceWithSlippage + (analysis.signalType === "BUY" ? 1 : -1) * tp2Distance * pipValue;

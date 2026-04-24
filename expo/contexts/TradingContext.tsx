@@ -1096,20 +1096,29 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       } else {
         const barResolution = resolveSignalWithBars(signal, historicalBars, { logPrefix: `   [Resolver ${signal.id.slice(-6)}]` });
         const legacy = await analyzeSignalWithHistoricalData(signal, historicalBars);
-        // Prefer bar-based resolver when it converts a prior SL into a TP
-        // (i.e. detects a false SL hit). Otherwise trust legacy analysis.
-        const barFlippedSlToWin = (signal.status === 'SL_HIT' || signal.status === 'SL_AFTER_BE')
-          && (barResolution.newStatus === 'ALL_TARGETS_HIT' || barResolution.newStatus === 'TP3_HIT' || barResolution.newStatus === 'TP2_HIT' || barResolution.newStatus === 'TP1_HIT' || barResolution.newStatus === 'PARTIAL_WIN_SL_HIT');
-        const analysis = barFlippedSlToWin ? {
+        // Bar-based resolver is the AUTHORITATIVE source of truth because it
+        // walks 1-minute bars tick-by-tick (by wick) from the signal creation
+        // time forward and respects SL-before-TP ordering. The legacy path is
+        // retained only for diagnostic logging. If the bar resolver and legacy
+        // disagree on the final status we ALWAYS trust the bar resolver —
+        // including the case where legacy reports a TP hit but bars show the
+        // SL was actually hit first (false TP win) or vice versa.
+        const legacyDiffers = legacy.newStatus !== barResolution.newStatus
+          || legacy.targetsHit !== barResolution.targetsHit
+          || Math.abs((legacy.exitPrice ?? 0) - (barResolution.exitPrice ?? 0)) > 0.05;
+        const analysis = {
           newStatus: barResolution.newStatus,
           targetsHit: barResolution.targetsHit,
           exitPrice: barResolution.exitPrice,
           outcomeResult: barResolution.outcomeResult,
           breakevenReached: barResolution.breakevenReached,
           breakevenTime: barResolution.breakevenTime,
-        } : legacy;
-        if (barFlippedSlToWin) {
-          console.log(`   🔧 Bar-based resolver overrode legacy path: ${signal.status} -> ${analysis.newStatus}`);
+        };
+        if (legacyDiffers) {
+          console.log(`   🔧 Bar resolver overrode legacy: legacy=${legacy.newStatus}(tgt ${legacy.targetsHit}) -> bars=${barResolution.newStatus}(tgt ${barResolution.targetsHit})`);
+        }
+        if (analysis.newStatus !== signal.status) {
+          console.log(`   📝 Signal ${signal.id.slice(-6)} status change: ${signal.status} -> ${analysis.newStatus} (bar-resolved, tick-by-wick on 1m)`);
         }
         
         if (analysis.newStatus !== signal.status || analysis.targetsHit !== signal.targetsHit || analysis.breakevenReached !== signal.breakevenReached) {
@@ -1164,19 +1173,23 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   const auditTerminalSLSignals = useCallback(async (history: TradingSignal[]): Promise<TradingSignal[]> => {
     console.log('\n' + '='.repeat(80));
-    console.log('🔬 FALSE-SL AUDIT: re-evaluating terminal SL signals against 1-min bars');
+    console.log('🔬 FULL OUTCOME AUDIT: re-evaluating every terminal signal against 1-min bars (catches false SL AND false TP)');
     console.log('='.repeat(80));
 
-    const SL_AUDIT_VERSION = 'v3-bar-wick-0p1';
+    // v4 expands the audit to ALL terminal signals (wins and losses) so that
+    // false-TP outcomes (where a signal actually went straight to SL but got
+    // mis-recorded as TP/ALL_TARGETS_HIT) are corrected the same way false-SL
+    // outcomes are corrected. Tick-by-wick 1m bar resolution is authoritative.
+    const SL_AUDIT_VERSION = 'v4-full-outcome-audit';
     const now = Date.now();
     const twoHoursInMs = 2 * 60 * 60 * 1000;
     let corrected = 0;
     const updated: TradingSignal[] = [];
 
     for (const signal of history) {
-      const isTerminalSL = signal.status === 'SL_HIT' || signal.status === 'SL_AFTER_BE' || signal.status === 'PARTIAL_WIN_SL_HIT';
+      const isTerminal = TERMINAL_SIGNAL_STATUSES.includes(signal.status);
       const alreadyAudited = (signal as TradingSignal & { slAuditVersion?: string }).slAuditVersion === SL_AUDIT_VERSION;
-      if (!isTerminalSL || alreadyAudited) {
+      if (!isTerminal || alreadyAudited) {
         updated.push(signal);
         continue;
       }
@@ -1195,23 +1208,26 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       }
 
       const barOutcome = resolveSignalWithBars(signal, bars, { logPrefix: `   [Audit ${signal.id.slice(-6)}]` });
+      // Bar resolver is authoritative for the audit too. Legacy evaluation is
+      // kept only for diagnostic comparison.
       const legacyOutcome = await analyzeSignalWithHistoricalData(signal, bars);
-      const barFlippedSlToWin = (signal.status === 'SL_HIT' || signal.status === 'SL_AFTER_BE')
-        && (barOutcome.newStatus === 'ALL_TARGETS_HIT' || barOutcome.newStatus === 'TP3_HIT' || barOutcome.newStatus === 'TP2_HIT' || barOutcome.newStatus === 'TP1_HIT' || barOutcome.newStatus === 'PARTIAL_WIN_SL_HIT');
-      const analysis = barFlippedSlToWin ? {
+      const analysis = {
         newStatus: barOutcome.newStatus,
         targetsHit: barOutcome.targetsHit,
         exitPrice: barOutcome.exitPrice,
         outcomeResult: barOutcome.outcomeResult,
         breakevenReached: barOutcome.breakevenReached,
         breakevenTime: barOutcome.breakevenTime,
-      } : legacyOutcome;
-      if (barFlippedSlToWin) {
-        console.log(`   🔧 Bar resolver overrode audit: ${signal.status} -> ${analysis.newStatus}`);
+      };
+      if (legacyOutcome.newStatus !== barOutcome.newStatus) {
+        console.log(`   🔍 Legacy vs bars disagreement during audit: legacy=${legacyOutcome.newStatus} bars=${barOutcome.newStatus} — trusting bars`);
       }
 
+      const winStatuses: SignalStatus[] = ['ALL_TARGETS_HIT', 'TP3_HIT', 'TP2_HIT', 'TP1_HIT', 'PARTIAL_WIN_SL_HIT', 'SL_AFTER_BE'];
       const originalOutcomeWasLoss = signal.status === 'SL_HIT';
-      const newOutcomeIsWin = analysis.newStatus === 'ALL_TARGETS_HIT' || analysis.newStatus === 'TP3_HIT' || analysis.newStatus === 'TP2_HIT' || analysis.newStatus === 'TP1_HIT' || analysis.newStatus === 'PARTIAL_WIN_SL_HIT' || analysis.newStatus === 'SL_AFTER_BE';
+      const originalOutcomeWasWin = winStatuses.includes(signal.status);
+      const newOutcomeIsWin = winStatuses.includes(analysis.newStatus);
+      const newOutcomeIsLoss = analysis.newStatus === 'SL_HIT';
       const statusChanged = analysis.newStatus !== signal.status;
       const targetsChanged = analysis.targetsHit !== signal.targetsHit;
 
@@ -1234,7 +1250,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         console.log(`      exitPrice ${signal.exitPrice?.toFixed(1) ?? 'n/a'} -> ${analysis.exitPrice.toFixed(1)}`);
 
         if (originalOutcomeWasLoss && newOutcomeIsWin) {
-          console.log(`   🧠 Submitting corrected WIN outcome to learning engine`);
+          console.log(`   🧠 Submitting corrected WIN outcome to learning engine (was false SL)`);
           await signalEngine.recordTradeOutcome(
             signal.id,
             signal.entryPrice,
@@ -1244,7 +1260,18 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             undefined,
             now - signalTs
           ).catch(err => console.error('Failed to record corrected WIN outcome:', err));
-        } else if (!originalOutcomeWasLoss && analysis.newStatus === 'SL_HIT') {
+        } else if (originalOutcomeWasWin && newOutcomeIsLoss) {
+          console.log(`   🧠 Submitting corrected LOSS outcome to learning engine (was false TP)`);
+          await signalEngine.recordTradeOutcome(
+            signal.id,
+            signal.entryPrice,
+            analysis.exitPrice,
+            'LOSS',
+            {} as any,
+            undefined,
+            now - signalTs
+          ).catch(err => console.error('Failed to record corrected LOSS outcome:', err));
+        } else if (!originalOutcomeWasLoss && newOutcomeIsLoss) {
           console.log(`   🧠 Submitting corrected LOSS outcome to learning engine`);
           await signalEngine.recordTradeOutcome(
             signal.id,
