@@ -1171,7 +1171,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     return updatedHistory;
   }, [analyzeSignalWithHistoricalData, fetchPriceHistory]);
 
-  const auditTerminalSLSignals = useCallback(async (history: TradingSignal[]): Promise<TradingSignal[]> => {
+  const auditTerminalSLSignals = useCallback(async (history: TradingSignal[], opts: { force?: boolean } = {}): Promise<TradingSignal[]> => {
     console.log('\n' + '='.repeat(80));
     console.log('🔬 FULL OUTCOME AUDIT: re-evaluating every terminal signal against 1-min bars (catches false SL AND false TP)');
     console.log('='.repeat(80));
@@ -1188,6 +1188,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     //   2. DO NOT mark a signal audited when no bars were available — that
     //      silently locked in whatever the live monitor committed.
     const SL_AUDIT_VERSION = 'v5-rolling-full-outcome-audit';
+    const force = opts.force === true;
+    if (force) {
+      console.log('🧨 MANUAL AUDIT: force=true - clearing audit locks and re-evaluating every terminal signal from scratch');
+    }
     const now = Date.now();
     const twoHoursInMs = 2 * 60 * 60 * 1000;
     const twentyFourHoursInMs = 24 * 60 * 60 * 1000;
@@ -1200,8 +1204,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       const alreadyAudited = (signal as TradingSignal & { slAuditVersion?: string }).slAuditVersion === SL_AUDIT_VERSION;
       // Bars retention is 24h. If the signal is older and already audited, we
       // cannot do better than the prior pass - safe to skip to save CPU.
+      // force=true (manual audit) bypasses both the audit lock and the 24h skip.
       const tooOldForBars = signalAgeMs > twentyFourHoursInMs;
-      if (!isTerminal || (alreadyAudited && tooOldForBars)) {
+      if (!isTerminal || (!force && alreadyAudited && tooOldForBars)) {
         updated.push(signal);
         continue;
       }
@@ -1306,6 +1311,38 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     console.log('='.repeat(80) + '\n');
     return updated;
   }, [analyzeSignalWithHistoricalData, fetchPriceHistory]);
+
+  const runManualAudit = useCallback(async (): Promise<{ corrected: number; total: number }> => {
+    console.log('🛠️ MANUAL AUDIT triggered from UI');
+    const current = signalHistoryRef.current;
+    const terminalCount = current.filter(s => TERMINAL_SIGNAL_STATUSES.includes(s.status)).length;
+    // Strip any prior audit locks so every terminal signal is re-evaluated against fresh bars.
+    const stripped = current.map(s => {
+      const copy: TradingSignal & { slAuditVersion?: string } = { ...s };
+      delete copy.slAuditVersion;
+      return copy as TradingSignal;
+    });
+    const reconciled = await catchUpAndEvaluateSignals(stripped);
+    const audited = await auditTerminalSLSignals(reconciled, { force: true });
+    let corrected = 0;
+    for (let i = 0; i < current.length; i++) {
+      const before = current[i];
+      const after = audited.find(a => a.id === before.id);
+      if (!after) continue;
+      if (after.status !== before.status || after.targetsHit !== before.targetsHit) {
+        corrected++;
+      }
+    }
+    signalHistoryRef.current = audited;
+    setSignalHistory(audited);
+    await AsyncStorage.setItem('signal_history', JSON.stringify(audited));
+    setSignalUpdateTrigger(prev => prev + 1);
+    const metrics = calculatePerformanceMetrics(audited);
+    setPerformanceMetrics(metrics);
+    await AsyncStorage.setItem('performance_metrics', JSON.stringify(metrics));
+    console.log(`🛠️ MANUAL AUDIT complete: ${corrected} of ${terminalCount} terminal signals corrected`);
+    return { corrected, total: terminalCount };
+  }, [auditTerminalSLSignals, catchUpAndEvaluateSignals, calculatePerformanceMetrics]);
 
   const loadPersistedData = async () => {
     try {
@@ -2315,6 +2352,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     manualCloseSignal,
     refreshData,
     triggerManualRetrain,
+    runManualAudit,
     backgroundTaskActive,
   }), [
     accountBalance,
@@ -2341,6 +2379,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     priceHistory,
     priceSource,
     refreshData,
+    runManualAudit,
     settings,
     signalHistory,
     signalTrackingSnapshot.price,

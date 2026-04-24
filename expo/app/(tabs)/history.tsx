@@ -1,7 +1,7 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Alert } from "react-native";
-import { useEffect, useMemo } from "react";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Alert, ActivityIndicator } from "react-native";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { LinearGradient } from "expo-linear-gradient";
-import { History, TrendingUp, TrendingDown, Trash2, CheckCircle, XCircle } from "lucide-react-native";
+import { History, TrendingUp, TrendingDown, Trash2, CheckCircle, XCircle, ShieldCheck } from "lucide-react-native";
 import { useTrading, computeSignalPnL, getEffectiveExitPrice } from "@/contexts/TradingContext";
 import { Stack } from "expo-router";
 import { TradingSignal } from "@/types/trading";
@@ -11,7 +11,49 @@ const ACTIVE_SIGNAL_STATUSES: TradingSignal["status"][] = ["ACTIVE", "PARTIALLY_
 const TERMINAL_PNL_STATUSES: TradingSignal["status"][] = ["ALL_TARGETS_HIT", "TP3_HIT", "PARTIAL_WIN_SL_HIT", "SL_AFTER_BE", "SL_HIT", "CLOSED", "EXPIRED_MISSED_ENTRY"];
 
 export default function HistoryScreen() {
-  const { signalHistory, deleteSignalFromHistory, signalUpdateTrigger, isLoading, settings } = useTrading();
+  const { signalHistory, deleteSignalFromHistory, signalUpdateTrigger, isLoading, settings, runManualAudit } = useTrading();
+  const [isAuditing, setIsAuditing] = useState<boolean>(false);
+
+  const handleManualAudit = useCallback(async () => {
+    if (isAuditing) return;
+    const confirmMsg = "Run a full signal audit?\n\nThis re-evaluates every closed signal against 1-minute bar history (tick-by-wick). False SL/TP outcomes are corrected and performance metrics are refreshed.";
+    const proceed = async () => {
+      try {
+        setIsAuditing(true);
+        console.log("[History] Manual audit started by user");
+        const result = await runManualAudit();
+        const msg = result.corrected > 0
+          ? `Audit complete: ${result.corrected} signal(s) corrected out of ${result.total} terminal signals. Performance metrics updated.`
+          : `Audit complete: all ${result.total} terminal signals already correct.`;
+        if (Platform.OS === "web") {
+          alert(msg);
+        } else {
+          Alert.alert("Audit Complete", msg);
+        }
+      } catch (err) {
+        console.error("[History] Manual audit failed:", err);
+        const errMsg = err instanceof Error ? err.message : "Unknown error";
+        if (Platform.OS === "web") alert(`Audit failed: ${errMsg}`);
+        else Alert.alert("Audit Failed", errMsg);
+      } finally {
+        setIsAuditing(false);
+      }
+    };
+    if (Platform.OS === "web") {
+      if (window.confirm(confirmMsg)) {
+        void proceed();
+      }
+    } else {
+      Alert.alert(
+        "Manual Audit",
+        confirmMsg,
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Run Audit", onPress: () => { void proceed(); } },
+        ],
+      );
+    }
+  }, [isAuditing, runManualAudit]);
 
   const sortedSignalHistory = useMemo(() => (
     [...signalHistory].sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
@@ -255,6 +297,20 @@ export default function HistoryScreen() {
                   {sortedSignalHistory.length} Tracked Signals • {activeSignals.length} Active • {closedSignals.length} Closed
                 </Text>
               </View>
+              <TouchableOpacity
+                onPress={handleManualAudit}
+                disabled={isAuditing || isLoading}
+                style={[styles.auditButton, (isAuditing || isLoading) && styles.auditButtonDisabled]}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                testID="history-manual-audit"
+              >
+                {isAuditing ? (
+                  <ActivityIndicator size="small" color="#FFD700" />
+                ) : (
+                  <ShieldCheck size={18} color="#FFD700" strokeWidth={2} />
+                )}
+                <Text style={styles.auditButtonText}>{isAuditing ? "Auditing" : "Audit"}</Text>
+              </TouchableOpacity>
             </View>
 
             {isLoading ? (
@@ -314,6 +370,26 @@ const styles = StyleSheet.create({
   headerTextContainer: {
     flex: 1,
   },
+  auditButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(255, 215, 0, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 215, 0, 0.35)",
+  },
+  auditButtonDisabled: {
+    opacity: 0.5,
+  },
+  auditButtonText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#FFD700",
+    letterSpacing: 0.3,
+  } as const,
   headerTitle: {
     fontSize: 28,
     fontWeight: "700",
