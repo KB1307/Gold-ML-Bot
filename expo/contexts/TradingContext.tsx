@@ -71,15 +71,27 @@ const TERMINAL_SIGNAL_STATUSES: SignalStatus[] = ["CLOSED", "SL_HIT", "SL_AFTER_
 const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;
 
 // False-SL protection thresholds.
-// Per user request: a wick through the SL price by 0.1 pip OR more triggers
-// an immediate SL hit (no duration requirement). Feed-glitch protection is
-// preserved only through the outlier-tick spike rejector, which drops ticks
-// that jump more than TICK_SPIKE_REJECT_PIPS vs the last accepted tracking
-// price inside TICK_SPIKE_WINDOW_MS (obvious feed glitch).
-const SL_CONFIRMATION_MIN_PENETRATION_PIPS = 0.1;
-const SL_CONFIRMATION_MIN_DURATION_MS = 0;
+// A single glitch tick that pokes 0.1 pips past SL for 0 ms was closing
+// trades as losses (and poisoning the 1m bar store) even when the underlying
+// market never printed that price. Two independent guards now apply:
+//   1. BAR-INGEST SPIKE FILTER (see commitSignalPrice) drops outlier ticks
+//      BEFORE they can be written into the OHLC bar store, so the historical
+//      resolver can't later "confirm" a false SL from a corrupted wick.
+//   2. LIVE SL CONFIRMATION now requires a sustained breach: at least
+//      SL_CONFIRMATION_MIN_PENETRATION_PIPS past SL for at least
+//      SL_CONFIRMATION_MIN_DURATION_MS of elapsed time AND at least
+//      SL_CONFIRMATION_MIN_TICKS independent ticks past SL.
+const SL_CONFIRMATION_MIN_PENETRATION_PIPS = 1.5;
+const SL_CONFIRMATION_MIN_DURATION_MS = 2500;
+const SL_CONFIRMATION_MIN_TICKS = 2;
 const TICK_SPIKE_REJECT_PIPS = 8.0;
 const TICK_SPIKE_WINDOW_MS = 500;
+// Profit-lock after TP1: replaces the previous cosmetic "breakeven" indicator
+// with a real trailing stop. Once TP1 is achieved, the effective SL becomes
+// entry + 15 pips (BUY) or entry - 15 pips (SELL). If price retraces to that
+// level, the trade closes as SL_AFTER_BE banking TP1 + 15 pip lock (WIN).
+const POST_TP1_PROFIT_LOCK_PIPS = 15;
+const PIP_VALUE = 0.1;
 const ACTIVE_SIGNAL_LOCK_RELEASE_MS = 45 * 60 * 1000;
 const SIGNAL_GENERATION_INTERVAL_MS = 20000;
 
@@ -97,6 +109,12 @@ function sanitizeSettings(settings: Settings): Settings {
   };
 }
 
+export function getPostTP1LockPrice(signal: TradingSignal): number {
+  const delta = POST_TP1_PROFIT_LOCK_PIPS * PIP_VALUE;
+  const raw = signal.type === 'BUY' ? signal.entryPrice + delta : signal.entryPrice - delta;
+  return Number(raw.toFixed(1));
+}
+
 function getProtectedExitPrice(signal: TradingSignal, targetsHit: number): number {
   const normalizedTargetsHit = Math.max(0, Math.min(2, targetsHit));
 
@@ -105,7 +123,9 @@ function getProtectedExitPrice(signal: TradingSignal, targetsHit: number): numbe
   }
 
   if (normalizedTargetsHit === 1) {
-    return Number(((signal.tp1 + signal.entryPrice + signal.entryPrice) / 3).toFixed(1));
+    // Post-TP1 protected exit = 15 pip profit lock (entry +/- 15 pips).
+    // This banks TP1 runner + 15 pip lock when price retraces past the lock.
+    return getPostTP1LockPrice(signal);
   }
 
   return signal.entryPrice;
@@ -226,9 +246,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   // Per-signal SL breach tracking (in-memory). Key = signal.id.
   // Tracks when price first broke the SL; we only confirm SL_HIT after the
   // required duration AND minimum penetration are satisfied.
-  const slBreachTrackerRef = useRef<Map<string, { firstBreachAt: number; maxPenetrationPips: number; lastPrice: number }>>(new Map());
+  const slBreachTrackerRef = useRef<Map<string, { firstBreachAt: number; maxPenetrationPips: number; lastPrice: number; tickCount: number }>>(new Map());
   // Last accepted signal-tracking price/time, used for spike rejection.
   const lastAcceptedTickRef = useRef<{ price: number; at: number }>({ price: 0, at: 0 });
+  // Last accepted BAR-ingest price/time, used to reject outlier ticks before
+  // they poison the OHLC bar store (which audits rely on).
+  const lastAcceptedBarTickRef = useRef<{ price: number; at: number }>({ price: 0, at: 0 });
 
   useEffect(() => {
     const init = async () => {
@@ -299,9 +322,28 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       return newHistory;
     });
 
-    void ingestTickAllTimeframes(price, now).catch(err => {
-      console.warn('⚠️ [BarStore] tick ingest failed (non-blocking):', err instanceof Error ? err.message : 'Unknown');
-    });
+    // BAR-INGEST SPIKE FILTER: reject outlier ticks BEFORE they get written
+    // into the OHLC bar store. A single glitchy tick that jumped >8 pips in
+    // <500ms was contaminating the 1m bar's high/low, which then made the
+    // historical resolver "confirm" false SL wicks during the audit. We drop
+    // those ticks from the bar store while still allowing them to update the
+    // on-screen price (no user-visible regression).
+    const barLast = lastAcceptedBarTickRef.current;
+    let allowBarIngest = true;
+    if (barLast.price > 0 && barLast.at > 0) {
+      const dtMsBar = now - barLast.at;
+      const gapPipsBar = Math.abs(price - barLast.price) / PIP_VALUE;
+      if (dtMsBar < TICK_SPIKE_WINDOW_MS && gapPipsBar > TICK_SPIKE_REJECT_PIPS) {
+        console.warn(`🛡️ [BarStore] Dropping spike tick ${price.toFixed(1)} (${gapPipsBar.toFixed(1)} pips in ${dtMsBar}ms from ${barLast.price.toFixed(1)}) - not ingesting into bars to avoid corrupting audits`);
+        allowBarIngest = false;
+      }
+    }
+    if (allowBarIngest) {
+      lastAcceptedBarTickRef.current = { price, at: now };
+      void ingestTickAllTimeframes(price, now).catch(err => {
+        console.warn('⚠️ [BarStore] tick ingest failed (non-blocking):', err instanceof Error ? err.message : 'Unknown');
+      });
+    }
 
     signalEngine.updateDailyOHLC(price).then(updatedOHLC => {
       if (!updatedOHLC) return;
@@ -1217,7 +1259,30 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       console.log(`\n🔍 Auditing ${signal.id.slice(-6)} (${signal.type}, status=${signal.status}) entry=${signal.entryPrice.toFixed(1)} SL=${signal.sl.toFixed(1)} TP1=${signal.tp1.toFixed(1)} TP3=${signal.tp3.toFixed(1)}${alreadyAudited ? ' [RE-AUDIT]' : ''}`);
 
-      const bars = await fetchPriceHistory(fromTime, toTime);
+      // When force=true (manual audit), bypass the local sqlite cache and
+      // fetch authoritative bars from the remote data provider. This prevents
+      // previously-poisoned local bars from re-confirming a false SL hit.
+      let bars: { timestamp: number; open: number; high: number; low: number; close: number }[] = [];
+      if (force) {
+        try {
+          console.log(`   🌐 [Audit force] Fetching authoritative remote bars (bypassing local cache)...`);
+          bars = await fetchHistoricalData({ fromTime, toTime, timeoutMs: 15000 });
+          if (bars.length > 0) {
+            void upsertBars('1m', bars).catch(err => {
+              console.warn('   ⚠️ [Audit force] failed to re-seed local bars:', err instanceof Error ? err.message : 'Unknown');
+            });
+            console.log(`   ✅ [Audit force] got ${bars.length} authoritative remote bars`);
+          } else {
+            console.log(`   ⚠️ [Audit force] remote returned 0 bars - falling back to local cache`);
+            bars = await fetchPriceHistory(fromTime, toTime);
+          }
+        } catch (err) {
+          console.warn(`   ⚠️ [Audit force] remote fetch failed, falling back to local:`, err instanceof Error ? err.message : 'Unknown');
+          bars = await fetchPriceHistory(fromTime, toTime);
+        }
+      } else {
+        bars = await fetchPriceHistory(fromTime, toTime);
+      }
       if (bars.length === 0) {
         // IMPORTANT: do NOT mark audited - we want to retry once bars arrive.
         console.log(`   ⚠️ No 1-min bars returned - leaving signal unchanged, will retry next audit pass`);
@@ -1885,19 +1950,28 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
         console.log(`🔍 Monitoring Signal ${signal.id.slice(-6)}: Type=${signal.type}, Status=${signal.status}, Targets=${targetsHit}/3, Price=${price.toFixed(1)}, TP1=${signal.tp1.toFixed(1)}, TP2=${signal.tp2.toFixed(1)}, TP3=${signal.tp3.toFixed(1)}, SL=${signal.sl.toFixed(1)}, TrailingSL=${trailingSLPrice.toFixed(1)} (${trailingSLLevel || 'ORIGINAL'}), Breakeven=${breakevenReached}`);
 
-        // SL-hit confirmation helper: returns true only if SL breach is genuine
-        // (sustained > SL_CONFIRMATION_MIN_DURATION_MS AND penetrated past SL
-        // by > SL_CONFIRMATION_MIN_PENETRATION_PIPS). Otherwise it tracks the
-        // breach attempt in memory and returns false, preventing a single-tick
-        // spike from closing the trade.
-        const confirmSLHit = (): boolean => {
+        // Effective SL level: after TP1 we switch to the 15-pip profit lock;
+        // after TP2 we switch to entry (existing behavior).
+        const hasTP1 = (signal.targetsHit >= 1) || signal.breakevenReached === true;
+        const hasTP2 = signal.targetsHit >= 2;
+        const postTP1Lock = getPostTP1LockPrice(signal);
+        const effectiveSLPrice = hasTP2
+          ? signal.entryPrice
+          : hasTP1
+            ? postTP1Lock
+            : signal.sl;
+
+        // SL-hit confirmation helper: returns true only if the breach of the
+        // EFFECTIVE SL level is genuine (sustained duration + penetration +
+        // multiple independent ticks). This prevents a single glitchy tick
+        // from closing the trade.
+        const confirmSLHit = (refPrice: number): boolean => {
           const penetrationPips = signal.type === "BUY"
-            ? signal.sl - price
-            : price - signal.sl;
+            ? (refPrice - price) / PIP_VALUE
+            : (price - refPrice) / PIP_VALUE;
           if (penetrationPips < 0) {
-            // Price recovered above/below SL -> reset any prior breach tracking
             if (slBreachTrackerRef.current.has(signal.id)) {
-              console.log(`🛡️ SL breach for ${signal.id.slice(-6)} reset - price recovered`);
+              console.log(`🛡️ SL breach for ${signal.id.slice(-6)} reset - price recovered above/below effective SL ${refPrice.toFixed(1)}`);
               slBreachTrackerRef.current.delete(signal.id);
             }
             return false;
@@ -1908,40 +1982,43 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
               firstBreachAt: now,
               maxPenetrationPips: penetrationPips,
               lastPrice: price,
+              tickCount: 1,
             });
-            console.log(`🛡️ SL BREACH DETECTED (pending confirmation): ${signal.id.slice(-6)} penetration=${penetrationPips.toFixed(2)} pips @ ${price.toFixed(1)} - awaiting ${SL_CONFIRMATION_MIN_DURATION_MS}ms & ${SL_CONFIRMATION_MIN_PENETRATION_PIPS} pip penetration before confirming`);
+            console.log(`🛡️ SL BREACH DETECTED (pending confirmation): ${signal.id.slice(-6)} penetration=${penetrationPips.toFixed(2)} pips @ ${price.toFixed(1)} vs effective SL ${refPrice.toFixed(1)} - need ${SL_CONFIRMATION_MIN_DURATION_MS}ms + ${SL_CONFIRMATION_MIN_PENETRATION_PIPS} pips + ${SL_CONFIRMATION_MIN_TICKS} ticks`);
             return false;
           }
           existing.maxPenetrationPips = Math.max(existing.maxPenetrationPips, penetrationPips);
           existing.lastPrice = price;
+          existing.tickCount += 1;
           const elapsed = now - existing.firstBreachAt;
           const confirmed = elapsed >= SL_CONFIRMATION_MIN_DURATION_MS
-            && existing.maxPenetrationPips >= SL_CONFIRMATION_MIN_PENETRATION_PIPS;
+            && existing.maxPenetrationPips >= SL_CONFIRMATION_MIN_PENETRATION_PIPS
+            && existing.tickCount >= SL_CONFIRMATION_MIN_TICKS;
           if (!confirmed) {
-            console.log(`🛡️ SL breach ongoing for ${signal.id.slice(-6)}: elapsed=${elapsed}ms (need ${SL_CONFIRMATION_MIN_DURATION_MS}ms), maxPen=${existing.maxPenetrationPips.toFixed(2)}pips (need ${SL_CONFIRMATION_MIN_PENETRATION_PIPS})`);
+            console.log(`🛡️ SL breach ongoing for ${signal.id.slice(-6)}: elapsed=${elapsed}ms (need ${SL_CONFIRMATION_MIN_DURATION_MS}), maxPen=${existing.maxPenetrationPips.toFixed(2)}p (need ${SL_CONFIRMATION_MIN_PENETRATION_PIPS}), ticks=${existing.tickCount} (need ${SL_CONFIRMATION_MIN_TICKS})`);
             return false;
           }
-          console.log(`✅ SL HIT CONFIRMED for ${signal.id.slice(-6)}: sustained ${elapsed}ms, max penetration ${existing.maxPenetrationPips.toFixed(2)} pips`);
+          console.log(`✅ SL HIT CONFIRMED for ${signal.id.slice(-6)}: sustained ${elapsed}ms, pen ${existing.maxPenetrationPips.toFixed(2)}p, ${existing.tickCount} ticks (effective SL ${refPrice.toFixed(1)})`);
           slBreachTrackerRef.current.delete(signal.id);
           return true;
         };
 
         if (signal.type === "BUY") {
-          if (targetsHit >= 2 && price <= signal.entryPrice) {
+          if (hasTP2 && price <= signal.entryPrice && confirmSLHit(signal.entryPrice)) {
             console.log(`✅ TP2 runner returned to entry: BUY signal ${signal.id.slice(-6)} closing as protected partial win @ ${price.toFixed(1)}`);
             newStatus = "PARTIAL_WIN_SL_HIT";
             targetsHit = Math.max(targetsHit, 2);
             updated = true;
             immediateUpdate = true;
-          } else if (price <= signal.sl && confirmSLHit()) {
+          } else if (hasTP1 && !hasTP2 && price <= postTP1Lock && confirmSLHit(postTP1Lock)) {
+            console.log(`⚖️ 15-PIP PROFIT LOCK HIT: BUY signal ${signal.id.slice(-6)} retraced to entry+15 (${postTP1Lock.toFixed(1)}) after TP1 - banking lock @ ${price.toFixed(1)}`);
+            newStatus = "SL_AFTER_BE";
+            targetsHit = Math.max(targetsHit, 1);
+            updated = true;
+            immediateUpdate = true;
+          } else if (!hasTP1 && price <= signal.sl && confirmSLHit(signal.sl)) {
             console.log(`🚨 ORIGINAL SL HIT (CONFIRMED): BUY signal @ Entry=${signal.entryPrice.toFixed(1)}, Original SL=${signal.sl.toFixed(1)}, Current=${price.toFixed(1)}`);
-            if (breakevenReached || targetsHit >= 1) {
-              newStatus = "SL_AFTER_BE";
-              targetsHit = Math.max(targetsHit, 1);
-              console.log(`   ⚖️ SL AFTER BREAKEVEN - TP1 banked, no capital loss`);
-            } else {
-              newStatus = "SL_HIT";
-            }
+            newStatus = "SL_HIT";
             updated = true;
             immediateUpdate = true;
           } else if (price >= signal.tp3 && targetsHit < 3) {
@@ -1975,21 +2052,21 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             console.log(`📋 BREAKEVEN NOTIFICATION: BUY Signal ${signal.id.slice(-6)} price at entry ${signal.entryPrice.toFixed(1)} (indicator only - trade remains open)`);
           }
         } else {
-          if (targetsHit >= 2 && price >= signal.entryPrice) {
+          if (hasTP2 && price >= signal.entryPrice && confirmSLHit(signal.entryPrice)) {
             console.log(`✅ TP2 runner returned to entry: SELL signal ${signal.id.slice(-6)} closing as protected partial win @ ${price.toFixed(1)}`);
             newStatus = "PARTIAL_WIN_SL_HIT";
             targetsHit = Math.max(targetsHit, 2);
             updated = true;
             immediateUpdate = true;
-          } else if (price >= signal.sl && confirmSLHit()) {
+          } else if (hasTP1 && !hasTP2 && price >= postTP1Lock && confirmSLHit(postTP1Lock)) {
+            console.log(`⚖️ 15-PIP PROFIT LOCK HIT: SELL signal ${signal.id.slice(-6)} retraced to entry-15 (${postTP1Lock.toFixed(1)}) after TP1 - banking lock @ ${price.toFixed(1)}`);
+            newStatus = "SL_AFTER_BE";
+            targetsHit = Math.max(targetsHit, 1);
+            updated = true;
+            immediateUpdate = true;
+          } else if (!hasTP1 && price >= signal.sl && confirmSLHit(signal.sl)) {
             console.log(`🚨 ORIGINAL SL HIT (CONFIRMED): SELL signal @ Entry=${signal.entryPrice.toFixed(1)}, Original SL=${signal.sl.toFixed(1)}, Current=${price.toFixed(1)}`);
-            if (breakevenReached || targetsHit >= 1) {
-              newStatus = "SL_AFTER_BE";
-              targetsHit = Math.max(targetsHit, 1);
-              console.log(`   ⚖️ SL AFTER BREAKEVEN - TP1 banked, no capital loss`);
-            } else {
-              newStatus = "SL_HIT";
-            }
+            newStatus = "SL_HIT";
             updated = true;
             immediateUpdate = true;
           } else if (price <= signal.tp3 && targetsHit < 3) {

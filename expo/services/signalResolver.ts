@@ -3,6 +3,13 @@ import type { OhlcBar } from '@/services/barStore';
 
 export const SL_WICK_PENETRATION_PIPS = 0.1;
 const PIP = 0.1;
+export const POST_TP1_PROFIT_LOCK_PIPS = 15;
+
+export function getPostTP1LockPrice(signal: TradingSignal): number {
+  const delta = POST_TP1_PROFIT_LOCK_PIPS * PIP;
+  const raw = signal.type === 'BUY' ? signal.entryPrice + delta : signal.entryPrice - delta;
+  return Number(raw.toFixed(1));
+}
 
 export interface ResolverOutcome {
   newStatus: SignalStatus;
@@ -21,7 +28,8 @@ function getProtectedExitPrice(signal: TradingSignal, targetsHit: number): numbe
     return Number(((signal.tp1 + signal.tp2 + signal.entryPrice) / 3).toFixed(1));
   }
   if (normalizedTargetsHit === 1) {
-    return Number(((signal.tp1 + signal.entryPrice + signal.entryPrice) / 3).toFixed(1));
+    // Post-TP1 protected exit = 15 pip profit lock price (entry +/- 15 pips).
+    return getPostTP1LockPrice(signal);
   }
   return signal.entryPrice;
 }
@@ -61,6 +69,8 @@ export function resolveSignalWithBars(
   const isBuy = signal.type === 'BUY';
   const slTriggerPrice = isBuy ? signal.sl - slSlack : signal.sl + slSlack;
 
+  const postTP1Lock = getPostTP1LockPrice(signal);
+
   for (const bar of evalBars) {
     if (!entryConfirmed) {
       const touchedZone = isBuy
@@ -78,29 +88,50 @@ export function resolveSignalWithBars(
       }
     }
 
-    const slHit = isBuy ? bar.low <= slTriggerPrice : bar.high >= slTriggerPrice;
+    const hasTP1 = currentTargetsHit >= 1 || breakevenReached;
+    const hasTP2 = currentTargetsHit >= 2;
+
+    // Pre-TP1: original SL with the wick-penetration slack applies.
+    // Post-TP1: trailing 15-pip profit lock replaces the original SL.
+    // Post-TP2: entry-level protective stop (existing behaviour).
+    const origSlHit = isBuy ? bar.low <= slTriggerPrice : bar.high >= slTriggerPrice;
+    const lockHit = hasTP1 && !hasTP2
+      ? (isBuy ? bar.low <= postTP1Lock : bar.high >= postTP1Lock)
+      : false;
+    const entryHitAfterTP2 = hasTP2
+      ? (isBuy ? bar.low <= signal.entryPrice : bar.high >= signal.entryPrice)
+      : false;
+
     const tp3Hit = isBuy ? bar.high >= signal.tp3 : bar.low <= signal.tp3;
     const tp2Hit = isBuy ? bar.high >= signal.tp2 : bar.low <= signal.tp2;
     const tp1Hit = isBuy ? bar.high >= signal.tp1 : bar.low <= signal.tp1;
 
-    if (slHit) {
-      if (currentTargetsHit >= 2) {
-        currentStatus = 'PARTIAL_WIN_SL_HIT';
-        currentTargetsHit = Math.max(currentTargetsHit, 2);
-        exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
-        outcomeResult = 'WIN';
-      } else if (breakevenReached || currentTargetsHit >= 1) {
-        currentStatus = 'SL_AFTER_BE';
-        currentTargetsHit = Math.max(currentTargetsHit, 1);
-        exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
-        outcomeResult = 'WIN';
-      } else {
-        currentStatus = 'SL_HIT';
-        exitPrice = signal.sl;
-        outcomeResult = 'LOSS';
-      }
+    if (!hasTP1 && origSlHit) {
+      currentStatus = 'SL_HIT';
+      exitPrice = signal.sl;
+      outcomeResult = 'LOSS';
       resolvedAtBarTs = bar.timestamp;
-      console.log(`${prefix} 🚨 SL wick-through on bar @ ${new Date(bar.timestamp).toISOString()} → ${currentStatus}`);
+      console.log(`${prefix} 🚨 Pre-TP1 SL wick-through on bar @ ${new Date(bar.timestamp).toISOString()} → SL_HIT`);
+      break;
+    }
+
+    if (hasTP2 && entryHitAfterTP2) {
+      currentStatus = 'PARTIAL_WIN_SL_HIT';
+      currentTargetsHit = Math.max(currentTargetsHit, 2);
+      exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
+      outcomeResult = 'WIN';
+      resolvedAtBarTs = bar.timestamp;
+      console.log(`${prefix} ⚖️ Post-TP2 runner retraced to entry on bar @ ${new Date(bar.timestamp).toISOString()} → PARTIAL_WIN_SL_HIT @ ${exitPrice.toFixed(1)}`);
+      break;
+    }
+
+    if (hasTP1 && !hasTP2 && lockHit) {
+      currentStatus = 'SL_AFTER_BE';
+      currentTargetsHit = Math.max(currentTargetsHit, 1);
+      exitPrice = postTP1Lock;
+      outcomeResult = 'WIN';
+      resolvedAtBarTs = bar.timestamp;
+      console.log(`${prefix} ⚖️ Post-TP1 15-pip profit lock hit on bar @ ${new Date(bar.timestamp).toISOString()} → SL_AFTER_BE @ ${exitPrice.toFixed(1)}`);
       break;
     }
 
@@ -125,17 +156,6 @@ export function resolveSignalWithBars(
         minute: '2-digit',
         hour12: false,
       });
-    }
-
-    if (currentTargetsHit >= 2 && currentTargetsHit < 3) {
-      const touchedEntry = isBuy ? bar.low <= signal.entryPrice : bar.high >= signal.entryPrice;
-      if (touchedEntry) {
-        currentStatus = 'PARTIAL_WIN_SL_HIT';
-        exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
-        outcomeResult = 'WIN';
-        resolvedAtBarTs = bar.timestamp;
-        break;
-      }
     }
   }
 

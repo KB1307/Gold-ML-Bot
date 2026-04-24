@@ -1,58 +1,29 @@
-# Signal engine full overhaul (40 improvements A-H)
+# Stop false Stop-Loss recordings and add a true 15-pip profit-lock after TP1
 
-## Progress
+## What's actually going wrong
 
-### A: Confidence calibration
-- [x] A1 Cap calibration penalties at 8%
-- [x] A2 EMA smoothing replaces +3% cap
-- [x] A3 Raise base confidence to 0.45 + strength*0.40
-- [x] A4 Raise MAX_CONFIDENCE_CAP to 0.95
-- [x] A5 Weight data-quality penalty by ohlcDataSource
+After carefully tracing the 8:09 SELL example tick-for-tick through the code, the history is being poisoned from three separate sources, each of which needs its own fix:
 
-### B: Conviction gates
-- [x] B6 MIN_SIGNAL_CONVICTION_THRESHOLD 0.50
-- [x] B7 Regime-scaled MIN_SIGNAL_STRENGTH_DIFFERENCE
-- [x] B8 OB/QM/sweep alt counter-trend confirmation
-- [x] B9 Merged conviction penalties into tiered check
+1. **Outlier "spike" ticks from the price feed are being written into the 1‑minute bar store.** Those bad high/low values then survive into the audit, so even the audit agrees there was an SL wick — even though no real trade ever printed that price. This is the single biggest cause of "SL hit at a price that was never reached".
+2. **The live stop-loss check confirms far too easily** — it accepts any tick that pokes 0.1 pips past the SL for 0 milliseconds. One glitch tick is enough to close the trade as a loss.
+3. **"Move SL to breakeven after TP1" is only a label today** — the trade never actually closes at that trailing level, so profits given back are never banked, and you asked for a real 15‑pip profit lock instead of breakeven.
 
-### C: Features
-- [x] C10 Synthetic order-flow -> context only
-- [x] C11 Kept price-count volume profile as context only (POC still displayed, no directional boost)
-- [x] C12 Trend feature stack capped at 0.50
-- [x] C13 Sentiment feature neutralized (telemetry only)
-- [x] C14 VWAP added
-- [x] C15 ADX added
-- [x] C16 Bollinger squeeze/expansion added
-- [x] C17 DXY correlation gate added
+## What I will change
 
-### D: Regime logic
-- [x] D18 QUIET mean-reversion (Bollinger squeeze + S/R)
-- [x] D19 Cold-start RANGING relief (0.72 threshold)
-- [x] D21 Regime-scaled cooldown (TRENDING 30-45s, RANGING 90s, VOLATILE 180s, QUIET 150s)
+**Feature fixes**
+- Reject obvious outlier ticks (the same 8‑pip / 500 ms filter that already guards signal evaluation) **before** they are written into the 1‑minute, 5‑minute and 1‑hour bar store, so the bars themselves stay clean.
+- Make a live stop-loss only confirm after a real, sustained breach (at least ~1.5 pips past SL for ~2.5 seconds), so a single glitch tick can no longer close a trade.
+- After TP1 is achieved, replace the current "move to breakeven" behaviour with a real **+15 pip profit lock**: for a BUY the trailing stop becomes entry + 15 pips, for a SELL it becomes entry − 15 pips. If price retraces to that level, the trade closes as a protected partial win that banks both TP1 and the 15‑pip lock. This is enforced in the live tick monitor, the historical bar resolver **and** the audit path, so every screen agrees.
+- Manual Audit now force-refreshes the authoritative 1‑minute bars from the remote data provider (Tiingo) for each signal's window and temporarily ignores any locally-cached bars, so previously poisoned bars cannot "re-confirm" a false SL hit. Once cleaned bars arrive, they are written back into the local store.
+- Manual Audit clears the audit-version lock for every terminal signal and re-resolves each one against the freshly fetched clean bars, so the existing false SL outcomes (including 8:09, 7:44, 6:13, 4:44) are corrected automatically and the machine‑learning engine receives the corrected WIN/LOSS records.
 
-### E: Learning
-- [x] E22 Retrain seeds from persisted baseline (70/30 blend)
-- [x] E23 4h drift check + rolling win-rate trigger
-- [x] E24 MIN_CONFIDENCE_FOR_RETRAINING 0.68
-- [x] E25 Critical feature-drift auto-halves weights
-- [x] E26 Bayesian Beta prior on weight updates
-- [x] E27 Learning adjustment range ±0.08
+**Safety / sandbox before I hand it back**
+- Before presenting, I will run the existing in-repo signal simulation harness to replay the scenarios you called out (straight-to-TP SELL, straight-to-SL BUY, TP1 → retrace past entry, TP1 → retrace to entry‑15) and assert the recorded outcome matches price action tick-for-tick. I will only present the result after these pass.
 
-### F: Entries/Exits
-- [x] F28 Real bid/ask spread layered into slippage
-- [x] F29 TP widening scaled by ATR-to-SR room
-- [x] F30 Continuous ATR-to-SL mapping
-- [x] F31 Opposite-direction signals bypass proximity
+**Performance metrics**
+- Once the audit corrects the historical false SL hits, win-rate, P&L and ML learning weights automatically recompute from the corrected history — no extra action needed from you.
 
-### G: OHLC data
-- [x] G32 5-min candles built from minute bars when available
-- [x] G33 OHLC merge on refresh (already via mergeDailyOHLCBars)
-- [x] G34 Block signals when OHLC estimated (strong penalty or starvation path only)
-- [x] G35 Null-guard intermarket fallbacks
-
-### H: Pipeline/EV/Cooldowns
-- [x] H36 Gate pipeline typed results (structural + quality gates typed)
-- [x] H37 EV scoring added
-- [x] H38 Separate BUY/SELL cooldown timers
-- [x] H39 Rolling-window attempt reset (recentAttemptTimestamps)
-- [x] H40 Starvation metric based on recent gap
+## Screens affected
+- **History** — false SL rows flip to their true outcome (TP3 / protected partial win) after the automatic audit pass. The manual audit button in the top-right keeps working and now does a deeper clean.
+- **Telemetry / Performance** — numbers refresh from the corrected history.
+- **Dashboard** — live trade monitoring is unchanged visually, but it will no longer close trades on a single glitch tick, and the breakeven badge after TP1 now reflects a real 15‑pip profit lock rather than a cosmetic indicator.
