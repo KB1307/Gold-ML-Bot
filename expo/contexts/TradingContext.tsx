@@ -1312,6 +1312,109 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     return updated;
   }, [analyzeSignalWithHistoricalData, fetchPriceHistory]);
 
+  const calculatePerformanceMetrics = useCallback((history: TradingSignal[]) => {
+    if (history.length === 0) {
+      const healthMetrics = signalEngine.getModelHealthMetrics();
+      return {
+        ...DEFAULT_METRICS,
+        modelHealthScore: healthMetrics.modelHealthScore,
+        featureCorrelationStatus: healthMetrics.featureCorrelationStatus,
+        confidenceDegradation: healthMetrics.confidenceDegradation,
+        conceptDriftScore: healthMetrics.conceptDriftScore,
+        featureImportanceDrift: healthMetrics.featureImportanceDrift,
+        driftAlertLevel: healthMetrics.driftAlertLevel,
+        daysSinceRetrain: healthMetrics.daysSinceRetrain,
+        retrainingRecommended: healthMetrics.retrainingRecommended,
+      };
+    }
+
+    const closedTrades = history.filter(s => 
+      s.status === "CLOSED" || s.status === "SL_HIT" || s.status === "SL_AFTER_BE" || s.status === "ALL_TARGETS_HIT" || s.status === "PARTIAL_WIN_SL_HIT"
+    );
+    
+    const totalTrades = closedTrades.length;
+    let winningTrades = 0;
+    let losingTrades = 0;
+    let totalProfit = 0;
+    let totalLoss = 0;
+    const profits: number[] = [];
+    const losses: number[] = [];
+
+    closedTrades.forEach(signal => {
+      const pnl = computeSignalPnL(signal, settings.basePositionSize);
+
+      if (signal.status === "ALL_TARGETS_HIT" || pnl > 0) {
+        winningTrades++;
+        totalProfit += Math.max(0, pnl);
+        if (pnl > 0) profits.push(pnl);
+      } else if (signal.status === "CLOSED" && Math.abs(pnl) < 0.01) {
+        console.log(`📊 Expired/manual close with ~0 P/L: Signal ${signal.id.slice(-6)}`);
+      } else {
+        losingTrades++;
+        totalLoss += Math.abs(pnl);
+        losses.push(Math.abs(pnl));
+      }
+    });
+
+    const winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0;
+    const averageWin = profits.length > 0 ? totalProfit / profits.length : 0;
+    const averageLoss = losses.length > 0 ? totalLoss / losses.length : 0;
+    const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : totalProfit > 0 ? 999 : 0;
+    const expectancy = totalTrades > 0 ? (totalProfit - totalLoss) / totalTrades : 0;
+
+    let runningBalance = accountBalance;
+    let peak = accountBalance;
+    let maxDrawdown = 0;
+    
+    closedTrades.forEach(signal => {
+      const pnl = computeSignalPnL(signal, settings.basePositionSize);
+
+      runningBalance += pnl;
+      if (runningBalance > peak) {
+        peak = runningBalance;
+      }
+      const drawdown = ((peak - runningBalance) / peak) * 100;
+      if (drawdown > maxDrawdown) {
+        maxDrawdown = drawdown;
+      }
+    });
+
+    const currentDrawdown = runningBalance < peak ? ((peak - runningBalance) / peak) * 100 : 0;
+
+    const returns = profits.concat(losses.map(l => -l));
+    const avgReturn = returns.length > 0 ? returns.reduce((a, b) => a + b, 0) / returns.length : 0;
+    const stdDev = returns.length > 1 
+      ? Math.sqrt(returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / (returns.length - 1))
+      : 0;
+    const sharpeRatio = stdDev > 0 ? (avgReturn / stdDev) * Math.sqrt(252) : 0;
+
+    const healthMetrics = signalEngine.getModelHealthMetrics();
+
+    return {
+      totalTrades,
+      winningTrades,
+      losingTrades,
+      totalProfit: parseFloat(totalProfit.toFixed(2)),
+      totalLoss: parseFloat(totalLoss.toFixed(2)),
+      maxDrawdown: parseFloat(maxDrawdown.toFixed(2)),
+      currentDrawdown: parseFloat(currentDrawdown.toFixed(2)),
+      sharpeRatio: parseFloat(sharpeRatio.toFixed(2)),
+      profitFactor: parseFloat(profitFactor.toFixed(2)),
+      winRate: parseFloat(winRate.toFixed(2)),
+      averageWin: parseFloat(averageWin.toFixed(2)),
+      averageLoss: parseFloat(averageLoss.toFixed(2)),
+      expectancy: parseFloat(expectancy.toFixed(2)),
+      modelHealthScore: healthMetrics.modelHealthScore,
+      featureCorrelationStatus: healthMetrics.featureCorrelationStatus,
+      confidenceDegradation: healthMetrics.confidenceDegradation,
+      conceptDriftScore: healthMetrics.conceptDriftScore,
+      featureImportanceDrift: healthMetrics.featureImportanceDrift,
+      driftAlertLevel: healthMetrics.driftAlertLevel,
+      daysSinceRetrain: healthMetrics.daysSinceRetrain,
+      retrainingRecommended: healthMetrics.retrainingRecommended,
+    };
+  }, [accountBalance, settings.basePositionSize]);
+
   const runManualAudit = useCallback(async (): Promise<{ corrected: number; total: number }> => {
     console.log('🛠️ MANUAL AUDIT triggered from UI');
     const current = signalHistoryRef.current;
@@ -1458,109 +1561,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       return outlook;
     });
   };
-
-  const calculatePerformanceMetrics = useCallback((history: TradingSignal[]) => {
-    if (history.length === 0) {
-      const healthMetrics = signalEngine.getModelHealthMetrics();
-      return {
-        ...DEFAULT_METRICS,
-        modelHealthScore: healthMetrics.modelHealthScore,
-        featureCorrelationStatus: healthMetrics.featureCorrelationStatus,
-        confidenceDegradation: healthMetrics.confidenceDegradation,
-        conceptDriftScore: healthMetrics.conceptDriftScore,
-        featureImportanceDrift: healthMetrics.featureImportanceDrift,
-        driftAlertLevel: healthMetrics.driftAlertLevel,
-        daysSinceRetrain: healthMetrics.daysSinceRetrain,
-        retrainingRecommended: healthMetrics.retrainingRecommended,
-      };
-    }
-
-    const closedTrades = history.filter(s => 
-      s.status === "CLOSED" || s.status === "SL_HIT" || s.status === "SL_AFTER_BE" || s.status === "ALL_TARGETS_HIT" || s.status === "PARTIAL_WIN_SL_HIT"
-    );
-    
-    const totalTrades = closedTrades.length;
-    let winningTrades = 0;
-    let losingTrades = 0;
-    let totalProfit = 0;
-    let totalLoss = 0;
-    const profits: number[] = [];
-    const losses: number[] = [];
-
-    closedTrades.forEach(signal => {
-      const pnl = computeSignalPnL(signal, settings.basePositionSize);
-
-      if (signal.status === "ALL_TARGETS_HIT" || pnl > 0) {
-        winningTrades++;
-        totalProfit += Math.max(0, pnl);
-        if (pnl > 0) profits.push(pnl);
-      } else if (signal.status === "CLOSED" && Math.abs(pnl) < 0.01) {
-        console.log(`📊 Expired/manual close with ~0 P/L: Signal ${signal.id.slice(-6)}`);
-      } else {
-        losingTrades++;
-        totalLoss += Math.abs(pnl);
-        losses.push(Math.abs(pnl));
-      }
-    });
-
-    const winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0;
-    const averageWin = profits.length > 0 ? totalProfit / profits.length : 0;
-    const averageLoss = losses.length > 0 ? totalLoss / losses.length : 0;
-    const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : totalProfit > 0 ? 999 : 0;
-    const expectancy = totalTrades > 0 ? (totalProfit - totalLoss) / totalTrades : 0;
-
-    let runningBalance = accountBalance;
-    let peak = accountBalance;
-    let maxDrawdown = 0;
-    
-    closedTrades.forEach(signal => {
-      const pnl = computeSignalPnL(signal, settings.basePositionSize);
-
-      runningBalance += pnl;
-      if (runningBalance > peak) {
-        peak = runningBalance;
-      }
-      const drawdown = ((peak - runningBalance) / peak) * 100;
-      if (drawdown > maxDrawdown) {
-        maxDrawdown = drawdown;
-      }
-    });
-
-    const currentDrawdown = runningBalance < peak ? ((peak - runningBalance) / peak) * 100 : 0;
-
-    const returns = profits.concat(losses.map(l => -l));
-    const avgReturn = returns.length > 0 ? returns.reduce((a, b) => a + b, 0) / returns.length : 0;
-    const stdDev = returns.length > 1 
-      ? Math.sqrt(returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / (returns.length - 1))
-      : 0;
-    const sharpeRatio = stdDev > 0 ? (avgReturn / stdDev) * Math.sqrt(252) : 0;
-
-    const healthMetrics = signalEngine.getModelHealthMetrics();
-
-    return {
-      totalTrades,
-      winningTrades,
-      losingTrades,
-      totalProfit: parseFloat(totalProfit.toFixed(2)),
-      totalLoss: parseFloat(totalLoss.toFixed(2)),
-      maxDrawdown: parseFloat(maxDrawdown.toFixed(2)),
-      currentDrawdown: parseFloat(currentDrawdown.toFixed(2)),
-      sharpeRatio: parseFloat(sharpeRatio.toFixed(2)),
-      profitFactor: parseFloat(profitFactor.toFixed(2)),
-      winRate: parseFloat(winRate.toFixed(2)),
-      averageWin: parseFloat(averageWin.toFixed(2)),
-      averageLoss: parseFloat(averageLoss.toFixed(2)),
-      expectancy: parseFloat(expectancy.toFixed(2)),
-      modelHealthScore: healthMetrics.modelHealthScore,
-      featureCorrelationStatus: healthMetrics.featureCorrelationStatus,
-      confidenceDegradation: healthMetrics.confidenceDegradation,
-      conceptDriftScore: healthMetrics.conceptDriftScore,
-      featureImportanceDrift: healthMetrics.featureImportanceDrift,
-      driftAlertLevel: healthMetrics.driftAlertLevel,
-      daysSinceRetrain: healthMetrics.daysSinceRetrain,
-      retrainingRecommended: healthMetrics.retrainingRecommended,
-    };
-  }, [accountBalance, settings.basePositionSize]);
 
   useEffect(() => {
     const metrics = calculatePerformanceMetrics(signalHistory);
