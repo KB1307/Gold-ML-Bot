@@ -252,6 +252,40 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   // Last accepted BAR-ingest price/time, used to reject outlier ticks before
   // they poison the OHLC bar store (which audits rely on).
   const lastAcceptedBarTickRef = useRef<{ price: number; at: number }>({ price: 0, at: 0 });
+  // Debounced AsyncStorage writer for signal_history. High-frequency tick-driven
+  // updaters (status monitor, reconciliation interval) were each writing the
+  // entire history JSON on every change. We coalesce those writes into a single
+  // flush ~400ms later so the UI thread isn't blocked by repeated stringify+IO.
+  const pendingHistoryWriteRef = useRef<TradingSignal[] | null>(null);
+  const historyWriteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushHistoryWrite = useCallback(async (): Promise<void> => {
+    const payload = pendingHistoryWriteRef.current;
+    if (!payload) return;
+    pendingHistoryWriteRef.current = null;
+    if (historyWriteTimerRef.current) {
+      clearTimeout(historyWriteTimerRef.current);
+      historyWriteTimerRef.current = null;
+    }
+    try {
+      await AsyncStorage.setItem('signal_history', JSON.stringify(payload));
+    } catch (err) {
+      console.error('❌ Failed to persist signal history (debounced):', err);
+    }
+  }, []);
+  const persistSignalHistory = useCallback((history: TradingSignal[], options?: { immediate?: boolean }) => {
+    pendingHistoryWriteRef.current = history;
+    if (options?.immediate) {
+      void flushHistoryWrite();
+      return;
+    }
+    if (historyWriteTimerRef.current) {
+      clearTimeout(historyWriteTimerRef.current);
+    }
+    historyWriteTimerRef.current = setTimeout(() => {
+      historyWriteTimerRef.current = null;
+      void flushHistoryWrite();
+    }, 400);
+  }, [flushHistoryWrite]);
 
   useEffect(() => {
     const init = async () => {
@@ -1503,7 +1537,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     }
     signalHistoryRef.current = audited;
     setSignalHistory(audited);
-    await AsyncStorage.setItem('signal_history', JSON.stringify(audited));
+    persistSignalHistory(audited, { immediate: true });
     setSignalUpdateTrigger(prev => prev + 1);
     const metrics = calculatePerformanceMetrics(audited);
     setPerformanceMetrics(metrics);
@@ -1555,7 +1589,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         setSignalHistory(auditedHistory);
 
         if (JSON.stringify(auditedHistory) !== JSON.stringify(parsedHistory)) {
-          await AsyncStorage.setItem("signal_history", JSON.stringify(auditedHistory));
+          persistSignalHistory(auditedHistory, { immediate: true });
           console.log('💾 Updated signal history saved after catch-up + false-SL audit');
         }
         
@@ -1650,10 +1684,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         }
         return signal;
       });
-      void AsyncStorage.setItem("signal_history", JSON.stringify(updated));
+      persistSignalHistory(updated, { immediate: true });
       return updated;
     });
-  }, []);
+  }, [persistSignalHistory]);
 
 
 
@@ -1853,11 +1887,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           console.log("=".repeat(60) + "\n");
           
           const updated = [signal, ...prev];
-          AsyncStorage.setItem("signal_history", JSON.stringify(updated)).then(() => {
-            console.log(`💾 History saved: ${updated.length} signals persisted to AsyncStorage`);
-          }).catch(err => {
-            console.error('❌ Failed to save history to AsyncStorage:', err);
-          });
+          persistSignalHistory(updated, { immediate: true });
+          console.log(`💾 History save scheduled: ${updated.length} signals queued for AsyncStorage`);
           return updated;
         });
 
@@ -2177,18 +2208,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         
         setSignalUpdateTrigger(prev => prev + 1);
         
-        AsyncStorage.setItem("signal_history", JSON.stringify(updatedHistory)).then(() => {
-          console.log(`💾 Updated history saved: ${updatedHistory.length} signals`);
-          
-          if (immediateUpdate) {
-            console.log(`🚨 Critical update (SL/TP hit) - Force UI refresh on ${Platform.OS}`);
-            setTimeout(() => {
-              setSignalUpdateTrigger(prev => prev + 1);
-            }, 50);
-          }
-        }).catch(err => {
-          console.error('❌ Failed to save updated history:', err);
-        });
+        persistSignalHistory(updatedHistory, { immediate: immediateUpdate });
+        if (immediateUpdate) {
+          console.log(`🚨 Critical update (SL/TP hit) - Force UI refresh on ${Platform.OS}`);
+          setTimeout(() => {
+            setSignalUpdateTrigger(prev => prev + 1);
+          }, 50);
+        }
       }
 
       return updated ? updatedHistory : prevHistory;
@@ -2270,7 +2296,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         if (previousSerialized !== nextSerialized) {
           signalHistoryRef.current = auditedHistory;
           setSignalHistory(auditedHistory);
-          await AsyncStorage.setItem("signal_history", JSON.stringify(auditedHistory));
+          persistSignalHistory(auditedHistory, { immediate: true });
           setSignalUpdateTrigger(prev => prev + 1);
           console.log('✅ Historical reconciliation + audit applied missed/wrong TP/SL updates');
         } else {
@@ -2341,6 +2367,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   const clearHistory = useCallback(async () => {
     setSignalHistory([]);
+    // Cancel any pending debounced write so it can't resurrect cleared history.
+    pendingHistoryWriteRef.current = [];
+    if (historyWriteTimerRef.current) {
+      clearTimeout(historyWriteTimerRef.current);
+      historyWriteTimerRef.current = null;
+    }
     await AsyncStorage.setItem("signal_history", JSON.stringify([]));
     console.log('🧹 Signal history cleared');
     console.log('✅ All signals removed from storage and UI');
@@ -2366,10 +2398,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const deleteSignalFromHistory = useCallback(async (signalId: string) => {
     setSignalHistory((prev) => {
       const updated = prev.filter((s) => s.id !== signalId);
-      void AsyncStorage.setItem("signal_history", JSON.stringify(updated));
+      persistSignalHistory(updated, { immediate: true });
       return updated;
     });
-  }, []);
+  }, [persistSignalHistory]);
 
   const manualCloseSignal = useCallback((signalId: string) => {
     closeSignal(signalId);
