@@ -1635,14 +1635,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
   const closeSignal = useCallback((signalId: string) => {
     const now = new Date();
+    const livePrice = signalEngine.getCurrentPrice();
 
     setSignalHistory((prev) => {
       const updated = prev.map(signal => {
         if (signal.id === signalId) {
+          const resolvedExitPrice = signal.exitPrice ?? (livePrice > 0 ? livePrice : signal.entryPrice);
           return {
             ...signal,
             status: "CLOSED" as const,
             exitTime: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+            exitPrice: resolvedExitPrice,
           };
         }
         return signal;
@@ -1931,11 +1934,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         if (signalAge > twoHoursInMs) {
           updated = true;
           const exitDate = new Date();
+          const livePrice = signalEngine.getCurrentPrice();
           console.log(`⏰ Signal ${signal.id.slice(-6)} expired after 2 hours`);
           return {
             ...signal,
             status: "CLOSED" as const,
             exitTime: exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+            exitPrice: signal.exitPrice ?? (livePrice > 0 ? livePrice : signal.entryPrice),
           };
         }
 

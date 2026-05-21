@@ -191,7 +191,20 @@ export default function DashboardScreen() {
     refreshData,
     signalUpdateTrigger,
   } = useTrading();
-  
+
+  const sessionHoursByName = useMemo(() => {
+    const getLocalTime = (utcHour: number) => {
+      const date = new Date();
+      date.setUTCHours(utcHour % 24, 0, 0, 0);
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    };
+    return {
+      ASIAN: `${getLocalTime(0)}-${getLocalTime(6)}\n${getLocalTime(21)}-${getLocalTime(24)}`,
+      LONDON: `${getLocalTime(6)}-${getLocalTime(13)}`,
+      NEW_YORK: `${getLocalTime(13)}-${getLocalTime(21)}`,
+    } as Record<string, string>;
+  }, []);
+
   const sortedSignalHistory = useMemo(() => (
     [...signalHistory].sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
   ), [signalHistory]);
@@ -730,21 +743,7 @@ export default function DashboardScreen() {
               <Text style={styles.sectionTitle}>Market Status</Text>
               <View style={styles.sessionGrid}>
                 {marketOutlook.sessions.map((session) => {
-                  let hours = "";
-                  const getLocalTime = (utcHour: number) => {
-                    const date = new Date();
-                    date.setUTCHours(utcHour, 0, 0, 0);
-                    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-                  };
-                  
-                  if (session.name === "ASIAN") {
-                    hours = `${getLocalTime(0)}-${getLocalTime(6)}\n${getLocalTime(21)}-${getLocalTime(24)}`;
-                  } else if (session.name === "LONDON") {
-                    hours = `${getLocalTime(6)}-${getLocalTime(13)}`;
-                  } else if (session.name === "NEW_YORK") {
-                    hours = `${getLocalTime(13)}-${getLocalTime(21)}`;
-                  }
-                  
+                  const hours = sessionHoursByName[session.name] ?? "";
                   return (
                     <View 
                       key={session.name} 
