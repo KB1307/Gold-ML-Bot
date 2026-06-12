@@ -1575,11 +1575,26 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       }
 
       if (savedHistory) {
-        const history = JSON.parse(savedHistory);
-        const parsedHistory = history.map((s: TradingSignal) => ({
-          ...s,
-          timestamp: new Date(s.timestamp),
-        }));
+        const rawHistory = JSON.parse(savedHistory);
+        const parsedHistory = (Array.isArray(rawHistory) ? rawHistory : [])
+          .filter((s: unknown) => s && typeof s === 'object' && 'id' in (s as Record<string, unknown>))
+          .map((s: Record<string, unknown>) => ({
+            ...s,
+            timestamp: s.timestamp ? new Date(s.timestamp as string | number) : new Date(),
+            // Defensive: ensure critical price fields are numbers to avoid .toFixed() crashes during render.
+            entryPrice: typeof s.entryPrice === 'number' ? s.entryPrice : 0,
+            entryPriceWithSlippage: typeof s.entryPriceWithSlippage === 'number' ? s.entryPriceWithSlippage : (typeof s.entryPrice === 'number' ? s.entryPrice : 0),
+            tp1: typeof s.tp1 === 'number' ? s.tp1 : 0,
+            tp2: typeof s.tp2 === 'number' ? s.tp2 : 0,
+            tp3: typeof s.tp3 === 'number' ? s.tp3 : 0,
+            sl: typeof s.sl === 'number' ? s.sl : 0,
+            confidence: typeof s.confidence === 'number' ? s.confidence : 0,
+            targetsHit: typeof s.targetsHit === 'number' ? s.targetsHit : 0,
+            type: s.type === 'BUY' || s.type === 'SELL' ? s.type : 'BUY',
+            status: typeof s.status === 'string' ? s.status : 'CLOSED',
+            id: typeof s.id === 'string' ? s.id : `legacy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            entryTime: typeof s.entryTime === 'string' ? s.entryTime : '',
+          } as TradingSignal));
         
         signalHistoryRef.current = parsedHistory;
         setSignalHistory(parsedHistory);

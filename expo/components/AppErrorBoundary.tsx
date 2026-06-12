@@ -1,5 +1,5 @@
 import React from "react";
-import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { StyleSheet, Text, TouchableOpacity, View, Platform } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { AlertTriangle, RefreshCw } from "lucide-react-native";
 
@@ -10,6 +10,41 @@ interface AppErrorBoundaryProps {
 interface AppErrorBoundaryState {
   hasError: boolean;
   errorMessage: string;
+  errorStack: string;
+}
+
+function safeMessage(caught: unknown): string {
+  if (caught instanceof Error) {
+    return caught.message || `Error (${caught.name || "unknown"})`;
+  }
+  if (typeof caught === "string") {
+    return caught;
+  }
+  if (caught === null) {
+    return "null thrown";
+  }
+  if (caught === undefined) {
+    return "undefined thrown";
+  }
+  try {
+    return JSON.stringify(caught);
+  } catch {
+    return String(caught);
+  }
+}
+
+function safeStack(caught: unknown): string {
+  if (caught instanceof Error && caught.stack) {
+    return caught.stack;
+  }
+  if (typeof caught === "object" && caught !== null) {
+    try {
+      return JSON.stringify(caught, null, 2).slice(0, 600);
+    } catch {
+      return "";
+    }
+  }
+  return "";
 }
 
 export class AppErrorBoundary extends React.Component<
@@ -19,17 +54,30 @@ export class AppErrorBoundary extends React.Component<
   public state: AppErrorBoundaryState = {
     hasError: false,
     errorMessage: "",
+    errorStack: "",
   };
 
-  public static getDerivedStateFromError(error: Error): AppErrorBoundaryState {
+  public static getDerivedStateFromError(error: unknown): AppErrorBoundaryState {
     return {
       hasError: true,
-      errorMessage: error.message || "Unexpected application error",
+      errorMessage: safeMessage(error),
+      errorStack: safeStack(error),
     };
   }
 
-  public componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
-    console.error("[ErrorBoundary] App render failure detected", error, errorInfo);
+  public componentDidCatch(error: unknown, errorInfo: React.ErrorInfo): void {
+    console.error(
+      "[ErrorBoundary] App render failure detected",
+      error,
+      errorInfo,
+    );
+    if (error instanceof Error) {
+      console.error("[ErrorBoundary] name:", error.name);
+      console.error("[ErrorBoundary] message:", error.message);
+      console.error("[ErrorBoundary] stack:", error.stack?.slice(0, 800));
+    } else {
+      console.error("[ErrorBoundary] non-Error thrown:", typeof error, error);
+    }
   }
 
   private handleRetry = (): void => {
@@ -53,6 +101,13 @@ export class AppErrorBoundary extends React.Component<
           </View>
           <Text style={styles.title}>Something went off track</Text>
           <Text style={styles.subtitle}>{this.state.errorMessage}</Text>
+          {this.state.errorStack ? (
+            <View style={styles.stackBox}>
+              <Text style={styles.stackText} numberOfLines={12}>
+                {this.state.errorStack}
+              </Text>
+            </View>
+          ) : null}
           <TouchableOpacity
             style={styles.retryButton}
             onPress={this.handleRetry}
@@ -112,5 +167,20 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700" as const,
     color: "#111827",
+  },
+  stackBox: {
+    maxWidth: "90%",
+    marginTop: 8,
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  stackText: {
+    fontSize: 10,
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+    color: "#666",
+    lineHeight: 14,
   },
 });

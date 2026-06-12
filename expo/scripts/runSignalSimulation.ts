@@ -408,7 +408,7 @@ const AsyncStorage = {
   },
 };
 
-const trpcClient = {
+(globalThis as Record<string, unknown>).__SANDBOX_TRPC__ = {
   goldPrice: {
     getSpotPrice: {
       async query(): Promise<{ price: number; source: string }> {
@@ -427,6 +427,8 @@ const trpcClient = {
     },
   },
 };
+
+const trpcClient = (globalThis as Record<string, unknown>).__SANDBOX_TRPC__ as any;
 
 const Platform = { OS: "web" as const };
 `;
