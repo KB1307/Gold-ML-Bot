@@ -110,6 +110,75 @@ export default function HistoryScreen() {
     }
   };
 
+  const safeDateString = (signal: TradingSignal): string => {
+    try {
+      return new Date(signal.timestamp).toLocaleString();
+    } catch {
+      return "Unknown date";
+    }
+  };
+
+  const safeEntryPrice = (signal: TradingSignal): string => {
+    try {
+      return `$${(signal.entryPrice ?? 0).toFixed(1)}`;
+    } catch {
+      return "$0.0";
+    }
+  };
+
+  const safeTpPrice = (signal: TradingSignal, tpKey: "tp1" | "tp2" | "tp3"): string => {
+    try {
+      return `$${(signal[tpKey] ?? 0).toFixed(1)}`;
+    } catch {
+      return "$0.0";
+    }
+  };
+
+  const safeSlPrice = (signal: TradingSignal): string => {
+    try {
+      return `${(signal.sl ?? 0).toFixed(1)}`;
+    } catch {
+      return "0.0";
+    }
+  };
+
+  const safeConfidence = (signal: TradingSignal): string => {
+    try {
+      return `${((signal.confidence ?? 0) * 100).toFixed(0)}%`;
+    } catch {
+      return "0%";
+    }
+  };
+
+  const safeExitDisplay = (signal: TradingSignal): string => {
+    try {
+      return `${(signal.exitPrice ?? signal.entryPrice ?? 0).toFixed(1)}`;
+    } catch {
+      return "0.0";
+    }
+  };
+
+  const safeEffectiveExitDisplay = (signal: TradingSignal): string => {
+    try {
+      const exit = getEffectiveExitPrice(signal);
+      return `$${exit.toFixed(2)}`;
+    } catch {
+      return "$0.00";
+    }
+  };
+
+  const safePnLDisplay = (signal: TradingSignal): { text: string; color: string } => {
+    try {
+      const pnl = computeSignalPnL(signal, settings.basePositionSize);
+      const isWin = pnl > 0.01;
+      const isLoss = pnl < -0.01;
+      const color = isWin ? "#22c55e" : isLoss ? "#ef4444" : "#999";
+      return { text: `${isWin ? "+" : ""}$${pnl.toFixed(2)}`, color };
+    } catch {
+      return { text: "$0.00", color: "#999" };
+    }
+  };
+
   const getStatusIcon = (status: TradingSignal["status"]) => {
     if (status === "SL_HIT" || status === "EXPIRED_MISSED_ENTRY") {
       return <XCircle size={16} color="#ef4444" />;
@@ -152,7 +221,7 @@ export default function HistoryScreen() {
             )}
             <View style={styles.signalInfo}>
               <Text style={styles.signalType}>{signal.type} XAUUSD</Text>
-              <Text style={styles.signalDate}>{new Date(signal.timestamp).toLocaleString()}</Text>
+              <Text style={styles.signalDate}>{safeDateString(signal)}</Text>
             </View>
           </View>
           <TouchableOpacity
@@ -171,26 +240,26 @@ export default function HistoryScreen() {
             {getStatusLabel(signal.status, signal.targetsHit)}
           </Text>
           <View style={styles.confidenceBadge}>
-            <Text style={styles.confidenceText}>{(signal.confidence * 100).toFixed(0)}%</Text>
+            <Text style={styles.confidenceText}>{safeConfidence(signal)}</Text>
           </View>
         </View>
 
         <View style={styles.priceGrid}>
           <View style={styles.priceColumn}>
             <Text style={styles.priceLabel}>Entry</Text>
-            <Text style={styles.priceValue}>${signal.entryPrice.toFixed(1)}</Text>
+            <Text style={styles.priceValue}>{safeEntryPrice(signal)}</Text>
           </View>
           <View style={[styles.priceColumn, signal.targetsHit >= 1 && styles.targetHit]}>
             <Text style={styles.priceLabel}>TP1</Text>
-            <Text style={[styles.priceValue, signal.targetsHit >= 1 && styles.targetValueHit]}>${signal.tp1.toFixed(1)}</Text>
+            <Text style={[styles.priceValue, signal.targetsHit >= 1 && styles.targetValueHit]}>{safeTpPrice(signal, "tp1")}</Text>
           </View>
           <View style={[styles.priceColumn, signal.targetsHit >= 2 && styles.targetHit]}>
             <Text style={styles.priceLabel}>TP2</Text>
-            <Text style={[styles.priceValue, signal.targetsHit >= 2 && styles.targetValueHit]}>${signal.tp2.toFixed(1)}</Text>
+            <Text style={[styles.priceValue, signal.targetsHit >= 2 && styles.targetValueHit]}>{safeTpPrice(signal, "tp2")}</Text>
           </View>
           <View style={[styles.priceColumn, signal.targetsHit >= 3 && styles.targetHit]}>
             <Text style={[styles.priceLabel]}>TP3</Text>
-            <Text style={[styles.priceValue, signal.targetsHit >= 3 && styles.targetValueHit]}>${signal.tp3.toFixed(1)}</Text>
+            <Text style={[styles.priceValue, signal.targetsHit >= 3 && styles.targetValueHit]}>{safeTpPrice(signal, "tp3")}</Text>
           </View>
         </View>
 
@@ -211,8 +280,8 @@ export default function HistoryScreen() {
             ]}
           >
             {(signal.status === "PARTIAL_WIN_SL_HIT" || signal.status === "SL_AFTER_BE")
-              ? `${(signal.exitPrice ?? signal.entryPrice).toFixed(1)}`
-              : `${signal.sl.toFixed(1)}`}
+              ? safeExitDisplay(signal)
+              : safeSlPrice(signal)}
           </Text>
         </View>
 
@@ -229,21 +298,17 @@ export default function HistoryScreen() {
         ) : null}
 
         {TERMINAL_PNL_STATUSES.includes(signal.status) ? (() => {
-          const pnl = computeSignalPnL(signal, settings.basePositionSize);
-          const effectiveExit = getEffectiveExitPrice(signal);
-          const isWin = pnl > 0.01;
-          const isLoss = pnl < -0.01;
-          const color = isWin ? "#22c55e" : isLoss ? "#ef4444" : "#999";
+          const pnlData = safePnLDisplay(signal);
           return (
             <View style={styles.pnlRow} testID={`history-pnl-${signal.id}`}>
               <View style={styles.pnlBlock}>
                 <Text style={styles.pnlLabel}>Effective Exit</Text>
-                <Text style={styles.pnlExit}>${effectiveExit.toFixed(2)}</Text>
+                <Text style={styles.pnlExit}>{safeEffectiveExitDisplay(signal)}</Text>
               </View>
               <View style={styles.pnlBlock}>
                 <Text style={styles.pnlLabel}>Net P/L</Text>
-                <Text style={[styles.pnlValue, { color }]}>
-                  {isWin ? "+" : ""}${pnl.toFixed(2)}
+                <Text style={[styles.pnlValue, { color: pnlData.color }]}>
+                  {pnlData.text}
                 </Text>
               </View>
             </View>

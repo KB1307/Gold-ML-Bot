@@ -19,18 +19,45 @@ interface TelemetrySnapshot {
   capturedAt: number;
 }
 
+const FALLBACK_TELEMETRY: TelemetrySnapshot = {
+  generationStats: { attempts: 0, successful: 0, rate: 0 },
+  modelHealth: {
+    modelHealthScore: 0,
+    featureCorrelationStatus: 'N/A',
+    confidenceDegradation: 0,
+    conceptDriftScore: 0,
+    featureImportanceDrift: [],
+    driftAlertLevel: 'NONE' as const,
+    daysSinceRetrain: 0,
+    retrainingRecommended: false,
+    retrainScheduled: false,
+  },
+  hypoStats: { avgSlippageDiff: 0, hypotheticalAccuracy: 0 },
+  perfMetrics: { recentWinRate: 0, profitFactor: 0, avgConfidence: 0, recentWinningConfidences: [] },
+  nearMisses: [],
+  diffBuckets: { low: { wins: 0, losses: 0, ev: 0 }, mid: { wins: 0, losses: 0, ev: 0 }, high: { wins: 0, losses: 0, ev: 0 } },
+  currentPrice: 0,
+  priceSource: 'unavailable',
+  capturedAt: Date.now(),
+};
+
 function captureTelemetry(): TelemetrySnapshot {
-  return {
-    generationStats: signalEngine.getSignalGenerationStats(),
-    modelHealth: signalEngine.getModelHealthMetrics(),
-    hypoStats: signalEngine.getHypotheticalTradeStats(),
-    perfMetrics: signalEngine.getPerformanceMetrics(),
-    nearMisses: signalEngine.getRecentNearMisses(),
-    diffBuckets: signalEngine.getDiffBucketStats(),
-    currentPrice: signalEngine.getCurrentPrice(),
-    priceSource: signalEngine.getPriceSource(),
-    capturedAt: Date.now(),
-  };
+  try {
+    return {
+      generationStats: signalEngine.getSignalGenerationStats(),
+      modelHealth: signalEngine.getModelHealthMetrics(),
+      hypoStats: signalEngine.getHypotheticalTradeStats(),
+      perfMetrics: signalEngine.getPerformanceMetrics(),
+      nearMisses: signalEngine.getRecentNearMisses(),
+      diffBuckets: signalEngine.getDiffBucketStats(),
+      currentPrice: signalEngine.getCurrentPrice(),
+      priceSource: signalEngine.getPriceSource(),
+      capturedAt: Date.now(),
+    };
+  } catch (err) {
+    console.error('[Telemetry] captureTelemetry crashed during render:', err);
+    return { ...FALLBACK_TELEMETRY, capturedAt: Date.now() };
+  }
 }
 
 function startOfLocalDay(ts: number): number {

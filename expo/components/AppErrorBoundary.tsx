@@ -70,7 +70,23 @@ export class AppErrorBoundary extends React.Component<
 
   private static lastComponentStack: string = "";
 
+  private static lastErrorRaw: unknown = null;
+
   public static getDerivedStateFromError(error: unknown): AppErrorBoundaryState {
+    AppErrorBoundary.lastErrorRaw = error;
+    // Log immediately so we capture it even if componentDidCatch hasn't fired
+    console.error("[ErrorBoundary] getDerivedStateFromError caught:", typeof error, error);
+    if (error instanceof Error) {
+      console.error("[ErrorBoundary] Error name:", error.name, "message:", error.message);
+      console.error("[ErrorBoundary] Error stack:", error.stack?.slice(0, 600));
+    } else if (typeof error === "object" && error !== null) {
+      const ctor = (error as object).constructor?.name ?? "unknown";
+      const keys = Object.keys(error as Record<string, unknown>);
+      console.error("[ErrorBoundary] non-Error object: constructor=", ctor, "keys=", keys);
+      try {
+        console.error("[ErrorBoundary] JSON:", JSON.stringify(error).slice(0, 400));
+      } catch { /* not serializable */ }
+    }
     return {
       hasError: true,
       errorMessage: safeMessage(error),
