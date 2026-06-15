@@ -1442,9 +1442,28 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     return updated;
   }, [analyzeSignalWithHistoricalData, fetchPriceHistory]);
 
+  const safeGetModelHealth = useCallback(() => {
+    try {
+      return signalEngine.getModelHealthMetrics();
+    } catch (err) {
+      console.error('[TradingContext] signalEngine.getModelHealthMetrics crashed:', err);
+      return {
+        modelHealthScore: 0,
+        featureCorrelationStatus: 'ERROR' as const,
+        confidenceDegradation: 0,
+        conceptDriftScore: 0,
+        featureImportanceDrift: [],
+        driftAlertLevel: 'NONE' as const,
+        daysSinceRetrain: 0,
+        retrainingRecommended: false,
+        retrainScheduled: false,
+      };
+    }
+  }, []);
+
   const calculatePerformanceMetrics = useCallback((history: TradingSignal[]) => {
     if (history.length === 0) {
-      const healthMetrics = signalEngine.getModelHealthMetrics();
+      const healthMetrics = safeGetModelHealth();
       return {
         ...DEFAULT_METRICS,
         modelHealthScore: healthMetrics.modelHealthScore,
@@ -1518,7 +1537,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       : 0;
     const sharpeRatio = stdDev > 0 ? (avgReturn / stdDev) * Math.sqrt(252) : 0;
 
-    const healthMetrics = signalEngine.getModelHealthMetrics();
+    const healthMetrics = safeGetModelHealth();
 
     return {
       totalTrades,
@@ -1543,7 +1562,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       daysSinceRetrain: healthMetrics.daysSinceRetrain,
       retrainingRecommended: healthMetrics.retrainingRecommended,
     };
-  }, [accountBalance, settings.basePositionSize]);
+  }, [accountBalance, settings.basePositionSize, safeGetModelHealth]);
 
   const runManualAudit = useCallback(async (): Promise<{ corrected: number; total: number }> => {
     console.log('🛠️ MANUAL AUDIT triggered from UI');
@@ -1708,9 +1727,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   };
 
   useEffect(() => {
-    const metrics = calculatePerformanceMetrics(signalHistory);
-    setPerformanceMetrics(metrics);
-    void AsyncStorage.setItem("performance_metrics", JSON.stringify(metrics));
+    try {
+      const metrics = calculatePerformanceMetrics(signalHistory);
+      setPerformanceMetrics(metrics);
+      void AsyncStorage.setItem("performance_metrics", JSON.stringify(metrics)).catch((err) => {
+        console.error('[TradingContext] Failed to persist performance metrics:', err);
+      });
+    } catch (err) {
+      console.error('[TradingContext] calculatePerformanceMetrics crashed in effect:', err);
+      // Don't let a metrics calculation crash take down the app
+    }
   }, [signalHistory, calculatePerformanceMetrics]);
 
   const closeSignal = useCallback((signalId: string) => {

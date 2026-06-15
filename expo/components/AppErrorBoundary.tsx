@@ -11,6 +11,8 @@ interface AppErrorBoundaryState {
   hasError: boolean;
   errorMessage: string;
   errorStack: string;
+  componentStack: string;
+  errorType: string;
 }
 
 function safeMessage(caught: unknown): string {
@@ -66,6 +68,8 @@ export class AppErrorBoundary extends React.Component<
     hasError: false,
     errorMessage: "",
     errorStack: "",
+    componentStack: "",
+    errorType: "",
   };
 
   private static lastComponentStack: string = "";
@@ -87,10 +91,21 @@ export class AppErrorBoundary extends React.Component<
         console.error("[ErrorBoundary] JSON:", JSON.stringify(error).slice(0, 400));
       } catch { /* not serializable */ }
     }
+    const errMsg = safeMessage(error);
+    const errStack = safeStack(error, AppErrorBoundary.lastComponentStack);
+    let errType: string = typeof error;
+    if (error instanceof Error) {
+      errType = error.name || "Error";
+    } else if (error !== null && typeof error === "object") {
+      errType = (error as object).constructor?.name ?? "Object";
+    }
+    console.error("[ErrorBoundary] DIAGNOSTIC:", { errType, errMsg, keys: error && typeof error === "object" ? Object.keys(error as object) : [] });
     return {
       hasError: true,
-      errorMessage: safeMessage(error),
-      errorStack: safeStack(error, AppErrorBoundary.lastComponentStack),
+      errorMessage: errMsg,
+      errorStack: errStack,
+      componentStack: AppErrorBoundary.lastComponentStack.slice(0, 600),
+      errorType: errType,
     };
   }
 
@@ -141,10 +156,21 @@ export class AppErrorBoundary extends React.Component<
           </View>
           <Text style={styles.title}>Something went off track</Text>
           <Text style={styles.subtitle}>{this.state.errorMessage}</Text>
+          {this.state.errorType ? (
+            <Text style={styles.errorTypeText}>{this.state.errorType}</Text>
+          ) : null}
           {this.state.errorStack ? (
             <View style={styles.stackBox}>
               <Text style={styles.stackText} numberOfLines={12}>
                 {this.state.errorStack}
+              </Text>
+            </View>
+          ) : null}
+          {this.state.componentStack ? (
+            <View style={styles.stackBox}>
+              <Text style={styles.componentLabel}>Component Stack:</Text>
+              <Text style={styles.stackText} numberOfLines={8}>
+                {this.state.componentStack}
               </Text>
             </View>
           ) : null}
@@ -222,5 +248,17 @@ const styles = StyleSheet.create({
     fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
     color: "#666",
     lineHeight: 14,
+  },
+  errorTypeText: {
+    fontSize: 12,
+    fontWeight: "600" as const,
+    color: "#f59e0b",
+    marginTop: 4,
+  },
+  componentLabel: {
+    fontSize: 10,
+    fontWeight: "600" as const,
+    color: "#888",
+    marginBottom: 4,
   },
 });
