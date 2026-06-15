@@ -109,6 +109,37 @@ function sanitizeSettings(settings: Settings): Settings {
   };
 }
 
+function sanitizePriceField(value: unknown, fallback: number = 0): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = parseFloat(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
+function sanitizeSignalForRender(signal: TradingSignal): TradingSignal {
+  return {
+    ...signal,
+    entryPrice: sanitizePriceField(signal.entryPrice),
+    entryPriceWithSlippage: sanitizePriceField(signal.entryPriceWithSlippage, sanitizePriceField(signal.entryPrice)),
+    tp1: sanitizePriceField(signal.tp1),
+    tp2: sanitizePriceField(signal.tp2),
+    tp3: sanitizePriceField(signal.tp3),
+    sl: sanitizePriceField(signal.sl),
+    confidence: sanitizePriceField(signal.confidence, 0),
+    targetsHit: typeof signal.targetsHit === 'number' && Number.isFinite(signal.targetsHit) ? signal.targetsHit : 0,
+    type: signal.type === 'BUY' || signal.type === 'SELL' ? signal.type : 'BUY',
+    status: typeof signal.status === 'string' ? signal.status : 'CLOSED',
+    id: typeof signal.id === 'string' ? signal.id : `legacy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    entryTime: typeof signal.entryTime === 'string' ? signal.entryTime : '',
+  };
+}
+
+function sanitizeHistoryForRender(history: TradingSignal[]): TradingSignal[] {
+  return history.map(sanitizeSignalForRender);
+}
+
 export function getPostTP1LockPrice(signal: TradingSignal): number {
   const delta = POST_TP1_PROFIT_LOCK_PIPS * PIP_VALUE;
   const raw = signal.type === 'BUY' ? signal.entryPrice + delta : signal.entryPrice - delta;
@@ -1536,7 +1567,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       }
     }
     signalHistoryRef.current = audited;
-    setSignalHistory(audited);
+    setSignalHistory(sanitizeHistoryForRender(audited));
     persistSignalHistory(audited, { immediate: true });
     setSignalUpdateTrigger(prev => prev + 1);
     const metrics = calculatePerformanceMetrics(audited);
@@ -1597,11 +1628,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           } as TradingSignal));
         
         signalHistoryRef.current = parsedHistory;
-        setSignalHistory(parsedHistory);
+        setSignalHistory(sanitizeHistoryForRender(parsedHistory));
         const evaluatedHistory = await catchUpAndEvaluateSignals(parsedHistory);
         const auditedHistory = await auditTerminalSLSignals(evaluatedHistory);
         signalHistoryRef.current = auditedHistory;
-        setSignalHistory(auditedHistory);
+        setSignalHistory(sanitizeHistoryForRender(auditedHistory));
 
         if (JSON.stringify(auditedHistory) !== JSON.stringify(parsedHistory)) {
           persistSignalHistory(auditedHistory, { immediate: true });
@@ -1904,7 +1935,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           const updated = [signal, ...prev];
           persistSignalHistory(updated, { immediate: true });
           console.log(`💾 History save scheduled: ${updated.length} signals queued for AsyncStorage`);
-          return updated;
+          return sanitizeHistoryForRender(updated);
         });
 
         if (Platform.OS !== 'web' && settings.enableNotifications) {
@@ -2310,7 +2341,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
         if (previousSerialized !== nextSerialized) {
           signalHistoryRef.current = auditedHistory;
-          setSignalHistory(auditedHistory);
+          setSignalHistory(sanitizeHistoryForRender(auditedHistory));
           persistSignalHistory(auditedHistory, { immediate: true });
           setSignalUpdateTrigger(prev => prev + 1);
           console.log('✅ Historical reconciliation + audit applied missed/wrong TP/SL updates');

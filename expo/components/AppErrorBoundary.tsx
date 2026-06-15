@@ -26,6 +26,14 @@ function safeMessage(caught: unknown): string {
   if (caught === undefined) {
     return "undefined thrown";
   }
+  if (typeof caught === "object" && caught !== null) {
+    const keys = Object.keys(caught as Record<string, unknown>);
+    if (keys.length === 0) {
+      const proto = Object.getPrototypeOf(caught);
+      const ctor = proto?.constructor?.name;
+      return ctor ? `Empty ${ctor} (no properties)` : "Empty object thrown — check console for component stack";
+    }
+  }
   try {
     return JSON.stringify(caught);
   } catch {
@@ -33,18 +41,21 @@ function safeMessage(caught: unknown): string {
   }
 }
 
-function safeStack(caught: unknown): string {
+function safeStack(caught: unknown, componentStack?: string): string {
+  const parts: string[] = [];
   if (caught instanceof Error && caught.stack) {
-    return caught.stack;
-  }
-  if (typeof caught === "object" && caught !== null) {
+    parts.push(caught.stack.slice(0, 800));
+  } else if (typeof caught === "object" && caught !== null) {
     try {
-      return JSON.stringify(caught, null, 2).slice(0, 600);
+      parts.push(JSON.stringify(caught, null, 2).slice(0, 600));
     } catch {
-      return "";
+      // ignore
     }
   }
-  return "";
+  if (componentStack) {
+    parts.push("\n-- Component Stack --\n" + componentStack.slice(0, 600));
+  }
+  return parts.join("");
 }
 
 export class AppErrorBoundary extends React.Component<
@@ -57,24 +68,37 @@ export class AppErrorBoundary extends React.Component<
     errorStack: "",
   };
 
+  private static lastComponentStack: string = "";
+
   public static getDerivedStateFromError(error: unknown): AppErrorBoundaryState {
     return {
       hasError: true,
       errorMessage: safeMessage(error),
-      errorStack: safeStack(error),
+      errorStack: safeStack(error, AppErrorBoundary.lastComponentStack),
     };
   }
 
   public componentDidCatch(error: unknown, errorInfo: React.ErrorInfo): void {
+    AppErrorBoundary.lastComponentStack = errorInfo.componentStack ?? "";
     console.error(
       "[ErrorBoundary] App render failure detected",
       error,
       errorInfo,
     );
+    console.error("[ErrorBoundary] Component stack:", errorInfo.componentStack);
     if (error instanceof Error) {
       console.error("[ErrorBoundary] name:", error.name);
       console.error("[ErrorBoundary] message:", error.message);
       console.error("[ErrorBoundary] stack:", error.stack?.slice(0, 800));
+    } else if (typeof error === "object" && error !== null) {
+      console.error("[ErrorBoundary] non-Error thrown: typeof=", typeof error);
+      console.error("[ErrorBoundary] constructor:", (error as object).constructor?.name);
+      console.error("[ErrorBoundary] keys:", Object.keys(error as Record<string, unknown>));
+      try {
+        console.error("[ErrorBoundary] JSON:", JSON.stringify(error));
+      } catch {
+        console.error("[ErrorBoundary] (not JSON-serializable)");
+      }
     } else {
       console.error("[ErrorBoundary] non-Error thrown:", typeof error, error);
     }
