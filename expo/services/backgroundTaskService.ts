@@ -9,15 +9,19 @@ import { Settings, TradingSignal } from '@/types/trading';
 const SIGNAL_GENERATION_TASK = 'signal-generation-check';
 const NOTIFICATION_CHANNEL_ID = 'trading-signals';
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+try {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    }),
+  });
+} catch (e: unknown) {
+  console.warn("[BgTask] Notifications.setNotificationHandler failed (non-fatal on web):", e instanceof Error ? e.message : String(e));
+}
 
 export async function setupNotificationChannel() {
   if (Platform.OS === 'android') {
@@ -88,70 +92,74 @@ export async function sendSignalNotification(signal: TradingSignal) {
   }
 }
 
-TaskManager.defineTask(SIGNAL_GENERATION_TASK, async () => {
-  try {
-    console.log('\n🔄 Background Task: Checking for new signals...');
+try {
+  TaskManager.defineTask(SIGNAL_GENERATION_TASK, async () => {
+    try {
+      console.log('\n🔄 Background Task: Checking for new signals...');
 
-    const [savedSettings, savedHistory, savedBalance] = await Promise.all([
-      AsyncStorage.getItem('trading_settings'),
-      AsyncStorage.getItem('signal_history'),
-      AsyncStorage.getItem('account_balance'),
-    ]);
+      const [savedSettings, savedHistory, savedBalance] = await Promise.all([
+        AsyncStorage.getItem('trading_settings'),
+        AsyncStorage.getItem('signal_history'),
+        AsyncStorage.getItem('account_balance'),
+      ]);
 
-    const settings: Settings = savedSettings 
-      ? JSON.parse(savedSettings)
-      : {
-          tp1Pips: 30,
-          tp2Pips: 60,
-          tp3Pips: 90,
-          slPips: 70,
-          numberOfTPs: 3,
-          minConfidence: 0.90,
-          enableNotifications: true,
-          basePositionSize: 0.01,
-          maxRiskPercentage: 2.0,
-          useKellyCriterion: true,
-          useDynamicSL: true,
-          maxSLPips: 90,
-        };
+      const settings: Settings = savedSettings 
+        ? JSON.parse(savedSettings)
+        : {
+            tp1Pips: 30,
+            tp2Pips: 60,
+            tp3Pips: 90,
+            slPips: 70,
+            numberOfTPs: 3,
+            minConfidence: 0.90,
+            enableNotifications: true,
+            basePositionSize: 0.01,
+            maxRiskPercentage: 2.0,
+            useKellyCriterion: true,
+            useDynamicSL: true,
+            maxSLPips: 90,
+          };
 
-    if (!settings.enableNotifications) {
-      console.log('⚠️ Notifications disabled in settings - skipping background check');
-      return BackgroundFetch.BackgroundFetchResult.NoData;
+      if (!settings.enableNotifications) {
+        console.log('⚠️ Notifications disabled in settings - skipping background check');
+        return BackgroundFetch.BackgroundFetchResult.NoData;
+      }
+
+      const history: TradingSignal[] = savedHistory 
+        ? JSON.parse(savedHistory).map((s: any) => ({
+            ...s,
+            timestamp: new Date(s.timestamp),
+          }))
+        : [];
+
+      const accountBalance: number = savedBalance 
+        ? JSON.parse(savedBalance)
+        : 100;
+
+      await signalEngine.updateCurrentPrice();
+      const signal = await signalEngine.generateSignal(settings, accountBalance, history);
+
+      if (signal) {
+        console.log(`✅ Background: New signal generated - ${signal.type} @ ${signal.entryPrice.toFixed(1)}`);
+        
+        const updatedHistory = [signal, ...history];
+        await AsyncStorage.setItem('signal_history', JSON.stringify(updatedHistory));
+
+        await sendSignalNotification(signal);
+
+        return BackgroundFetch.BackgroundFetchResult.NewData;
+      } else {
+        console.log('⚠️ Background: No signal generated');
+        return BackgroundFetch.BackgroundFetchResult.NoData;
+      }
+    } catch (error) {
+      console.error('❌ Background task error:', error);
+      return BackgroundFetch.BackgroundFetchResult.Failed;
     }
-
-    const history: TradingSignal[] = savedHistory 
-      ? JSON.parse(savedHistory).map((s: any) => ({
-          ...s,
-          timestamp: new Date(s.timestamp),
-        }))
-      : [];
-
-    const accountBalance: number = savedBalance 
-      ? JSON.parse(savedBalance)
-      : 100;
-
-    await signalEngine.updateCurrentPrice();
-    const signal = await signalEngine.generateSignal(settings, accountBalance, history);
-
-    if (signal) {
-      console.log(`✅ Background: New signal generated - ${signal.type} @ ${signal.entryPrice.toFixed(1)}`);
-      
-      const updatedHistory = [signal, ...history];
-      await AsyncStorage.setItem('signal_history', JSON.stringify(updatedHistory));
-
-      await sendSignalNotification(signal);
-
-      return BackgroundFetch.BackgroundFetchResult.NewData;
-    } else {
-      console.log('⚠️ Background: No signal generated');
-      return BackgroundFetch.BackgroundFetchResult.NoData;
-    }
-  } catch (error) {
-    console.error('❌ Background task error:', error);
-    return BackgroundFetch.BackgroundFetchResult.Failed;
-  }
-});
+  });
+} catch (e: unknown) {
+  console.warn("[BgTask] TaskManager.defineTask failed (non-fatal on web):", e instanceof Error ? e.message : String(e));
+}
 
 export async function registerBackgroundTask(): Promise<boolean> {
   if (Platform.OS === 'web') {

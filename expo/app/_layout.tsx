@@ -10,6 +10,57 @@ import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { View, ActivityIndicator, Text, StyleSheet, LogBox, Platform } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 
+// Global uncaught error handler for diagnostics — catches module-level crashes
+// before the React error boundary can mount.
+(function installGlobalErrorTrap() {
+  const logDetails = (label: string, error: unknown) => {
+    console.error(`[GlobalTrap] ${label}:`, typeof error);
+    if (error instanceof Error) {
+      console.error(`[GlobalTrap] ${label} name=`, error.name, "msg=", error.message);
+      console.error(`[GlobalTrap] ${label} stack=`, error.stack?.slice(0, 800) ?? "(none)");
+    } else if (error !== null && typeof error === "object") {
+      const keys = Object.keys(error as Record<string, unknown>);
+      console.error(`[GlobalTrap] ${label} keys=`, keys.length > 0 ? keys : "(empty object)");
+      try {
+        console.error(`[GlobalTrap] ${label} json=`, JSON.stringify(error).slice(0, 400));
+      } catch {
+        console.error(`[GlobalTrap] ${label} (not JSON-serializable)`);
+      }
+    } else {
+      console.error(`[GlobalTrap] ${label} value=`, String(error));
+    }
+  };
+
+  // React Native global handler (native runtime)
+  const g = global as Record<string, unknown>;
+  if (typeof g.ErrorUtils !== "undefined" && g.ErrorUtils) {
+    try {
+      const utils = g.ErrorUtils as { getGlobalHandler?: () => (error: unknown, isFatal?: boolean) => void; setGlobalHandler?: (h: (error: unknown, isFatal?: boolean) => void) => void };
+      const originalHandler = utils.getGlobalHandler?.();
+      utils.setGlobalHandler?.((error: unknown, isFatal?: boolean) => {
+        logDetails("RN", error);
+        if (originalHandler) {
+          try { originalHandler(error, isFatal); } catch { /* must not throw */ }
+        }
+      });
+      console.log("[GlobalTrap] Registered React Native global error handler");
+    } catch (e) {
+      console.warn("[GlobalTrap] Failed to install RN ErrorUtils handler:", e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // Web global handler
+  if (typeof window !== "undefined") {
+    window.addEventListener("error", (event: ErrorEvent) => {
+      logDetails("WEB", event.error ?? event.message);
+    });
+    window.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {
+      logDetails("WEB-unhandled", event.reason);
+    });
+    console.log("[GlobalTrap] Registered web error listeners");
+  }
+})();
+
 void SplashScreen.preventAutoHideAsync();
 
 if (Platform.OS === 'web') {

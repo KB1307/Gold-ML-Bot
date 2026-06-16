@@ -24,9 +24,13 @@ function getRCToken() {
 
 const apiKey = getRCToken();
 if (apiKey) {
-  void Purchases.setLogLevel(LOG_LEVEL.VERBOSE);
-  Purchases.configure({ apiKey });
-  console.log("[RC] RevenueCat configured successfully");
+  try {
+    void Purchases.setLogLevel(LOG_LEVEL.VERBOSE);
+    Purchases.configure({ apiKey });
+    console.log("[RC] RevenueCat configured successfully");
+  } catch (e: unknown) {
+    console.warn("[RC] RevenueCat init failed (non-fatal):", e instanceof Error ? e.message : String(e));
+  }
 } else {
   console.warn("[RC] No RevenueCat API key found");
 }

@@ -22,7 +22,11 @@ import {
   type SupabaseSmokeTestResult,
 } from "@/lib/supabaseSmokeTest";
 
-WebBrowser.maybeCompleteAuthSession();
+try {
+  WebBrowser.maybeCompleteAuthSession();
+} catch (e: unknown) {
+  console.warn("[Auth] WebBrowser.maybeCompleteAuthSession() failed (non-fatal):", e instanceof Error ? e.message : String(e));
+}
 
 const SESSION_QUERY_KEY = ["supabase-auth-session"] as const;
 
