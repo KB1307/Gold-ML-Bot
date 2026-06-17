@@ -1,7 +1,5 @@
 import React from "react";
 import { StyleSheet, Text, TouchableOpacity, View, Platform } from "react-native";
-import { LinearGradient } from "expo-linear-gradient";
-import { AlertTriangle, RefreshCw } from "lucide-react-native";
 
 interface AppErrorBoundaryProps {
   children: React.ReactNode;
@@ -145,14 +143,15 @@ export class AppErrorBoundary extends React.Component<
       return this.props.children;
     }
 
+    // NOTE: Error UI uses ONLY plain React Native components — no native modules
+    // (LinearGradient, lucide icons, etc.). If a native module caused the original
+    // crash, importing it again here would crash the error boundary itself and
+    // produce the unrecoverable {} error.
     return (
       <View style={styles.container} testID="app-error-boundary-screen">
-        <LinearGradient
-          colors={["#050505", "#111827", "#050505"]}
-          style={styles.gradient}
-        >
+        <View style={styles.errorContent}>
           <View style={styles.iconWrap}>
-            <AlertTriangle size={28} color="#FFD700" />
+            <Text style={styles.iconText}>!</Text>
           </View>
           <Text style={styles.title}>Something went off track</Text>
           <Text style={styles.subtitle}>{this.state.errorMessage}</Text>
@@ -179,10 +178,10 @@ export class AppErrorBoundary extends React.Component<
             onPress={this.handleRetry}
             testID="app-error-boundary-retry-button"
           >
-            <RefreshCw size={18} color="#111827" />
+            <Text style={styles.retryIcon}>↻</Text>
             <Text style={styles.retryText}>Try again</Text>
           </TouchableOpacity>
-        </LinearGradient>
+        </View>
       </View>
     );
   }
@@ -193,12 +192,12 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#050505",
   },
-  gradient: {
+  errorContent: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 28,
-    gap: 16,
+    backgroundColor: "#0a0a0f",
   },
   iconWrap: {
     width: 64,
@@ -207,6 +206,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(255, 215, 0, 0.12)",
+    marginBottom: 16,
+  },
+  iconText: {
+    fontSize: 28,
+    fontWeight: "700" as const,
+    color: "#FFD700",
+  },
+  retryIcon: {
+    fontSize: 18,
+    color: "#111827",
+    marginRight: 4,
   },
   title: {
     fontSize: 22,

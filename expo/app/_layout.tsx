@@ -59,6 +59,22 @@ import { LinearGradient } from "expo-linear-gradient";
     });
     console.log("[GlobalTrap] Registered web error listeners");
   }
+
+  // Native unhandled promise rejection handler.
+  // React Native 0.81+ uses a 'unhandledrejection' event on the
+  // global scope (same as web). Register it on both platforms.
+  const rejectionHandler = (event: { reason?: unknown } | PromiseRejectionEvent) => {
+    const reason = 'reason' in event ? event.reason : undefined;
+    logDetails("NATIVE-unhandled-rejection", reason);
+  };
+  try {
+    if (typeof globalThis !== "undefined" && typeof globalThis.addEventListener === "function") {
+      (globalThis as unknown as Window).addEventListener("unhandledrejection", rejectionHandler as EventListener);
+      console.log("[GlobalTrap] Registered native unhandledrejection handler");
+    }
+  } catch {
+    // globalThis.addEventListener not available
+  }
 })();
 
 void SplashScreen.preventAutoHideAsync();
@@ -86,19 +102,22 @@ const queryClient = new QueryClient({
 });
 
 const LoadingOverlay = React.memo(() => {
-  const { isLoading } = useTrading();
+  let isLoading = true;
+  try {
+    const ctx = useTrading();
+    isLoading = ctx.isLoading;
+  } catch {
+    // Trading context not ready yet — keep showing loading
+  }
   
   if (!isLoading) return null;
   
   return (
     <View style={[styles.loadingContainer, StyleSheet.absoluteFill]}>
-      <LinearGradient
-        colors={["#0a0a0a", "#1a1a2e"]}
-        style={styles.loadingGradient}
-      >
+      <View style={styles.loadingFallback}>
         <ActivityIndicator size="large" color="#FFD700" />
         <Text style={styles.loadingText}>Loading Trading Data...</Text>
-      </LinearGradient>
+      </View>
     </View>
   );
 });
@@ -192,6 +211,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     gap: 16,
+  },
+  loadingFallback: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#0a0a0a",
   },
   loadingText: {
     fontSize: 16,
