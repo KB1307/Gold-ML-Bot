@@ -1947,6 +1947,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       syncSignalPriceFromEngine();
       
       if (signal) {
+        // Telegram alert — fired FIRST, before any processing.
+        // The fetch is truly fire-and-forget (no await), so the message
+        // dispatches to Telegram in <100ms.
+        sendTelegramAlert(signal);
+
         setSignalHistory((prev) => {
           console.log("\n" + "=".repeat(60));
           console.log("✅ ✅ ✅ NEW SIGNAL GENERATED ✅ ✅ ✅");
@@ -1970,11 +1975,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             console.error('❌ Failed to send notification:', err);
           });
         }
-
-        // Telegram alert — fire-and-forget, never blocks the UI
-        sendTelegramAlert(signal).catch(err => {
-          console.error('[Telegram] Failed to send alert:', err);
-        });
 
         const sizing = signalEngine.calculatePositionSizing(signal.confidence, settings, accountBalance);
         setPositionSizing(sizing);

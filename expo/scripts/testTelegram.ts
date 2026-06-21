@@ -32,7 +32,11 @@ async function main() {
   console.log(JSON.stringify(testSignal, null, 2));
   console.log("---");
 
-  await sendTelegramAlert(testSignal);
+  // sendTelegramAlert is fire-and-forget — the fetch starts immediately.
+  // Wait 3 seconds for it to complete before the script exits.
+  sendTelegramAlert(testSignal);
+  console.log("Alert dispatched. Waiting 3s for delivery...");
+  await new Promise((r) => setTimeout(r, 3000));
 
   console.log("Done. Check your Telegram channel for the alert.");
 }

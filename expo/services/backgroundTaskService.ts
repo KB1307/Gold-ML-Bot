@@ -143,15 +143,13 @@ try {
       if (signal) {
         console.log(`✅ Background: New signal generated - ${signal.type} @ ${signal.entryPrice.toFixed(1)}`);
         
+        // Telegram alert — fire-and-forget, dispatched before any await
+        sendTelegramAlert(signal);
+
         const updatedHistory = [signal, ...history];
         await AsyncStorage.setItem('signal_history', JSON.stringify(updatedHistory));
 
         await sendSignalNotification(signal);
-
-        // Telegram alert — fire-and-forget
-        sendTelegramAlert(signal).catch(err => {
-          console.error('[Telegram] Bg task failed to send alert:', err);
-        });
 
         return BackgroundFetch.BackgroundFetchResult.NewData;
       } else {
