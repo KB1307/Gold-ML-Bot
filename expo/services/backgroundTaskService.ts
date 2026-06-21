@@ -5,6 +5,7 @@ import { Platform } from 'react-native';
 import { signalEngine } from './signalEngine';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Settings, TradingSignal } from '@/types/trading';
+import { sendTelegramAlert } from './telegramNotifier';
 
 const SIGNAL_GENERATION_TASK = 'signal-generation-check';
 const NOTIFICATION_CHANNEL_ID = 'trading-signals';
@@ -146,6 +147,11 @@ try {
         await AsyncStorage.setItem('signal_history', JSON.stringify(updatedHistory));
 
         await sendSignalNotification(signal);
+
+        // Telegram alert — fire-and-forget
+        sendTelegramAlert(signal).catch(err => {
+          console.error('[Telegram] Bg task failed to send alert:', err);
+        });
 
         return BackgroundFetch.BackgroundFetchResult.NewData;
       } else {

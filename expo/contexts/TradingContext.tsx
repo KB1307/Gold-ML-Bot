@@ -15,6 +15,7 @@ import {
 import { subscribeToChartPrice, subscribeToChartHeartbeat } from "@/services/chartPriceBridge";
 import { ensureBarStoreReady, ingestTickAllTimeframes, upsertBars, getBars, getBarStoreStats, pruneOldBars, getLatestBarTimestamp } from "@/services/barStore";
 import { resolveSignalWithBars } from "@/services/signalResolver";
+import { sendTelegramAlert } from "@/services/telegramNotifier";
 
 const INDEPENDENT_POLL_INTERVAL_MS = 12000;
 const INDEPENDENT_POLL_NO_PRICE_INTERVAL_MS = 5000;
@@ -1969,6 +1970,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             console.error('❌ Failed to send notification:', err);
           });
         }
+
+        // Telegram alert — fire-and-forget, never blocks the UI
+        sendTelegramAlert(signal).catch(err => {
+          console.error('[Telegram] Failed to send alert:', err);
+        });
 
         const sizing = signalEngine.calculatePositionSizing(signal.confidence, settings, accountBalance);
         setPositionSizing(sizing);
