@@ -12,20 +12,34 @@ function formatConfidence(value: number): string {
   return (value * 100).toFixed(1);
 }
 
+function formatTime(isoString: string): string {
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return isoString;
+  const time = d.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+  });
+  const day = d.getDate();
+  const month = d.toLocaleString("en-US", { month: "long" });
+  return `${time} ${day} ${month}`;
+}
+
 function buildTelegramMessage(signal: TradingSignal): string {
-  const emoji = signal.type === "BUY" ? "📈" : "📉";
   const entryPrice = signal.entryPriceWithSlippage || signal.entryPrice;
+  const confPct = formatConfidence(signal.confidence);
 
   const lines = [
-    `${emoji} *New XAU/USD ${signal.type} Signal*`,
+    `*New ${signal.type} Signal (${confPct}%)*`,
     "",
-    `*Entry Price:* ${formatPrice(entryPrice)}`,
-    `*Confidence:* ${formatConfidence(signal.confidence)}%`,
-    `*Stop Loss:* ${formatPrice(signal.sl)}`,
+    `Entry Price: ${formatPrice(entryPrice)}`,
+    "",
+    `*SL:* ${formatPrice(signal.sl)}`,
     `*Take Profit 1:* ${formatPrice(signal.tp1)}`,
     `*Take Profit 2:* ${formatPrice(signal.tp2)}`,
     `*Take Profit 3:* ${formatPrice(signal.tp3)}`,
-    `*Time:* ${signal.entryTime}`,
+    `Time: ${formatTime(signal.entryTime)}`,
   ];
 
   if (signal.topFeatures && signal.topFeatures.length > 0) {
@@ -33,10 +47,10 @@ function buildTelegramMessage(signal: TradingSignal): string {
       .slice(0, 3)
       .map((f) => f.feature)
       .join(", ");
-    lines.push(`*Top Drivers:* ${topFeatureNames}`);
+    lines.push(`Top Drivers: ${topFeatureNames}`);
   }
 
-  lines.push("", `_Signal ID: ${signal.id}_`);
+  lines.push("", `Signal ID: ${signal.id}`);
 
   return lines.join("\n");
 }
