@@ -15,15 +15,11 @@ function formatConfidence(value: number): string {
 function formatTime(isoString: string): string {
   const d = new Date(isoString);
   if (isNaN(d.getTime())) return isoString;
-  const time = d.toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-  });
+  const hours = d.getHours().toString().padStart(2, "0");
+  const minutes = d.getMinutes().toString().padStart(2, "0");
   const day = d.getDate();
   const month = d.toLocaleString("en-US", { month: "long" });
-  return `${time} ${day} ${month}`;
+  return `${hours}:${minutes} ${day} ${month}`;
 }
 
 function buildTelegramMessage(signal: TradingSignal): string {
@@ -42,16 +38,6 @@ function buildTelegramMessage(signal: TradingSignal): string {
     "",
     `Time: ${formatTime(signal.entryTime)}`,
   ];
-
-  if (signal.topFeatures && signal.topFeatures.length > 0) {
-    const topFeatureNames = signal.topFeatures
-      .slice(0, 3)
-      .map((f) => f.feature)
-      .join(", ");
-    lines.push(`_Top Drivers: ${topFeatureNames}_`);
-  }
-
-  lines.push("", `Signal ID: ${signal.id}`);
 
   return lines.join("\n");
 }
