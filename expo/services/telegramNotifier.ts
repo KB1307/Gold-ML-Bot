@@ -39,6 +39,7 @@ function buildTelegramMessage(signal: TradingSignal): string {
     `*Take Profit 1:* ${formatPrice(signal.tp1)}`,
     `*Take Profit 2:* ${formatPrice(signal.tp2)}`,
     `*Take Profit 3:* ${formatPrice(signal.tp3)}`,
+    "",
     `Time: ${formatTime(signal.entryTime)}`,
   ];
 
@@ -47,7 +48,7 @@ function buildTelegramMessage(signal: TradingSignal): string {
       .slice(0, 3)
       .map((f) => f.feature)
       .join(", ");
-    lines.push(`Top Drivers: ${topFeatureNames}`);
+    lines.push(`_Top Drivers: ${topFeatureNames}_`);
   }
 
   lines.push("", `Signal ID: ${signal.id}`);
