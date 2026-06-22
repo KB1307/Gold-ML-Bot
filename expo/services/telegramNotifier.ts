@@ -2,7 +2,7 @@ import { TradingSignal } from "@/types/trading";
 
 const TELEGRAM_API_URL =
   "https://api.telegram.org/bot8704113854:AAHebld6qMlK2eKGJB0DND3O7FvuLdPypSQ/sendMessage";
-const TELEGRAM_CHAT_ID = "-5368971735";
+const TELEGRAM_CHAT_ID = "-1004409610798";
 
 function formatPrice(value: number): string {
   return value.toFixed(1);
