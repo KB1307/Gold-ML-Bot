@@ -14,17 +14,22 @@ function formatConfidence(value: number): string {
 
 function buildTelegramMessage(signal: TradingSignal): string {
   const entryPrice = signal.entryPriceWithSlippage || signal.entryPrice;
-  const confPct = formatConfidence(signal.confidence);
+  const dot = signal.type === "BUY" ? "\u{1F7E2}" : "\u{1F534}";
 
   const lines = [
-    `*New ${signal.type} Signal (${confPct}%)*`,
+    `${dot} *SIGNAL ALERT* ${dot}`,
     "",
-    `Entry Price: ${formatPrice(entryPrice)}`,
+    `*SYMBOL:* XAUUSD`,
     "",
-    `*SL:* ${formatPrice(signal.sl)}`,
-    `*Take Profit 1:* ${formatPrice(signal.tp1)}`,
-    `*Take Profit 2:* ${formatPrice(signal.tp2)}`,
-    `*Take Profit 3:* ${formatPrice(signal.tp3)}`,
+    `*ACTION:* ${signal.type}`,
+    "",
+    `*ENTRY ZONE:* ${formatPrice(entryPrice)}`,
+    "",
+    `*STOP LOSS:* ${formatPrice(signal.sl)}`,
+    "",
+    `*TAKE PROFIT 1:* ${formatPrice(signal.tp1)}`,
+    `*TAKE PROFIT 2:* ${formatPrice(signal.tp2)}`,
+    `*TAKE PROFIT 3:* ${formatPrice(signal.tp3)}`,
   ];
 
   return lines.join("\n");
