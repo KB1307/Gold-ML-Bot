@@ -58,12 +58,15 @@ export function sendTelegramAlert(signal: TradingSignal): void {
     .then((response) => {
       clearTimeout(timeoutId);
       if (!response.ok) {
-        // Read the body only on failure, and don't block on it
+        // Read the body only on failure, and don't block on it.
+        // Logged as a warning (not an error) because a delivery failure is an
+        // external/config issue (e.g. the bot lacks posting rights in the chat)
+        // — it must never surface as an app runtime error or block the pipeline.
         response
           .text()
           .then((body) => {
-            console.error(
-              `[Telegram] API error ${response.status}: ${body.slice(0, 200)}`
+            console.warn(
+              `[Telegram] Delivery failed (${response.status}): ${body.slice(0, 200)}`
             );
           })
           .catch(() => {});
@@ -81,7 +84,7 @@ export function sendTelegramAlert(signal: TradingSignal): void {
         );
         return;
       }
-      console.error(
+      console.warn(
         "[Telegram] Network error dispatching alert:",
         error instanceof Error ? error.message : String(error)
       );

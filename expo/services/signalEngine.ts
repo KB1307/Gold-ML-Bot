@@ -96,6 +96,35 @@ interface SessionSweep {
   strength: number;
 }
 
+/**
+ * Fair Value Gap (FVG) — a 3-candle imbalance zone where price moved so fast it
+ * skipped two-way trading. Price has a statistical tendency to revisit ("fill")
+ * the gap before continuing, so an unfilled gap acts as support (bullish) or
+ * resistance (bearish). Detected on closed candles only to avoid lookahead bias.
+ */
+interface FVGZone {
+  type: 'BULLISH' | 'BEARISH';
+  /** Upper bound of the imbalance zone. */
+  top: number;
+  /** Lower bound of the imbalance zone. */
+  bottom: number;
+  /** Gap height in price units (top - bottom). */
+  size: number;
+  /** Gap size relative to ATR(14) — used to filter noise vs. institutional gaps. */
+  sizeAtrRatio: number;
+  /** 0 = untouched/fresh, 1 = fully filled (mitigated). */
+  fillPct: number;
+  /** True once the gap has been fully filled. */
+  mitigated: boolean;
+  timestamp: number;
+  /** 0-1 quality score derived from size relative to ATR. */
+  strength: number;
+  /** Lowest low observed since formation (bullish mitigation tracking). */
+  lowestLowSince: number;
+  /** Highest high observed since formation (bearish mitigation tracking). */
+  highestHighSince: number;
+}
+
 interface SRZone {
   price: number;
   type: 'SUPPORT' | 'RESISTANCE';
@@ -151,6 +180,7 @@ interface MarketFeatures {
   orderBlocks: OrderBlock[];
   quasimodolLevels: QuasimodolLevel[];
   sessionSweeps: SessionSweep[];
+  fairValueGaps: FVGZone[];
   vwap: number | null;
   adx: number | null;
   bollingerSqueeze: boolean;
@@ -231,6 +261,9 @@ const ATTEMPT_WINDOW_MS = 60 * 60 * 1000;
 const STARVATION_GAP_MS = 90 * 60 * 1000;
 const BAYESIAN_PRIOR_ALPHA = 2;
 const BAYESIAN_PRIOR_BETA = 2;
+
+// FVG: discard gaps smaller than this fraction of ATR as low-liquidity noise.
+const MIN_FVG_ATR_RATIO = 0.18;
 
 const TIME_WEIGHTS = {
   LOW_LIQUIDITY: 0.5,
@@ -767,6 +800,7 @@ class SignalGenerationEngine {
   private lastFiveMinCandleClose: number = 0;
   private quasimodolLevels: QuasimodolLevel[] = [];
   private sessionSweeps: SessionSweep[] = [];
+  private fvgZones: FVGZone[] = [];
   private srZones: SRZone[] = [];
   private srZoneProximityThreshold: number = 5;
   private asianSessionHigh: number = 0;
@@ -1443,6 +1477,116 @@ class SignalGenerationEngine {
     return 'NEUTRAL';
   }
   
+  private buildFvgZone(
+    type: 'BULLISH' | 'BEARISH',
+    top: number,
+    bottom: number,
+    size: number,
+    atr: number,
+    timestamp: number
+  ): FVGZone {
+    const sizeAtrRatio = atr > 0 ? size / atr : 0;
+    const strength = Math.max(0, Math.min(1, sizeAtrRatio / 1.5));
+    return {
+      type,
+      top: parseFloat(top.toFixed(2)),
+      bottom: parseFloat(bottom.toFixed(2)),
+      size: parseFloat(size.toFixed(2)),
+      sizeAtrRatio: parseFloat(sizeAtrRatio.toFixed(2)),
+      fillPct: 0,
+      mitigated: false,
+      timestamp,
+      strength: parseFloat(strength.toFixed(2)),
+      lowestLowSince: type === 'BULLISH' ? top : 0,
+      highestHighSince: type === 'BEARISH' ? bottom : 0,
+    };
+  }
+
+  /**
+   * Detect Fair Value Gaps (3-candle imbalances) on CLOSED candles only.
+   * Bullish FVG: candle1 high < candle3 low (gap acts as support on a retrace).
+   * Bearish FVG: candle1 low > candle3 high (gap acts as resistance on a retrace).
+   * Gaps smaller than MIN_FVG_ATR_RATIO × ATR are discarded as noise. Mitigation
+   * (fill %) is tracked as state across cycles, and fully filled gaps are dropped.
+   */
+  private detectFairValueGaps(atr: number): FVGZone[] {
+    const minBars = 3;
+    if (this.highHistory.length < minBars || this.lowHistory.length < minBars) {
+      return this.fvgZones;
+    }
+
+    const lookback = Math.min(30, this.highHistory.length);
+    const highs = this.highHistory.slice(-lookback);
+    const lows = this.lowHistory.slice(-lookback);
+    const baseTime = Date.now();
+    const minGapSize = Math.max(atr * MIN_FVG_ATR_RATIO, this.currentPrice * 0.0003);
+
+    const newZones: FVGZone[] = [];
+    // Require candle3 (i+2) to be a closed bar within the window — no lookahead.
+    for (let i = 0; i + 2 < lookback; i++) {
+      const c1High = highs[i];
+      const c1Low = lows[i];
+      const c3High = highs[i + 2];
+      const c3Low = lows[i + 2];
+      const ts = baseTime - ((lookback - (i + 2)) * 60000);
+
+      if (c1High < c3Low) {
+        const size = c3Low - c1High;
+        if (size >= minGapSize) {
+          newZones.push(this.buildFvgZone('BULLISH', c3Low, c1High, size, atr, ts));
+        }
+      }
+
+      if (c1Low > c3High) {
+        const size = c1Low - c3High;
+        if (size >= minGapSize) {
+          newZones.push(this.buildFvgZone('BEARISH', c1Low, c3High, size, atr, ts));
+        }
+      }
+    }
+
+    const merged: FVGZone[] = [...this.fvgZones];
+    for (const z of newZones) {
+      const exists = merged.some(
+        m => m.type === z.type && Math.abs(m.top - z.top) < 0.5 && Math.abs(m.bottom - z.bottom) < 0.5
+      );
+      if (!exists) merged.push(z);
+    }
+
+    const latestHigh = this.highHistory[this.highHistory.length - 1] ?? this.currentPrice;
+    const latestLow = this.lowHistory[this.lowHistory.length - 1] ?? this.currentPrice;
+    for (const z of merged) {
+      const span = z.top - z.bottom;
+      if (span <= 0) {
+        z.fillPct = 1;
+        z.mitigated = true;
+        continue;
+      }
+      if (z.type === 'BULLISH') {
+        z.lowestLowSince = Math.min(z.lowestLowSince, latestLow, this.currentPrice);
+        z.fillPct = Math.max(0, Math.min(1, (z.top - z.lowestLowSince) / span));
+      } else {
+        z.highestHighSince = Math.max(z.highestHighSince, latestHigh, this.currentPrice);
+        z.fillPct = Math.max(0, Math.min(1, (z.highestHighSince - z.bottom) / span));
+      }
+      z.mitigated = z.fillPct >= 1;
+    }
+
+    const fourHoursAgo = Date.now() - (4 * 60 * 60 * 1000);
+    this.fvgZones = merged
+      .filter(z => z.timestamp > fourHoursAgo && z.fillPct < 1)
+      .sort((a, b) => b.strength - a.strength)
+      .slice(0, 12);
+
+    if (this.fvgZones.length > 0) {
+      const bull = this.fvgZones.filter(z => z.type === 'BULLISH').length;
+      const bear = this.fvgZones.filter(z => z.type === 'BEARISH').length;
+      console.log(`📊 Active Fair Value Gaps: ${this.fvgZones.length} (${bull} bullish, ${bear} bearish, top by size/ATR)`);
+    }
+
+    return this.fvgZones;
+  }
+
   private detectOrderBlocks(): OrderBlock[] {
     if (this.priceHistory.length < 20 || this.highHistory.length < 20 || this.lowHistory.length < 20) {
       console.log('⚠️ Insufficient data for Order Block detection');
@@ -2318,6 +2462,7 @@ class SignalGenerationEngine {
     const orderBlocks = this.detectOrderBlocks();
     const quasimodolLevels = this.detectQuasimodolLevels();
     const sessionSweeps = this.detectSessionSweeps();
+    const fairValueGaps = this.detectFairValueGaps(atr);
     
     this.volumeHistory.push(volumeRatio * 1000);
     if (this.volumeHistory.length > 50) {
@@ -2370,6 +2515,7 @@ class SignalGenerationEngine {
       orderBlocks,
       quasimodolLevels,
       sessionSweeps,
+      fairValueGaps,
       vwap,
       adx,
       bollingerSqueeze: bollinger.squeeze,
@@ -3225,6 +3371,43 @@ class SignalGenerationEngine {
       attentionScores.set('session_high_sweep', 0.35);
       console.log(`🔴 SELL: ${confirmedHighSweep.sessionType} Session High Sweep Confirmed (High Accuracy Setup)`);
       console.log(`   Sweep @ ${confirmedHighSweep.sweepPrice.toFixed(1)} - Reversal confirmed`);
+    }
+
+    // Fair Value Gap (FVG) confluence — unfilled imbalance zones price tends to
+    // revisit. A fresh, ATR-meaningful gap aligned with bias is a probability
+    // tilt, never a standalone trigger. Weight scales with size and freshness,
+    // with an extra tilt when it agrees with the higher-timeframe bias.
+    const fvgProximity = Math.max(features.atr * 0.5, 4);
+    const computeFvgBoost = (zone: FVGZone, biasAligned: boolean): number => {
+      const freshness = zone.fillPct < 0.5 ? 1 : 0.55; // fresh gaps defended harder
+      const base = Math.min(0.16, 0.09 + zone.strength * 0.10) * freshness;
+      return parseFloat((base + (biasAligned ? 0.04 : 0)).toFixed(3));
+    };
+
+    const activeBullishFvg = features.fairValueGaps.find(
+      z => z.type === 'BULLISH' && !z.mitigated &&
+        this.currentPrice >= z.bottom - fvgProximity &&
+        this.currentPrice <= z.top + fvgProximity
+    );
+    if (activeBullishFvg) {
+      const aligned = htfTrend === 'BULLISH';
+      const fvgBoost = computeFvgBoost(activeBullishFvg, aligned);
+      buySignalStrength += fvgBoost;
+      attentionScores.set('bullish_fair_value_gap', fvgBoost);
+      console.log(`✅ BUY: Bullish FVG support @ ${activeBullishFvg.bottom.toFixed(1)}-${activeBullishFvg.top.toFixed(1)} (fill ${(activeBullishFvg.fillPct * 100).toFixed(0)}%, ${activeBullishFvg.sizeAtrRatio.toFixed(2)}x ATR${aligned ? ', HTF-aligned' : ''}) +${(fvgBoost * 100).toFixed(1)}%`);
+    }
+
+    const activeBearishFvg = features.fairValueGaps.find(
+      z => z.type === 'BEARISH' && !z.mitigated &&
+        this.currentPrice >= z.bottom - fvgProximity &&
+        this.currentPrice <= z.top + fvgProximity
+    );
+    if (activeBearishFvg) {
+      const aligned = htfTrend === 'BEARISH';
+      const fvgBoost = computeFvgBoost(activeBearishFvg, aligned);
+      sellSignalStrength += fvgBoost;
+      attentionScores.set('bearish_fair_value_gap', fvgBoost);
+      console.log(`🔴 SELL: Bearish FVG resistance @ ${activeBearishFvg.bottom.toFixed(1)}-${activeBearishFvg.top.toFixed(1)} (fill ${(activeBearishFvg.fillPct * 100).toFixed(0)}%, ${activeBearishFvg.sizeAtrRatio.toFixed(2)}x ATR${aligned ? ', HTF-aligned' : ''}) +${(fvgBoost * 100).toFixed(1)}%`);
     }
     
     console.log('\n📊 SIGNAL STRENGTH COMPARISON:');
