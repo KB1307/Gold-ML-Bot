@@ -8,6 +8,18 @@ function formatPrice(value: number): string {
   return value.toFixed(1);
 }
 
+// Half-width of the entry zone band, in price units (gold). The zone spans
+// entryPrice ± ENTRY_ZONE_BAND so an alert can still be executed despite the
+// lag between sending and receiving the signal. TPs/SL remain anchored to the
+// single entry point.
+const ENTRY_ZONE_BAND = 2.0;
+
+function formatEntryZone(entryPrice: number): string {
+  const low = entryPrice - ENTRY_ZONE_BAND;
+  const high = entryPrice + ENTRY_ZONE_BAND;
+  return `${formatPrice(low)} - ${formatPrice(high)}`;
+}
+
 function formatConfidence(value: number): string {
   return (value * 100).toFixed(1);
 }
@@ -23,7 +35,7 @@ function buildTelegramMessage(signal: TradingSignal): string {
     "",
     `*ACTION:* ${signal.type}`,
     "",
-    `*ENTRY ZONE:* ${formatPrice(entryPrice)}`,
+    `*ENTRY ZONE:* ${formatEntryZone(entryPrice)}`,
     "",
     `*STOP LOSS:* ${formatPrice(signal.sl)}`,
     "",
