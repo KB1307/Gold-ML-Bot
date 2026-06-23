@@ -85,14 +85,47 @@ const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;
 const SL_CONFIRMATION_MIN_PENETRATION_PIPS = 1.5;
 const SL_CONFIRMATION_MIN_DURATION_MS = 2500;
 const SL_CONFIRMATION_MIN_TICKS = 2;
-const TICK_SPIKE_REJECT_PIPS = 8.0;
-const TICK_SPIKE_WINDOW_MS = 500;
+// Spike (feed-glitch) rejection. A tick is treated as a glitch when it deviates
+// from the last ACCEPTED price by more than a time-scaled budget. The budget
+// grows with the gap since the last accepted tick, so a legitimately fast move
+// is still allowed, but a lone tick that leaps tens of pips and vanishes (the
+// phantom wick that produced false SL AND false TP/TP2/TP3 fills) is rejected.
+// The previous implementation only engaged when two ticks arrived within 500ms
+// — gold ticks usually arrive farther apart, so phantom spikes slipped through
+// and both banked false wins/losses AND poisoned the 1m bar store the audit
+// trusts. Beyond TICK_SPIKE_STALE_MS we stop rejecting (a real move could have
+// happened while the feed was quiet / after a reconnect).
+const TICK_SPIKE_BASE_PIPS = 8.0;
+const TICK_SPIKE_RATE_PIPS_PER_SEC = 6.0;
+const TICK_SPIKE_STALE_MS = 30000;
 // Profit-lock after TP1: replaces the previous cosmetic "breakeven" indicator
 // with a real trailing stop. Once TP1 is achieved, the effective SL becomes
 // entry + 15 pips (BUY) or entry - 15 pips (SELL). If price retraces to that
 // level, the trade closes as SL_AFTER_BE banking TP1 + 15 pip lock (WIN).
 const POST_TP1_PROFIT_LOCK_PIPS = 15;
 const PIP_VALUE = 0.1;
+
+/**
+ * Decide whether an incoming tick is an implausible feed glitch ("spike")
+ * relative to the last accepted price. Used by BOTH the bar-ingest filter
+ * (keeps the OHLC store clean for audits) and the live signal evaluator
+ * (prevents a single phantom tick from banking a false SL/TP).
+ */
+function isSpikeTick(
+  price: number,
+  last: { price: number; at: number },
+  now: number,
+): { spike: boolean; gapPips: number; budgetPips: number; dtMs: number } {
+  const dtMs = now - last.at;
+  const gapPips = Math.abs(price - last.price) / PIP_VALUE;
+  // No baseline yet, clock anomaly, or the feed was quiet long enough that a
+  // genuine move could have occurred — never reject.
+  if (!(last.price > 0) || !(last.at > 0) || dtMs < 0 || dtMs > TICK_SPIKE_STALE_MS) {
+    return { spike: false, gapPips, budgetPips: Number.POSITIVE_INFINITY, dtMs };
+  }
+  const budgetPips = TICK_SPIKE_BASE_PIPS + TICK_SPIKE_RATE_PIPS_PER_SEC * (dtMs / 1000);
+  return { spike: gapPips > budgetPips, gapPips, budgetPips, dtMs };
+}
 const ACTIVE_SIGNAL_LOCK_RELEASE_MS = 45 * 60 * 1000;
 const SIGNAL_GENERATION_INTERVAL_MS = 20000;
 
@@ -396,13 +429,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     // on-screen price (no user-visible regression).
     const barLast = lastAcceptedBarTickRef.current;
     let allowBarIngest = true;
-    if (barLast.price > 0 && barLast.at > 0) {
-      const dtMsBar = now - barLast.at;
-      const gapPipsBar = Math.abs(price - barLast.price) / PIP_VALUE;
-      if (dtMsBar < TICK_SPIKE_WINDOW_MS && gapPipsBar > TICK_SPIKE_REJECT_PIPS) {
-        console.warn(`🛡️ [BarStore] Dropping spike tick ${price.toFixed(1)} (${gapPipsBar.toFixed(1)} pips in ${dtMsBar}ms from ${barLast.price.toFixed(1)}) - not ingesting into bars to avoid corrupting audits`);
-        allowBarIngest = false;
-      }
+    const barSpike = isSpikeTick(price, barLast, now);
+    if (barSpike.spike) {
+      console.warn(`🛡️ [BarStore] Dropping spike tick ${price.toFixed(1)} (${barSpike.gapPips.toFixed(1)} pips in ${barSpike.dtMs}ms vs budget ${barSpike.budgetPips.toFixed(1)} pips from ${barLast.price.toFixed(1)}) - not ingesting into bars to avoid corrupting audits`);
+      allowBarIngest = false;
     }
     if (allowBarIngest) {
       lastAcceptedBarTickRef.current = { price, at: now };
@@ -2015,13 +2045,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     // from the last accepted tracking price within <500ms. These readings were
     // the root cause of false SL hits recorded "1 minute after" signal creation.
     const lastAccepted = lastAcceptedTickRef.current;
-    if (lastAccepted.price > 0 && lastAccepted.at > 0) {
-      const dtMs = now - lastAccepted.at;
-      const gapPips = Math.abs(price - lastAccepted.price);
-      if (dtMs < TICK_SPIKE_WINDOW_MS && gapPips > TICK_SPIKE_REJECT_PIPS) {
-        console.warn(`🛡️ SPIKE REJECTED: tick ${price.toFixed(1)} jumped ${gapPips.toFixed(1)} pips in ${dtMs}ms from last accepted ${lastAccepted.price.toFixed(1)} - not evaluating signals on this tick`);
-        return;
-      }
+    const liveSpike = isSpikeTick(price, lastAccepted, now);
+    if (liveSpike.spike) {
+      console.warn(`🛡️ SPIKE REJECTED: tick ${price.toFixed(1)} jumped ${liveSpike.gapPips.toFixed(1)} pips in ${liveSpike.dtMs}ms (budget ${liveSpike.budgetPips.toFixed(1)} pips) from last accepted ${lastAccepted.price.toFixed(1)} - not evaluating signals on this tick`);
+      return;
     }
     lastAcceptedTickRef.current = { price, at: now };
 
