@@ -29,6 +29,7 @@ const DEFAULT_SETTINGS: Settings = {
   numberOfTPs: 3,
   minConfidence: 0.68,
   enableNotifications: true,
+  enableTelegramNotifier: true,
   basePositionSize: 0.01,
   maxRiskPercentage: 2.0,
   useKellyCriterion: true,
@@ -85,19 +86,30 @@ const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;
 const SL_CONFIRMATION_MIN_PENETRATION_PIPS = 1.5;
 const SL_CONFIRMATION_MIN_DURATION_MS = 2500;
 const SL_CONFIRMATION_MIN_TICKS = 2;
-// Spike (feed-glitch) rejection. A tick is treated as a glitch when it deviates
-// from the last ACCEPTED price by more than a time-scaled budget. The budget
-// grows with the gap since the last accepted tick, so a legitimately fast move
-// is still allowed, but a lone tick that leaps tens of pips and vanishes (the
-// phantom wick that produced false SL AND false TP/TP2/TP3 fills) is rejected.
-// The previous implementation only engaged when two ticks arrived within 500ms
-// — gold ticks usually arrive farther apart, so phantom spikes slipped through
-// and both banked false wins/losses AND poisoned the 1m bar store the audit
-// trusts. Beyond TICK_SPIKE_STALE_MS we stop rejecting (a real move could have
-// happened while the feed was quiet / after a reconnect).
+// Spike (feed-glitch) rejection via a TWO-TICK GATE. A tick whose move from the
+// last ACCEPTED price exceeds a time-scaled budget is treated as a *candidate*
+// and is NOT trusted on its own: it must be corroborated by a SECOND independent
+// tick near the same new level before we accept it (a genuine fast move / a
+// post-reconnect gap). A lone tick that leaps far and immediately reverts (the
+// phantom wick that banked false SL AND false TP1/TP2/TP3 fills, and poisoned
+// the bar store the audit trusts) is dropped.
+//
+// The previous implementation had a fatal hole: beyond TICK_SPIKE_STALE_MS (30s)
+// it STOPPED rejecting entirely, and the budget grew unbounded with the gap (a
+// 25s gap allowed a ~150 pip jump). During thin pre-London hours gold ticks
+// arrive far apart, so a single phantom spike sailed straight through — banking
+// a false ALL_TARGETS_HIT off one tick AND corrupting the 1m bar. The gate below
+// removes that hole without risking a deadlock (a real gap is accepted on the
+// 2nd corroborating tick).
 const TICK_SPIKE_BASE_PIPS = 8.0;
 const TICK_SPIKE_RATE_PIPS_PER_SEC = 6.0;
-const TICK_SPIKE_STALE_MS = 30000;
+// Cap how much the budget grows with the inter-tick gap. 10s cap => max budget
+// 8 + 6*10 = 68 pips, so a quiet feed can never "earn" an unlimited jump.
+const TICK_SPIKE_BUDGET_CAP_MS = 10000;
+// A held spike candidate stays valid this long; a second tick within
+// TICK_SPIKE_CONFIRM_TOL_PIPS of it confirms the new level is real.
+const TICK_SPIKE_CONFIRM_WINDOW_MS = 60000;
+const TICK_SPIKE_CONFIRM_TOL_PIPS = 25;
 // Profit-lock after TP1: replaces the previous cosmetic "breakeven" indicator
 // with a real trailing stop. Once TP1 is achieved, the effective SL becomes
 // entry + 15 pips (BUY) or entry - 15 pips (SELL). If price retraces to that
@@ -105,26 +117,88 @@ const TICK_SPIKE_STALE_MS = 30000;
 const POST_TP1_PROFIT_LOCK_PIPS = 15;
 const PIP_VALUE = 0.1;
 
+interface TickGateState {
+  lastPrice: number;
+  lastAt: number;
+  lastTickId: number;
+  pendingPrice: number;
+  pendingAt: number;
+  pendingTickId: number;
+}
+
+function createTickGateState(): TickGateState {
+  return { lastPrice: 0, lastAt: 0, lastTickId: 0, pendingPrice: 0, pendingAt: 0, pendingTickId: 0 };
+}
+
 /**
- * Decide whether an incoming tick is an implausible feed glitch ("spike")
- * relative to the last accepted price. Used by BOTH the bar-ingest filter
- * (keeps the OHLC store clean for audits) and the live signal evaluator
- * (prevents a single phantom tick from banking a false SL/TP).
+ * Two-tick spike gate. Decides whether to ACCEPT an incoming tick as a genuine
+ * price (updating the baseline) or REJECT it as an uncorroborated feed glitch.
+ * Used by BOTH the bar-ingest path (keeps the OHLC store clean for audits) and
+ * the live signal evaluator (stops a single phantom tick banking a false TP/SL).
+ * Mutates `state`, so each caller keeps one TickGateState per stream.
+ *
+ * `tickId` identifies the underlying tick (snapshot.updatedAt for the live path,
+ * the commit time for the bar path) so a re-read of the SAME stale tick on the
+ * 5s safety interval can never "corroborate" itself.
  */
-function isSpikeTick(
+function classifyTick(
   price: number,
-  last: { price: number; at: number },
   now: number,
-): { spike: boolean; gapPips: number; budgetPips: number; dtMs: number } {
-  const dtMs = now - last.at;
-  const gapPips = Math.abs(price - last.price) / PIP_VALUE;
-  // No baseline yet, clock anomaly, or the feed was quiet long enough that a
-  // genuine move could have occurred — never reject.
-  if (!(last.price > 0) || !(last.at > 0) || dtMs < 0 || dtMs > TICK_SPIKE_STALE_MS) {
-    return { spike: false, gapPips, budgetPips: Number.POSITIVE_INFINITY, dtMs };
+  tickId: number,
+  state: TickGateState,
+): { accept: boolean; gapPips: number; budgetPips: number; dtMs: number; corroborated: boolean } {
+  // No baseline yet, or a backwards clock — seed and accept.
+  if (!(state.lastPrice > 0) || !(state.lastAt > 0) || now < state.lastAt) {
+    state.lastPrice = price;
+    state.lastAt = now;
+    state.lastTickId = tickId;
+    state.pendingPrice = 0;
+    state.pendingAt = 0;
+    state.pendingTickId = 0;
+    return { accept: true, gapPips: 0, budgetPips: Number.POSITIVE_INFINITY, dtMs: 0, corroborated: false };
   }
-  const budgetPips = TICK_SPIKE_BASE_PIPS + TICK_SPIKE_RATE_PIPS_PER_SEC * (dtMs / 1000);
-  return { spike: gapPips > budgetPips, gapPips, budgetPips, dtMs };
+
+  const dtMs = now - state.lastAt;
+  const gapPips = Math.abs(price - state.lastPrice) / PIP_VALUE;
+  const effectiveDtMs = Math.min(dtMs, TICK_SPIKE_BUDGET_CAP_MS);
+  const budgetPips = TICK_SPIKE_BASE_PIPS + TICK_SPIKE_RATE_PIPS_PER_SEC * (effectiveDtMs / 1000);
+
+  if (gapPips <= budgetPips) {
+    // Plausible move — accept and clear any stale candidate.
+    state.lastPrice = price;
+    state.lastAt = now;
+    state.lastTickId = tickId;
+    state.pendingPrice = 0;
+    state.pendingAt = 0;
+    state.pendingTickId = 0;
+    return { accept: true, gapPips, budgetPips, dtMs, corroborated: false };
+  }
+
+  // Large jump: only trust it if a recent, DIFFERENT pending tick corroborates
+  // the new level (two independent ticks agree => real move, not a glitch).
+  const isNewTick = tickId !== state.pendingTickId;
+  const pendingFresh = state.pendingAt > 0 && now - state.pendingAt <= TICK_SPIKE_CONFIRM_WINDOW_MS;
+  const corroborated =
+    isNewTick &&
+    pendingFresh &&
+    Math.abs(price - state.pendingPrice) / PIP_VALUE <= TICK_SPIKE_CONFIRM_TOL_PIPS;
+  if (corroborated) {
+    state.lastPrice = price;
+    state.lastAt = now;
+    state.lastTickId = tickId;
+    state.pendingPrice = 0;
+    state.pendingAt = 0;
+    state.pendingTickId = 0;
+    return { accept: true, gapPips, budgetPips, dtMs, corroborated: true };
+  }
+
+  // Record/refresh the candidate only for a genuinely new tick, then reject.
+  if (isNewTick) {
+    state.pendingPrice = price;
+    state.pendingAt = now;
+    state.pendingTickId = tickId;
+  }
+  return { accept: false, gapPips, budgetPips, dtMs, corroborated: false };
 }
 const ACTIVE_SIGNAL_LOCK_RELEASE_MS = 45 * 60 * 1000;
 const SIGNAL_GENERATION_INTERVAL_MS = 20000;
@@ -140,6 +214,7 @@ function sanitizeSettings(settings: Settings): Settings {
     minConfidence: clampSignalConfidenceThreshold(settings.minConfidence ?? DEFAULT_SETTINGS.minConfidence),
     maxSLPips: typeof settings.maxSLPips === 'number' && Number.isFinite(settings.maxSLPips) ? settings.maxSLPips : DEFAULT_SETTINGS.maxSLPips,
     useDynamicSL: typeof settings.useDynamicSL === 'boolean' ? settings.useDynamicSL : DEFAULT_SETTINGS.useDynamicSL,
+    enableTelegramNotifier: typeof settings.enableTelegramNotifier === 'boolean' ? settings.enableTelegramNotifier : DEFAULT_SETTINGS.enableTelegramNotifier,
   };
 }
 
@@ -312,11 +387,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   // Tracks when price first broke the SL; we only confirm SL_HIT after the
   // required duration AND minimum penetration are satisfied.
   const slBreachTrackerRef = useRef<Map<string, { firstBreachAt: number; maxPenetrationPips: number; lastPrice: number; tickCount: number }>>(new Map());
-  // Last accepted signal-tracking price/time, used for spike rejection.
-  const lastAcceptedTickRef = useRef<{ price: number; at: number }>({ price: 0, at: 0 });
-  // Last accepted BAR-ingest price/time, used to reject outlier ticks before
-  // they poison the OHLC bar store (which audits rely on).
-  const lastAcceptedBarTickRef = useRef<{ price: number; at: number }>({ price: 0, at: 0 });
+  // Two-tick spike gate state for the live signal evaluator (stops an
+  // uncorroborated glitch tick from banking a false TP/SL).
+  const liveTickGateRef = useRef<TickGateState>(createTickGateState());
+  // Separate gate state for BAR ingest so a single phantom tick can't poison
+  // the OHLC store the audit relies on.
+  const barTickGateRef = useRef<TickGateState>(createTickGateState());
   // Debounced AsyncStorage writer for signal_history. High-frequency tick-driven
   // updaters (status monitor, reconciliation interval) were each writing the
   // entire history JSON on every change. We coalesce those writes into a single
@@ -421,21 +497,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       return newHistory;
     });
 
-    // BAR-INGEST SPIKE FILTER: reject outlier ticks BEFORE they get written
-    // into the OHLC bar store. A single glitchy tick that jumped >8 pips in
-    // <500ms was contaminating the 1m bar's high/low, which then made the
-    // historical resolver "confirm" false SL wicks during the audit. We drop
-    // those ticks from the bar store while still allowing them to update the
-    // on-screen price (no user-visible regression).
-    const barLast = lastAcceptedBarTickRef.current;
-    let allowBarIngest = true;
-    const barSpike = isSpikeTick(price, barLast, now);
-    if (barSpike.spike) {
-      console.warn(`🛡️ [BarStore] Dropping spike tick ${price.toFixed(1)} (${barSpike.gapPips.toFixed(1)} pips in ${barSpike.dtMs}ms vs budget ${barSpike.budgetPips.toFixed(1)} pips from ${barLast.price.toFixed(1)}) - not ingesting into bars to avoid corrupting audits`);
-      allowBarIngest = false;
-    }
-    if (allowBarIngest) {
-      lastAcceptedBarTickRef.current = { price, at: now };
+    // BAR-INGEST SPIKE GATE: a single phantom tick that leaps far and reverts
+    // was contaminating the 1m/5m/1h bar high/low, which then made the audit
+    // "confirm" false SL/TP fills. The two-tick gate only writes a large move
+    // into the bar store once a SECOND tick corroborates the new level, so a
+    // lone glitch is never ingested. The on-screen price still updates every
+    // tick above (no user-visible regression).
+    const barGate = classifyTick(price, now, now, barTickGateRef.current);
+    if (!barGate.accept) {
+      console.warn(`🛡️ [BarStore] Holding unconfirmed tick ${price.toFixed(1)} (${barGate.gapPips.toFixed(1)} pips in ${barGate.dtMs}ms vs budget ${barGate.budgetPips.toFixed(1)} pips) - awaiting a 2nd corroborating tick before ingesting`);
+    } else {
       void ingestTickAllTimeframes(price, now).catch(err => {
         console.warn('⚠️ [BarStore] tick ingest failed (non-blocking):', err instanceof Error ? err.message : 'Unknown');
       });
@@ -1386,7 +1457,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         continue;
       }
 
-      const barOutcome = resolveSignalWithBars(signal, bars, { logPrefix: `   [Audit ${signal.id.slice(-6)}]` });
+      const barOutcome = resolveSignalWithBars(signal, bars, {
+        logPrefix: `   [Audit ${signal.id.slice(-6)}]`,
+        // The manual/force audit fetches authoritative remote bars and may need
+        // to UNDO a falsely-recorded terminal (e.g. an ALL_TARGETS_HIT banked
+        // off a phantom spike when price never reached TP1). Forward-seeded
+        // resolution can only ratchet forward, so we re-derive from scratch
+        // when force-auditing.
+        fromScratch: force,
+        evalNowMs: now,
+      });
       // Bar resolver is authoritative for the audit too. Legacy evaluation is
       // kept only for diagnostic comparison.
       const legacyOutcome = await analyzeSignalWithHistoricalData(signal, bars);
@@ -1987,8 +2067,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       if (signal) {
         // Telegram alert — fired FIRST, before any processing.
         // The fetch is truly fire-and-forget (no await), so the message
-        // dispatches to Telegram in <100ms.
-        sendTelegramAlert(signal);
+        // dispatches to Telegram in <100ms. Gated by the dedicated notifier
+        // toggle so it can be muted during testing/updates.
+        if (settings.enableTelegramNotifier) {
+          sendTelegramAlert(signal);
+        } else {
+          console.log('🔕 Telegram notifier disabled — skipping signal alert');
+        }
 
         setSignalHistory((prev) => {
           console.log("\n" + "=".repeat(60));
@@ -2049,16 +2134,15 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     
     console.log(`🔄 [${Platform.OS}] Checking signal status updates - Tracking Price: ${price.toFixed(1)} from ${signalPriceSource}`);
 
-    // SPIKE FILTER: reject clearly-outlier ticks (feed glitches) that jump >8 pips
-    // from the last accepted tracking price within <500ms. These readings were
-    // the root cause of false SL hits recorded "1 minute after" signal creation.
-    const lastAccepted = lastAcceptedTickRef.current;
-    const liveSpike = isSpikeTick(price, lastAccepted, now);
-    if (liveSpike.spike) {
-      console.warn(`🛡️ SPIKE REJECTED: tick ${price.toFixed(1)} jumped ${liveSpike.gapPips.toFixed(1)} pips in ${liveSpike.dtMs}ms (budget ${liveSpike.budgetPips.toFixed(1)} pips) from last accepted ${lastAccepted.price.toFixed(1)} - not evaluating signals on this tick`);
+    // SPIKE GATE: a lone glitch tick that leaps past TP/SL and reverts must not
+    // bank a false outcome. The two-tick gate holds a large jump until a SECOND
+    // tick corroborates the new level; an uncorroborated spike is skipped so it
+    // can neither bank a false TP (all 3 targets off one tick) nor a false SL.
+    const liveGate = classifyTick(price, now, signalTrackingSnapshot.updatedAt, liveTickGateRef.current);
+    if (!liveGate.accept) {
+      console.warn(`🛡️ SPIKE HELD: tick ${price.toFixed(1)} jumped ${liveGate.gapPips.toFixed(1)} pips in ${liveGate.dtMs}ms (budget ${liveGate.budgetPips.toFixed(1)} pips) - awaiting a 2nd corroborating tick before evaluating signals`);
       return;
     }
-    lastAcceptedTickRef.current = { price, at: now };
 
     setSignalHistory((prevHistory) => {
       let updated = false;

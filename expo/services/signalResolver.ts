@@ -37,28 +37,36 @@ function getProtectedExitPrice(signal: TradingSignal, targetsHit: number): numbe
 export function resolveSignalWithBars(
   signal: TradingSignal,
   bars: OhlcBar[],
-  opts: { slWickPenetrationPips?: number; logPrefix?: string } = {},
+  opts: { slWickPenetrationPips?: number; logPrefix?: string; fromScratch?: boolean; evalNowMs?: number } = {},
 ): ResolverOutcome {
   const wickPen = opts.slWickPenetrationPips ?? SL_WICK_PENETRATION_PIPS;
   const slSlack = wickPen * PIP;
   const prefix = opts.logPrefix ?? `   [Resolver ${signal.id.slice(-6)}]`;
+  // fromScratch re-derives the ENTIRE outcome purely from price action and
+  // ignores the stored status/targetsHit. The default (forward-seeded) mode can
+  // only ratchet a signal FORWARD, so it can never undo a falsely-recorded
+  // terminal — e.g. an ALL_TARGETS_HIT banked off a phantom spike when price
+  // never actually reached TP1. The manual/force audit uses fromScratch against
+  // authoritative Tiingo bars so those false wins/losses get corrected.
+  const fromScratch = opts.fromScratch === true;
 
   const signalCreatedAtMs = signal.createdAt ?? new Date(signal.timestamp).getTime();
   const safeBarStart = signalCreatedAtMs + 60 * 1000;
   const evalBars = bars.filter(b => b.timestamp >= safeBarStart);
 
-  let currentStatus: SignalStatus = signal.status;
-  let currentTargetsHit = signal.targetsHit;
+  let currentStatus: SignalStatus = fromScratch ? 'ACTIVE' : signal.status;
+  let currentTargetsHit = fromScratch ? 0 : signal.targetsHit;
   let exitPrice = signal.entryPrice;
   let outcomeResult: 'WIN' | 'LOSS' | null = null;
-  let entryConfirmed =
-    signal.targetsHit >= 1 ||
-    signal.status === 'TP1_HIT' ||
-    signal.status === 'TP2_HIT' ||
-    signal.status === 'TP3_HIT' ||
-    signal.status === 'ALL_TARGETS_HIT';
-  let breakevenReached = signal.breakevenReached || false;
-  let breakevenTime = signal.breakevenTime;
+  let entryConfirmed = fromScratch
+    ? false
+    : (signal.targetsHit >= 1 ||
+      signal.status === 'TP1_HIT' ||
+      signal.status === 'TP2_HIT' ||
+      signal.status === 'TP3_HIT' ||
+      signal.status === 'ALL_TARGETS_HIT');
+  let breakevenReached = fromScratch ? false : (signal.breakevenReached || false);
+  let breakevenTime = fromScratch ? undefined : signal.breakevenTime;
   let resolvedAtBarTs: number | undefined;
 
   const entryMin = Math.min(signal.entryPrice, signal.entryPriceWithSlippage);
@@ -171,6 +179,35 @@ export function resolveSignalWithBars(
     if (!anyTargetHit) {
       currentStatus = 'EXPIRED_MISSED_ENTRY';
       outcomeResult = null;
+    }
+  } else if (
+    fromScratch &&
+    (currentStatus === 'ACTIVE' || currentStatus === 'TP1_HIT' || currentStatus === 'TP2_HIT')
+  ) {
+    // Entry filled but the bars never produced a terminal event. For a force
+    // audit (a terminal, fully-matured signal) collapse it to its TRUE neutral
+    // or protected outcome instead of leaving a stale non-terminal status. This
+    // is what corrects a false ALL_TARGETS_HIT whose price action shows no real
+    // target was ever reached.
+    const evalNow = opts.evalNowMs ?? Date.now();
+    const matured = evalNow - signalCreatedAtMs >= 2 * 60 * 60 * 1000;
+    if (matured) {
+      if (currentTargetsHit >= 2) {
+        currentStatus = 'PARTIAL_WIN_SL_HIT';
+        exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
+        outcomeResult = 'WIN';
+        console.log(`${prefix} 🧮 fromScratch: TP1+TP2 banked, runner matured → PARTIAL_WIN_SL_HIT @ ${exitPrice.toFixed(1)}`);
+      } else if (currentTargetsHit >= 1) {
+        currentStatus = 'SL_AFTER_BE';
+        exitPrice = getPostTP1LockPrice(signal);
+        outcomeResult = 'WIN';
+        console.log(`${prefix} 🧮 fromScratch: TP1 banked, runner matured above lock → SL_AFTER_BE @ ${exitPrice.toFixed(1)}`);
+      } else {
+        currentStatus = 'CLOSED';
+        exitPrice = evalBars.length > 0 ? evalBars[evalBars.length - 1].close : signal.entryPrice;
+        outcomeResult = null;
+        console.log(`${prefix} 🧮 fromScratch: entry filled but NO TP/SL printed → CLOSED flat @ ${exitPrice.toFixed(1)} (was ${signal.status})`);
+      }
     }
   }
 

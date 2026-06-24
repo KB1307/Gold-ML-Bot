@@ -24,6 +24,77 @@ function formatConfidence(value: number): string {
   return (value * 100).toFixed(1);
 }
 
+function extractTelegramError(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { description?: string };
+    if (parsed && typeof parsed.description === "string" && parsed.description.length > 0) {
+      return parsed.description;
+    }
+  } catch {
+    // body wasn't JSON — fall through to the raw text
+  }
+  return body.slice(0, 160) || "Unknown error";
+}
+
+export interface TelegramSendResult {
+  ok: boolean;
+  status: number;
+  error?: string;
+}
+
+/**
+ * Sends an arbitrary custom message to the configured Telegram chat and awaits
+ * the result. Unlike {@link sendTelegramAlert}, this resolves with a structured
+ * result so callers (e.g. the in-app test panel) can surface success/failure.
+ * Sent as plain text (no Markdown) so a custom notice never trips entity-parse
+ * errors regardless of the characters the user types.
+ */
+export async function sendTelegramMessage(text: string): Promise<TelegramSendResult> {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return { ok: false, status: 0, error: "Message is empty" };
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+  try {
+    const response = await fetch(TELEGRAM_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: TELEGRAM_CHAT_ID,
+        text: trimmed,
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      let body = "";
+      try {
+        body = await response.text();
+      } catch {
+        // ignore body read failures
+      }
+      const description = extractTelegramError(body);
+      console.warn(`[Telegram] Test message failed (${response.status}): ${description}`);
+      return { ok: false, status: response.status, error: description };
+    }
+
+    console.log("[Telegram] Test message delivered");
+    return { ok: true, status: response.status };
+  } catch (error: unknown) {
+    clearTimeout(timeoutId);
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return { ok: false, status: 0, error: "Request timed out" };
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("[Telegram] Network error sending test message:", message);
+    return { ok: false, status: 0, error: message };
+  }
+}
+
 function buildTelegramMessage(signal: TradingSignal): string {
   const entryPrice = signal.entryPriceWithSlippage || signal.entryPrice;
   const dot = signal.type === "BUY" ? "\u{1F7E2}" : "\u{1F534}";

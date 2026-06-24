@@ -114,6 +114,7 @@ try {
             numberOfTPs: 3,
             minConfidence: 0.90,
             enableNotifications: true,
+            enableTelegramNotifier: true,
             basePositionSize: 0.01,
             maxRiskPercentage: 2.0,
             useKellyCriterion: true,
@@ -143,8 +144,13 @@ try {
       if (signal) {
         console.log(`✅ Background: New signal generated - ${signal.type} @ ${signal.entryPrice.toFixed(1)}`);
         
-        // Telegram alert — fire-and-forget, dispatched before any await
-        sendTelegramAlert(signal);
+        // Telegram alert — fire-and-forget, dispatched before any await.
+        // Gated by the dedicated notifier toggle so it can be muted during testing.
+        if (settings.enableTelegramNotifier !== false) {
+          sendTelegramAlert(signal);
+        } else {
+          console.log('🔕 Telegram notifier disabled in settings - skipping alert');
+        }
 
         const updatedHistory = [signal, ...history];
         await AsyncStorage.setItem('signal_history', JSON.stringify(updatedHistory));

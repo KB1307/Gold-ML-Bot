@@ -65,3 +65,25 @@ Make the TradingView chart price the primary live input for signal generation an
 - [x] **RevenueCat user identity sync** now logs RevenueCat into the authenticated Supabase user ID so tiered pricing can follow the signed-in user across sessions
 - [x] **Type validation for auth integration** confirmed the new auth and subscription wiring passes strict TypeScript checks
 - [x] **Supabase smoke test tooling** now creates a throwaway auth user, saves auth metadata, and exposes an in-app verification action in settings
+
+---
+
+## Addendum: Stop false Take-Profit recordings (all 3 TP “touched” off one phantom tick)
+
+### What was going wrong
+
+The earlier work hardened the **stop-loss** side but left the **take-profit** side exposed to the exact same failure, which surfaced on the 05:42 BUY signal (recorded as all 3 TPs hit / runner at breakeven when price never reached TP1):
+
+1. **The spike filter had a low-liquidity hole.** It stopped rejecting outlier ticks entirely once the feed went quiet for 30s, and its tolerance grew without limit as the gap widened (a 25s gap allowed a ~150 pip jump). During thin pre-London hours (05:42 local = 03:42 UTC) gold ticks arrive far apart, so a single phantom spike sailed straight through — instantly banking a false ALL_TARGETS_HIT off one tick **and** poisoning the 1-minute bar the audit trusts.
+2. **Take-profit had no confirmation at all.** Unlike the stop-loss (which now needs a sustained breach), a single tick at/above TP3 immediately banked all three targets.
+3. **The audit could not undo it.** The bar resolver was seeded from the stored status and could only ratchet *forward*, so a falsely-recorded ALL_TARGETS_HIT was frozen — even a clean-bar re-check left it as a win.
+
+### What I changed
+
+- [x] Replaced the holey spike filter with a **two-tick spike gate** used by both the bar-ingest path and the live signal evaluator: a large jump is held until a **second independent tick** corroborates the new level, so a lone glitch that leaps and reverts is dropped — with no risk of a stuck feed (a genuine gap is accepted on the next corroborating tick). The tolerance no longer grows without limit, and the 30-second “stop rejecting” hole is gone.
+- [x] This single gate protects **both** failure modes at once: a phantom tick can no longer bank a false TP **and** can no longer be written into the 1m/5m/1h bars, so the audit stays truthful.
+- [x] **Manual Audit now re-derives each terminal signal’s outcome from scratch** against the freshly fetched authoritative bars, instead of only ratcheting forward. This lets it **undo** a falsely-recorded ALL_TARGETS_HIT (the 05:42 signal and any like it) and collapse it to its true outcome — SL, protected partial, or a flat neutral close — feeding the corrected record to the learning engine.
+- [x] Verified tick-for-tick: the resolver harness now covers a false ALL_TARGETS_HIT being corrected while a genuine win is preserved. **Result: 22/22 assertions passed.** Project type-checks pass.
+
+### To correct the existing 05:42 signal
+Tap **Manual Audit** (top-right of History). It force-fetches clean 1-minute bars from the data provider and re-resolves from scratch, so the false win flips to its true outcome and the performance numbers recompute from the corrected history.

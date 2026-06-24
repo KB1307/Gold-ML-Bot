@@ -152,6 +152,7 @@ export interface Settings {
   numberOfTPs: 1 | 2 | 3;
   minConfidence: number;
   enableNotifications: boolean;
+  enableTelegramNotifier: boolean;
   basePositionSize: number;
   maxRiskPercentage: number;
   useKellyCriterion: boolean;

@@ -1,6 +1,6 @@
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Platform, Switch, Alert } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { Settings as SettingsIcon, Target, Shield, TrendingUp, LogOut, Save, Trash2, Activity, AlertTriangle, RefreshCw, Bell, Smartphone, Crown } from "lucide-react-native";
+import { Settings as SettingsIcon, Target, Shield, TrendingUp, LogOut, Save, Trash2, Activity, AlertTriangle, RefreshCw, Bell, Smartphone, Crown, Send, MessageCircle } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
 import { useSubscription } from "@/contexts/SubscriptionContext";
 import { useAuth } from "@/contexts/AuthContext";
@@ -8,6 +8,7 @@ import { AccountSettingsCard } from "@/components/AccountSettingsCard";
 import { useState, useEffect, useMemo } from "react";
 import { Stack, useRouter } from "expo-router";
 import { getBackgroundTaskStatus } from "@/services/backgroundTaskService";
+import { sendTelegramMessage } from "@/services/telegramNotifier";
 
 function getProviderLabel(provider: unknown): string {
   if (provider === "google") {
@@ -89,6 +90,10 @@ export default function SettingsScreen() {
   const [minConfidence, setMinConfidence] = useState<string>((settings.minConfidence * 100).toFixed(0));
   const [numberOfTPs, setNumberOfTPs] = useState<1 | 2 | 3>(settings.numberOfTPs);
 
+  const [testMessage, setTestMessage] = useState<string>("");
+  const [isSendingTest, setIsSendingTest] = useState<boolean>(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
   useEffect(() => {
     async function checkBackgroundTask() {
       if (Platform.OS !== 'web') {
@@ -139,6 +144,34 @@ export default function SettingsScreen() {
       alert('Settings saved successfully!');
     } else {
       Alert.alert('Success', 'Settings saved successfully!');
+    }
+  };
+
+  const handleSendTestMessage = async () => {
+    const text = testMessage.trim();
+    if (!text) {
+      setTestResult({ ok: false, message: "Enter a message to send." });
+      return;
+    }
+
+    setIsSendingTest(true);
+    setTestResult(null);
+
+    try {
+      const result = await sendTelegramMessage(text);
+      if (result.ok) {
+        setTestResult({ ok: true, message: "Test message delivered to Telegram." });
+        setTestMessage("");
+      } else {
+        setTestResult({ ok: false, message: result.error ?? "Failed to send message." });
+      }
+    } catch (error) {
+      setTestResult({
+        ok: false,
+        message: error instanceof Error ? error.message : "Failed to send message.",
+      });
+    } finally {
+      setIsSendingTest(false);
     }
   };
 
@@ -620,6 +653,102 @@ export default function SettingsScreen() {
                     </View>
                   )}
                 </>
+              )}
+            </View>
+
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <Send size={20} color="#229ED9" />
+                <Text style={styles.sectionTitle}>Telegram Signal Notifier</Text>
+              </View>
+
+              <View style={styles.switchRow}>
+                <View style={styles.switchInfo}>
+                  <Text style={styles.switchLabel}>Activate Notifier</Text>
+                  <Text style={styles.switchHelper}>
+                    Broadcast new signals to your Telegram channel. Turn off to mute alerts during testing or updates.
+                  </Text>
+                </View>
+                <Switch
+                  value={settings.enableTelegramNotifier}
+                  onValueChange={(value) => updateSettings({ enableTelegramNotifier: value })}
+                  trackColor={{ false: "#333", true: "rgba(34, 158, 217, 0.3)" }}
+                  thumbColor={settings.enableTelegramNotifier ? "#229ED9" : "#666"}
+                  ios_backgroundColor="#333"
+                />
+              </View>
+
+              <View style={styles.notifierStatusRow}>
+                <View style={[
+                  styles.statusBadge,
+                  settings.enableTelegramNotifier ? styles.statusBadgeActive : styles.statusBadgeInactive,
+                ]}>
+                  <Text style={styles.statusBadgeText}>
+                    {settings.enableTelegramNotifier ? "NOTIFIER ON" : "NOTIFIER OFF"}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.divider} />
+
+              <View style={styles.testHeaderRow}>
+                <MessageCircle size={16} color="#229ED9" />
+                <Text style={styles.testTitle}>Send Test Message</Text>
+              </View>
+              <Text style={styles.switchHelper}>
+                Push a custom notice to the Telegram channel — handy for confirming delivery or broadcasting an update.
+              </Text>
+
+              <TextInput
+                style={styles.testInput}
+                value={testMessage}
+                onChangeText={(text) => {
+                  setTestMessage(text);
+                  if (testResult) {
+                    setTestResult(null);
+                  }
+                }}
+                placeholder="Type a custom notice to broadcast…"
+                placeholderTextColor="#666"
+                multiline
+                numberOfLines={4}
+                textAlignVertical="top"
+                editable={!isSendingTest}
+                testID="settings-telegram-test-input"
+              />
+
+              <TouchableOpacity
+                style={[
+                  styles.testButton,
+                  (isSendingTest || !testMessage.trim()) && styles.testButtonDisabled,
+                ]}
+                onPress={() => {
+                  void handleSendTestMessage();
+                }}
+                disabled={isSendingTest || !testMessage.trim()}
+                testID="settings-telegram-test-button"
+              >
+                <Send size={18} color={(isSendingTest || !testMessage.trim()) ? "#666" : "#229ED9"} />
+                <Text style={[
+                  styles.testButtonText,
+                  (isSendingTest || !testMessage.trim()) && styles.testButtonTextDisabled,
+                ]}>
+                  {isSendingTest ? "Sending…" : "Send Test Message"}
+                </Text>
+              </TouchableOpacity>
+
+              {testResult && (
+                <View style={[
+                  styles.testResult,
+                  testResult.ok ? styles.testResultSuccess : styles.testResultError,
+                ]}>
+                  <Text style={[
+                    styles.testResultText,
+                    testResult.ok ? styles.testResultTextSuccess : styles.testResultTextError,
+                  ]}>
+                    {testResult.ok ? "✅ " : "⚠️ "}{testResult.message}
+                  </Text>
+                </View>
               )}
             </View>
 
@@ -1148,6 +1277,81 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: "rgba(255, 255, 255, 0.05)",
     marginVertical: 16,
+  },
+  notifierStatusRow: {
+    flexDirection: "row",
+    marginTop: 14,
+  },
+  testHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 6,
+  },
+  testTitle: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#fff",
+  } as const,
+  testInput: {
+    backgroundColor: "rgba(0, 0, 0, 0.3)",
+    borderWidth: 1,
+    borderColor: "rgba(34, 158, 217, 0.25)",
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    color: "#fff",
+    fontSize: 15,
+    minHeight: 96,
+    marginTop: 12,
+    marginBottom: 12,
+  },
+  testButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(34, 158, 217, 0.12)",
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(34, 158, 217, 0.35)",
+    gap: 8,
+  },
+  testButtonDisabled: {
+    backgroundColor: "rgba(255, 255, 255, 0.03)",
+    borderColor: "rgba(255, 255, 255, 0.05)",
+  },
+  testButtonText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#229ED9",
+  } as const,
+  testButtonTextDisabled: {
+    color: "#666",
+  },
+  testResult: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  testResultSuccess: {
+    backgroundColor: "rgba(34, 197, 94, 0.1)",
+    borderColor: "rgba(34, 197, 94, 0.3)",
+  },
+  testResultError: {
+    backgroundColor: "rgba(239, 68, 68, 0.1)",
+    borderColor: "rgba(239, 68, 68, 0.3)",
+  },
+  testResultText: {
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  testResultTextSuccess: {
+    color: "#22c55e",
+  },
+  testResultTextError: {
+    color: "#ef4444",
   },
   statusRow: {
     flexDirection: "row",
