@@ -664,7 +664,7 @@ export default function SettingsScreen() {
 
               <View style={styles.switchRow}>
                 <View style={styles.switchInfo}>
-                  <Text style={styles.switchLabel}>Activate Notifier</Text>
+                  <Text style={styles.switchLabel}>Enable Telegram Signal Alert</Text>
                   <Text style={styles.switchHelper}>
                     Broadcast new signals to your Telegram channel. Turn off to mute alerts during testing or updates.
                   </Text>
@@ -688,12 +688,12 @@ export default function SettingsScreen() {
                   </Text>
                 </View>
               </View>
+            </View>
 
-              <View style={styles.divider} />
-
-              <View style={styles.testHeaderRow}>
-                <MessageCircle size={16} color="#229ED9" />
-                <Text style={styles.testTitle}>Send Test Message</Text>
+            <View style={styles.section} testID="settings-telegram-test-section">
+              <View style={styles.sectionHeader}>
+                <MessageCircle size={20} color="#229ED9" />
+                <Text style={styles.sectionTitle}>Telegram Test Message</Text>
               </View>
               <Text style={styles.switchHelper}>
                 Push a custom notice to the Telegram channel — handy for confirming delivery or broadcasting an update.

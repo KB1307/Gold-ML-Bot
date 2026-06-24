@@ -8,6 +8,39 @@ import { TradingSignal } from "@/types/trading";
 
 const ACTIVE_SIGNAL_STATUSES: TradingSignal["status"][] = ["ACTIVE", "PARTIALLY_MANAGED", "TP1_HIT", "TP2_HIT"];
 
+/**
+ * Number of take-profit cells that should illuminate for a signal.
+ *
+ * The bubbles must reflect the signal's RESOLVED outcome, not the raw
+ * `targetsHit` counter. The background (non-force) audit can only ratchet
+ * `targetsHit` forward, so a falsely-recorded ALL_TARGETS_HIT that gets
+ * corrected to a lower outcome would otherwise keep TP2/TP3 lit even though
+ * price never reached them. Deriving the count from the terminal status keeps
+ * the visuals in lock-step with the corrected status and P/L.
+ */
+const getDisplayTargetsHit = (signal: TradingSignal): number => {
+  const stored = typeof signal.targetsHit === "number" && Number.isFinite(signal.targetsHit)
+    ? Math.max(0, Math.min(3, signal.targetsHit))
+    : 0;
+  switch (signal.status) {
+    case "ALL_TARGETS_HIT":
+    case "TP3_HIT":
+      return 3;
+    case "TP2_HIT":
+    case "PARTIAL_WIN_SL_HIT":
+      return 2;
+    case "TP1_HIT":
+    case "SL_AFTER_BE":
+      return 1;
+    case "SL_HIT":
+    case "EXPIRED_MISSED_ENTRY":
+      return 0;
+    default:
+      // ACTIVE / PARTIALLY_MANAGED / CLOSED: trust the live counter.
+      return stored;
+  }
+};
+
 const TERMINAL_PNL_STATUSES: TradingSignal["status"][] = ["ALL_TARGETS_HIT", "TP3_HIT", "PARTIAL_WIN_SL_HIT", "SL_AFTER_BE", "SL_HIT", "CLOSED", "EXPIRED_MISSED_ENTRY"];
 
 export default function HistoryScreen() {
@@ -203,7 +236,9 @@ export default function HistoryScreen() {
     return "Active";
   };
 
-  const renderSignalCard = (signal: TradingSignal) => (
+  const renderSignalCard = (signal: TradingSignal) => {
+    const displayTargetsHit = getDisplayTargetsHit(signal);
+    return (
     <View key={signal.id} style={styles.signalCard} testID={`history-signal-card-${signal.id}`}>
       <LinearGradient
         colors={signal.type === "BUY"
@@ -237,7 +272,7 @@ export default function HistoryScreen() {
         <View style={styles.statusRow}>
           {getStatusIcon(signal.status)}
           <Text style={[styles.statusText, { color: getStatusColor(signal.status) }]}>
-            {getStatusLabel(signal.status, signal.targetsHit)}
+            {getStatusLabel(signal.status, getDisplayTargetsHit(signal))}
           </Text>
           <View style={styles.confidenceBadge}>
             <Text style={styles.confidenceText}>{safeConfidence(signal)}</Text>
@@ -249,17 +284,17 @@ export default function HistoryScreen() {
             <Text style={styles.priceLabel}>Entry</Text>
             <Text style={styles.priceValue}>{safeEntryPrice(signal)}</Text>
           </View>
-          <View style={[styles.priceColumn, signal.targetsHit >= 1 && styles.targetHit]}>
+          <View style={[styles.priceColumn, displayTargetsHit >= 1 && styles.targetHit]}>
             <Text style={styles.priceLabel}>TP1</Text>
-            <Text style={[styles.priceValue, signal.targetsHit >= 1 && styles.targetValueHit]}>{safeTpPrice(signal, "tp1")}</Text>
+            <Text style={[styles.priceValue, displayTargetsHit >= 1 && styles.targetValueHit]}>{safeTpPrice(signal, "tp1")}</Text>
           </View>
-          <View style={[styles.priceColumn, signal.targetsHit >= 2 && styles.targetHit]}>
+          <View style={[styles.priceColumn, displayTargetsHit >= 2 && styles.targetHit]}>
             <Text style={styles.priceLabel}>TP2</Text>
-            <Text style={[styles.priceValue, signal.targetsHit >= 2 && styles.targetValueHit]}>{safeTpPrice(signal, "tp2")}</Text>
+            <Text style={[styles.priceValue, displayTargetsHit >= 2 && styles.targetValueHit]}>{safeTpPrice(signal, "tp2")}</Text>
           </View>
-          <View style={[styles.priceColumn, signal.targetsHit >= 3 && styles.targetHit]}>
+          <View style={[styles.priceColumn, displayTargetsHit >= 3 && styles.targetHit]}>
             <Text style={[styles.priceLabel]}>TP3</Text>
-            <Text style={[styles.priceValue, signal.targetsHit >= 3 && styles.targetValueHit]}>{safeTpPrice(signal, "tp3")}</Text>
+            <Text style={[styles.priceValue, displayTargetsHit >= 3 && styles.targetValueHit]}>{safeTpPrice(signal, "tp3")}</Text>
           </View>
         </View>
 
@@ -322,7 +357,8 @@ export default function HistoryScreen() {
         ) : null}
       </LinearGradient>
     </View>
-  );
+    );
+  };
 
   const renderSection = (title: string, signals: TradingSignal[]) => {
     if (signals.length === 0) {
