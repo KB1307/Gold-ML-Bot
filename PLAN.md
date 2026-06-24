@@ -24,6 +24,6 @@ After carefully tracing the 8:09 SELL example tick-for-tick through the code, th
 - [x] Once the audit corrects the historical false SL hits, win-rate, P&L and ML learning weights automatically recompute from the corrected history — no extra action needed from you.
 
 ## Screens affected
-- **History** — false SL rows flip to their true outcome (TP3 / protected partial win) after the automatic audit pass. The manual audit button in the top-right keeps working and now does a deeper clean.
+- **History** — false SL rows flip to their true outcome (TP3 / protected partial win) after the automatic audit pass. The manual audit button lives in the History tab header and does a deeper clean. The Settings "Save Changes" button sits at the bottom of the Settings tab alongside the other action buttons.
 - **Telemetry / Performance** — numbers refresh from the corrected history.
 - **Dashboard** — live trade monitoring is unchanged visually, but it will no longer close trades on a single glitch tick, and the breakeven badge after TP1 now reflects a real 15‑pip profit lock rather than a cosmetic indicator.

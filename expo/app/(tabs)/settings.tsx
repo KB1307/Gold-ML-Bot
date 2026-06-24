@@ -579,11 +579,6 @@ export default function SettingsScreen() {
                   ))}
                 </View>
               </View>
-
-              <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
-                <Save size={20} color="#FFD700" />
-                <Text style={styles.saveButtonText}>Save Changes</Text>
-              </TouchableOpacity>
             </View>
 
             <View style={styles.section}>
@@ -871,6 +866,11 @@ export default function SettingsScreen() {
                 The model continuously learns from live signal performance through reinforcement learning.
               </Text>
             </View>
+
+            <TouchableOpacity style={styles.saveButton} onPress={handleSave} testID="settings-save-changes">
+              <Save size={20} color="#FFD700" />
+              <Text style={styles.saveButtonText}>Save Changes</Text>
+            </TouchableOpacity>
 
             <TouchableOpacity 
               style={[styles.retrainButton, isRetraining && styles.retrainButtonDisabled]} 

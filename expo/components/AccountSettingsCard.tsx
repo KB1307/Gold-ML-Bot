@@ -332,9 +332,9 @@ export function AccountSettingsCard({
                 testID="account-email-submit"
               >
                 {isSubmittingEmail ? (
-                  <ActivityIndicator size="small" color="#111827" />
+                  <ActivityIndicator size="small" color="#FFD700" />
                 ) : (
-                  <Mail size={18} color="#111827" />
+                  <Mail size={18} color="#FFD700" />
                 )}
                 <Text style={styles.primaryButtonText}>
                   {mode === "create_account"
@@ -544,14 +544,16 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 8,
     borderRadius: 16,
-    backgroundColor: "#FFD700",
+    backgroundColor: "rgba(255, 215, 0, 0.15)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 215, 0, 0.35)",
     paddingVertical: 15,
     marginTop: 4,
   },
   primaryButtonText: {
     fontSize: 15,
     fontWeight: "700" as const,
-    color: "#111827",
+    color: "#FFD700",
   },
   oauthDividerRow: {
     flexDirection: "row",
