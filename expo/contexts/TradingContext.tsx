@@ -1677,25 +1677,33 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             entryTime: typeof s.entryTime === 'string' ? s.entryTime : '',
           } as TradingSignal));
         
+        // Show raw persisted data immediately — UI renders now.
+        // Catch-up evaluation and false-SL audit run in background to avoid
+        // blocking the loading screen for 10-30s on every cold start.
         signalHistoryRef.current = parsedHistory;
         setSignalHistory(sanitizeHistoryForRender(parsedHistory));
-        const evaluatedHistory = await catchUpAndEvaluateSignals(parsedHistory);
-        const auditedHistory = await auditTerminalSLSignals(evaluatedHistory);
-        signalHistoryRef.current = auditedHistory;
-        setSignalHistory(sanitizeHistoryForRender(auditedHistory));
+        console.log(`✅ History loaded: ${parsedHistory.length} signals (raw — background audit pending)`);
 
-        if (JSON.stringify(auditedHistory) !== JSON.stringify(parsedHistory)) {
-          persistSignalHistory(auditedHistory, { immediate: true });
-          console.log('💾 Updated signal history saved after catch-up + false-SL audit');
-        }
-        
-        console.log(`✅ History loaded: ${auditedHistory.length} signals`);
-        console.log('📊 First 2 signals:', auditedHistory.slice(0, 2).map((s: TradingSignal) => ({
-          id: s.id.slice(-6),
-          type: s.type,
-          status: s.status,
-          entry: s.entryPrice
-        })));
+        // Fire background audit (non-blocking — don't await).
+        void (async () => {
+          try {
+            console.log('🔍 [Boot Audit] Starting background catch-up + false-SL audit...');
+            const evaluatedHistory = await catchUpAndEvaluateSignals(parsedHistory);
+            const auditedHistory = await auditTerminalSLSignals(evaluatedHistory);
+            signalHistoryRef.current = auditedHistory;
+            setSignalHistory(sanitizeHistoryForRender(auditedHistory));
+            if (JSON.stringify(auditedHistory) !== JSON.stringify(parsedHistory)) {
+              persistSignalHistory(auditedHistory, { immediate: true });
+              console.log('💾 [Boot Audit] Updated signal history saved after catch-up + false-SL audit');
+            }
+            const metrics = calculatePerformanceMetrics(auditedHistory);
+            setPerformanceMetrics(metrics);
+            void AsyncStorage.setItem('performance_metrics', JSON.stringify(metrics));
+            console.log(`✅ [Boot Audit] Complete: ${auditedHistory.length} signals (${parsedHistory.filter(s => TERMINAL_SIGNAL_STATUSES.includes(s.status)).length} terminal)`);
+          } catch (err) {
+            console.warn('⚠️ [Boot Audit] Background audit failed (non-blocking):', err instanceof Error ? err.message : 'Unknown');
+          }
+        })();
       } else {
         console.log('⚠️ No saved history found in AsyncStorage');
         setSignalHistory([]);
