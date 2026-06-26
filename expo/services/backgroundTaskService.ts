@@ -152,7 +152,13 @@ try {
           console.log('🔕 Telegram notifier disabled in settings - skipping alert');
         }
 
-        const updatedHistory = [signal, ...history];
+        // Dedupe by id (defensive against re-entrant runs) and cap growth. The
+        // foreground reconciles these additions on next resume, so we must not
+        // let storage diverge or grow without bound here.
+        const deduped = [signal, ...history].filter(
+          (s, i, arr) => arr.findIndex(x => x.id === s.id) === i,
+        );
+        const updatedHistory = deduped.slice(0, 1000);
         await AsyncStorage.setItem('signal_history', JSON.stringify(updatedHistory));
 
         await sendSignalNotification(signal);

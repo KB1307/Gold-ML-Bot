@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { LinearGradient } from "expo-linear-gradient";
 import { Activity, Brain, Zap, TrendingUp, Target, AlertTriangle, BarChart3, Clock, CheckCircle2, XCircle, Radio, Cpu, Gauge, Eye } from "lucide-react-native";
 import { Stack } from "expo-router";
-import { useTrading } from "@/contexts/TradingContext";
+import { useTrading, classifySignalOutcome } from "@/contexts/TradingContext";
 import { signalEngine } from "@/services/signalEngine";
 import { TradingSignal } from "@/types/trading";
 
@@ -67,7 +67,7 @@ function startOfLocalDay(ts: number): number {
 }
 
 export default function TelemetryScreen() {
-  const { signalHistory, performanceMetrics, signalUpdateTrigger } = useTrading();
+  const { signalHistory, performanceMetrics, signalUpdateTrigger, settings } = useTrading();
   const [snapshot, setSnapshot] = useState<TelemetrySnapshot>(() => captureTelemetry());
   const [refreshing, setRefreshing] = useState<boolean>(false);
 
@@ -106,14 +106,18 @@ export default function TelemetryScreen() {
     for (const s of todaySignals) {
       if (s.type === "BUY") buys++;
       else sells++;
-      if (s.status === "ALL_TARGETS_HIT" || s.status === "TP3_HIT" || s.status === "PARTIAL_WIN_SL_HIT" || s.status === "SL_AFTER_BE") wins++;
-      else if (s.status === "SL_HIT" || s.status === "EXPIRED_MISSED_ENTRY") losses++;
-      else active++;
+      // Shared classifier keeps these counts in lock-step with the Dashboard
+      // performance metrics: a missed entry (no position) is NOT a loss, and a
+      // TP3 win is always a win.
+      const outcome = classifySignalOutcome(s, settings.basePositionSize);
+      if (outcome === "WIN") wins++;
+      else if (outcome === "LOSS") losses++;
+      else if (outcome === "OPEN") active++;
     }
     const closed = wins + losses;
     const winRate = closed > 0 ? (wins / closed) * 100 : 0;
     return { wins, losses, active, buys, sells, total: todaySignals.length, winRate };
-  }, [todaySignals]);
+  }, [todaySignals, settings.basePositionSize]);
 
   const driftColor = (level: string) => {
     switch (level) {

@@ -86,4 +86,4 @@ The earlier work hardened the **stop-loss** side but left the **take-profit** si
 - [x] Verified tick-for-tick: the resolver harness now covers a false ALL_TARGETS_HIT being corrected while a genuine win is preserved. **Result: 22/22 assertions passed.** Project type-checks pass.
 
 ### To correct the existing 05:42 signal
-Tap **Manual Audit** (top-right of History). It force-fetches clean 1-minute bars from the data provider and re-resolves from scratch, so the false win flips to its true outcome and the performance numbers recompute from the corrected history.
+Tap **Manual Audit** (top-right of History). It now resolves against a **two-tier source that agrees with the chart**: the TradingView chart-derived 1-minute bars (built locally from the live chart you actually watched) are primary and are trusted whenever they already capture the signal's terminal event and densely cover the window; a remote feed only fills any gaps the chart-derived bars don't cover (chart-derived bars win on every conflicting minute). The signal is re-resolved from scratch, so the false win flips to its true outcome and the performance numbers recompute from the corrected history.

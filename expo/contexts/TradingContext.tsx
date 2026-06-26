@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { TradingSignal, SignalStatus, Settings, MarketOutlook, PerformanceMetrics, PositionSizing, DailyOHLC } from "@/types/trading";
 import { signalEngine, setExternalPrice, fetchLiveGoldPriceFallback } from "@/services/signalEngine";
-import { Platform } from "react-native";
+import { Platform, AppState, type AppStateStatus } from "react-native";
 import { fetchHistoricalData } from "@/lib/trpc";
 import { goldWebSocketService } from "@/services/goldWebSocketService";
 import { 
@@ -13,7 +13,7 @@ import {
   sendSignalNotification
 } from "@/services/backgroundTaskService";
 import { subscribeToChartPrice, subscribeToChartHeartbeat } from "@/services/chartPriceBridge";
-import { ensureBarStoreReady, ingestTickAllTimeframes, upsertBars, getBars, getBarStoreStats, pruneOldBars, getLatestBarTimestamp } from "@/services/barStore";
+import { ensureBarStoreReady, ingestTickAllTimeframes, upsertBars, getBars, getBarStoreStats, pruneOldBars, getLatestBarTimestamp, type OhlcBar } from "@/services/barStore";
 import { resolveSignalWithBars } from "@/services/signalResolver";
 import { sendTelegramAlert } from "@/services/telegramNotifier";
 
@@ -69,7 +69,50 @@ const CHART_STALL_FAILOVER_MS = 20000;
 const GUIDE_PRICE_STALE_THRESHOLD_MS = 12000;
 const MIN_MEANINGFUL_PRICE_CHANGE = 0.03;
 const HISTORICAL_RECONCILIATION_INTERVAL_MS = 30000;
-const TERMINAL_SIGNAL_STATUSES: SignalStatus[] = ["CLOSED", "SL_HIT", "SL_AFTER_BE", "ALL_TARGETS_HIT", "PARTIAL_WIN_SL_HIT"];
+const TERMINAL_SIGNAL_STATUSES: SignalStatus[] = ["CLOSED", "SL_HIT", "SL_AFTER_BE", "ALL_TARGETS_HIT", "TP3_HIT", "PARTIAL_WIN_SL_HIT", "EXPIRED_MISSED_ENTRY"];
+
+/**
+ * Density/coverage assessment for a set of 1-minute bars over a window.
+ * Used to decide whether locally-stored (chart-derived) bars are complete
+ * enough to be the authoritative audit source, or whether a remote feed is
+ * needed to fill gaps. We require the history to start near the window open and
+ * to cover at least ~70% of the expected 1-minute buckets (markets can have
+ * genuinely thin minutes, so we don't demand a perfect 100%).
+ */
+function assessBarCoverage(
+  bars: { timestamp: number }[],
+  fromTime: number,
+  toTime: number,
+): { dense: boolean; reason: string } {
+  const MINUTE = 60_000;
+  if (bars.length === 0) return { dense: false, reason: "no local bars" };
+  const sorted = [...bars].sort((a, b) => a.timestamp - b.timestamp);
+  const earliest = sorted[0].timestamp;
+  const windowMs = Math.max(MINUTE, toTime - fromTime);
+  const expectedMinutes = Math.max(1, Math.round(windowMs / MINUTE));
+  const within = sorted.filter(b => b.timestamp >= fromTime - MINUTE && b.timestamp <= toTime + MINUTE);
+  const startCovered = earliest <= fromTime + 2 * MINUTE;
+  const density = within.length / expectedMinutes;
+  const dense = startCovered && density >= 0.7;
+  return {
+    dense,
+    reason: `start=${startCovered} density=${(density * 100).toFixed(0)}% (${within.length}/${expectedMinutes}min)`,
+  };
+}
+
+/**
+ * Merge locally-stored (chart-derived) bars with remote bars on a 1-minute
+ * grid. Local bars ALWAYS win on conflict because they are built from the live
+ * TradingView chart stream the user actually saw; remote bars only fill the
+ * minutes the local history is missing.
+ */
+function mergeBarsPreferLocal(local: OhlcBar[], remote: OhlcBar[]): OhlcBar[] {
+  const MINUTE = 60_000;
+  const byMinute = new Map<number, OhlcBar>();
+  for (const b of remote) byMinute.set(Math.floor(b.timestamp / MINUTE) * MINUTE, b);
+  for (const b of local) byMinute.set(Math.floor(b.timestamp / MINUTE) * MINUTE, b);
+  return Array.from(byMinute.values()).sort((a, b) => a.timestamp - b.timestamp);
+}
 const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;
 
 // False-SL protection thresholds.
@@ -295,6 +338,34 @@ export function getEffectiveExitPrice(signal: TradingSignal): number {
   }
 }
 
+/**
+ * Single source of truth for how a signal's terminal outcome is bucketed.
+ *
+ * Every screen (Dashboard performance metrics, Telemetry day-stats, History)
+ * MUST use this so the same signal can never be a win on one screen and a loss
+ * (or ignored) on another. Key rules:
+ *  - OPEN: still being monitored (ACTIVE / PARTIALLY_MANAGED / TP1 / TP2 runner).
+ *  - NO_TRADE: no position was ever taken (EXPIRED_MISSED_ENTRY) or a flat close.
+ *    These are excluded from win/loss and from totalTrades.
+ *  - WIN/LOSS: a real position that reached a profitable/losing terminal state.
+ */
+export type SignalOutcomeClass = "WIN" | "LOSS" | "NO_TRADE" | "OPEN";
+
+const OPEN_OUTCOME_STATUSES: SignalStatus[] = ["ACTIVE", "PARTIALLY_MANAGED", "TP1_HIT", "TP2_HIT"];
+const WIN_OUTCOME_STATUSES: SignalStatus[] = ["ALL_TARGETS_HIT", "TP3_HIT", "PARTIAL_WIN_SL_HIT", "SL_AFTER_BE"];
+
+export function classifySignalOutcome(signal: TradingSignal, basePositionSize: number): SignalOutcomeClass {
+  if (OPEN_OUTCOME_STATUSES.includes(signal.status)) return "OPEN";
+  if (signal.status === "EXPIRED_MISSED_ENTRY") return "NO_TRADE";
+  if (WIN_OUTCOME_STATUSES.includes(signal.status)) return "WIN";
+  if (signal.status === "SL_HIT") return "LOSS";
+  // CLOSED (manual/expired close): decide by realized P/L.
+  const pnl = computeSignalPnL(signal, basePositionSize);
+  if (pnl > 0.01) return "WIN";
+  if (pnl < -0.01) return "LOSS";
+  return "NO_TRADE";
+}
+
 export function computeSignalPnL(signal: TradingSignal, basePositionSize: number): number {
   const terminalStatuses: SignalStatus[] = [
     "ALL_TARGETS_HIT",
@@ -427,6 +498,52 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       void flushHistoryWrite();
     }, 400);
   }, [flushHistoryWrite]);
+
+  /**
+   * Absorb signals written to storage by the background task while the app was
+   * suspended. The foreground keeps an authoritative in-memory copy and persists
+   * it (debounced) on every tick; without this merge, the next foreground write
+   * would clobber any background-generated signals, making history "fall out of
+   * sync" and appear to lose older days. We union by id (foreground wins on
+   * conflicts since it actively monitors live status) and re-sort newest-first.
+   */
+  const reconcileBackgroundSignals = useCallback(async () => {
+    try {
+      const saved = await AsyncStorage.getItem('signal_history');
+      if (!saved) return;
+      const raw: unknown = JSON.parse(saved);
+      if (!Array.isArray(raw)) return;
+      const current = signalHistoryRef.current;
+      const knownIds = new Set(current.map(s => s.id));
+      const additions: TradingSignal[] = raw
+        .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object' && typeof (s as Record<string, unknown>).id === 'string' && !knownIds.has((s as Record<string, unknown>).id as string))
+        .map((s) => ({
+          ...s,
+          timestamp: s.timestamp ? new Date(s.timestamp as string | number) : new Date(),
+        } as TradingSignal));
+      if (additions.length === 0) return;
+      const merged = [...additions, ...current].sort(
+        (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      );
+      signalHistoryRef.current = merged;
+      setSignalHistory(sanitizeHistoryForRender(merged));
+      persistSignalHistory(merged, { immediate: true });
+      console.log(`🔁 Reconciled ${additions.length} background-generated signal(s) into history`);
+    } catch (err) {
+      console.warn('⚠️ Background signal reconciliation failed:', err instanceof Error ? err.message : 'Unknown');
+    }
+  }, [persistSignalHistory]);
+
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    const handleAppStateChange = (state: AppStateStatus) => {
+      if (state === 'active') {
+        void reconcileBackgroundSignals();
+      }
+    };
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
+  }, [reconcileBackgroundSignals]);
 
   useEffect(() => {
     const init = async () => {
@@ -1380,6 +1497,70 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     return updatedHistory;
   }, [analyzeSignalWithHistoricalData, fetchPriceHistory]);
 
+  /**
+   * Two-tier authoritative bar source for auditing a signal's window.
+   *
+   * Tier 1 (primary): locally-stored 1-minute bars. While the app is open these
+   *   are built directly from the live TradingView chart price stream, so they
+   *   are the closest possible match to what the user actually saw on the chart.
+   *   We trust them whenever they (a) already capture a terminal event for the
+   *   signal and (b) densely cover the window up to that resolution point.
+   * Tier 2 (fallback): a remote matched-instrument feed (TwelveData / Tiingo),
+   *   used only to fill the windows the chart-derived bars do not cover. When
+   *   both exist, the chart-derived bar wins on every conflicting minute.
+   */
+  const getAuditBars = useCallback(async (
+    signal: TradingSignal,
+    fromTime: number,
+    toTime: number,
+  ): Promise<{ bars: OhlcBar[]; source: string }> => {
+    const localBars = await getBars('1m', fromTime, toTime);
+
+    // Probe: does the chart-derived local history already capture a terminal
+    // event (SL / TP / protected exit) for this signal? We replay from scratch
+    // purely to locate the resolution point — the real resolution still runs
+    // later with the caller's chosen mode.
+    const probe = resolveSignalWithBars(signal, localBars, {
+      fromScratch: true,
+      evalNowMs: Date.now(),
+      logPrefix: `   [Audit-probe ${signal.id.slice(-6)}]`,
+    });
+    const resolutionTs = probe.resolvedAtBarTs;
+    const localResolvesTerminal = resolutionTs != null;
+    const coverage = assessBarCoverage(localBars, fromTime, resolutionTs ?? toTime);
+
+    if (localResolvesTerminal && coverage.dense) {
+      console.log(`   📈 [Audit ${signal.id.slice(-6)}] Using TradingView chart-derived bars (authoritative): ${localBars.length} local bars, ${coverage.reason}`);
+      return { bars: localBars, source: '🟢 chart-derived (local)' };
+    }
+
+    console.log(`   🌐 [Audit ${signal.id.slice(-6)}] Chart-derived bars insufficient (terminal=${localResolvesTerminal}, ${coverage.reason}) — pulling remote feed to fill gaps`);
+    let remoteBars: OhlcBar[] = [];
+    try {
+      remoteBars = await fetchHistoricalData({ fromTime, toTime, timeoutMs: 15000 });
+    } catch (err) {
+      console.warn(`   ⚠️ [Audit ${signal.id.slice(-6)}] remote fetch failed:`, err instanceof Error ? err.message : 'Unknown');
+    }
+
+    if (remoteBars.length === 0) {
+      if (localBars.length > 0) {
+        console.log(`   ↩️ [Audit ${signal.id.slice(-6)}] remote empty — using ${localBars.length} chart-derived bars anyway`);
+        return { bars: localBars, source: '🟢 chart-derived (local, remote empty)' };
+      }
+      return { bars: [], source: 'none' };
+    }
+
+    // Persist remote bars so future audits/catch-ups can reuse them.
+    void upsertBars('1m', remoteBars).catch(err => {
+      console.warn(`   ⚠️ [Audit ${signal.id.slice(-6)}] failed to persist remote bars:`, err instanceof Error ? err.message : 'Unknown');
+    });
+
+    const merged = mergeBarsPreferLocal(localBars, remoteBars);
+    const source = localBars.length > 0 ? '🟡 merged (chart-derived + remote gap-fill)' : '🟠 remote feed';
+    console.log(`   🔀 [Audit ${signal.id.slice(-6)}] ${source}: ${localBars.length} local + ${remoteBars.length} remote → ${merged.length} bars`);
+    return { bars: merged, source };
+  }, []);
+
   const auditTerminalSLSignals = useCallback(async (history: TradingSignal[], opts: { force?: boolean } = {}): Promise<TradingSignal[]> => {
     console.log('\n' + '='.repeat(80));
     console.log('🔬 FULL OUTCOME AUDIT: re-evaluating every terminal signal against 1-min bars (catches false SL AND false TP)');
@@ -1426,30 +1607,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       console.log(`\n🔍 Auditing ${signal.id.slice(-6)} (${signal.type}, status=${signal.status}) entry=${signal.entryPrice.toFixed(1)} SL=${signal.sl.toFixed(1)} TP1=${signal.tp1.toFixed(1)} TP3=${signal.tp3.toFixed(1)}${alreadyAudited ? ' [RE-AUDIT]' : ''}`);
 
-      // When force=true (manual audit), bypass the local sqlite cache and
-      // fetch authoritative bars from the remote data provider. This prevents
-      // previously-poisoned local bars from re-confirming a false SL hit.
-      let bars: { timestamp: number; open: number; high: number; low: number; close: number }[] = [];
-      if (force) {
-        try {
-          console.log(`   🌐 [Audit force] Fetching authoritative remote bars (bypassing local cache)...`);
-          bars = await fetchHistoricalData({ fromTime, toTime, timeoutMs: 15000 });
-          if (bars.length > 0) {
-            void upsertBars('1m', bars).catch(err => {
-              console.warn('   ⚠️ [Audit force] failed to re-seed local bars:', err instanceof Error ? err.message : 'Unknown');
-            });
-            console.log(`   ✅ [Audit force] got ${bars.length} authoritative remote bars`);
-          } else {
-            console.log(`   ⚠️ [Audit force] remote returned 0 bars - falling back to local cache`);
-            bars = await fetchPriceHistory(fromTime, toTime);
-          }
-        } catch (err) {
-          console.warn(`   ⚠️ [Audit force] remote fetch failed, falling back to local:`, err instanceof Error ? err.message : 'Unknown');
-          bars = await fetchPriceHistory(fromTime, toTime);
-        }
-      } else {
-        bars = await fetchPriceHistory(fromTime, toTime);
-      }
+      // Two-tier authoritative source: TradingView chart-derived local bars are
+      // primary (they match what the user saw on the chart); a remote feed only
+      // fills windows the chart-derived bars don't cover. This keeps the audit in
+      // agreement with the chart instead of a divergent third-party feed.
+      const { bars, source: barSource } = await getAuditBars(signal, fromTime, toTime);
+      console.log(`   🧭 [Audit ${signal.id.slice(-6)}] bar source: ${barSource} (${bars.length} bars)`);
       if (bars.length === 0) {
         // IMPORTANT: do NOT mark audited - we want to retry once bars arrive.
         console.log(`   ⚠️ No 1-min bars returned - leaving signal unchanged, will retry next audit pass`);
@@ -1551,7 +1714,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     console.log(`\n✅ FALSE-SL AUDIT COMPLETE: ${corrected} signal(s) corrected`);
     console.log('='.repeat(80) + '\n');
     return updated;
-  }, [analyzeSignalWithHistoricalData, fetchPriceHistory]);
+  }, [analyzeSignalWithHistoricalData, getAuditBars]);
 
   const safeGetModelHealth = useCallback(() => {
     try {
@@ -1588,10 +1751,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       };
     }
 
-    const closedTrades = history.filter(s => 
-      s.status === "CLOSED" || s.status === "SL_HIT" || s.status === "SL_AFTER_BE" || s.status === "ALL_TARGETS_HIT" || s.status === "PARTIAL_WIN_SL_HIT"
-    );
-    
+    // A single classifier (shared with Telemetry & History) decides win/loss so
+    // the same signal can never be counted differently across screens. Only
+    // signals where a real position was taken AND reached a profit/loss terminal
+    // state count as trades — EXPIRED_MISSED_ENTRY (no entry) and flat closes are
+    // excluded. Previously TP3_HIT wins were silently dropped here, desyncing the
+    // Dashboard metrics from the History/Telemetry views.
+    const closedTrades = history.filter(s => {
+      const outcome = classifySignalOutcome(s, settings.basePositionSize);
+      return outcome === "WIN" || outcome === "LOSS";
+    });
+
     const totalTrades = closedTrades.length;
     let winningTrades = 0;
     let losingTrades = 0;
@@ -1602,13 +1772,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
     closedTrades.forEach(signal => {
       const pnl = computeSignalPnL(signal, settings.basePositionSize);
+      const outcome = classifySignalOutcome(signal, settings.basePositionSize);
 
-      if (signal.status === "ALL_TARGETS_HIT" || pnl > 0) {
+      if (outcome === "WIN") {
         winningTrades++;
         totalProfit += Math.max(0, pnl);
         if (pnl > 0) profits.push(pnl);
-      } else if (signal.status === "CLOSED" && Math.abs(pnl) < 0.01) {
-        console.log(`📊 Expired/manual close with ~0 P/L: Signal ${signal.id.slice(-6)}`);
       } else {
         losingTrades++;
         totalLoss += Math.abs(pnl);
@@ -1625,8 +1794,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     let runningBalance = accountBalance;
     let peak = accountBalance;
     let maxDrawdown = 0;
-    
-    closedTrades.forEach(signal => {
+
+    const chronologicalTrades = [...closedTrades].sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+
+    chronologicalTrades.forEach(signal => {
       const pnl = computeSignalPnL(signal, settings.basePositionSize);
 
       runningBalance += pnl;
