@@ -294,6 +294,28 @@ const UTC_HOURS = {
   NY_LONDON_END: 17,
 };
 
+/**
+ * Daily market-close break. No signals should be produced during this window.
+ * Expressed by the user in local time (UTC+2): 22:59 -> 23:59.
+ * That maps to 20:59 -> 21:59 UTC (minutes-of-day 1259 -> 1319 inclusive).
+ */
+const MARKET_CLOSE_WINDOW_UTC = {
+  startMinuteOfDay: 20 * 60 + 59, // 20:59 UTC = 22:59 UTC+2
+  endMinuteOfDay: 21 * 60 + 59, // 21:59 UTC = 23:59 UTC+2
+};
+
+/**
+ * Returns true when the given time falls inside the daily market-close break
+ * (22:59-23:59 UTC+2). During this hour no new signals should be generated.
+ */
+function isWithinDailyMarketClose(date: Date = new Date()): boolean {
+  const minuteOfDayUTC = date.getUTCHours() * 60 + date.getUTCMinutes();
+  return (
+    minuteOfDayUTC >= MARKET_CLOSE_WINDOW_UTC.startMinuteOfDay &&
+    minuteOfDayUTC <= MARKET_CLOSE_WINDOW_UTC.endMinuteOfDay
+  );
+}
+
 let intermarketHistory: IntermarketHistory = {
   dxyPrices: [],
   us10yYields: [],
@@ -4351,6 +4373,13 @@ class SignalGenerationEngine {
     console.log(`📊 SIGNAL GENERATION ATTEMPT #${this.signalGenerationAttempts}`);
     console.log(`${'='.repeat(80)}`);
     
+    if (isWithinDailyMarketClose()) {
+      const nowDate = new Date();
+      console.log(`❌ REJECTED: Daily market-close break (22:59-23:59 UTC+2 / 20:59-21:59 UTC). No signals during this hour. Current UTC ${nowDate.getUTCHours()}:${String(nowDate.getUTCMinutes()).padStart(2, '0')}`);
+      console.log(`${'='.repeat(80)}\n`);
+      return null;
+    }
+    
     const fullyActiveSignals = activeSignals.filter((signal) => (
       signal.status === "ACTIVE" && signal.confidence >= ENFORCED_MIN_SIGNAL_CONFIDENCE
     ));
@@ -5488,10 +5517,11 @@ class SignalGenerationEngine {
     const isSaturday = dayOfWeek === 6;
     const isFridayClose = dayOfWeek === 5 && hour >= 21;
     const isSundayBeforeOpen = dayOfWeek === 0 && hour < 22;
+    const isDailyCloseBreak = isWithinDailyMarketClose(now);
     
-    const isMarketOpen = !isSaturday && !isFridayClose && !isSundayBeforeOpen;
+    const isMarketOpen = !isSaturday && !isFridayClose && !isSundayBeforeOpen && !isDailyCloseBreak;
     
-    console.log(`[MarketStatus] UTC ${dayOfWeek} ${hour}:${minute} | open=${isMarketOpen} | sat=${isSaturday} friClose=${isFridayClose} sunBefore=${isSundayBeforeOpen}`);
+    console.log(`[MarketStatus] UTC ${dayOfWeek} ${hour}:${minute} | open=${isMarketOpen} | sat=${isSaturday} friClose=${isFridayClose} sunBefore=${isSundayBeforeOpen} dailyClose=${isDailyCloseBreak}`);
     
     const isLondonActive = hour >= 6 && hour < 13 && isMarketOpen;
     const isNYActive = hour >= 13 && hour < 21 && isMarketOpen;
