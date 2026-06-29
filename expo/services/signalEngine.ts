@@ -193,14 +193,18 @@ const MAX_RECENT_SIGNAL_TIME_MINUTES = 4;
 const POST_TP1_COOLDOWN_MS = 3 * 60 * 1000;
 const DRIFT_CHECK_INTERVAL = 4 * 60 * 60 * 1000;
 const FEATURE_DRIFT_STORAGE_KEY = 'feature_drift_history_v1';
-const MIN_SIGNAL_CONVICTION_THRESHOLD = 0.50;
-const MIN_SIGNAL_STRENGTH_DIFFERENCE_BASE = 0.08;
+// #1 Direction-conviction gate. Raised from 0.50/0.08 to cut near-tie "coin-flip"
+// entries that historically were the lowest win-rate bucket. The winning side must
+// now show clearer dominance, and the per-regime separation floors are tightened a
+// notch each so indecisive tape stands down instead of firing a marginal trade.
+const MIN_SIGNAL_CONVICTION_THRESHOLD = 0.55;
+const MIN_SIGNAL_STRENGTH_DIFFERENCE_BASE = 0.12;
 function getMinStrengthDifferenceForRegime(regime: 'TRENDING' | 'RANGING' | 'VOLATILE' | 'QUIET'): number {
   switch (regime) {
-    case 'TRENDING': return 0.06;
-    case 'VOLATILE': return 0.07;
-    case 'RANGING': return 0.09;
-    case 'QUIET': return 0.11;
+    case 'TRENDING': return 0.09;
+    case 'VOLATILE': return 0.11;
+    case 'RANGING': return 0.13;
+    case 'QUIET': return 0.15;
     default: return MIN_SIGNAL_STRENGTH_DIFFERENCE_BASE;
   }
 }
@@ -4338,6 +4342,14 @@ class SignalGenerationEngine {
     }
     
     let effectiveMinConfidence = requestedMinConfidence;
+    // #2 HTF-alignment veto. detectHTFTrend is a real filter here, not just a soft
+    // bonus: a signal that fights a clear higher-timeframe (daily) trend must clear
+    // a +5% confidence premium on top of the session floor. Counter-trend gold setups
+    // are the lowest win-rate bucket, so we only take the highest-quality ones.
+    if (isCounterTrendSignal) {
+      effectiveMinConfidence = Math.max(effectiveMinConfidence, requestedMinConfidence + 0.05);
+      console.log(`🧭 COUNTER-TREND vs HTF ${htfTrend}: confidence floor raised to ${(effectiveMinConfidence * 100).toFixed(0)}%`);
+    }
     // H40 + Proposal #2: Tighten starvation relief - require TRENDING regime + ADX>20
     const lastSignalAgeMs = this.lastSignalTime > 0 ? (now - this.lastSignalTime) : Number.POSITIVE_INFINITY;
     const starvationEligibleRegime = (

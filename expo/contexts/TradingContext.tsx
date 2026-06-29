@@ -378,10 +378,30 @@ export function computeSignalPnL(signal: TradingSignal, basePositionSize: number
   ];
   if (!terminalStatuses.includes(signal.status)) return 0;
 
+  // Guard against corrupt/legacy signals whose stored prices are missing or zero.
+  // A signal with no valid entry, SL or TP3 cannot have a meaningful P/L, and
+  // letting a zeroed exit through (e.g. exit=0 against a ~$3000 entry) poisons
+  // the running total with absurd outliers like a single -$100+ trade.
+  const entry = signal.entryPrice;
+  if (!Number.isFinite(entry) || entry <= 0) return 0;
+  if (!Number.isFinite(signal.sl) || signal.sl <= 0) return 0;
+  if (!Number.isFinite(signal.tp3) || signal.tp3 <= 0) return 0;
+
   const exit = getEffectiveExitPrice(signal);
+  if (!Number.isFinite(exit) || exit <= 0) return 0;
+
   const contractSize = 100;
-  const directional = signal.type === "BUY" ? exit - signal.entryPrice : signal.entryPrice - exit;
-  return directional * basePositionSize * contractSize;
+  const rawDirectional = signal.type === "BUY" ? exit - entry : entry - exit;
+
+  // A trade can never realize more than its full TP3 reward, nor lose more than
+  // its full SL risk — we always exit at SL or a target, never beyond. Clamp the
+  // per-unit move to that structural envelope so a single bad bar/price can't
+  // fabricate an impossible win or loss in the metrics.
+  const rewardDistance = Math.abs(signal.tp3 - entry);
+  const riskDistance = Math.abs(entry - signal.sl);
+  const clampedDirectional = Math.max(-riskDistance, Math.min(rewardDistance, rawDirectional));
+
+  return clampedDirectional * basePositionSize * contractSize;
 }
 
 function areMarketSessionsEqual(left: MarketOutlook["sessions"], right: MarketOutlook["sessions"]): boolean {
