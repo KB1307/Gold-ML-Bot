@@ -430,14 +430,28 @@ const AsyncStorage = {
 
 const trpcClient = (globalThis as Record<string, unknown>).__SANDBOX_TRPC__ as any;
 
+const fetchHistoricalData = async (input: { fromTime: number; toTime: number }): Promise<SandboxBar[]> => {
+  return getSandboxContext().bars.filter((bar) => bar.timestamp >= input.fromTime && bar.timestamp <= input.toTime);
+};
+
 const Platform = { OS: "web" as const };
 `;
 
-  const rewritten = source
-    .replace('import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC } from "@/types/trading";\n', "")
-    .replace('import AsyncStorage from "@react-native-async-storage/async-storage";\n', "")
-    .replace('import { trpcClient } from "@/lib/trpc";\n', "")
-    .replace('import { Platform } from "react-native";\n', "");
+  // Regex-based stripping: match by module specifier, tolerant of the imported
+  // names. This must not silently break when signalEngine.ts's import list
+  // changes (e.g. a new named import added to an existing module specifier).
+  const stripImportFrom = (code: string, specifier: string): string => {
+    const escaped = specifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(`^import\\s+(?:[\\w*]+\\s*,\\s*)?(?:\\{[^}]*\\}|[\\w*]+(?:\\s+as\\s+\\w+)?)\\s+from\\s+["']${escaped}["'];?\\n`, "m");
+    return code.replace(pattern, "");
+  };
+
+  const rewritten = [
+    "@/types/trading",
+    "@react-native-async-storage/async-storage",
+    "@/lib/trpc",
+    "react-native",
+  ].reduce(stripImportFrom, source);
 
   await mkdir(sandboxDir, { recursive: true });
   await writeFile(sandboxPath, `${sandboxPrelude}\n${rewritten}`);
