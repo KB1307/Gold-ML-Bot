@@ -174,6 +174,21 @@ const DAILY_OHLC_STORAGE_KEY = 'daily_ohlc_history_v1';
 
 const TRAINING_WINDOW_DAYS = 14;
 const MIN_CONFIDENCE_FOR_RETRAINING = 0.68;
+
+/**
+ * Phase 0 — learning→scoring linkage.
+ * Converts a learned (normalized, signed) feature weight into a multiplier that
+ * scales that feature's hardcoded scoring contribution inside
+ * enhancedTransformerAnalysis(). At cold-start (no learned weight) the multiplier
+ * is 1.0, so behaviour is identical to the pre-Phase-0 engine. As a feature's
+ * learned importance rises the multiplier grows; as it drifts toward zero (or is
+ * halved by the concept-drift auto-response) the multiplier shrinks toward — and
+ * can cross — zero, measurably reducing or reversing that feature's influence on
+ * the next signal.
+ */
+const LEARNED_WEIGHT_GAIN = 2.5;
+const LEARNED_MODULATION_MIN = -1.0;
+const LEARNED_MODULATION_MAX = 3.0;
 const BASE_SLIPPAGE_BUFFER_PIPS = 0.5;
 const CONFIDENCE_SMOOTHING_WINDOW = 5;
 const LATENCY_WARNING_THRESHOLD_MS = 100;
@@ -2902,6 +2917,38 @@ class SignalGenerationEngine {
     }
   }
   
+  /**
+   * Phase 0: maps a learned (normalized, signed) feature weight to a scoring
+   * multiplier. Returns 1.0 when the feature has no learned weight yet (cold
+   * start), so the engine reproduces pre-Phase-0 behaviour until training data
+   * exists. A positive learned weight amplifies the feature's contribution; a
+   * weight that has drifted toward/under zero (including the concept-drift
+   * auto-halving) shrinks or reverses it.
+   */
+  private getFeatureModulation(featureKey: string): number {
+    const w = this.modelWeights.get(featureKey);
+    if (w === undefined || !Number.isFinite(w)) {
+      return 1;
+    }
+    const factor = 1 + LEARNED_WEIGHT_GAIN * w;
+    return Math.max(LEARNED_MODULATION_MIN, Math.min(LEARNED_MODULATION_MAX, factor));
+  }
+
+  /** Phase 0 test seam: deterministically retrain weights from a fixed outcome set. */
+  public trainOnOutcomesForTest(outcomes: TradeOutcome[]): void {
+    this.retrainModel(outcomes);
+  }
+
+  /** Phase 0 test seam: read the live learned modulation applied to a feature's scoring contribution. */
+  public getLearnedFeatureModulationForTest(featureKey: string): number {
+    return this.getFeatureModulation(featureKey);
+  }
+
+  /** Phase 0 test seam: read the current learned weight for a feature. */
+  public getModelWeightForTest(featureKey: string): number | undefined {
+    return this.modelWeights.get(featureKey);
+  }
+
   private enhancedTransformerAnalysis(features: MarketFeatures): {
     signalStrength: number;
     signalType: SignalType;
@@ -2934,66 +2981,79 @@ class SignalGenerationEngine {
     console.log(`📈 LTF Trend (5min): ${ltfTrend}`);
     console.log(`📉 RSI: ${features.rsi.toFixed(1)} (Overbought: ${rsiOverbought}, Oversold: ${rsiOversold})`);
     
+    // Phase 0: the HTF/LTF × RSI setups below are the RSI feature family. Each branch
+    // is gated on RSI state, so the whole block's contribution is routed through the
+    // learned `rsi_weight` modulation rather than being added as a fixed constant.
+    let rsiBuyContribution = 0;
+    let rsiSellContribution = 0;
     if (htfTrend === 'BULLISH') {
       if (ltfTrend === 'BULLISH' && !rsiOverbought) {
-        buySignalStrength += 0.4;
+        rsiBuyContribution += 0.4;
         attentionScores.set('htf_ltf_bullish_alignment', 0.4);
         console.log('✅ BUY: HTF + LTF Bullish Alignment');
       }
       
       if (rsiOversold || (rsiNeutralBearish && ltfTrend === 'BEARISH')) {
-        buySignalStrength += 0.35;
+        rsiBuyContribution += 0.35;
         attentionScores.set('counter_trend_bounce_setup', 0.35);
         console.log('✅ BUY: Counter-trend Bounce Setup (Oversold in Uptrend)');
       }
       
       if (rsiOverbought && ltfTrend === 'BEARISH') {
-        sellSignalStrength += 0.3;
+        rsiSellContribution += 0.3;
         attentionScores.set('intraday_correction_in_uptrend', 0.3);
         console.log('🔴 SELL: Intraday Correction Setup (Overbought + LTF Bearish)');
       }
     } else if (htfTrend === 'BEARISH') {
       if (ltfTrend === 'BEARISH' && !rsiOversold) {
-        sellSignalStrength += 0.4;
+        rsiSellContribution += 0.4;
         attentionScores.set('htf_ltf_bearish_alignment', 0.4);
         console.log('🔴 SELL: HTF + LTF Bearish Alignment');
       }
       
       if (rsiOverbought || (rsiNeutralBullish && ltfTrend === 'BULLISH')) {
-        sellSignalStrength += 0.35;
+        rsiSellContribution += 0.35;
         attentionScores.set('counter_trend_rejection_setup', 0.35);
         console.log('🔴 SELL: Counter-trend Rejection Setup (Overbought in Downtrend)');
       }
       
       if (rsiOversold && ltfTrend === 'BULLISH') {
-        buySignalStrength += 0.3;
+        rsiBuyContribution += 0.3;
         attentionScores.set('intraday_bounce_in_downtrend', 0.3);
         console.log('✅ BUY: Intraday Bounce Setup (Oversold + LTF Bullish)');
       }
     } else {
       if (rsiOverbought && ltfTrend === 'BEARISH') {
-        sellSignalStrength += 0.35;
+        rsiSellContribution += 0.35;
         attentionScores.set('neutral_htf_overbought_sell', 0.35);
         console.log('🔴 SELL: Neutral HTF - Overbought Mean Reversion');
       }
       
       if (rsiOversold && ltfTrend === 'BULLISH') {
-        buySignalStrength += 0.35;
+        rsiBuyContribution += 0.35;
         attentionScores.set('neutral_htf_oversold_buy', 0.35);
         console.log('✅ BUY: Neutral HTF - Oversold Mean Reversion');
       }
       
       if (ltfTrend === 'BULLISH' && !rsiOverbought) {
-        buySignalStrength += 0.25;
+        rsiBuyContribution += 0.25;
         attentionScores.set('ltf_momentum_buy', 0.25);
         console.log('✅ BUY: LTF Momentum (Neutral HTF)');
       }
       
       if (ltfTrend === 'BEARISH' && !rsiOversold) {
-        sellSignalStrength += 0.25;
+        rsiSellContribution += 0.25;
         attentionScores.set('ltf_momentum_sell', 0.25);
         console.log('🔴 SELL: LTF Momentum (Neutral HTF)');
       }
+    }
+
+    const rsiModulation = this.getFeatureModulation('rsi_weight');
+    buySignalStrength += rsiBuyContribution * rsiModulation;
+    sellSignalStrength += rsiSellContribution * rsiModulation;
+    if (rsiBuyContribution > 0 || rsiSellContribution > 0) {
+      attentionScores.set('rsi_learned_modulation', rsiModulation);
+      console.log(`🧠 Learned RSI modulation x${rsiModulation.toFixed(3)} → BUY+${(rsiBuyContribution * rsiModulation).toFixed(3)} SELL+${(rsiSellContribution * rsiModulation).toFixed(3)} (raw BUY+${rsiBuyContribution.toFixed(2)} SELL+${rsiSellContribution.toFixed(2)})`);
     }
     
     if (isLondonSession || isNYSession) {
@@ -3184,18 +3244,22 @@ class SignalGenerationEngine {
     }
 
     // C17: DXY correlation gate for LONG gold
+    // Phase 0: the headwind penalty is scaled by the learned `dxy_weight` (magnitude
+    // only, clamped ≥0) so a feature that has proven predictive applies a stronger
+    // penalty, and one that has drifted to zero applies none.
     const dxy = features.intermarketData;
+    const dxyModulation = Math.max(0, this.getFeatureModulation('dxy_weight'));
     if (dxy && dxy.dxyChange !== 0 && dxy.goldDxyCorrelation < -0.3) {
       if (dxy.dxyChange > 0.15 && buySignalStrength > sellSignalStrength) {
-        const dxyPenalty = Math.min(0.12, dxy.dxyChange * 0.5);
+        const dxyPenalty = Math.min(0.12, dxy.dxyChange * 0.5) * dxyModulation;
         buySignalStrength = Math.max(0, buySignalStrength - dxyPenalty);
         attentionScores.set('dxy_headwind', -dxyPenalty);
-        console.log(`⚠️ DXY +${dxy.dxyChange.toFixed(2)} rising vs LONG gold bias: -${(dxyPenalty * 100).toFixed(1)}%`);
+        console.log(`⚠️ DXY +${dxy.dxyChange.toFixed(2)} rising vs LONG gold bias: -${(dxyPenalty * 100).toFixed(1)}% (learned x${dxyModulation.toFixed(2)})`);
       } else if (dxy.dxyChange < -0.15 && sellSignalStrength > buySignalStrength) {
-        const dxyPenalty = Math.min(0.12, Math.abs(dxy.dxyChange) * 0.5);
+        const dxyPenalty = Math.min(0.12, Math.abs(dxy.dxyChange) * 0.5) * dxyModulation;
         sellSignalStrength = Math.max(0, sellSignalStrength - dxyPenalty);
         attentionScores.set('dxy_headwind', -dxyPenalty);
-        console.log(`⚠️ DXY ${dxy.dxyChange.toFixed(2)} falling vs SHORT gold bias: -${(dxyPenalty * 100).toFixed(1)}%`);
+        console.log(`⚠️ DXY ${dxy.dxyChange.toFixed(2)} falling vs SHORT gold bias: -${(dxyPenalty * 100).toFixed(1)}% (learned x${dxyModulation.toFixed(2)})`);
       }
     }
     
