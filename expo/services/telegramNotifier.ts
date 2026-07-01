@@ -1,17 +1,18 @@
 import { TradingSignal } from "@/types/trading";
 
-const TELEGRAM_API_URL =
-  "https://api.telegram.org/bot8704113854:AAHebld6qMlK2eKGJB0DND3O7FvuLdPypSQ/sendMessage";
-const TELEGRAM_CHAT_ID = "-1004409610798";
+const TELEGRAM_API_URL = "https://api.telegram.org/bot8704113854:AAHebld6qMlK2eKGJB0DND3O7FvuLdPypSQ/sendMessage";
+
+// 🌐 Convert the single ID into an array of targets
+// ⚠️ Note: Telegram channel IDs almost always start with a "-100" prefix (e.g., "-1001234567890")
+const TELEGRAM_CHAT_IDS = [
+  "-1004409610798",   
+  "-1004310142756" 
+];
 
 function formatPrice(value: number): string {
   return value.toFixed(1);
 }
 
-// Half-width of the entry zone band, in price units (gold). The zone spans
-// entryPrice ± ENTRY_ZONE_BAND so an alert can still be executed despite the
-// lag between sending and receiving the signal. TPs/SL remain anchored to the
-// single entry point.
 const ENTRY_ZONE_BAND = 2.0;
 
 function formatEntryZone(entryPrice: number): string {
@@ -43,11 +44,8 @@ export interface TelegramSendResult {
 }
 
 /**
- * Sends an arbitrary custom message to the configured Telegram chat and awaits
- * the result. Unlike {@link sendTelegramAlert}, this resolves with a structured
- * result so callers (e.g. the in-app test panel) can surface success/failure.
- * Sent as plain text (no Markdown) so a custom notice never trips entity-parse
- * errors regardless of the characters the user types.
+ * Sends an arbitrary custom message to ALL configured Telegram chats and awaits
+ * the results. Returns success only if all destinations delivered successfully.
  */
 export async function sendTelegramMessage(text: string): Promise<TelegramSendResult> {
   const trimmed = text.trim();
@@ -55,49 +53,56 @@ export async function sendTelegramMessage(text: string): Promise<TelegramSendRes
     return { ok: false, status: 0, error: "Message is empty" };
   }
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 12000);
+  // Fire off all requests concurrently using Promise.all
+  const requests = TELEGRAM_CHAT_IDS.map(async (chatId) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
 
-  try {
-    const response = await fetch(TELEGRAM_API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: TELEGRAM_CHAT_ID,
-        text: trimmed,
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
+    try {
+      const response = await fetch(TELEGRAM_API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: trimmed,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
 
-    if (!response.ok) {
-      let body = "";
-      try {
-        body = await response.text();
-      } catch {
-        // ignore body read failures
+      if (!response.ok) {
+        let body = "";
+        try { body = await response.text(); } catch {}
+        const description = extractTelegramError(body);
+        console.warn(`[Telegram] Message failed for chat ${chatId} (${response.status}): ${description}`);
+        return { ok: false, status: response.status, error: description };
       }
-      const description = extractTelegramError(body);
-      console.warn(`[Telegram] Test message failed (${response.status}): ${description}`);
-      return { ok: false, status: response.status, error: description };
-    }
 
-    console.log("[Telegram] Test message delivered");
-    return { ok: true, status: response.status };
-  } catch (error: unknown) {
-    clearTimeout(timeoutId);
-    if (error instanceof DOMException && error.name === "AbortError") {
-      return { ok: false, status: 0, error: "Request timed out" };
+      console.log(`[Telegram] Message delivered to chat ${chatId}`);
+      return { ok: true, status: response.status };
+    } catch (error: unknown) {
+      clearTimeout(timeoutId);
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return { ok: false, status: 0, error: `Request timed out for chat ${chatId}` };
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[Telegram] Network error sending to chat ${chatId}:`, message);
+      return { ok: false, status: 0, error: message };
     }
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn("[Telegram] Network error sending test message:", message);
-    return { ok: false, status: 0, error: message };
-  }
+  });
+
+  const results = await Promise.all(requests);
+  
+  // If any destination fails, surface the first error caught
+  const failedResult = results.find((res) => !res.ok);
+  if (failedResult) return failedResult;
+
+  return { ok: true, status: 200 };
 }
 
 function buildTelegramMessage(signal: TradingSignal): string {
   const entryPrice = signal.entryPriceWithSlippage || signal.entryPrice;
-  const dot = signal.type === "BUY" ? "\u{1F7E2}" : "\u{1F534}";
+  const dot = signal.type === "BUY" ? "\u{1F7E2}" : "\u{1F534}`;
 
   const lines = [
     `${dot} *SIGNAL ALERT* ${dot}`,
@@ -119,62 +124,55 @@ function buildTelegramMessage(signal: TradingSignal): string {
 }
 
 /**
- * Sends a Telegram alert for a newly generated trading signal.
- * Truly fire-and-forget — the fetch is kicked off without waiting for
- * Telegram's response, so the message dispatches in <100ms. Success/failure
- * is logged asynchronously without ever blocking the caller.
+ * Sends a Telegram alert for a newly generated trading signal to multiple rooms.
+ * Iterates through destinations instantly so formatting execution remains <100ms.
  */
 export function sendTelegramAlert(signal: TradingSignal): void {
   const text = buildTelegramMessage(signal);
   const signalId = signal.id;
 
-  const controller = new AbortController();
-  // Kill the request after 8 seconds — the message is already delivered
-  // when Telegram receives the POST body; we don't need the response.
-  const timeoutId = setTimeout(() => controller.abort(), 8000);
+  // Spin up parallel async fetches for each ID in the array
+  TELEGRAM_CHAT_IDS.forEach((chatId) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-  fetch(TELEGRAM_API_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: TELEGRAM_CHAT_ID,
-      text,
-      parse_mode: "Markdown",
-    }),
-    signal: controller.signal,
-  })
-    .then((response) => {
-      clearTimeout(timeoutId);
-      if (!response.ok) {
-        // Read the body only on failure, and don't block on it.
-        // Logged as a warning (not an error) because a delivery failure is an
-        // external/config issue (e.g. the bot lacks posting rights in the chat)
-        // — it must never surface as an app runtime error or block the pipeline.
-        response
-          .text()
-          .then((body) => {
-            console.warn(
-              `[Telegram] Delivery failed (${response.status}): ${body.slice(0, 200)}`
-            );
-          })
-          .catch(() => {});
-        return;
-      }
-      console.log(`[Telegram] Alert dispatched for signal ${signalId}`);
+    fetch(TELEGRAM_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        parse_mode: "Markdown",
+      }),
+      signal: controller.signal,
     })
-    .catch((error: unknown) => {
-      clearTimeout(timeoutId);
-      if (error instanceof DOMException && error.name === "AbortError") {
-        // Timed out — message was almost certainly delivered, Telegram just
-        // didn't respond within 8s. Don't log as an error.
-        console.log(
-          `[Telegram] Request timed out for signal ${signalId} (message likely delivered)`
+      .then((response) => {
+        clearTimeout(timeoutId);
+        if (!response.ok) {
+          response
+            .text()
+            .then((body) => {
+              console.warn(
+                `[Telegram] Delivery failed for destination ${chatId} (${response.status}): ${body.slice(0, 200)}`
+              );
+            })
+            .catch(() => {});
+          return;
+        }
+        console.log(`[Telegram] Alert dispatched to ${chatId} for signal ${signalId}`);
+      })
+      .catch((error: unknown) => {
+        clearTimeout(timeoutId);
+        if (error instanceof DOMException && error.name === "AbortError") {
+          console.log(
+            `[Telegram] Request timed out for ${chatId} on signal ${signalId} (message likely delivered)`
+          );
+          return;
+        }
+        console.warn(
+          `[Telegram] Network error dispatching alert to ${chatId}:`,
+          error instanceof Error ? error.message : String(error)
         );
-        return;
-      }
-      console.warn(
-        "[Telegram] Network error dispatching alert:",
-        error instanceof Error ? error.message : String(error)
-      );
-    });
+      });
+  });
 }
