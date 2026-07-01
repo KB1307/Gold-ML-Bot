@@ -13,6 +13,10 @@ function formatPrice(value: number): string {
   return value.toFixed(1);
 }
 
+// Half-width of the entry zone band, in price units (gold). The zone spans
+// entryPrice ± ENTRY_ZONE_BAND so an alert can still be executed despite the
+// lag between sending and receiving the signal. TPs/SL remain anchored to the
+// single entry point.
 const ENTRY_ZONE_BAND = 2.0;
 
 function formatEntryZone(entryPrice: number): string {
@@ -45,7 +49,8 @@ export interface TelegramSendResult {
 
 /**
  * Sends an arbitrary custom message to ALL configured Telegram chats and awaits
- * the results. Returns success only if all destinations delivered successfully.
+ * the results. Resolves with a structured result only after all destinations 
+ * have been attempted.
  */
 export async function sendTelegramMessage(text: string): Promise<TelegramSendResult> {
   const trimmed = text.trim();
@@ -93,7 +98,7 @@ export async function sendTelegramMessage(text: string): Promise<TelegramSendRes
 
   const results = await Promise.all(requests);
   
-  // If any destination fails, surface the first error caught
+  // Surface the first error caught if any room failed
   const failedResult = results.find((res) => !res.ok);
   if (failedResult) return failedResult;
 
@@ -102,7 +107,7 @@ export async function sendTelegramMessage(text: string): Promise<TelegramSendRes
 
 function buildTelegramMessage(signal: TradingSignal): string {
   const entryPrice = signal.entryPriceWithSlippage || signal.entryPrice;
-  const dot = signal.type === "BUY" ? "\u{1F7E2}" : "\u{1F534}`;
+  const dot = signal.type === "BUY" ? "\u{1F7E2}" : "\u{1F534}"; // ✅ Quote syntax mismatch fixed here
 
   const lines = [
     `${dot} *SIGNAL ALERT* ${dot}`,
@@ -125,13 +130,14 @@ function buildTelegramMessage(signal: TradingSignal): string {
 
 /**
  * Sends a Telegram alert for a newly generated trading signal to multiple rooms.
- * Iterates through destinations instantly so formatting execution remains <100ms.
+ * Truly fire-and-forget — the fetches are kicked off in parallel without waiting 
+ * for Telegram's response, keeping execution time under 100ms.
  */
 export function sendTelegramAlert(signal: TradingSignal): void {
   const text = buildTelegramMessage(signal);
   const signalId = signal.id;
 
-  // Spin up parallel async fetches for each ID in the array
+  // Spin up background async fetches for each ID concurrently
   TELEGRAM_CHAT_IDS.forEach((chatId) => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 8000);
