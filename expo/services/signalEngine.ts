@@ -883,7 +883,6 @@ class SignalGenerationEngine {
   private quasimodolLevels: QuasimodolLevel[] = [];
   private sessionSweeps: SessionSweep[] = [];
   private srZones: SRZone[] = [];
-  private srZoneProximityThreshold: number = 5;
   private asianSessionHigh: number = 0;
   private asianSessionLow: number = Infinity;
   private londonSessionHigh: number = 0;
@@ -1970,7 +1969,15 @@ class SignalGenerationEngine {
     const currentPrice = this.currentPrice;
     const zones: SRZone[] = [];
     const atr = this.calculateRealATR(14);
-    const zoneWidth = Math.max(2, atr * 0.3);
+    // Bug fix: the previous flat "$2" floor collapsed zone-merge distance to a
+    // meaningless value for gold at $3,000+ whenever ATR came back small (quiet
+    // market / thin history). Use the same price-relative floor convention as
+    // the pivot-level fix, but with a smaller coefficient (0.15% of price)
+    // because zoneWidth is a *merge/touch* distance, not a full daily-range
+    // floor — it needs to stay tight enough to keep genuinely distinct levels
+    // separate (at $3,250 gold that's ~$4.9, vs. the ~$26 the pivot fix's 0.008
+    // coefficient would produce, which would over-merge distinct S/R levels).
+    const zoneWidth = Math.max(atr * 0.3, currentPrice * 0.0015);
 
     if (this.priceHistory.length < 20 || this.highHistory.length < 20 || this.lowHistory.length < 20) {
       console.log('⚠️ S/R Zones: Insufficient data for zone detection');
@@ -1997,7 +2004,13 @@ class SignalGenerationEngine {
 
     const ohlc = this.getDerivedDailyOHLC();
     const dailyPivot = (ohlc.yesterdayHigh + ohlc.yesterdayLow + ohlc.yesterdayClose) / 3;
-    const dailyRange = Math.max(ohlc.yesterdayHigh - ohlc.yesterdayLow, atr);
+    // Bug fix: flooring only on raw atr (no price-relative safety net) let
+    // zoneStep collapse toward zero on the same small-ATR condition as the
+    // pivot-level bug. Reuse the same 0.008 daily-range-floor coefficient
+    // already established as correct in getDerivedDailyOHLC() /
+    // calculateDashboardPivotLevels() / calculateMarketFeatures() for this same
+    // "genuine daily range" concept.
+    const dailyRange = Math.max(ohlc.yesterdayHigh - ohlc.yesterdayLow, atr, currentPrice * 0.008);
     const zoneStep = dailyRange / 12;
     candidateLevels.push({ price: dailyPivot, source: 'PIVOT' });
     candidateLevels.push({ price: ohlc.yesterdayClose + zoneStep, source: 'PIVOT' });
@@ -2129,7 +2142,11 @@ class SignalGenerationEngine {
   private detectActiveSRReaction(features: MarketFeatures): SRZoneReaction | null {
     const currentPrice = this.currentPrice;
     const atr = features.atr || this.calculateRealATR(14);
-    const proximityThreshold = Math.max(3, atr * 0.25);
+    // Bug fix: same flat-dollar-floor class of bug as zoneWidth/dailyRange above
+    // — replace the flat "$3" floor with a price-relative one (0.1% of price,
+    // ~$3.25 at $3,250 gold, matching the old default's rough magnitude at
+    // today's price while actually scaling with price going forward).
+    const proximityThreshold = Math.max(atr * 0.25, currentPrice * 0.001);
 
     for (const zone of this.srZones) {
       const distance = Math.abs(currentPrice - zone.price);
@@ -3196,6 +3213,31 @@ class SignalGenerationEngine {
   /** Pivot-floor-fix test seam: read the ATR value that would be used as the floor's raw input. */
   public getRealATRForTest(period: number = 14): number {
     return this.calculateRealATR(period);
+  }
+
+  /** SRZone-floor-fix test seam: force deterministic price/history/prior-day inputs, then read detectSRZones() output. */
+  public getSRZonesForTest(
+    price: number,
+    highs: number[],
+    lows: number[],
+    closes: number[],
+    priorDayBar?: { high: number; low: number; close: number; open: number }
+  ): SRZone[] {
+    this.currentPrice = price;
+    this.highHistory = highs;
+    this.lowHistory = lows;
+    this.priceHistory = closes;
+    if (priorDayBar) {
+      this.dailyOHLCHistory = [{
+        date: "test-day",
+        open: priorDayBar.open,
+        high: priorDayBar.high,
+        low: priorDayBar.low,
+        close: priorDayBar.close,
+        timestamp: Date.now() - 60 * 60 * 1000,
+      }];
+    }
+    return this.detectSRZones();
   }
 
   private enhancedTransformerAnalysis(features: MarketFeatures): {
