@@ -3,6 +3,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { fetchHistoricalData, trpcClient } from "@/lib/trpc";
 import { Platform } from "react-native";
 import { appendOutcome as appendOutcomeToStore, getAllOutcomes as getAllOutcomesFromStore, getOutcomeCount as getOutcomeCountFromStore, migrateLegacyOutcomesIfEmpty, pruneToCap as pruneOutcomeStoreToCap, type StoredTradeOutcome } from "@/services/learningStore";
+import { resolveSignalWithBars } from "@/services/signalResolver";
+import type { OhlcBar } from "@/services/barStore";
 
 interface OrderFlowData {
   bidVolume: number;
@@ -282,6 +284,36 @@ const NEAR_MISS_CONFIDENCE_HIGH = 0.68;
 const NEAR_MISS_DIFF_LOW = 0.04;
 const NEAR_MISS_DIFF_HIGH = 0.06;
 const NEAR_MISS_MAX_ENTRIES = 40;
+const NEAR_MISS_MIN_MATURITY_MS = 2 * 60 * 60 * 1000;
+const NEAR_MISS_LOOKAHEAD_MS = 6 * 60 * 60 * 1000;
+const NEAR_MISS_FLAG_WIN_RATE = 0.40;
+const NEAR_MISS_FLAG_MIN_SAMPLE = 3;
+
+interface NearMissEntry {
+  timestamp: number;
+  signalType: SignalType;
+  confidence: number;
+  strengthDiff: number;
+  reason: string;
+  // Hypothetical trade snapshot at the moment of rejection, captured so the
+  // setup can be retroactively resolved against real subsequent price action
+  // (Step 6: near-miss threshold recalibration mining). Omitted when the
+  // rejection happened before entry/TP/SL context existed.
+  entryPrice?: number;
+  tp1?: number;
+  tp2?: number;
+  tp3?: number;
+  sl?: number;
+}
+
+export interface NearMissRecalibrationBucket {
+  reason: string;
+  wins: number;
+  losses: number;
+  noOutcome: number;
+  winRate: number;
+  flagged: boolean;
+}
 const SYNTHETIC_DATA_PENALTY = 0.03;
 const _BIDIRECTIONAL_INFLATION_PENALTY = 0.04;
 const LOW_DATA_QUALITY_PENALTY = 0.03;
@@ -821,7 +853,7 @@ class SignalGenerationEngine {
   } = { recentWinRate: 0.65, profitFactor: 1.8, avgConfidence: 0.75, recentWinningConfidences: [] };
   private lastSignalType: SignalType | null = null;
   private lastSignalTime: number = 0;
-  private nearMisses: { timestamp: number; signalType: SignalType; confidence: number; strengthDiff: number; reason: string }[] = [];
+  private nearMisses: NearMissEntry[] = [];
   private diffBucketStats: { low: { wins: number; losses: number }; mid: { wins: number; losses: number }; high: { wins: number; losses: number } } = { low: { wins: 0, losses: 0 }, mid: { wins: 0, losses: 0 }, high: { wins: 0, losses: 0 } };
   private lastSignalStrengthDifference: number = 0;
   private lastBuySignalTime: number = 0;
@@ -4612,7 +4644,7 @@ class SignalGenerationEngine {
             console.log(`   Alt check: ${altConfirmation.reason}`);
             console.log(`   💡 TIP: ${requires5MinConfirmation.tip}`);
             console.log(`${'='.repeat(80)}\n`);
-            this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'counter-trend mid-RSI unconfirmed');
+            this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'counter-trend mid-RSI unconfirmed', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
             return null;
           } else {
             console.log(`✅ COUNTER-TREND ASYMMETRIC: RSI ${features.rsi.toFixed(1)} not mid-range, accepting without 5-min gate`);
@@ -4722,7 +4754,7 @@ class SignalGenerationEngine {
       }
       console.log(`   💡 TIP: Confidence ${(analysis.confidence * 100).toFixed(1)}% below ${(effectiveMinConfidence * 100).toFixed(0)}% threshold. Wait for stronger alignment or adjust threshold in settings.`);
       console.log(`${'='.repeat(80)}\n`);
-      this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, `below threshold ${(effectiveMinConfidence * 100).toFixed(0)}%`);
+      this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, `below threshold ${(effectiveMinConfidence * 100).toFixed(0)}%`, { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
       return null;
     }
     
@@ -4799,7 +4831,7 @@ class SignalGenerationEngine {
         console.log(`   Opposing Signal Strength: ${(opposingStrength * 100).toFixed(1)}% (Max: 15%)`);
         console.log(`   💡 CONFLICT RESOLUTION: New signal must be >55% confident AND opposing signal <15% strength`);
         console.log(`${'='.repeat(80)}\n`);
-        this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'conflict with last signal type');
+        this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'conflict with last signal type', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
         return null;
       } else {
         console.log(`✅ SIGNAL OVERRIDE APPROVED: Conflict check passed`);
@@ -5459,20 +5491,114 @@ class SignalGenerationEngine {
     return { active: false, reason: '', minConfidence: 0 };
   }
 
-  private recordNearMiss(signalType: SignalType, confidence: number, strengthDiff: number, reason: string): void {
+  private recordNearMiss(
+    signalType: SignalType,
+    confidence: number,
+    strengthDiff: number,
+    reason: string,
+    snapshot?: { entryPrice: number; atr: number; tp1Pips: number; tp2Pips: number; tp3Pips: number; slPips: number },
+  ): void {
     // Proposal #11: Setup brewing telemetry
     const inConfBand = confidence >= NEAR_MISS_CONFIDENCE_LOW && confidence < NEAR_MISS_CONFIDENCE_HIGH;
     const inDiffBand = strengthDiff >= NEAR_MISS_DIFF_LOW && strengthDiff < NEAR_MISS_DIFF_HIGH;
     if (!inConfBand && !inDiffBand) return;
-    this.nearMisses.push({ timestamp: Date.now(), signalType, confidence, strengthDiff, reason });
+
+    const entry: NearMissEntry = { timestamp: Date.now(), signalType, confidence, strengthDiff, reason };
+    if (snapshot) {
+      // Step 6: capture a hypothetical entry/TP/SL snapshot (same ATR-scaled sizing
+      // an accepted signal would have used) so this rejected setup can later be
+      // resolved against REAL subsequent price action via the same resolver logic
+      // that grades real signals — never inventing a separate, looser grading path.
+      const pipValue = 0.1;
+      const atrMultiplier = Math.max(0.8, Math.min(1.4, 0.6 + snapshot.atr * 0.06));
+      const dir = signalType === 'BUY' ? 1 : -1;
+      entry.entryPrice = snapshot.entryPrice;
+      entry.tp1 = snapshot.entryPrice + dir * snapshot.tp1Pips * pipValue;
+      entry.tp2 = snapshot.entryPrice + dir * snapshot.tp2Pips * pipValue;
+      entry.tp3 = snapshot.entryPrice + dir * snapshot.tp3Pips * pipValue;
+      entry.sl = snapshot.entryPrice - dir * Math.min(snapshot.slPips * atrMultiplier, snapshot.slPips * 1.4) * pipValue;
+    }
+
+    this.nearMisses.push(entry);
     if (this.nearMisses.length > NEAR_MISS_MAX_ENTRIES) {
       this.nearMisses = this.nearMisses.slice(-NEAR_MISS_MAX_ENTRIES);
     }
     console.log(`🔍 NEAR-MISS logged: ${signalType} conf ${(confidence * 100).toFixed(1)}% diff ${strengthDiff.toFixed(3)} - ${reason}`);
   }
 
-  getRecentNearMisses(): { timestamp: number; signalType: SignalType; confidence: number; strengthDiff: number; reason: string }[] {
+  getRecentNearMisses(): NearMissEntry[] {
     return [...this.nearMisses].reverse();
+  }
+
+  /**
+   * Step 6: retroactively resolves every matured, price-snapshotted near-miss
+   * against REAL subsequent price action (via the same signalResolver logic
+   * used for real signals, fromScratch so it never trusts a stored status)
+   * and buckets the hypothetical outcomes by rejection reason. A bucket where
+   * a meaningful fraction of rejected setups would have won flags that
+   * threshold/reason as miscalibrated-too-tight; a bucket that mostly would
+   * have lost confirms the gate is working as intended.
+   */
+  async mineNearMissesForRecalibration(
+    fetchBars: (fromTs: number, toTs: number) => Promise<OhlcBar[]>,
+    nowMs: number = Date.now(),
+  ): Promise<NearMissRecalibrationBucket[]> {
+    const buckets = new Map<string, { wins: number; losses: number; noOutcome: number }>();
+
+    for (const nm of this.nearMisses) {
+      if (nm.entryPrice === undefined || nm.tp1 === undefined || nm.tp2 === undefined || nm.tp3 === undefined || nm.sl === undefined) {
+        continue; // no snapshot captured (rejection happened before entry context existed)
+      }
+      if (nowMs - nm.timestamp < NEAR_MISS_MIN_MATURITY_MS) {
+        continue; // too recent to have played out
+      }
+
+      const bars = await fetchBars(nm.timestamp, Math.min(nowMs, nm.timestamp + NEAR_MISS_LOOKAHEAD_MS));
+      const hypotheticalSignal: TradingSignal = {
+        id: `nearmiss-${nm.timestamp}`,
+        timestamp: new Date(nm.timestamp),
+        type: nm.signalType,
+        entryPrice: nm.entryPrice,
+        entryPriceWithSlippage: nm.entryPrice,
+        tp1: nm.tp1,
+        tp2: nm.tp2,
+        tp3: nm.tp3,
+        sl: nm.sl,
+        slMultiplier: 1,
+        confidence: nm.confidence,
+        status: 'ACTIVE',
+        targetsHit: 0,
+        entryTime: new Date(nm.timestamp).toISOString(),
+        topFeatures: [],
+        riskJustification: 'near-miss hypothetical resolution (never emitted as a real signal)',
+        createdAt: nm.timestamp,
+      };
+
+      const outcome = resolveSignalWithBars(hypotheticalSignal, bars, {
+        fromScratch: true,
+        evalNowMs: nowMs,
+        logPrefix: `   [NearMissMiner ${nm.reason}]`,
+      });
+
+      const bucket = buckets.get(nm.reason) ?? { wins: 0, losses: 0, noOutcome: 0 };
+      if (outcome.outcomeResult === 'WIN') bucket.wins++;
+      else if (outcome.outcomeResult === 'LOSS') bucket.losses++;
+      else bucket.noOutcome++;
+      buckets.set(nm.reason, bucket);
+    }
+
+    return Array.from(buckets.entries()).map(([reason, b]) => {
+      const decided = b.wins + b.losses;
+      const winRate = decided > 0 ? b.wins / decided : 0;
+      return {
+        reason,
+        wins: b.wins,
+        losses: b.losses,
+        noOutcome: b.noOutcome,
+        winRate,
+        flagged: decided >= NEAR_MISS_FLAG_MIN_SAMPLE && winRate > NEAR_MISS_FLAG_WIN_RATE,
+      };
+    });
   }
 
   getDiffBucketStats(): { low: { wins: number; losses: number; ev: number }; mid: { wins: number; losses: number; ev: number }; high: { wins: number; losses: number; ev: number } } {
