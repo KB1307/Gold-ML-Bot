@@ -438,11 +438,14 @@ const Platform = { OS: "web" as const };
 `;
 
   // Regex-based stripping: match by module specifier, tolerant of the imported
-  // names. This must not silently break when signalEngine.ts's import list
-  // changes (e.g. a new named import added to an existing module specifier).
+  // names AND tolerant of CRLF line endings (source files in this repo may be
+  // saved with either \n or \r\n) so this can't silently fail to strip an
+  // import and produce duplicate-declaration errors. This must not silently
+  // break when signalEngine.ts's import list changes (e.g. a new named import
+  // added to an existing module specifier).
   const stripImportFrom = (code: string, specifier: string): string => {
     const escaped = specifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const pattern = new RegExp(`^import\\s+(?:[\\w*]+\\s*,\\s*)?(?:\\{[^}]*\\}|[\\w*]+(?:\\s+as\\s+\\w+)?)\\s+from\\s+["']${escaped}["'];?\\n`, "m");
+    const pattern = new RegExp(`^import\\s+(?:[\\w*]+\\s*,\\s*)?(?:\\{[^}]*\\}|[\\w*]+(?:\\s+as\\s+\\w+)?)\\s+from\\s+["']${escaped}["'];?\\r?\\n`, "m");
     return code.replace(pattern, "");
   };
 

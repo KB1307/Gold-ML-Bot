@@ -47,12 +47,15 @@ const trpcClient = {} as any;
 const Platform = { OS: "web" as const };
 `;
 
-  // Regex-based stripping: match by module specifier, tolerant of the imported names.
+  // Regex-based stripping: match by module specifier, tolerant of the imported
+  // names AND tolerant of CRLF line endings (source files in this repo may be
+  // saved with either \n or \r\n) so this can't silently fail to strip an
+  // import and produce duplicate-declaration errors.
   const rewritten = source
-    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/types\/trading["'];?\n/m, "")
-    .replace(/^import\s+AsyncStorage\s+from\s+["']@react-native-async-storage\/async-storage["'];?\n/m, "")
-    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/lib\/trpc["'];?\n/m, "")
-    .replace(/^import\s+\{[^}]*\}\s+from\s+["']react-native["'];?\n/m, "");
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/types\/trading["'];?\r?\n/m, "")
+    .replace(/^import\s+AsyncStorage\s+from\s+["']@react-native-async-storage\/async-storage["'];?\r?\n/m, "")
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/lib\/trpc["'];?\r?\n/m, "")
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["']react-native["'];?\r?\n/m, "");
 
   await mkdir(sandboxDir, { recursive: true });
   await writeFile(sandboxPath, `${sandboxPrelude}\n${rewritten}`);

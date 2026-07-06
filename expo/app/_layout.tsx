@@ -32,7 +32,7 @@ import { LinearGradient } from "expo-linear-gradient";
   };
 
   // React Native global handler (native runtime)
-  const g = global as Record<string, unknown>;
+  const g = globalThis as Record<string, unknown>;
   if (typeof g.ErrorUtils !== "undefined" && g.ErrorUtils) {
     try {
       const utils = g.ErrorUtils as { getGlobalHandler?: () => (error: unknown, isFatal?: boolean) => void; setGlobalHandler?: (h: (error: unknown, isFatal?: boolean) => void) => void };

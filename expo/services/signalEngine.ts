@@ -187,8 +187,29 @@ const MIN_CONFIDENCE_FOR_RETRAINING = 0.68;
  * the next signal.
  */
 const LEARNED_WEIGHT_GAIN = 2.5;
-const LEARNED_MODULATION_MIN = -1.0;
+/**
+ * Step 1 design decision: kept at 0 (not -1.0) even though Bayesian
+ * consolidation (BAYESIAN_BLEND_ALPHA below) now damps single-cycle swings.
+ * A blended weight can still legitimately land close to -1.0 if a feature has
+ * been consistently poor across many consolidated cycles, and at that
+ * magnitude a -1.0 floor would let the feature's contribution flip to argue
+ * the OPPOSITE direction of its raw evidence — not just fade toward
+ * irrelevant. That failure mode (a bad feature actively arguing backwards)
+ * is worse than under-using a feature, so the floor stays at 0 until more
+ * production retrain cycles have been observed to prove the blended weights
+ * stay away from the extremes that made sign-flip risky.
+ */
+const LEARNED_MODULATION_MIN = 0;
 const LEARNED_MODULATION_MAX = 3.0;
+/**
+ * Step 1: Bayesian memory consolidation. Each retrain blends the freshly
+ * fitted (recent-window) weight vector with the previous consolidated
+ * ("historical") vector instead of overwriting it outright, so a short
+ * adverse/favorable streak can only nudge the learned weights, not swing
+ * them to an extreme in a single cycle.
+ * W_final = (alpha * W_historical) + ((1 - alpha) * W_recent)
+ */
+const BAYESIAN_BLEND_ALPHA = 0.4;
 const BASE_SLIPPAGE_BUFFER_PIPS = 0.5;
 const CONFIDENCE_SMOOTHING_WINDOW = 5;
 const LATENCY_WARNING_THRESHOLD_MS = 100;
@@ -2949,6 +2970,11 @@ class SignalGenerationEngine {
     return this.modelWeights.get(featureKey);
   }
 
+  /** Step 1 test seam: read the Bayesian blend alpha (historical-weight share) used by retrainModel. */
+  public getBayesianBlendAlphaForTest(): number {
+    return BAYESIAN_BLEND_ALPHA;
+  }
+
   private enhancedTransformerAnalysis(features: MarketFeatures): {
     signalStrength: number;
     signalType: SignalType;
@@ -4007,6 +4033,10 @@ class SignalGenerationEngine {
       console.log('⚠️ Retrain class diversity is limited - applying neutral fallback weighting to avoid unstable model weights');
     }
     
+    // Step 1: capture the pre-retrain ("historical") vector BEFORE clearing,
+    // so the freshly fitted recent-window vector can be blended against it
+    // rather than overwriting it outright.
+    const historicalWeights = new Map<string, number>(this.modelWeights);
     this.modelWeights.clear();
     
     const rawWeights: { [key: string]: number } = {};
@@ -4056,25 +4086,43 @@ class SignalGenerationEngine {
     const sumAbsoluteWeights = Object.values(rawWeights).reduce((sum, w) => sum + Math.abs(w), 0);
     console.log(`   Sum of Absolute Weights: ${sumAbsoluteWeights.toFixed(4)}`);
     
+    const recentWeights = new Map<string, number>();
     if (sumAbsoluteWeights > 0) {
       Object.entries(rawWeights).forEach(([key, value]) => {
         const normalizedWeight = value / sumAbsoluteWeights;
-        this.modelWeights.set(key, normalizedWeight);
+        recentWeights.set(key, normalizedWeight);
       });
-      
-      console.log('   Normalized Weights (sum = 1.0):');
-      let verificationSum = 0;
-      this.modelWeights.forEach((value, key) => {
-        console.log(`      ${key}: ${value.toFixed(4)} (${(Math.abs(value) * 100).toFixed(1)}% influence)`);
-        verificationSum += Math.abs(value);
-      });
-      console.log(`   Verification Sum: ${verificationSum.toFixed(4)} ✅`);
     } else {
       console.log('   ⚠️ Warning: All weights are zero. Using equal distribution.');
       Object.keys(rawWeights).forEach(key => {
-        this.modelWeights.set(key, 1.0 / Object.keys(rawWeights).length);
+        recentWeights.set(key, 1.0 / Object.keys(rawWeights).length);
       });
     }
+
+    // Step 1: Bayesian memory consolidation. Blend the freshly fitted
+    // recent-window vector (W_recent) with the previous consolidated vector
+    // (W_historical, i.e. last cycle's W_final) instead of overwriting it:
+    //   W_final = (alpha * W_historical) + ((1 - alpha) * W_recent)
+    // A feature with no prior history defaults W_historical to 0 (neutral),
+    // so cold-start behaviour is unaffected.
+    console.log('\n🧮 BAYESIAN MEMORY CONSOLIDATION:');
+    console.log(`   alpha (historical weight): ${BAYESIAN_BLEND_ALPHA}`);
+    const blendedKeys = new Set<string>([...historicalWeights.keys(), ...recentWeights.keys()]);
+    blendedKeys.forEach(key => {
+      const historical = historicalWeights.get(key) ?? 0;
+      const recent = recentWeights.get(key) ?? 0;
+      const blended = (BAYESIAN_BLEND_ALPHA * historical) + ((1 - BAYESIAN_BLEND_ALPHA) * recent);
+      this.modelWeights.set(key, blended);
+      console.log(`      ${key}: historical=${historical.toFixed(4)} recent=${recent.toFixed(4)} -> blended=${blended.toFixed(4)}`);
+    });
+
+    console.log('   Final Blended Weights:');
+    let verificationSum = 0;
+    this.modelWeights.forEach((value, key) => {
+      console.log(`      ${key}: ${value.toFixed(4)} (${(Math.abs(value) * 100).toFixed(1)}% influence)`);
+      verificationSum += Math.abs(value);
+    });
+    console.log(`   Verification Sum (post-blend, not necessarily 1.0): ${verificationSum.toFixed(4)}`);
     
     this.lastTrainingTime = Date.now();
     
@@ -4097,7 +4145,7 @@ class SignalGenerationEngine {
       weights: Array.from(this.modelWeights.entries()),
       lastTrainingTime: this.lastTrainingTime,
     };
-    AsyncStorage.setItem(MODEL_WEIGHTS_KEY, JSON.stringify(persistData)).catch(error => {
+    AsyncStorage.setItem(MODEL_WEIGHTS_KEY, JSON.stringify(persistData)).catch((error: unknown) => {
       console.error('Failed to persist model weights:', error);
     });
     

@@ -15,6 +15,6 @@
     "expo-env.d.ts"
   ],
   "exclude": [
-    "scripts/__sandbox__"
+    "scripts"
   ]
 }
