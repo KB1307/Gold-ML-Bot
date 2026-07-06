@@ -404,6 +404,35 @@ export function computeSignalPnL(signal: TradingSignal, basePositionSize: number
   return clampedDirectional * basePositionSize * contractSize;
 }
 
+/**
+ * Dollar risk a signal was actually exposed to (entry -> SL distance), scaled
+ * by the same position-sizing convention as computeSignalPnL. This is the
+ * denominator for R-multiple normalization — required because SL distance is
+ * NOT fixed across signals (dynamic/ATR-based SL means a 40-pip-risk signal
+ * and a 90-pip-risk signal are not comparable in raw dollar terms).
+ */
+export function computeSignalRiskAmount(signal: TradingSignal, basePositionSize: number): number {
+  if (!Number.isFinite(signal.entryPrice) || signal.entryPrice <= 0) return 0;
+  if (!Number.isFinite(signal.sl) || signal.sl <= 0) return 0;
+  const contractSize = 100;
+  const riskDistance = Math.abs(signal.entryPrice - signal.sl);
+  return riskDistance * basePositionSize * contractSize;
+}
+
+/**
+ * Risk-normalized return for a single closed trade: how many multiples of its
+ * own initial risk it made or lost (R-multiple). A trade that risked $20 and
+ * made $40 is +2R regardless of whether another signal that day risked $50.
+ * Returns 0 when risk is unknown/invalid rather than throwing, so a single
+ * corrupt signal can't NaN-poison an aggregate.
+ */
+export function computeSignalRMultiple(signal: TradingSignal, basePositionSize: number): number {
+  const riskAmount = computeSignalRiskAmount(signal, basePositionSize);
+  if (riskAmount <= 0) return 0;
+  const pnl = computeSignalPnL(signal, basePositionSize);
+  return pnl / riskAmount;
+}
+
 function areMarketSessionsEqual(left: MarketOutlook["sessions"], right: MarketOutlook["sessions"]): boolean {
   if (left.length !== right.length) {
     return false;
@@ -1809,7 +1838,15 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const averageWin = profits.length > 0 ? totalProfit / profits.length : 0;
     const averageLoss = losses.length > 0 ? totalLoss / losses.length : 0;
     const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : totalProfit > 0 ? 999 : 0;
-    const expectancy = totalTrades > 0 ? (totalProfit - totalLoss) / totalTrades : 0;
+
+    // Expectancy in R-multiples, not raw dollars: SL distance varies per signal
+    // (dynamic/ATR-based SL), so a $-per-trade average conflates a trade that
+    // risked $10 with one that risked $50. Risk-normalizing first makes
+    // expectancy comparable across signals and over time as SL width shifts.
+    const rMultiples = closedTrades.map(signal => computeSignalRMultiple(signal, settings.basePositionSize));
+    const expectancy = rMultiples.length > 0
+      ? rMultiples.reduce((a, b) => a + b, 0) / rMultiples.length
+      : 0;
 
     let runningBalance = accountBalance;
     let peak = accountBalance;
@@ -1834,12 +1871,31 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
     const currentDrawdown = runningBalance < peak ? ((peak - runningBalance) / peak) * 100 : 0;
 
-    const returns = profits.concat(losses.map(l => -l));
+    // Risk-normalized (R-multiple) per-trade returns — same rationale as
+    // expectancy above: dollar P&L isn't comparable across signals with
+    // different SL distances, so Sharpe's mean/stdDev must be computed on R,
+    // not raw dollars, or a run of wide-SL trades silently dominates the ratio.
+    const returns = rMultiples;
     const avgReturn = returns.length > 0 ? returns.reduce((a, b) => a + b, 0) / returns.length : 0;
     const stdDev = returns.length > 1 
       ? Math.sqrt(returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / (returns.length - 1))
       : 0;
-    const sharpeRatio = stdDev > 0 ? (avgReturn / stdDev) * Math.sqrt(252) : 0;
+
+    // Intraday-correct annualization: this system can generate many signals per
+    // day (not one trade/day like a typical daily-bar equity strategy), so a
+    // fixed sqrt(252) daily-annualization massively UNDER-annualizes real risk
+    // taken. Derive actual trades/day from the real timestamp span of the
+    // closed-trade history instead of assuming a frequency.
+    const chronoTimestamps = chronologicalTrades.map(s => new Date(s.timestamp).getTime());
+    const spanMs = chronoTimestamps.length > 1
+      ? chronoTimestamps[chronoTimestamps.length - 1] - chronoTimestamps[0]
+      : 0;
+    // Floor the span at 1 day so a burst of trades within a few hours doesn't
+    // divide by a near-zero span and produce an absurd trades/day figure.
+    const spanDays = Math.max(spanMs / (1000 * 60 * 60 * 24), 1);
+    const tradesPerDay = totalTrades > 0 ? totalTrades / spanDays : 0;
+    const annualizationFactor = tradesPerDay > 0 ? Math.sqrt(tradesPerDay * 252) : 0;
+    const sharpeRatio = stdDev > 0 ? (avgReturn / stdDev) * annualizationFactor : 0;
 
     const healthMetrics = safeGetModelHealth();
 
