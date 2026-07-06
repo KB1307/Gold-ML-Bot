@@ -105,7 +105,14 @@ interface SRZone {
   rejectionWicks: number;
   avgRejectionSize: number;
   reactionStrength: number;
-  source: 'PRICE_ACTION' | 'PIVOT' | 'FIBONACCI' | 'VOLUME_NODE';
+  source: 'PRICE_ACTION' | 'PIVOT' | 'FIBONACCI' | 'VOLUME_NODE' | 'PREV_DAY' | 'ASIAN_RANGE' | 'ORH_ORL' | 'WEEKLY';
+  /**
+   * Step 5e: number of distinct source types (PRICE_ACTION, PIVOT, PREV_DAY,
+   * ASIAN_RANGE, ORH_ORL, WEEKLY, FIBONACCI, VOLUME_NODE) that cluster onto
+   * this same price level. A level confirmed by several independent
+   * timeframes/methods is structurally stronger than one seen only once.
+   */
+  confluenceScore: number;
 }
 
 interface SRZoneReaction {
@@ -851,6 +858,19 @@ class SignalGenerationEngine {
   private londonSessionLow: number = Infinity;
   private nySessionHigh: number = 0;
   private nySessionLow: number = Infinity;
+  /**
+   * Step 5a: the Asian range frozen at the moment London opens, so it stays
+   * available through London/NY for sweep + zone detection instead of being
+   * silently replaced by a rolling recent-tick proxy the moment new data
+   * arrives (which is what MarketFeatures.asianHigh/asianLow used to do).
+   */
+  private frozenAsianHigh: number = 0;
+  private frozenAsianLow: number = Infinity;
+  private asianRangeFrozenForToday: boolean = false;
+  /** Step 5c: London/NY opening-range (first 30 min) highs/lows, distinct from the ongoing session high/low. */
+  private londonOR: { high: number; low: number; captured: boolean } = { high: 0, low: Infinity, captured: false };
+  private nyOR: { high: number; low: number; captured: boolean } = { high: 0, low: Infinity, captured: false };
+  private lastOpeningRangeResetDate: string = '';
   private lastSessionUpdate: number = 0;
   private lastOHLCFetchTime: number = 0;
   private ohlcDataSource: string = 'estimated';
@@ -1675,15 +1695,54 @@ class SignalGenerationEngine {
     return this.quasimodolLevels;
   }
 
+  /**
+   * Step 5c: freezes an opening-range high/low once the capture window has
+   * passed, and keeps extending high/low while still inside the window.
+   * Mutates `state` in place (object identity preserved for class fields).
+   */
+  private updateOpeningRange(
+    totalMinutesUTC: number,
+    windowStartMinutes: number,
+    windowEndMinutes: number,
+    currentPrice: number,
+    state: { high: number; low: number; captured: boolean },
+    label: string,
+  ): void {
+    const inWindow = totalMinutesUTC >= windowStartMinutes && totalMinutesUTC < windowEndMinutes;
+    if (inWindow) {
+      state.high = state.high > 0 ? Math.max(state.high, currentPrice) : currentPrice;
+      state.low = state.low < Infinity ? Math.min(state.low, currentPrice) : currentPrice;
+      state.captured = false;
+    } else if (totalMinutesUTC >= windowEndMinutes && !state.captured && state.high > 0) {
+      state.captured = true;
+      console.log(`📐 ${label} Opening Range frozen: ${state.low.toFixed(1)} - ${state.high.toFixed(1)}`);
+    }
+  }
+
   private detectSessionSweeps(): SessionSweep[] {
     const now = Date.now();
     const currentPrice = this.currentPrice;
-    const hour = new Date().getUTCHours();
+    const nowDate = new Date();
+    const hour = nowDate.getUTCHours();
+    const minute = nowDate.getUTCMinutes();
 
     if (now - this.lastSessionUpdate < 60000) {
       return this.sessionSweeps;
     }
     this.lastSessionUpdate = now;
+
+    const utcDateStr = nowDate.toISOString().slice(0, 10);
+    if (this.lastOpeningRangeResetDate !== utcDateStr) {
+      this.lastOpeningRangeResetDate = utcDateStr;
+      this.londonOR = { high: 0, low: Infinity, captured: false };
+      this.nyOR = { high: 0, low: Infinity, captured: false };
+      this.asianRangeFrozenForToday = false;
+    }
+
+    // Step 5c: London 07:00-07:30 UTC / NY 13:30-14:00 UTC opening ranges.
+    const totalMinutesUTC = hour * 60 + minute;
+    this.updateOpeningRange(totalMinutesUTC, 7 * 60, 7 * 60 + 30, currentPrice, this.londonOR, 'London');
+    this.updateOpeningRange(totalMinutesUTC, 13 * 60 + 30, 14 * 60, currentPrice, this.nyOR, 'NY');
 
     const isAsianSession = (hour >= 0 && hour < 6) || (hour >= 22 && hour < 24);
     const isLondonSession = hour >= 6 && hour < 13;
@@ -1699,6 +1758,16 @@ class SignalGenerationEngine {
       this.asianSessionLow = Math.min(this.asianSessionLow, currentPrice);
       console.log(`Asian Session - High: ${this.asianSessionHigh.toFixed(1)}, Low: ${this.asianSessionLow.toFixed(1)}`);
     } else if (isLondonSession) {
+      // Step 5a: freeze the Asian range the moment London opens so it survives
+      // through London/NY instead of being silently overwritten by a rolling
+      // recent-tick proxy elsewhere in the pipeline.
+      if (!this.asianRangeFrozenForToday && this.asianSessionHigh > 0 && this.asianSessionLow < Infinity) {
+        this.frozenAsianHigh = this.asianSessionHigh;
+        this.frozenAsianLow = this.asianSessionLow;
+        this.asianRangeFrozenForToday = true;
+        console.log(`🔒 Asian Range frozen for the day: ${this.frozenAsianLow.toFixed(1)} - ${this.frozenAsianHigh.toFixed(1)}`);
+      }
+
       this.londonSessionHigh = Math.max(this.londonSessionHigh, currentPrice);
       this.londonSessionLow = Math.min(this.londonSessionLow, currentPrice);
 
@@ -1876,7 +1945,8 @@ class SignalGenerationEngine {
       return this.srZones;
     }
 
-    const candidateLevels: { price: number; source: 'PRICE_ACTION' | 'PIVOT' | 'FIBONACCI' | 'VOLUME_NODE' }[] = [];
+    type ZoneSource = SRZone['source'];
+    const candidateLevels: { price: number; source: ZoneSource; alwaysAdmit?: boolean }[] = [];
 
     const recentHighs = this.highHistory.slice(-50);
     const recentLows = this.lowHistory.slice(-50);
@@ -1903,15 +1973,48 @@ class SignalGenerationEngine {
     candidateLevels.push({ price: ohlc.yesterdayClose + zoneStep * 2, source: 'PIVOT' });
     candidateLevels.push({ price: ohlc.yesterdayClose - zoneStep * 2, source: 'PIVOT' });
 
-    const clustered: { price: number; source: 'PRICE_ACTION' | 'PIVOT' | 'FIBONACCI' | 'VOLUME_NODE'; count: number }[] = [];
+    // Step 5b: Previous-Day High/Low/Open are structurally significant by
+    // definition (not discovered via touch count) — always admit them.
+    candidateLevels.push({ price: ohlc.yesterdayHigh, source: 'PREV_DAY', alwaysAdmit: true });
+    candidateLevels.push({ price: ohlc.yesterdayLow, source: 'PREV_DAY', alwaysAdmit: true });
+    candidateLevels.push({ price: ohlc.yesterdayOpen, source: 'PREV_DAY', alwaysAdmit: true });
+
+    // Step 5a: the Asian range frozen at London open (falls back to the live
+    // tracked range if the freeze hasn't fired yet this cycle).
+    if (this.frozenAsianHigh > 0 && this.frozenAsianLow < Infinity) {
+      candidateLevels.push({ price: this.frozenAsianHigh, source: 'ASIAN_RANGE', alwaysAdmit: true });
+      candidateLevels.push({ price: this.frozenAsianLow, source: 'ASIAN_RANGE', alwaysAdmit: true });
+    } else if (this.asianSessionHigh > 0 && this.asianSessionLow < Infinity) {
+      candidateLevels.push({ price: this.asianSessionHigh, source: 'ASIAN_RANGE', alwaysAdmit: true });
+      candidateLevels.push({ price: this.asianSessionLow, source: 'ASIAN_RANGE', alwaysAdmit: true });
+    }
+
+    // Step 5c: London/NY opening-range highs/lows, distinct from the ongoing session high/low.
+    if (this.londonOR.high > 0 && this.londonOR.low < Infinity) {
+      candidateLevels.push({ price: this.londonOR.high, source: 'ORH_ORL', alwaysAdmit: true });
+      candidateLevels.push({ price: this.londonOR.low, source: 'ORH_ORL', alwaysAdmit: true });
+    }
+    if (this.nyOR.high > 0 && this.nyOR.low < Infinity) {
+      candidateLevels.push({ price: this.nyOR.high, source: 'ORH_ORL', alwaysAdmit: true });
+      candidateLevels.push({ price: this.nyOR.low, source: 'ORH_ORL', alwaysAdmit: true });
+    }
+
+    // Step 5d: genuine weekly high/low (not a copy of the daily pivot inputs).
+    const { weeklyHigh, weeklyLow } = this.getWeeklyHighLow();
+    candidateLevels.push({ price: weeklyHigh, source: 'WEEKLY', alwaysAdmit: true });
+    candidateLevels.push({ price: weeklyLow, source: 'WEEKLY', alwaysAdmit: true });
+
+    const clustered: { price: number; source: ZoneSource; count: number; sources: Set<ZoneSource>; alwaysAdmit: boolean }[] = [];
     for (const level of candidateLevels) {
       const existing = clustered.find(c => Math.abs(c.price - level.price) < zoneWidth);
       if (existing) {
         existing.count++;
         existing.price = (existing.price + level.price) / 2;
+        existing.sources.add(level.source);
+        existing.alwaysAdmit = existing.alwaysAdmit || !!level.alwaysAdmit;
         if (level.source === 'PRICE_ACTION') existing.source = level.source;
       } else {
-        clustered.push({ ...level, count: 1 });
+        clustered.push({ price: level.price, source: level.source, count: 1, sources: new Set([level.source]), alwaysAdmit: !!level.alwaysAdmit });
       }
     }
 
@@ -1954,9 +2057,14 @@ class SignalGenerationEngine {
       const avgRejectionSize = rejectionWicks > 0 ? totalRejectionSize / rejectionWicks : 0;
       const rejectionSizeScore = Math.min(1, avgRejectionSize / (atr * 0.5));
       const clusterScore = Math.min(1, cluster.count / 3);
-      const reactionStrength = (touchScore * 0.30) + (rejectionScore * 0.30) + (rejectionSizeScore * 0.20) + (clusterScore * 0.20);
+      // Step 5e: confluence — how many distinct source types agree on this
+      // level (e.g. PREV_DAY + ASIAN_RANGE + PIVOT). Genuine multi-timeframe
+      // agreement earns real extra strength on top of the base score.
+      const confluenceScore = cluster.sources.size;
+      const confluenceBonus = Math.min(1, confluenceScore * 0.25);
+      const reactionStrength = Math.min(1, (touchScore * 0.30) + (rejectionScore * 0.30) + (rejectionSizeScore * 0.20) + (clusterScore * 0.20) + confluenceBonus);
 
-      if (touches >= 2 || rejectionWicks >= 1 || cluster.count >= 2) {
+      if (cluster.alwaysAdmit || touches >= 2 || rejectionWicks >= 1 || cluster.count >= 2) {
         zones.push({
           price: parseFloat(cluster.price.toFixed(1)),
           type: isResistance ? 'RESISTANCE' : 'SUPPORT',
@@ -1966,18 +2074,19 @@ class SignalGenerationEngine {
           avgRejectionSize: parseFloat(avgRejectionSize.toFixed(2)),
           reactionStrength: parseFloat(reactionStrength.toFixed(3)),
           source: cluster.source,
+          confluenceScore,
         });
       }
     }
 
     zones.sort((a, b) => b.reactionStrength - a.reactionStrength);
-    this.srZones = zones.slice(0, 12);
+    this.srZones = zones.slice(0, 16);
 
     if (this.srZones.length > 0) {
       console.log('\n📊 S/R ZONE DETECTION:');
       console.log('='.repeat(60));
       for (const zone of this.srZones.slice(0, 6)) {
-        console.log(`   ${zone.type} @ ${zone.price.toFixed(1)} | Touches: ${zone.touches} | Wick Rejections: ${zone.rejectionWicks} | Reaction: ${(zone.reactionStrength * 100).toFixed(0)}% | Source: ${zone.source}`);
+        console.log(`   ${zone.type} @ ${zone.price.toFixed(1)} | Touches: ${zone.touches} | Wick Rejections: ${zone.rejectionWicks} | Reaction: ${(zone.reactionStrength * 100).toFixed(0)}% | Source: ${zone.source} | Confluence: ${zone.confluenceScore}`);
       }
       console.log('='.repeat(60));
     }
@@ -2165,6 +2274,31 @@ class SignalGenerationEngine {
     };
   }
   
+  /**
+   * Step 5d: a genuine weekly high/low/close derived from the actual last 7
+   * days of dailyOHLCHistory, instead of weeklyPivot simply being a copy of
+   * the daily pivot.
+   */
+  private getWeeklyHighLow(): { weeklyHigh: number; weeklyLow: number; weeklyClose: number } {
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const recentBars = this.dailyOHLCHistory.filter((bar) => bar.timestamp >= sevenDaysAgo);
+
+    if (recentBars.length === 0) {
+      const ohlc = this.getDerivedDailyOHLC();
+      return { weeklyHigh: ohlc.yesterdayHigh, weeklyLow: ohlc.yesterdayLow, weeklyClose: ohlc.yesterdayClose };
+    }
+
+    const weeklyHigh = Math.max(...recentBars.map((bar) => bar.high));
+    const weeklyLow = Math.min(...recentBars.map((bar) => bar.low));
+    const mostRecent = [...recentBars].sort((a, b) => b.timestamp - a.timestamp)[0];
+
+    return {
+      weeklyHigh,
+      weeklyLow,
+      weeklyClose: mostRecent.close,
+    };
+  }
+
   private getDerivedDailyOHLC(): { yesterdayHigh: number; yesterdayLow: number; yesterdayClose: number; yesterdayOpen: number } {
     const currentPrice = this.currentPrice;
     const STALENESS_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000;
@@ -2280,10 +2414,19 @@ class SignalGenerationEngine {
     
     // Synthetic Asian Session Range based on recent price history or ATR
     // If we have history, find min/max of last N bars to simulate session
-    let asianHigh = currentPrice;
-    let asianLow = currentPrice;
-    
-    if (this.priceHistory.length > 20) {
+    // Step 5a: prefer the real tracked Asian session range (frozen at London
+    // open so it survives through the day) over a rolling recent-tick proxy,
+    // which effectively "forgot" the actual Asian session the moment new
+    // ticks arrived.
+    let asianHigh: number;
+    let asianLow: number;
+    if (this.frozenAsianHigh > 0 && this.frozenAsianLow < Infinity) {
+      asianHigh = this.frozenAsianHigh;
+      asianLow = this.frozenAsianLow;
+    } else if (this.asianSessionHigh > 0 && this.asianSessionLow < Infinity) {
+      asianHigh = this.asianSessionHigh;
+      asianLow = this.asianSessionLow;
+    } else if (this.priceHistory.length > 20) {
       const recent = this.priceHistory.slice(-50); // Last 50 ticks
       asianHigh = Math.max(...recent);
       asianLow = Math.min(...recent);
@@ -2335,7 +2478,9 @@ class SignalGenerationEngine {
     const atr = this.calculateRealATR(14);
     const volumeRatio = this.calculateRealVolumeRatio();
     
-    const weeklyPivot = dailyPivot;
+    // Step 5d: a genuine weekly figure from actual daily bars, not a copy of dailyPivot.
+    const { weeklyHigh, weeklyLow, weeklyClose } = this.getWeeklyHighLow();
+    const weeklyPivot = (weeklyHigh + weeklyLow + weeklyClose) / 3;
     
     // Fractals from price history
     let fractalResistance = currentPrice;
