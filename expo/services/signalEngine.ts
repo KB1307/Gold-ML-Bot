@@ -3101,20 +3101,6 @@ class SignalGenerationEngine {
       console.log(`✅ High Liquidity Session (${isLondonSession ? 'LONDON' : 'NY'}) - context factor, not directional boost`);
     }
     
-    // C10: Synthetic order flow disabled (no real tick volume). Kept as context only.
-    if (features.orderFlow.largeOrdersDetected) {
-      attentionScores.set('order_flow_context', 0.02);
-      console.log(`ℹ️ Order Flow context only (synthetic, no directional boost): imbalance ${(features.orderFlow.volumeImbalance * 100).toFixed(1)}%`);
-    }
-    
-    const nearHighVolumeNode = features.volumeProfile.highVolumeNodes.some(
-      node => Math.abs(this.currentPrice - node) < 3
-    );
-    if (nearHighVolumeNode) {
-      attentionScores.set('volume_node_support_resistance', 0.05);
-      console.log('ℹ️ Price near High Volume Node (context only, no directional boost)');
-    }
-    
     // C12: Trend feature stack capped at 0.50 combined contribution
     let trendBuyContribution = 0;
     let trendSellContribution = 0;
@@ -3355,6 +3341,42 @@ class SignalGenerationEngine {
       attentionScores.set('session_high_sweep', 0.35);
       console.log(`🔴 SELL: ${confirmedHighSweep.sessionType} Session High Sweep Confirmed (High Accuracy Setup)`);
       console.log(`   Sweep @ ${confirmedHighSweep.sweepPrice.toFixed(1)} - Reversal confirmed`);
+    }
+
+    // STEP 4: De-correlate synthetic microstructure features (order-flow proxy,
+    // volume-profile histogram). Both are derived from the SAME raw price series as
+    // RSI/trend/EMA/MACD above (there is no real tick/volume feed), so if a momentum
+    // feature has already fired in the same analysis pass, order-flow/volume-node
+    // "confirmation" is a redundant re-expression of that signal, not new evidence.
+    // Redundancy is down-weighted to near-zero unless a genuine structural signal
+    // (a confirmed session-range sweep, checked here now that sweeps are resolved) is
+    // also present. HTF/LTF trend alignment does NOT count as structural confirmation
+    // here - it's the same momentum family, not an order-block/sweep-level event.
+    const momentumAlreadyCounted = [
+      'htf_ltf_bullish_alignment', 'htf_ltf_bearish_alignment',
+      'ltf_momentum_buy', 'ltf_momentum_sell',
+      'strong_uptrend', 'strong_downtrend',
+      'bullish_ema_crossover', 'bearish_ema_crossover',
+      'bullish_macd_momentum', 'bearish_macd_momentum',
+      'rsi_learned_modulation',
+    ].some(k => attentionScores.has(k));
+    const hasStructuralConfirmation = attentionScores.has('session_low_sweep') || attentionScores.has('session_high_sweep');
+    const microstructureRedundancyFactor = hasStructuralConfirmation ? 1.0 : (momentumAlreadyCounted ? 0.25 : 1.0);
+    const microstructureDownWeighted = momentumAlreadyCounted && !hasStructuralConfirmation;
+
+    if (features.orderFlow.largeOrdersDetected) {
+      const orderFlowWeight = parseFloat((0.02 * microstructureRedundancyFactor).toFixed(4));
+      attentionScores.set('order_flow_context', orderFlowWeight);
+      console.log(`ℹ️ Order Flow context only (synthetic, no directional boost): imbalance ${(features.orderFlow.volumeImbalance * 100).toFixed(1)}% | weight ${orderFlowWeight.toFixed(3)}${microstructureDownWeighted ? ' (down-weighted: redundant with momentum already counted)' : ''}`);
+    }
+
+    const nearHighVolumeNode = features.volumeProfile.highVolumeNodes.some(
+      node => Math.abs(this.currentPrice - node) < 3
+    );
+    if (nearHighVolumeNode) {
+      const volumeNodeWeight = parseFloat((0.05 * microstructureRedundancyFactor).toFixed(4));
+      attentionScores.set('volume_node_support_resistance', volumeNodeWeight);
+      console.log(`ℹ️ Price near High Volume Node (context only, no directional boost) | weight ${volumeNodeWeight.toFixed(3)}${microstructureDownWeighted ? ' (down-weighted: redundant with momentum already counted)' : ''}`);
     }
 
     console.log('\n📊 SIGNAL STRENGTH COMPARISON:');
