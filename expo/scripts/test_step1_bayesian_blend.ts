@@ -49,6 +49,18 @@ const AsyncStorage = {
 };
 const trpcClient = {} as any;
 const Platform = { OS: "web" as const };
+type StoredTradeOutcome = any;
+const sandboxLearningStoreOutcomes: unknown[] = [];
+async function appendOutcomeToStore(outcome: unknown): Promise<void> { sandboxLearningStoreOutcomes.push(outcome); }
+async function getAllOutcomesFromStore(): Promise<unknown[]> { return sandboxLearningStoreOutcomes.slice(); }
+async function getOutcomeCountFromStore(): Promise<number> { return sandboxLearningStoreOutcomes.length; }
+async function pruneOutcomeStoreToCap(cap: number): Promise<void> { if (sandboxLearningStoreOutcomes.length > cap) sandboxLearningStoreOutcomes.splice(0, sandboxLearningStoreOutcomes.length - cap); }
+async function migrateLegacyOutcomesIfEmpty(legacy: unknown[]): Promise<number> {
+  if (sandboxLearningStoreOutcomes.length > 0) return 0;
+  if (!Array.isArray(legacy) || legacy.length === 0) return 0;
+  sandboxLearningStoreOutcomes.push(...legacy);
+  return legacy.length;
+}
 `;
 
   // CRLF-tolerant regex stripping (Step 1 / Fix A requirement).
@@ -56,6 +68,7 @@ const Platform = { OS: "web" as const };
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/types\/trading["'];?\r?\n/m, "")
     .replace(/^import\s+AsyncStorage\s+from\s+["']@react-native-async-storage\/async-storage["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/lib\/trpc["'];?\r?\n/m, "")
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/learningStore["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']react-native["'];?\r?\n/m, "");
 
   await mkdir(sandboxDir, { recursive: true });

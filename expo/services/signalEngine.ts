@@ -2,6 +2,7 @@ import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { fetchHistoricalData, trpcClient } from "@/lib/trpc";
 import { Platform } from "react-native";
+import { appendOutcome as appendOutcomeToStore, getAllOutcomes as getAllOutcomesFromStore, getOutcomeCount as getOutcomeCountFromStore, migrateLegacyOutcomesIfEmpty, pruneToCap as pruneOutcomeStoreToCap, type StoredTradeOutcome } from "@/services/learningStore";
 
 interface OrderFlowData {
   bidVolume: number;
@@ -171,6 +172,19 @@ let lastIntermarketFetchTime: number = 0;
 const LEARNING_STORAGE_KEY = 'trade_outcomes_learning';
 const MODEL_WEIGHTS_KEY = 'model_weights_v1';
 const DAILY_OHLC_STORAGE_KEY = 'daily_ohlc_history_v1';
+/**
+ * Step 3 — expanded persisted learning memory.
+ * A 24h accelerated real-market replay (scripts/runSignalSimulation.ts)
+ * produced 5 signals/day with 2 reaching a terminal WIN/LOSS outcome the same
+ * day (the rest expired or stayed open) — i.e. roughly 2 real outcomes/day,
+ * ~14/week at current signal volume. A 2,000-row cap would take ~2.7 years
+ * to fill and is not a meaningful sliding window for a 14-day retrain cycle.
+ * 300 is chosen as a realistic interim cap: ~3x the old 100-entry limit,
+ * fills in roughly 21 weeks (~5 months) at measured volume, and can be raised
+ * later with a one-line constant change now that storage is SQLite-backed
+ * (no in-memory array copy cost to worry about).
+ */
+const MAX_STORED_OUTCOMES = 300;
 
 const TRAINING_WINDOW_DAYS = 14;
 const MIN_CONFIDENCE_FOR_RETRAINING = 0.68;
@@ -3877,8 +3891,8 @@ class SignalGenerationEngine {
     
     this.tradeOutcomes.push(outcome);
     
-    if (this.tradeOutcomes.length > 100) {
-      this.tradeOutcomes = this.tradeOutcomes.slice(-100);
+    if (this.tradeOutcomes.length > MAX_STORED_OUTCOMES) {
+      this.tradeOutcomes = this.tradeOutcomes.slice(-MAX_STORED_OUTCOMES);
     }
     
     const recentOutcomes = this.tradeOutcomes.slice(-20);
@@ -3960,9 +3974,10 @@ class SignalGenerationEngine {
     this.updateModelHealthScore();
     
     try {
-      await AsyncStorage.setItem(LEARNING_STORAGE_KEY, JSON.stringify(this.tradeOutcomes));
+      await appendOutcomeToStore(outcome as unknown as StoredTradeOutcome);
+      await pruneOutcomeStoreToCap(MAX_STORED_OUTCOMES);
     } catch (error) {
-      console.error('Failed to persist trade outcomes:', error);
+      console.error('Failed to persist trade outcome to SQLite learning store:', error);
     }
   }
   
@@ -3980,7 +3995,7 @@ class SignalGenerationEngine {
     
     if (trainingData.length < 10) {
       console.log(`⚠️ Time-based window yielded only ${trainingData.length} outcomes. Using all available trades as fallback.`);
-      const fallbackData = this.tradeOutcomes.slice(-100);
+      const fallbackData = this.tradeOutcomes.slice(-MAX_STORED_OUTCOMES);
       this.retrainModel(fallbackData);
       return;
     }
@@ -4154,15 +4169,31 @@ class SignalGenerationEngine {
   
   async loadPersistedLearningData(): Promise<DailyOHLC[]> {
     try {
-      const [outcomesData, weightsData, dailyOHLCData] = await Promise.all([
+      const [legacyOutcomesData, weightsData, dailyOHLCData] = await Promise.all([
         AsyncStorage.getItem(LEARNING_STORAGE_KEY),
         AsyncStorage.getItem(MODEL_WEIGHTS_KEY),
         AsyncStorage.getItem(DAILY_OHLC_STORAGE_KEY),
       ]);
       
-      if (outcomesData) {
-        this.tradeOutcomes = JSON.parse(outcomesData);
-        console.log(`✓ Loaded ${this.tradeOutcomes.length} trade outcomes from storage`);
+      // Step 3: trade outcomes now live in SQLite (learningStore.ts), not this
+      // AsyncStorage blob. One-time, idempotent migration: if SQLite is still
+      // empty but a legacy AsyncStorage blob exists, copy it in (preserving
+      // order), then always read from SQLite going forward.
+      try {
+        if (legacyOutcomesData) {
+          const legacyOutcomes = JSON.parse(legacyOutcomesData);
+          const migratedCount = await migrateLegacyOutcomesIfEmpty(Array.isArray(legacyOutcomes) ? legacyOutcomes : []);
+          if (migratedCount > 0) {
+            console.log(`✓ Migrated ${migratedCount} legacy trade outcomes from AsyncStorage into SQLite learning store`);
+          }
+        }
+        const storedOutcomes = await getAllOutcomesFromStore();
+        this.tradeOutcomes = (storedOutcomes.length > MAX_STORED_OUTCOMES
+          ? storedOutcomes.slice(-MAX_STORED_OUTCOMES)
+          : storedOutcomes) as unknown as TradeOutcome[];
+        console.log(`✓ Loaded ${this.tradeOutcomes.length} trade outcomes from SQLite learning store`);
+      } catch (migrationError) {
+        console.error('Failed to load/migrate trade outcomes into SQLite learning store:', migrationError);
       }
       
       if (weightsData) {

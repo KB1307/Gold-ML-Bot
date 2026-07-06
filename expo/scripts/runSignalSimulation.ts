@@ -435,6 +435,18 @@ const fetchHistoricalData = async (input: { fromTime: number; toTime: number }):
 };
 
 const Platform = { OS: "web" as const };
+type StoredTradeOutcome = any;
+const sandboxLearningStoreOutcomes: unknown[] = [];
+async function appendOutcomeToStore(outcome: unknown): Promise<void> { sandboxLearningStoreOutcomes.push(outcome); }
+async function getAllOutcomesFromStore(): Promise<unknown[]> { return sandboxLearningStoreOutcomes.slice(); }
+async function getOutcomeCountFromStore(): Promise<number> { return sandboxLearningStoreOutcomes.length; }
+async function pruneOutcomeStoreToCap(cap: number): Promise<void> { if (sandboxLearningStoreOutcomes.length > cap) sandboxLearningStoreOutcomes.splice(0, sandboxLearningStoreOutcomes.length - cap); }
+async function migrateLegacyOutcomesIfEmpty(legacy: unknown[]): Promise<number> {
+  if (sandboxLearningStoreOutcomes.length > 0) return 0;
+  if (!Array.isArray(legacy) || legacy.length === 0) return 0;
+  sandboxLearningStoreOutcomes.push(...legacy);
+  return legacy.length;
+}
 `;
 
   // Regex-based stripping: match by module specifier, tolerant of the imported
@@ -453,6 +465,7 @@ const Platform = { OS: "web" as const };
     "@/types/trading",
     "@react-native-async-storage/async-storage",
     "@/lib/trpc",
+    "@/services/learningStore",
     "react-native",
   ].reduce(stripImportFrom, source);
 
