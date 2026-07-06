@@ -2433,7 +2433,7 @@ class SignalGenerationEngine {
     }
 
     const dailyPivot = (H + L + C) / 3;
-    const range = H - L;
+    const range = Math.max(H - L, dailyRange);
     const r1 = C + (range * 1.1) / 12;
     const s1 = C - (range * 1.1) / 12;
     const r2 = C + (range * 1.1) / 6;
@@ -2515,7 +2515,7 @@ class SignalGenerationEngine {
     const dailyPivot = (pivotH + pivotL + pivotC) / 3;
     const dailyRange = pivotH - pivotL;
 
-    const camRange = pivotH - pivotL;
+    const camRange = Math.max(pivotH - pivotL, effectiveRange);
     const r1 = pivotC + (camRange * 1.1) / 12;
     const s1 = pivotC - (camRange * 1.1) / 12;
     const r2 = pivotC + (camRange * 1.1) / 6;

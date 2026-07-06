@@ -164,6 +164,53 @@ async function main(): Promise<void> {
   check("R3 > R2 > R1 and S3 < S2 < S1 (monotonic)", levels.r3 > levels.r2 && levels.r2 > levels.r1 && levels.s3 < levels.s2 && levels.s2 < levels.s1,
     `R: ${levels.r1}/${levels.r2}/${levels.r3}  S: ${levels.s1}/${levels.s2}/${levels.s3}`);
 
+  // -------------------------------------------------------------------
+  // REGRESSION CASE: currentPrice sits INSIDE a genuinely tight prior-day
+  // range (no gap). priceOutsideRange is false, so H/L are never
+  // re-centered -- range = H - L must still be floored (Math.max(H-L,
+  // dailyRange)), otherwise it silently falls back to the raw tiny H-L
+  // span, bypassing the atrFloor fix entirely even though the console log
+  // still prints the correctly-floored dailyRange (misleadingly).
+  // -------------------------------------------------------------------
+  console.log("\n--- Regression case: currentPrice INSIDE a tight prior-day range (no gap) ---\n");
+
+  const tightPriorDayBar = { high: 3250.5, low: 3249.5, close: 3250, open: 3250 };
+  const noGapPrice = 3250; // sits inside [3249.5, 3250.5] -> priceOutsideRange stays false
+
+  const noGapLevels = signalEngine.getDashboardPivotLevelsForTest(noGapPrice, highs, lows, closes, tightPriorDayBar);
+  const noGapAtr = signalEngine.getRealATRForTest(14);
+  const noGapSpread = noGapLevels.r3 - noGapLevels.s3;
+  const noGapExpectedFloor = noGapPrice * 0.008;
+  const noGapMinSpread = (noGapExpectedFloor * 1.1) / 4 * 2;
+
+  console.log(`  Prior-day bar (tight, on record): H ${tightPriorDayBar.high} L ${tightPriorDayBar.low} (range $${(tightPriorDayBar.high - tightPriorDayBar.low).toFixed(2)})`);
+  console.log(`  Current price (INSIDE that range, no gap): ${noGapPrice}`);
+  console.log(`  Forced ATR(14): ${noGapAtr.toFixed(2)}`);
+  console.log(`  Pivot: ${noGapLevels.dailyPivot.toFixed(2)}`);
+  console.log(`  R1/R2/R3: ${noGapLevels.r1.toFixed(2)} / ${noGapLevels.r2.toFixed(2)} / ${noGapLevels.r3.toFixed(2)}`);
+  console.log(`  S1/S2/S3: ${noGapLevels.s1.toFixed(2)} / ${noGapLevels.s2.toFixed(2)} / ${noGapLevels.s3.toFixed(2)}`);
+  console.log(`  Total R3-S3 spread: $${noGapSpread.toFixed(2)} (must be >= ~$${noGapMinSpread.toFixed(2)}, NOT the raw $1.00 H-L span)\n`);
+
+  check(
+    "BEFORE-FIX BUG (documented): raw H-L for this bar is only $1.00 -- confirms the unfloored path would have collapsed pivots",
+    (tightPriorDayBar.high - tightPriorDayBar.low) < 2,
+    `raw H-L=$${(tightPriorDayBar.high - tightPriorDayBar.low).toFixed(2)}`
+  );
+  check(
+    "no-gap case: range/camRange floor now applies even when priceOutsideRange never fires",
+    noGapSpread >= noGapMinSpread - 0.1,
+    `spread=$${noGapSpread.toFixed(2)} vs required floor implied spread=$${noGapMinSpread.toFixed(2)}`
+  );
+  check(
+    "no-gap case: spread is well beyond the old raw-H-L collapse (~$0.60)",
+    noGapSpread > 3,
+    `spread=$${noGapSpread.toFixed(2)}`
+  );
+  check("no-gap case: R1 > pivot > S1 (ordering sane)", noGapLevels.r1 > noGapLevels.dailyPivot && noGapLevels.dailyPivot > noGapLevels.s1,
+    `r1=${noGapLevels.r1} pivot=${noGapLevels.dailyPivot} s1=${noGapLevels.s1}`);
+  check("no-gap case: R3 > R2 > R1 and S3 < S2 < S1 (monotonic)", noGapLevels.r3 > noGapLevels.r2 && noGapLevels.r2 > noGapLevels.r1 && noGapLevels.s3 < noGapLevels.s2 && noGapLevels.s2 < noGapLevels.s1,
+    `R: ${noGapLevels.r1}/${noGapLevels.r2}/${noGapLevels.r3}  S: ${noGapLevels.s1}/${noGapLevels.s2}/${noGapLevels.s3}`);
+
   console.log(`\n${pass}/${pass + fail} assertions passed.`);
   if (fail > 0) { console.error(`❌ ${fail} FAILED`); process.exit(1); }
   else { console.log("✅ Pivot floor fix verified — R1-R3/S1-S3 now scale with live price, even when re-centering around a gapped price."); }
