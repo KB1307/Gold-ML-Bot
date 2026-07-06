@@ -55,6 +55,16 @@ export interface MarketSession {
   nextClose?: Date;
 }
 
+export interface DetectedSRZone {
+  price: number;
+  type: "SUPPORT" | "RESISTANCE";
+  touches: number;
+  rejectionWicks: number;
+  reactionStrength: number;
+  source: "PRICE_ACTION" | "PIVOT" | "FIBONACCI" | "VOLUME_NODE" | "PREV_DAY" | "ASIAN_RANGE" | "ORH_ORL" | "WEEKLY";
+  confluenceScore: number;
+}
+
 export interface MarketOutlook {
   isMarketOpen: boolean;
   currentSession: string;
@@ -68,6 +78,14 @@ export interface MarketOutlook {
   s1: number;
   s2: number;
   s3: number;
+  /**
+   * Real, candlestick-derived S/R zones from detectSRZones() (fractal swing
+   * highs/lows, actual touch counts, rejection wicks, PDH/PDL, Asian range,
+   * opening range, weekly H/L, confluence). These are what structural gating
+   * actually checks first - the r1/r2/r3/s1/s2/s3 fields above are the fixed
+   * Camarilla reference pivots, kept for display/fallback only.
+   */
+  srZones: DetectedSRZone[];
 }
 
 export interface FibonacciLevel {

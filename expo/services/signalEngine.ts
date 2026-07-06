@@ -3240,6 +3240,23 @@ class SignalGenerationEngine {
     return this.detectSRZones();
   }
 
+  /** Part 2 test seam: call validateStructuralConditions() directly with synthetic features/settings, bypassing full analysis. */
+  public validateStructuralConditionsForTest(
+    signalType: SignalType,
+    features: MarketFeatures,
+    settings: { tp1Pips: number; tp2Pips: number; tp3Pips: number; slPips: number },
+    currentPrice: number
+  ): { valid: boolean; reason?: string; tip?: string } {
+    this.currentPrice = currentPrice;
+    return this.validateStructuralConditions(signalType, features, settings);
+  }
+
+  /** Part 2 test seam: call computeRoomToSR() directly with synthetic features. */
+  public computeRoomToSRForTest(signalType: SignalType, features: MarketFeatures, currentPrice: number): number {
+    this.currentPrice = currentPrice;
+    return this.computeRoomToSR(signalType, features);
+  }
+
   private enhancedTransformerAnalysis(features: MarketFeatures): {
     signalStrength: number;
     signalType: SignalType;
@@ -5307,9 +5324,17 @@ class SignalGenerationEngine {
       let nearestBarrierDistance = Infinity;
       let barrierType = 'None';
 
+      // Part 2: real, candlestick-derived srZones (fractal swings, actual touch
+      // counts, rejection wicks, PDH/PDL, Asian range, opening range, weekly
+      // H/L + confluence) are checked FIRST as the primary barrier source.
+      // Fixed Camarilla pivots (r1-r3/s1-s3) are now only a fallback used when
+      // no qualifying real zone exists - they have no requirement to
+      // correspond to anywhere price has actually reacted before.
       if (signalType === 'BUY') {
         const bearishOBs = features.orderBlocks.filter(ob => ob.type === 'BEARISH' && ob.price > currentPrice);
-        const resistanceLevels = [features.r1, features.r2, features.r3].filter(r => r > currentPrice);
+        const qualifyingZones = features.srZones.filter(z => z.type === 'RESISTANCE' && z.price > currentPrice && z.reactionStrength >= 0.3);
+        const hasRealBarrier = bearishOBs.length > 0 || qualifyingZones.length > 0;
+        const resistanceLevels = hasRealBarrier ? [] : [features.r1, features.r2, features.r3].filter(r => r > currentPrice);
 
         bearishOBs.forEach(ob => {
           const distance = (ob.price - currentPrice) / pipValue;
@@ -5319,16 +5344,26 @@ class SignalGenerationEngine {
           }
         });
 
+        qualifyingZones.forEach(zone => {
+          const distance = (zone.price - currentPrice) / pipValue;
+          if (distance < nearestBarrierDistance) {
+            nearestBarrierDistance = distance;
+            barrierType = `SRZone RESISTANCE @ ${zone.price.toFixed(1)} (reaction ${(zone.reactionStrength * 100).toFixed(0)}%, touches ${zone.touches}, source ${zone.source})`;
+          }
+        });
+
         resistanceLevels.forEach(level => {
           const distance = (level - currentPrice) / pipValue;
           if (distance < nearestBarrierDistance) {
             nearestBarrierDistance = distance;
-            barrierType = `Resistance @ ${level.toFixed(1)}`;
+            barrierType = `Resistance (Camarilla fallback) @ ${level.toFixed(1)}`;
           }
         });
       } else {
         const bullishOBs = features.orderBlocks.filter(ob => ob.type === 'BULLISH' && ob.price < currentPrice);
-        const supportLevels = [features.s1, features.s2, features.s3].filter(s => s < currentPrice);
+        const qualifyingZones = features.srZones.filter(z => z.type === 'SUPPORT' && z.price < currentPrice && z.reactionStrength >= 0.3);
+        const hasRealBarrier = bullishOBs.length > 0 || qualifyingZones.length > 0;
+        const supportLevels = hasRealBarrier ? [] : [features.s1, features.s2, features.s3].filter(s => s < currentPrice);
 
         bullishOBs.forEach(ob => {
           const distance = (currentPrice - ob.price) / pipValue;
@@ -5338,11 +5373,19 @@ class SignalGenerationEngine {
           }
         });
 
+        qualifyingZones.forEach(zone => {
+          const distance = (currentPrice - zone.price) / pipValue;
+          if (distance < nearestBarrierDistance) {
+            nearestBarrierDistance = distance;
+            barrierType = `SRZone SUPPORT @ ${zone.price.toFixed(1)} (reaction ${(zone.reactionStrength * 100).toFixed(0)}%, touches ${zone.touches}, source ${zone.source})`;
+          }
+        });
+
         supportLevels.forEach(level => {
           const distance = (currentPrice - level) / pipValue;
           if (distance < nearestBarrierDistance) {
             nearestBarrierDistance = distance;
-            barrierType = `Support @ ${level.toFixed(1)}`;
+            barrierType = `Support (Camarilla fallback) @ ${level.toFixed(1)}`;
           }
         });
       }
@@ -5370,27 +5413,34 @@ class SignalGenerationEngine {
       let nearMajorLevel = false;
       let levelDescription = 'None';
 
+      // Part 2: counter-trend entries now require proof of a REAL,
+      // previously-tested level (order block, or an srZone with
+      // reactionStrength >= 0.3 AND touches >= 2) - not an
+      // arithmetically-derived Camarilla pivot that merely happens to be
+      // nearby. No pivot-proximity fallback here (unlike the primary-trend
+      // branch): a counter-trend bet against the prevailing HTF/LTF trend
+      // needs genuine structural evidence, not a fixed grid number.
       if (signalType === 'BUY') {
         const bullishOBs = features.orderBlocks.filter(ob => ob.type === 'BULLISH' && Math.abs(ob.price - currentPrice) < bounceThreshold);
-        const supportLevels = [features.s2, features.s3].filter(s => Math.abs(s - currentPrice) < bounceThreshold);
+        const qualifyingZone = features.srZones.find(z => z.type === 'SUPPORT' && Math.abs(z.price - currentPrice) < bounceThreshold && z.reactionStrength >= 0.3 && z.touches >= 2);
 
         if (bullishOBs.length > 0) {
           nearMajorLevel = true;
           levelDescription = `Bullish OB @ ${bullishOBs[0].price.toFixed(1)} (Strength: ${(bullishOBs[0].strength * 100).toFixed(0)}%)`;
-        } else if (supportLevels.length > 0) {
+        } else if (qualifyingZone) {
           nearMajorLevel = true;
-          levelDescription = `Support Level @ ${supportLevels[0].toFixed(1)}`;
+          levelDescription = `SRZone SUPPORT @ ${qualifyingZone.price.toFixed(1)} (reaction ${(qualifyingZone.reactionStrength * 100).toFixed(0)}%, touches ${qualifyingZone.touches}, source ${qualifyingZone.source})`;
         }
       } else {
         const bearishOBs = features.orderBlocks.filter(ob => ob.type === 'BEARISH' && Math.abs(ob.price - currentPrice) < bounceThreshold);
-        const resistanceLevels = [features.r2, features.r3].filter(r => Math.abs(r - currentPrice) < bounceThreshold);
+        const qualifyingZone = features.srZones.find(z => z.type === 'RESISTANCE' && Math.abs(z.price - currentPrice) < bounceThreshold && z.reactionStrength >= 0.3 && z.touches >= 2);
 
         if (bearishOBs.length > 0) {
           nearMajorLevel = true;
           levelDescription = `Bearish OB @ ${bearishOBs[0].price.toFixed(1)} (Strength: ${(bearishOBs[0].strength * 100).toFixed(0)}%)`;
-        } else if (resistanceLevels.length > 0) {
+        } else if (qualifyingZone) {
           nearMajorLevel = true;
-          levelDescription = `Resistance Level @ ${resistanceLevels[0].toFixed(1)}`;
+          levelDescription = `SRZone RESISTANCE @ ${qualifyingZone.price.toFixed(1)} (reaction ${(qualifyingZone.reactionStrength * 100).toFixed(0)}%, touches ${qualifyingZone.touches}, source ${qualifyingZone.source})`;
         }
       }
 
@@ -5401,8 +5451,8 @@ class SignalGenerationEngine {
       }
 
       if (!nearMajorLevel) {
-        const reason = `COUNTER-TREND REJECTED: Not bouncing off major structural level`;
-        const tip = `Counter-trend signals require price within ${bounceThreshold} pips of Bullish/Bearish OB or major S2/R2/S3/R3 pivot.`;
+        const reason = `COUNTER-TREND REJECTED: Not bouncing off a real, previously-tested structural level`;
+        const tip = `Counter-trend signals require price within ${bounceThreshold} pips of a Bullish/Bearish OB, or an S/R zone with reaction strength >= 30% and at least 2 confirmed touches - not just a nearby arithmetic pivot.`;
         console.log(`   ❌ ${reason}`);
         console.log(`   💡 ${tip}`);
         console.log('='.repeat(60) + '\n');
@@ -5716,12 +5766,21 @@ class SignalGenerationEngine {
   private computeRoomToSR(signalType: SignalType, features: MarketFeatures): number {
     const price = this.currentPrice;
     const pip = 0.1;
+    // Part 2: real srZones (filtered by side + reactionStrength >= 0.3) are
+    // now included alongside the Camarilla pivots and order blocks as
+    // candidate barriers for TP2/TP3 room sizing.
     if (signalType === 'BUY') {
-      const barriers = [features.r1, features.r2, features.r3, ...features.orderBlocks.filter(o => o.type === 'BEARISH').map(o => o.price)].filter(p => p > price);
+      const srBarriers = features.srZones
+        .filter(z => z.type === 'RESISTANCE' && z.price > price && z.reactionStrength >= 0.3)
+        .map(z => z.price);
+      const barriers = [features.r1, features.r2, features.r3, ...features.orderBlocks.filter(o => o.type === 'BEARISH').map(o => o.price), ...srBarriers].filter(p => p > price);
       if (barriers.length === 0) return 200;
       return (Math.min(...barriers) - price) / pip;
     } else {
-      const barriers = [features.s1, features.s2, features.s3, ...features.orderBlocks.filter(o => o.type === 'BULLISH').map(o => o.price)].filter(p => p < price);
+      const srBarriers = features.srZones
+        .filter(z => z.type === 'SUPPORT' && z.price < price && z.reactionStrength >= 0.3)
+        .map(z => z.price);
+      const barriers = [features.s1, features.s2, features.s3, ...features.orderBlocks.filter(o => o.type === 'BULLISH').map(o => o.price), ...srBarriers].filter(p => p < price);
       if (barriers.length === 0) return 200;
       return (price - Math.max(...barriers)) / pip;
     }
@@ -5907,6 +5966,19 @@ class SignalGenerationEngine {
       s1: pivotLevels.s1,
       s2: pivotLevels.s2,
       s3: pivotLevels.s3,
+      // Part 3: expose the real, candlestick-derived S/R zones already
+      // computed above as part of calculateMarketFeatures() - features.srZones
+      // is fresh for this exact call (calculateMarketFeatures() runs detectSRZones()
+      // synchronously at the top of this function), so no extra recompute is needed.
+      srZones: features.srZones.map(zone => ({
+        price: zone.price,
+        type: zone.type,
+        touches: zone.touches,
+        rejectionWicks: zone.rejectionWicks,
+        reactionStrength: zone.reactionStrength,
+        source: zone.source,
+        confluenceScore: zone.confluenceScore,
+      })),
     };
   }
   

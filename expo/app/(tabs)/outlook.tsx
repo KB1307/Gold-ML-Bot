@@ -225,9 +225,38 @@ export default function OutlookScreen() {
               </View>
               <View style={styles.pivotInfo}>
                 <Text style={styles.pivotInfoText}>
-                  Daily intraday support and resistance anchors are calculated from the completed day range and close for tighter bot-ready zones
+                  Reference Pivots (Camarilla) — a fixed arithmetic grid, shown for context.
                 </Text>
               </View>
+            </View>
+
+            <View style={styles.sessionCard}>
+              <View style={styles.cardHeader}>
+                <BarChart3 size={20} color="#FFD700" />
+                <Text style={styles.cardTitle}>Detected Zones (Live Signal Data)</Text>
+              </View>
+              <Text style={styles.sessionInfoText}>
+                These real, candlestick-tested levels — not the fixed grid above — are what actually drive trade decisions.
+              </Text>
+              {marketOutlook.srZones.length === 0 ? (
+                <View style={styles.sessionInfo}>
+                  <Text style={styles.sessionInfoText}>No confirmed zones yet — gathering price history for this session.</Text>
+                </View>
+              ) : (
+                <View style={{ marginTop: 12, gap: 8 }} testID="outlook-detected-zones-list">
+                  {marketOutlook.srZones.map((zone, index) => {
+                    const isResistance = zone.type === "RESISTANCE";
+                    const strengthPct = Math.round(zone.reactionStrength * 100);
+                    return (
+                      <View key={`${zone.type}-${zone.price}-${index}`} style={styles.sessionRow}>
+                        <View style={[styles.sessionDot, { backgroundColor: isResistance ? "#ef4444" : "#22c55e" }]} />
+                        <Text style={[styles.sessionName, { color: "#fff" }]}>${zone.price.toFixed(1)} · {zone.touches} touch{zone.touches === 1 ? "" : "es"} · {zone.source.replace(/_/g, " ").toLowerCase()}</Text>
+                        <Text style={[styles.sessionStatus, { color: isResistance ? "#ef4444" : "#22c55e" }]}>{strengthPct}%</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
             </View>
 
             <View style={styles.infoCard}>

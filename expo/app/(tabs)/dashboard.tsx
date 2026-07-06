@@ -821,6 +821,41 @@ export default function DashboardScreen() {
                 <Text style={styles.pivotLabel}>Daily Pivot</Text>
                 <Text style={styles.pivotValue}>${marketOutlook.dailyPivot.toFixed(1)}</Text>
               </View>
+              <Text style={styles.srReferenceNote}>Reference Pivots (Camarilla) — fixed grid, shown for context</Text>
+
+              <View style={styles.divider} />
+
+              <Text style={styles.srTitle} testID="dashboard-detected-zones-title">Detected Zones (Live Signal Data)</Text>
+              <Text style={styles.srReferenceNote}>These real, candlestick-tested levels — not the fixed grid above — are what actually drive trade decisions.</Text>
+              {marketOutlook.srZones.length === 0 ? (
+                <View style={styles.noZonesBox} testID="dashboard-no-zones">
+                  <Text style={styles.noZonesText}>No confirmed zones yet — gathering price history for this session.</Text>
+                </View>
+              ) : (
+                <View style={styles.detectedZonesList} testID="dashboard-detected-zones-list">
+                  {marketOutlook.srZones.map((zone, index) => {
+                    const isResistance = zone.type === "RESISTANCE";
+                    const strengthPct = Math.round(zone.reactionStrength * 100);
+                    return (
+                      <View key={`${zone.type}-${zone.price}-${index}`} style={styles.zoneRow}>
+                        <View style={styles.zoneRowLeft}>
+                          <View style={[styles.zoneTypeBadge, { backgroundColor: isResistance ? "rgba(239, 68, 68, 0.15)" : "rgba(34, 197, 94, 0.15)" }]}>
+                            <Text style={[styles.zoneTypeBadgeText, { color: isResistance ? "#ef4444" : "#22c55e" }]}>{isResistance ? "R" : "S"}</Text>
+                          </View>
+                          <View>
+                            <Text style={styles.zonePrice}>${zone.price.toFixed(1)}</Text>
+                            <Text style={styles.zoneMeta}>{zone.touches} touch{zone.touches === 1 ? "" : "es"} · {zone.source.replace(/_/g, " ").toLowerCase()}</Text>
+                          </View>
+                        </View>
+                        <View style={styles.zoneStrengthTrack}>
+                          <View style={[styles.zoneStrengthFill, { width: `${Math.min(100, Math.max(4, strengthPct))}%`, backgroundColor: isResistance ? "#ef4444" : "#22c55e" }]} />
+                        </View>
+                        <Text style={styles.zoneStrengthLabel}>{strengthPct}%</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
             </View>
             )}
           </ScrollView>
@@ -1304,6 +1339,85 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "700",
     color: "#FFD700",
+  } as const,
+  srReferenceNote: {
+    fontSize: 11,
+    color: "#666",
+    marginTop: 8,
+    marginBottom: 4,
+    lineHeight: 15,
+  },
+  noZonesBox: {
+    backgroundColor: "rgba(255, 255, 255, 0.03)",
+    padding: 14,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.05)",
+    marginTop: 8,
+  },
+  noZonesText: {
+    fontSize: 12,
+    color: "#888",
+    textAlign: "center",
+  },
+  detectedZonesList: {
+    gap: 8,
+    marginTop: 8,
+  },
+  zoneRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "rgba(0, 0, 0, 0.3)",
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.05)",
+  },
+  zoneRowLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    minWidth: 92,
+  },
+  zoneTypeBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  zoneTypeBadgeText: {
+    fontSize: 11,
+    fontWeight: "700",
+  } as const,
+  zonePrice: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#fff",
+  } as const,
+  zoneMeta: {
+    fontSize: 9,
+    color: "#888",
+    marginTop: 1,
+  },
+  zoneStrengthTrack: {
+    flex: 1,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    overflow: "hidden",
+  },
+  zoneStrengthFill: {
+    height: 6,
+    borderRadius: 3,
+  },
+  zoneStrengthLabel: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#999",
+    minWidth: 30,
+    textAlign: "right",
   } as const,
   metricsCard: {
     backgroundColor: "rgba(255, 255, 255, 0.03)",
