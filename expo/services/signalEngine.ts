@@ -2399,7 +2399,7 @@ class SignalGenerationEngine {
     const ohlc = this.getDerivedDailyOHLC();
     const currentPrice = this.currentPrice > 0 ? this.currentPrice : ohlc.yesterdayClose;
     const observedDailyRange = Math.max(ohlc.yesterdayHigh - ohlc.yesterdayLow, 0);
-    const atrFloor = Math.max(this.calculateRealATR(14), 2);
+    const atrFloor = Math.max(this.calculateRealATR(14), currentPrice * 0.008);
     const dailyRange = Math.max(observedDailyRange, atrFloor);
 
     let H = ohlc.yesterdayHigh;
@@ -2484,7 +2484,7 @@ class SignalGenerationEngine {
     let pivotL = yesterdayLow;
     let pivotC = yesterdayClose;
     const rawRange = Math.max(pivotH - pivotL, 0);
-    const atrFloorFeatures = Math.max(this.calculateRealATR(14), 2);
+    const atrFloorFeatures = Math.max(this.calculateRealATR(14), currentPrice * 0.008);
     const effectiveRange = Math.max(rawRange, atrFloorFeatures);
 
     const priceOutsidePivotRange = currentPrice > pivotH + effectiveRange * 0.5 || currentPrice < pivotL - effectiveRange * 0.5;
@@ -3164,6 +3164,38 @@ class SignalGenerationEngine {
   /** Step 1 test seam: read the Bayesian blend alpha (historical-weight share) used by retrainModel. */
   public getBayesianBlendAlphaForTest(): number {
     return BAYESIAN_BLEND_ALPHA;
+  }
+
+  /** Pivot-floor-fix test seam: force deterministic price/ATR/prior-day inputs, then read the dashboard pivot levels. */
+  public getDashboardPivotLevelsForTest(
+    price: number,
+    highs: number[],
+    lows: number[],
+    closes: number[],
+    priorDayBar?: { high: number; low: number; close: number; open: number }
+  ): {
+    dailyPivot: number; r1: number; r2: number; r3: number; s1: number; s2: number; s3: number;
+  } {
+    this.currentPrice = price;
+    this.highHistory = highs;
+    this.lowHistory = lows;
+    this.priceHistory = closes;
+    if (priorDayBar) {
+      this.dailyOHLCHistory = [{
+        date: "test-day",
+        open: priorDayBar.open,
+        high: priorDayBar.high,
+        low: priorDayBar.low,
+        close: priorDayBar.close,
+        timestamp: Date.now() - 60 * 60 * 1000, // 1h old -> not stale
+      }];
+    }
+    return this.calculateDashboardPivotLevels();
+  }
+
+  /** Pivot-floor-fix test seam: read the ATR value that would be used as the floor's raw input. */
+  public getRealATRForTest(period: number = 14): number {
+    return this.calculateRealATR(period);
   }
 
   private enhancedTransformerAnalysis(features: MarketFeatures): {
