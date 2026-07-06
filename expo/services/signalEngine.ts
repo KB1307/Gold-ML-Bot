@@ -4200,6 +4200,13 @@ class SignalGenerationEngine {
       
       await this.loadFeatureDriftHistory();
       
+      // Bug fix: loadFeatureDriftHistory() restores conceptDriftScore/driftAlertLevel from
+      // storage but never recomputed modelHealthScore, so health stayed at its default (100)
+      // until an unrelated event (trade outcome, correlation check, retrain) triggered a
+      // recompute — producing contradictory dashboard states like Health 100/100 alongside
+      // a HIGH drift alert. Recompute immediately after restoring drift state.
+      this.updateModelHealthScore();
+      
       return this.dailyOHLCHistory;
     } catch (error) {
       console.error('Failed to load learning data:', error);
