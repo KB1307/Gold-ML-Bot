@@ -55,6 +55,13 @@ const getBaseUrlCandidates = (): string[] => {
 
 const getPrimaryTrpcUrl = (): string => `${getBaseUrlCandidates()[0]}${TRPC_PATH}`;
 
+/**
+ * Base API origin (no /api/trpc suffix) — used to build plain, non-tRPC
+ * download links such as the Export Diagnostics pull-by-URL endpoint
+ * (`${getApiOrigin()}/api/export/latest`).
+ */
+export const getApiOrigin = (): string => getBaseUrlCandidates()[0];
+
 const isNetworkRetryableError = (error: unknown): boolean => {
   if (!(error instanceof Error)) {
     return false;

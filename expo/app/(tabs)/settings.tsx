@@ -1,6 +1,7 @@
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Platform, Switch, Alert } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { Settings as SettingsIcon, Target, Shield, TrendingUp, LogOut, Save, Trash2, Activity, AlertTriangle, RefreshCw, Bell, Smartphone, Crown, Send, MessageCircle } from "lucide-react-native";
+import { Settings as SettingsIcon, Target, Shield, TrendingUp, LogOut, Save, Trash2, Activity, AlertTriangle, RefreshCw, Bell, Smartphone, Crown, Send, MessageCircle, FileDown, Copy, Check } from "lucide-react-native";
+import * as Clipboard from "expo-clipboard";
 import { useTrading } from "@/contexts/TradingContext";
 import { useSubscription } from "@/contexts/SubscriptionContext";
 import { useAuth } from "@/contexts/AuthContext";
@@ -9,6 +10,9 @@ import { useState, useEffect, useMemo } from "react";
 import { Stack, useRouter } from "expo-router";
 import { getBackgroundTaskStatus } from "@/services/backgroundTaskService";
 import { sendTelegramMessage } from "@/services/telegramNotifier";
+import { signalEngine } from "@/services/signalEngine";
+import { buildDiagnosticsExportText } from "@/services/diagnosticsExport";
+import { getApiOrigin } from "@/lib/trpc";
 
 function getProviderLabel(provider: unknown): string {
   if (provider === "google") {
@@ -55,7 +59,7 @@ function formatMetadataValue(value: unknown): string {
 }
 
 export default function SettingsScreen() {
-  const { settings, updateSettings, logout, clearHistory, performanceMetrics, triggerManualRetrain, backgroundTaskActive } = useTrading();
+  const { settings, updateSettings, logout, clearHistory, performanceMetrics, triggerManualRetrain, backgroundTaskActive, signalHistory } = useTrading();
   const { isPro, isProGold, appUserId, isSyncingCustomerIdentity } = useSubscription();
   const {
     isConfigured,
@@ -93,6 +97,11 @@ export default function SettingsScreen() {
   const [testMessage, setTestMessage] = useState<string>("");
   const [isSendingTest, setIsSendingTest] = useState<boolean>(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const [isExporting, setIsExporting] = useState<boolean>(false);
+  const [exportUrl, setExportUrl] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [isUrlCopied, setIsUrlCopied] = useState<boolean>(false);
 
   useEffect(() => {
     async function checkBackgroundTask() {
@@ -264,6 +273,56 @@ export default function SettingsScreen() {
       } else {
         Alert.alert('Supabase Test Failed', message);
       }
+    }
+  };
+
+  const handleExportDiagnostics = async () => {
+    setIsExporting(true);
+    setExportError(null);
+    setExportUrl(null);
+    setIsUrlCopied(false);
+
+    try {
+      const [modelWeights, modelHealth] = await Promise.all([
+        signalEngine.getRawModelWeightsForExport(),
+        Promise.resolve(signalEngine.getModelHealthMetrics()),
+      ]);
+
+      const content = buildDiagnosticsExportText({
+        signalHistory,
+        modelWeights,
+        modelHealth,
+        performanceMetrics,
+      });
+
+      const response = await fetch(`${getApiOrigin()}/api/trpc/diagnostics.saveExport`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ json: { content } }),
+      });
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(`Server responded ${response.status}: ${text.slice(0, 200)}`);
+      }
+
+      const url = `${getApiOrigin()}/api/export/latest`;
+      setExportUrl(url);
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : 'Failed to export diagnostics.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleCopyExportUrl = async () => {
+    if (!exportUrl) return;
+    try {
+      await Clipboard.setStringAsync(exportUrl);
+      setIsUrlCopied(true);
+      setTimeout(() => setIsUrlCopied(false), 2000);
+    } catch (error) {
+      console.error('[Settings] Failed to copy export URL:', error);
     }
   };
 
@@ -854,6 +913,62 @@ export default function SettingsScreen() {
               )}
             </View>
 
+            <View style={styles.section} testID="settings-export-diagnostics-section">
+              <View style={styles.sectionHeader}>
+                <FileDown size={20} color="#34d399" />
+                <Text style={styles.sectionTitle}>Export Diagnostics</Text>
+              </View>
+
+              <Text style={styles.helperText}>
+                Bundle your full signal history, model weights, model health/drift metrics, and
+                performance metrics into a readable text file, hosted at a stable URL you can
+                revisit anytime from any device.
+              </Text>
+
+              <TouchableOpacity
+                style={[styles.exportButton, isExporting && styles.exportButtonDisabled]}
+                onPress={() => {
+                  void handleExportDiagnostics();
+                }}
+                disabled={isExporting}
+                testID="settings-export-diagnostics-button"
+              >
+                <FileDown size={18} color={isExporting ? "#666" : "#34d399"} />
+                <Text style={[styles.exportButtonText, isExporting && styles.exportButtonTextDisabled]}>
+                  {isExporting ? "Generating export\u2026" : "Export Diagnostics"}
+                </Text>
+              </TouchableOpacity>
+
+              {exportError && (
+                <View style={styles.exportErrorBox}>
+                  <Text style={styles.exportErrorText}>{exportError}</Text>
+                </View>
+              )}
+
+              {exportUrl && (
+                <View style={styles.exportResultBox} testID="settings-export-diagnostics-url">
+                  <Text style={styles.exportResultLabel}>Download anytime at:</Text>
+                  <Text selectable style={styles.exportResultUrl}>{exportUrl}</Text>
+                  <TouchableOpacity
+                    style={styles.copyUrlButton}
+                    onPress={() => {
+                      void handleCopyExportUrl();
+                    }}
+                    testID="settings-export-diagnostics-copy"
+                  >
+                    {isUrlCopied ? (
+                      <Check size={16} color="#34d399" />
+                    ) : (
+                      <Copy size={16} color="#34d399" />
+                    )}
+                    <Text style={styles.copyUrlButtonText}>
+                      {isUrlCopied ? "Copied!" : "Copy URL"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+
             <View style={styles.infoCard}>
               <Text style={styles.infoTitle}>About Signal Generation</Text>
               <Text style={styles.infoText}>
@@ -1027,6 +1142,80 @@ const styles = StyleSheet.create({
   tpButtonTextActive: {
     color: "#FFD700",
   },
+  exportButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(52, 211, 153, 0.1)",
+    paddingVertical: 14,
+    borderRadius: 10,
+    marginTop: 4,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: "rgba(52, 211, 153, 0.3)",
+  },
+  exportButtonDisabled: {
+    backgroundColor: "rgba(255, 255, 255, 0.03)",
+    borderColor: "rgba(255, 255, 255, 0.08)",
+  },
+  exportButtonText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#34d399",
+  } as const,
+  exportButtonTextDisabled: {
+    color: "#666",
+  },
+  exportErrorBox: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: "rgba(239, 68, 68, 0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.3)",
+  },
+  exportErrorText: {
+    fontSize: 12,
+    color: "#ef4444",
+    lineHeight: 17,
+  },
+  exportResultBox: {
+    marginTop: 12,
+    padding: 14,
+    borderRadius: 10,
+    backgroundColor: "rgba(52, 211, 153, 0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(52, 211, 153, 0.2)",
+  },
+  exportResultLabel: {
+    fontSize: 11,
+    color: "#999",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 6,
+  } as const,
+  exportResultUrl: {
+    fontSize: 13,
+    color: "#fff",
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    marginBottom: 12,
+  },
+  copyUrlButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    alignSelf: "flex-start",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: "rgba(52, 211, 153, 0.12)",
+    gap: 6,
+  },
+  copyUrlButtonText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#34d399",
+  } as const,
   switchRow: {
     flexDirection: "row",
     justifyContent: "space-between",

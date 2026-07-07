@@ -6097,6 +6097,33 @@ class SignalGenerationEngine {
       };
     }
   }
+
+  /**
+   * Raw persisted model_weights_v1 contents, for the Settings > Export
+   * Diagnostics feature. Reads directly from AsyncStorage rather than the
+   * in-memory this.modelWeights map so the export reflects exactly what was
+   * actually persisted. Returns null (not a default/empty map) when the model
+   * has never been retrained yet, so callers can render an explicit
+   * "never retrained" message instead of a misleading empty section.
+   */
+  async getRawModelWeightsForExport(): Promise<{ weights: [string, number][]; lastTrainingTime: number } | null> {
+    try {
+      const weightsData = await AsyncStorage.getItem(MODEL_WEIGHTS_KEY);
+      if (!weightsData) return null;
+      const parsed = JSON.parse(weightsData);
+      const weights: [string, number][] = Array.isArray(parsed?.weights) ? parsed.weights : Array.isArray(parsed) ? parsed : [];
+      const lastTrainingTime: number = typeof parsed?.lastTrainingTime === 'number' ? parsed.lastTrainingTime : 0;
+      if (weights.length === 0 && !lastTrainingTime) return null;
+      return { weights, lastTrainingTime };
+    } catch (error) {
+      console.error('[SignalEngine] Failed to read raw model weights for export:', error);
+      return null;
+    }
+  }
+
+  getTradeOutcomeCount(): number {
+    return this.tradeOutcomes.length;
+  }
 }
 
 export const signalEngine = new SignalGenerationEngine();
