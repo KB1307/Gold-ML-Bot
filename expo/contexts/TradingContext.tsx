@@ -1319,7 +1319,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           signal.entryPrice,
           currentFallbackPrice > 0 ? currentFallbackPrice : signal.entryPrice,
           'LOSS',
-          {} as any,
+          signal.learningContext,
           undefined,
           signalAge
         ).catch(err => {
@@ -1458,7 +1458,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
               signal.entryPrice,
               exitPrice,
               outcomeResult,
-              {} as any,
+              signal.learningContext,
               undefined,
               signalAge
             ).catch(err => {
@@ -1521,7 +1521,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
               signal.entryPrice,
               analysis.exitPrice,
               analysis.outcomeResult,
-              {} as any,
+              signal.learningContext,
               undefined,
               signalAge
             ).catch(err => {
@@ -1727,7 +1727,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             signal.entryPrice,
             analysis.exitPrice,
             'WIN',
-            {} as any,
+            signal.learningContext,
             undefined,
             now - signalTs
           ).catch(err => console.error('Failed to record corrected WIN outcome:', err));
@@ -1738,7 +1738,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             signal.entryPrice,
             analysis.exitPrice,
             'LOSS',
-            {} as any,
+            signal.learningContext,
             undefined,
             now - signalTs
           ).catch(err => console.error('Failed to record corrected LOSS outcome:', err));
@@ -1749,7 +1749,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             signal.entryPrice,
             analysis.exitPrice,
             'LOSS',
-            {} as any,
+            signal.learningContext,
             undefined,
             now - signalTs
           ).catch(err => console.error('Failed to record corrected LOSS outcome:', err));
@@ -2612,7 +2612,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
               signal.entryPrice,
               exitPrice,
               result,
-              {} as any,
+              signal.learningContext,
               undefined,
               now - new Date(signal.timestamp).getTime()
             ).catch(err => {

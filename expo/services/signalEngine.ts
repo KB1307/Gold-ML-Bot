@@ -233,6 +233,13 @@ const LEARNED_MODULATION_MAX = 3.0;
  * W_final = (alpha * W_historical) + ((1 - alpha) * W_recent)
  */
 const BAYESIAN_BLEND_ALPHA = 0.4;
+// Step 2 (zone staleness/decay): half-life, in hours, used to decay a detected
+// S/R zone's reactionStrength based on how long it's been since its last real
+// touch. Chosen so a zone with zero fresh touches decays below the 0.3
+// structural-gating threshold well within a single trading day (0.5^(24/6) =
+// ~6% of original strength at 24h), instead of retaining near-maximum
+// strength indefinitely once earned during one early, low-volatility window.
+const ZONE_STALENESS_HALF_LIFE_HOURS = 6;
 const BASE_SLIPPAGE_BUFFER_PIPS = 0.5;
 const CONFIDENCE_SMOOTHING_WINDOW = 5;
 const LATENCY_WARNING_THRESHOLD_MS = 100;
@@ -2107,7 +2114,28 @@ class SignalGenerationEngine {
       // agreement earns real extra strength on top of the base score.
       const confluenceScore = cluster.sources.size;
       const confluenceBonus = Math.min(1, confluenceScore * 0.25);
-      const reactionStrength = Math.min(1, (touchScore * 0.30) + (rejectionScore * 0.30) + (rejectionSizeScore * 0.20) + (clusterScore * 0.20) + confluenceBonus);
+      const rawReactionStrength = Math.min(1, (touchScore * 0.30) + (rejectionScore * 0.30) + (rejectionSizeScore * 0.20) + (clusterScore * 0.20) + confluenceBonus);
+
+      // Step 2 fix (zone staleness/decay): without this, a zone that earned
+      // maximum touchScore/rejectionScore during one early, low-volatility
+      // window would retain that same maximum reactionStrength indefinitely —
+      // price could travel far away and hours could pass with zero fresh
+      // touches, yet the zone still dominated structural gating for the rest
+      // of the session. Apply an exponential recency decay keyed off lastTouch
+      // (halving every ZONE_STALENESS_HALF_LIFE_HOURS with no fresh touch) so a
+      // genuinely stale, untested-recently zone naturally fades toward
+      // irrelevance instead of retaining full strength forever. Zones with no
+      // touch at all in the current scan window (lastTouch === 0, e.g. an
+      // always-admitted structural level like PDH that simply hasn't been
+      // revisited yet) are NOT penalized here — they already earn zero
+      // touchScore/rejectionScore credit above, so they aren't being
+      // double-penalized for staleness they don't actually have evidence of.
+      const ageMs = lastTouch > 0 ? Math.max(0, now - lastTouch) : 0;
+      const ageHours = ageMs / (60 * 60 * 1000);
+      const recencyDecayFactor = lastTouch > 0
+        ? Math.pow(0.5, ageHours / ZONE_STALENESS_HALF_LIFE_HOURS)
+        : 1;
+      const reactionStrength = Math.min(1, rawReactionStrength * recencyDecayFactor);
 
       if (cluster.alwaysAdmit || touches >= 2 || rejectionWicks >= 1 || cluster.count >= 2) {
         zones.push({
@@ -5307,6 +5335,39 @@ class SignalGenerationEngine {
     );
 
     console.log(`Classification: ${isPrimaryTrend ? 'PRIMARY TREND' : isCounterTrend ? 'COUNTER-TREND' : 'NEUTRAL'}`);
+
+    // Step 3: baseline opposing-structure veto, runs REGARDLESS of primary/
+    // counter/neutral classification (closes the "neutral bypasses everything"
+    // gap - the neutral fallback below returns valid:true unconditionally and
+    // never checked real srZones at all). A 142-signal diagnostics export
+    // showed 38% of signals fired with a top-3 displayed feature directly
+    // opposing their own direction (win rate 46.3% vs 64.8% overall in that
+    // group) - this closes that gap by rejecting any signal that sits near a
+    // real, previously-tested opposing zone with no confirmed favorable
+    // reaction. Depends on Step 2's staleness decay already being applied to
+    // features.srZones, otherwise a single stale-but-maxed zone can veto
+    // almost everything for a full session.
+    const OPPOSING_ZONE_VETO_PROXIMITY = 8;
+    const OPPOSING_ZONE_VETO_MIN_REACTION = 0.3;
+    const opposingZoneType = signalType === 'BUY' ? 'RESISTANCE' : 'SUPPORT';
+    const favorableReactionType = signalType === 'BUY' ? 'SUPPORT' : 'RESISTANCE';
+    const nearOpposingZone = features.srZones.find(z =>
+      z.type === opposingZoneType &&
+      z.reactionStrength >= OPPOSING_ZONE_VETO_MIN_REACTION &&
+      Math.abs(z.price - currentPrice) <= OPPOSING_ZONE_VETO_PROXIMITY
+    );
+    const hasFavorableConfirmedReaction = (
+      features.activeSRReaction?.confirmed === true &&
+      features.activeSRReaction.zone.type === favorableReactionType
+    );
+    if (nearOpposingZone && !hasFavorableConfirmedReaction) {
+      const reason = `${signalType} REJECTED: within ${OPPOSING_ZONE_VETO_PROXIMITY} of a real ${opposingZoneType} zone @ ${nearOpposingZone.price.toFixed(1)} (reaction ${(nearOpposingZone.reactionStrength * 100).toFixed(0)}%, ${nearOpposingZone.touches} touches) with no confirmed favorable reaction`;
+      const tip = `A real, previously-tested ${opposingZoneType.toLowerCase()} zone sits nearby without a confirmed bounce in this signal's favor - firing here risks entering directly against genuine structure.`;
+      console.log(`   ❌ BASELINE OPPOSING-STRUCTURE VETO: ${reason}`);
+      console.log(`   💡 ${tip}`);
+      console.log('='.repeat(60) + '\n');
+      return { valid: false, reason, tip };
+    }
 
     if (isPrimaryTrend) {
       console.log('\n🎯 PRIMARY TREND FILTER: Checking Runway to Barriers');
