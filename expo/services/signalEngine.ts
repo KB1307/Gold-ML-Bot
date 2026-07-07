@@ -3243,6 +3243,11 @@ class SignalGenerationEngine {
     return this.calculateRealATR(period);
   }
 
+  /** Step 3 investigation seam: read the live, already-computed this.srZones snapshot (top-16, post-decay, as gating actually sees it) without forcing synthetic inputs. */
+  public getCurrentSRZonesForTest(): SRZone[] {
+    return this.srZones;
+  }
+
   /** SRZone-floor-fix test seam: force deterministic price/history/prior-day inputs, then read detectSRZones() output. */
   public getSRZonesForTest(
     price: number,
