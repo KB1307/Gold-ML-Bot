@@ -134,6 +134,38 @@ const r10 = resolveSignalWithBars(realWin, [
 check("S10a", r10.newStatus === "ALL_TARGETS_HIT", `status=${r10.newStatus}`);
 check("S10b", r10.outcomeResult === "WIN", `outcome=${r10.outcomeResult}`);
 
+// S11: THE 12:55 BUG — a SELL signal's 1-minute bar spans BOTH the original
+// SL level AND TP2, with TP2 sitting much closer to the bar's open (i.e. the
+// chart really ran to TP2 first before any SL-side wick). The old code always
+// resolved the SL side first regardless of proximity to open, discarding the
+// real TP2 hit and reporting a false SL_HIT/LOSS. The fix must bank TP1+TP2
+// first since they're the closer-to-open levels.
+console.log("S11: same-bar ambiguity — SELL bar spans SL AND TP2, TP2 closer to open (the reported 12:55 bug)");
+const sellAmbig: any = { ...base, type: "SELL", id: "1255-sell",
+  entryPrice: P, entryPriceWithSlippage: P + 1.0,
+  tp1: P - 30 * PIP, tp2: P - 60 * PIP, tp3: P - 90 * PIP, sl: P + 70 * PIP };
+const r11 = resolveSignalWithBars(sellAmbig, [
+  bar(T0 + 2*oneMin, P + 0.5, P - 1, P),                       // entry fill bar
+  // open sits right at TP2 (P-6), but the bar's high also wicks through the
+  // original SL (P+7) — a genuinely ambiguous single 1-min candle.
+  { timestamp: T0 + 3*oneMin, open: P - 6, high: P + 7.2, low: P - 6.5, close: P - 6.2 },
+]);
+check("S11a", r11.newStatus !== "SL_HIT", `status=${r11.newStatus} (must NOT be the false SL_HIT)`);
+check("S11b", r11.targetsHit >= 2, `targetsHit=${r11.targetsHit} (TP2 was closer to open, must be banked)`);
+check("S11c", r11.outcomeResult === "WIN", `outcome=${r11.outcomeResult}`);
+
+// S12: CONTROL — same bar shape, but now the original SL level sits closer to
+// open than TP2 (i.e. price genuinely stopped out first, then merely wicked
+// toward TP2 afterward in the same candle). Must still resolve as a real loss.
+console.log("S12: same-bar ambiguity control — SL closer to open than TP2 stays a real SL_HIT");
+const sellAmbig2: any = { ...sellAmbig, id: "1255-sell-control" };
+const r12 = resolveSignalWithBars(sellAmbig2, [
+  bar(T0 + 2*oneMin, P + 0.5, P - 1, P),
+  { timestamp: T0 + 3*oneMin, open: P + 6.8, high: P + 7.2, low: P - 6.5, close: P - 6.2 },
+]);
+check("S12a", r12.newStatus === "SL_HIT", `status=${r12.newStatus} (SL genuinely closer to open here)`);
+check("S12b", r12.outcomeResult === "LOSS", `outcome=${r12.outcomeResult}`);
+
 console.log(`\n${pass}/${pass+fail} assertions passed.`);
 if (fail > 0) { console.error(`❌ ${fail} FAILED`); process.exit(1); }
 else console.log("✅ All tick-for-tick scenarios verified — resolver correct.");

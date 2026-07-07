@@ -114,6 +114,107 @@ export function resolveSignalWithBars(
     const tp2Hit = isBuy ? bar.high >= signal.tp2 : bar.low <= signal.tp2;
     const tp1Hit = isBuy ? bar.high >= signal.tp1 : bar.low <= signal.tp1;
 
+    // SAME-BAR AMBIGUITY GUARD: a single OHLC bar only gives us open/high/low/
+    // close, not the true tick-by-tick path. When a bar's range spans BOTH the
+    // currently-applicable SL-type level AND a still-unbanked TP level, the old
+    // code always resolved the SL side first regardless of which was actually
+    // touched first on the real chart - silently discarding a genuine TP hit
+    // (or protected exit) in favor of a false loss (e.g. a SELL that really ran
+    // to TP2 within that minute got reported as SL_HIT). We approximate real
+    // order using proximity to the bar's open: price is assumed to travel away
+    // from open continuously, so whichever level sits closer to open was
+    // reached first.
+    let newTargetsHitThisBar = currentTargetsHit;
+    let newTargetLevelThisBar: number | null = null;
+    if (tp3Hit && currentTargetsHit < 3) {
+      newTargetsHitThisBar = 3;
+      newTargetLevelThisBar = signal.tp3;
+    } else if (tp2Hit && currentTargetsHit < 2) {
+      newTargetsHitThisBar = 2;
+      newTargetLevelThisBar = signal.tp2;
+    } else if (tp1Hit && currentTargetsHit < 1) {
+      newTargetsHitThisBar = 1;
+      newTargetLevelThisBar = signal.tp1;
+    }
+
+    const slBreachedPreState = (!hasTP1 && origSlHit) || (hasTP1 && !hasTP2 && lockHit) || (hasTP2 && entryHitAfterTP2);
+    const slBreachLevel = hasTP2 ? signal.entryPrice : (hasTP1 ? postTP1Lock : slTriggerPrice);
+
+    if (newTargetLevelThisBar !== null && slBreachedPreState) {
+      const targetDist = Math.abs(bar.open - newTargetLevelThisBar);
+      const slDist = Math.abs(bar.open - slBreachLevel);
+
+      if (slDist <= targetDist) {
+        // SL-side level sits closer to open -> assume it was hit first; the
+        // target reached later in this same bar never actually banks.
+        if (hasTP2) {
+          currentStatus = 'PARTIAL_WIN_SL_HIT';
+          currentTargetsHit = Math.max(currentTargetsHit, 2);
+          exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
+          outcomeResult = 'WIN';
+        } else if (hasTP1) {
+          currentStatus = 'SL_AFTER_BE';
+          currentTargetsHit = Math.max(currentTargetsHit, 1);
+          exitPrice = postTP1Lock;
+          outcomeResult = 'WIN';
+        } else {
+          currentStatus = 'SL_HIT';
+          exitPrice = signal.sl;
+          outcomeResult = 'LOSS';
+        }
+        resolvedAtBarTs = bar.timestamp;
+        console.log(`${prefix} 🔀 Same-bar ambiguity @ ${new Date(bar.timestamp).toISOString()}: SL-side level ${slBreachLevel.toFixed(1)} (${slDist.toFixed(2)} from open) closer than target ${newTargetLevelThisBar.toFixed(1)} (${targetDist.toFixed(2)}) → ${currentStatus}`);
+        break;
+      }
+
+      // Target level sits closer to open -> bank it first, then check whether
+      // the NEW effective SL-type level was ALSO breached later in this same bar.
+      currentTargetsHit = newTargetsHitThisBar;
+      exitPrice = newTargetLevelThisBar;
+      currentStatus = newTargetsHitThisBar === 3 ? 'ALL_TARGETS_HIT' : newTargetsHitThisBar === 2 ? 'TP2_HIT' : 'TP1_HIT';
+      if (newTargetsHitThisBar === 1) {
+        breakevenReached = true;
+        breakevenTime = new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+      }
+      console.log(`${prefix} 🔀 Same-bar ambiguity @ ${new Date(bar.timestamp).toISOString()}: target ${newTargetLevelThisBar.toFixed(1)} (${targetDist.toFixed(2)} from open) closer than SL-side ${slBreachLevel.toFixed(1)} (${slDist.toFixed(2)}) → banking ${currentStatus} first`);
+
+      if (newTargetsHitThisBar === 3) {
+        outcomeResult = 'WIN';
+        resolvedAtBarTs = bar.timestamp;
+        break;
+      }
+
+      const hasTP2After = newTargetsHitThisBar >= 2;
+      const postLockHitAfter = !hasTP2After
+        ? (isBuy ? bar.low <= postTP1Lock : bar.high >= postTP1Lock)
+        : false;
+      const entryHitAfter = hasTP2After
+        ? (isBuy ? bar.low <= signal.entryPrice : bar.high >= signal.entryPrice)
+        : false;
+
+      if (hasTP2After && entryHitAfter) {
+        currentStatus = 'PARTIAL_WIN_SL_HIT';
+        currentTargetsHit = Math.max(currentTargetsHit, 2);
+        exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
+        outcomeResult = 'WIN';
+        resolvedAtBarTs = bar.timestamp;
+        console.log(`${prefix} ⚖️ Same bar: runner also retraced to entry after banking target → PARTIAL_WIN_SL_HIT @ ${exitPrice.toFixed(1)}`);
+        break;
+      }
+      if (!hasTP2After && postLockHitAfter) {
+        currentStatus = 'SL_AFTER_BE';
+        currentTargetsHit = Math.max(currentTargetsHit, 1);
+        exitPrice = postTP1Lock;
+        outcomeResult = 'WIN';
+        resolvedAtBarTs = bar.timestamp;
+        console.log(`${prefix} ⚖️ Same bar: also retraced to profit lock after banking TP1 → SL_AFTER_BE @ ${exitPrice.toFixed(1)}`);
+        break;
+      }
+      // Target banked, no further same-bar reversal - continue scanning forward.
+      continue;
+    }
+
+    // No same-bar ambiguity - original sequential resolution applies unchanged.
     if (!hasTP1 && origSlHit) {
       currentStatus = 'SL_HIT';
       exitPrice = signal.sl;
