@@ -2114,7 +2114,21 @@ class SignalGenerationEngine {
       // agreement earns real extra strength on top of the base score.
       const confluenceScore = cluster.sources.size;
       const confluenceBonus = Math.min(1, confluenceScore * 0.25);
-      const rawReactionStrength = Math.min(1, (touchScore * 0.30) + (rejectionScore * 0.30) + (rejectionSizeScore * 0.20) + (clusterScore * 0.20) + confluenceBonus);
+      // Structural fix: clusterScore/confluenceBonus reward multiple
+      // reference CALCULATIONS agreeing on a price (e.g. PDH + Asian range +
+      // pivot all landing near the same level) — that is agreement between
+      // arithmetic sources, not evidence the market has actually reacted
+      // there. Without a floor, a zero-touch/zero-rejection zone with enough
+      // agreeing sources could already clear the 0.3 gating threshold on
+      // confluence alone. Require at least one earned touch or rejection
+      // wick before clustering/confluence agreement is allowed to contribute
+      // anything — this generalizes to every zone source (not just the
+      // always-admitted structural ones) and keeps agreement-without-
+      // interaction at a LOW (but still visible/reference-worthy) strength.
+      const hasEarnedEvidence = touches >= 1 || rejectionWicks >= 1;
+      const effectiveClusterScore = hasEarnedEvidence ? clusterScore : 0;
+      const effectiveConfluenceBonus = hasEarnedEvidence ? confluenceBonus : 0;
+      const rawReactionStrength = Math.min(1, (touchScore * 0.30) + (rejectionScore * 0.30) + (rejectionSizeScore * 0.20) + (effectiveClusterScore * 0.20) + effectiveConfluenceBonus);
 
       // Step 2 fix (zone staleness/decay): without this, a zone that earned
       // maximum touchScore/rejectionScore during one early, low-volatility
