@@ -1962,8 +1962,16 @@ class SignalGenerationEngine {
     const distanceToResistance = recentHigh - currentPrice;
     const distanceToSupport = currentPrice - recentLow;
     
-    const resistanceStrength = Math.max(0, Math.min(1, 1 - (distanceToResistance / 50)));
-    const supportStrength = Math.max(0, Math.min(1, 1 - (distanceToSupport / 50)));
+    // Bug fix: the previous flat $50 divisor made strength decay at a fixed
+    // dollar distance regardless of price level or real volatility - same bug
+    // class as the earlier Camarilla-floor/zoneWidth/proximityThreshold fixes.
+    // Use the same Math.max(atr-relative, price-relative) convention already
+    // established elsewhere in this file (e.g. zoneWidth, proximityThreshold).
+    const atr = this.calculateRealATR(14);
+    const strengthDecayDistance = Math.max(atr * 5, currentPrice * 0.015);
+    
+    const resistanceStrength = Math.max(0, Math.min(1, 1 - (distanceToResistance / strengthDecayDistance)));
+    const supportStrength = Math.max(0, Math.min(1, 1 - (distanceToSupport / strengthDecayDistance)));
     
     return {
       supportStrength: parseFloat(supportStrength.toFixed(2)),
@@ -3900,7 +3908,18 @@ class SignalGenerationEngine {
     
     const momentum = currentPrice - avg;
     const volatility = this.calculateRealTimeVolatility();
-    const momentumThreshold = Math.max(0.8, Math.min(2.5, volatility * 0.9));
+    // Bug fix: the previous flat $0.80 floor / $2.50 cap was calibrated for a
+    // coarser momentum window than this function actually measures (current
+    // price vs. a 5-tick/~2.5min average). Investigation showed volatility
+    // pinned at its own floor (0.5) in the vast majority of real attempts,
+    // which meant momentumThreshold was ALWAYS pinned to the 0.80 floor too -
+    // while genuine momentum in this short window tops out around 0.15-0.30
+    // even during confirmed 90%+ strength TRENDING regimes, so the floor was
+    // structurally unreachable and the classifier always fell back to NEUTRAL.
+    // Rescaled price-relative (matching the Math.max(atr/price-relative, ...)
+    // convention already used elsewhere in this file) so floor/cap scale with
+    // the actual price level instead of a stale flat dollar value.
+    const momentumThreshold = Math.max(currentPrice * 0.00005, Math.min(currentPrice * 0.0005, volatility * 0.3));
     
     console.log(`📈 LTF Momentum: ${momentum.toFixed(2)} vs threshold ${momentumThreshold.toFixed(2)} (volatility: ${volatility.toFixed(2)})`);
     

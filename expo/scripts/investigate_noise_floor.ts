@@ -95,6 +95,12 @@ interface AttemptRecord {
   trendStackClipped: boolean;
   trendBuyContribution: number | null;
   trendSellContribution: number | null;
+  htfTrend: string | null;
+  ltfTrend: string | null;
+  ltfMomentum: number | null;
+  ltfMomentumThreshold: number | null;
+  ltfVolatility: number | null;
+  rsi: number | null;
   attentionLines: { key: string; value: number }[];
   rawLines: string[];
 }
@@ -115,6 +121,12 @@ function newAttempt(): AttemptRecord {
     trendStackClipped: false,
     trendBuyContribution: null,
     trendSellContribution: null,
+    htfTrend: null,
+    ltfTrend: null,
+    ltfMomentum: null,
+    ltfMomentumThreshold: null,
+    ltfVolatility: null,
+    rsi: null,
     attentionLines: [],
     rawLines: [],
   };
@@ -147,6 +159,22 @@ function trackLine(line: string): void {
 
   const regimeMatch = line.match(/regime\s+(TRENDING|QUIET|RANGING|VOLATILE)\s+min/);
   if (regimeMatch) currentAttempt.regimeType = regimeMatch[1];
+
+  const htfMatch = line.match(/HTF Trend \(Daily\):\s*(BULLISH|BEARISH|NEUTRAL)/);
+  if (htfMatch) currentAttempt.htfTrend = htfMatch[1];
+
+  const ltfMatch = line.match(/LTF Trend \(5min\):\s*(BULLISH|BEARISH|NEUTRAL)/);
+  if (ltfMatch) currentAttempt.ltfTrend = ltfMatch[1];
+
+  const ltfMomentumMatch = line.match(/LTF Momentum:\s*(-?[\d.]+)\s*vs threshold\s*([\d.]+)\s*\(volatility:\s*([\d.]+)\)/);
+  if (ltfMomentumMatch) {
+    currentAttempt.ltfMomentum = Number(ltfMomentumMatch[1]);
+    currentAttempt.ltfMomentumThreshold = Number(ltfMomentumMatch[2]);
+    currentAttempt.ltfVolatility = Number(ltfMomentumMatch[3]);
+  }
+
+  const rsiMatch = line.match(/📉 RSI:\s*([\d.]+)/);
+  if (rsiMatch) currentAttempt.rsi = Number(rsiMatch[1]);
 
   const regimeMatch2 = line.match(/Market Regime:\s*(TRENDING|QUIET|RANGING|VOLATILE)\s*\(Strength:\s*(\d+)%/);
   if (regimeMatch2) {
@@ -524,6 +552,8 @@ async function main(): Promise<void> {
       originalConsole.log(`  winningStrength: ${attempt.winningStrength?.toFixed(3)}`);
       originalConsole.log(`  buySignalStrength: ${attempt.buyStrength?.toFixed(3) ?? "n/a"} | sellSignalStrength: ${attempt.sellStrength?.toFixed(3) ?? "n/a"}`);
       originalConsole.log(`  marketRegime.type: ${regime}${attempt.regimeStrength !== null ? ` (strength ${attempt.regimeStrength}%)` : ""}`);
+      originalConsole.log(`  htfTrend: ${attempt.htfTrend ?? "n/a"} | ltfTrend: ${attempt.ltfTrend ?? "n/a"} | rsi: ${attempt.rsi?.toFixed(1) ?? "n/a"}`);
+      originalConsole.log(`  ltfMomentum: ${attempt.ltfMomentum?.toFixed(2) ?? "n/a"} vs threshold: ${attempt.ltfMomentumThreshold?.toFixed(2) ?? "n/a"} (volatility: ${attempt.ltfVolatility?.toFixed(2) ?? "n/a"})`);
       originalConsole.log(`  TREND_STACK_CAP clipped this attempt: ${attempt.trendStackClipped ? "YES" : "no"}${attempt.trendBuyContribution !== null ? ` (BUY+${attempt.trendBuyContribution.toFixed(2)} SELL+${attempt.trendSellContribution?.toFixed(2)})` : ""}`);
       if (attempt.attentionLines.length === 0) {
         originalConsole.log(`  attentionScores: (none fired)`);
