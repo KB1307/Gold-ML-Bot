@@ -243,7 +243,13 @@ function classifyTick(
   }
   return { accept: false, gapPips, budgetPips, dtMs, corroborated: false };
 }
-const ACTIVE_SIGNAL_LOCK_RELEASE_MS = 45 * 60 * 1000;
+// Failsafe-only: normal release happens within ~5-25s once
+// updateAllSignalsStatus() transitions a signal away from "ACTIVE" (see the
+// explicit status check below). This constant only matters if status-sync
+// itself stalls (app backgrounded, a missed status-check tick), so it's kept
+// short rather than the old 45-minute value which made it look like the
+// primary release path.
+const ACTIVE_SIGNAL_LOCK_RELEASE_MS = 5 * 60 * 1000;
 const SIGNAL_GENERATION_INTERVAL_MS = 20000;
 
 function clampSignalConfidenceThreshold(value: number): number {
@@ -2279,29 +2285,37 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       const signalAgeMs = Date.now() - new Date(activeSignal.timestamp).getTime();
       const activeSignalLockReleaseMs = ACTIVE_SIGNAL_LOCK_RELEASE_MS;
       
-      const lockReleased = activeSignal.targetsHit >= 2;
+      // Explicit release check: the lock is meant to apply ONLY to genuinely
+      // ACTIVE signals. updateAllSignalsStatus() runs every 5s and moves a
+      // signal's status away from "ACTIVE" the instant it resolves (SL_HIT,
+      // SL_AFTER_BE, TP*_HIT, ALL_TARGETS_HIT, PARTIAL_WIN_SL_HIT are all
+      // non-"ACTIVE"), so checking status directly here - rather than relying
+      // on the implicit side effect of the upstream fullyActiveSignals filter -
+      // makes the real release condition self-documenting and refactor-safe.
+      const statusReleased = activeSignal.status !== "ACTIVE";
+      const targetsReleased = activeSignal.targetsHit >= 2;
+      const failsafeReleased = signalAgeMs > activeSignalLockReleaseMs;
       
-      const canGenerateNewSignal = (
-        lockReleased || 
-        signalAgeMs > activeSignalLockReleaseMs
-      );
+      const canGenerateNewSignal = statusReleased || targetsReleased || failsafeReleased;
       
       if (!canGenerateNewSignal) {
         console.log("❌ BLOCKED: Active signal exists and lock not released.");
         console.log(`   Active Signal: ${activeSignal.type} @ ${activeSignal.entryPrice}`);
-        console.log(`   Targets Hit: ${activeSignal.targetsHit}/3 (Lock releases at TP2)`);
+        console.log(`   Status: ${activeSignal.status} | Targets Hit: ${activeSignal.targetsHit}/3`);
         console.log(`   Age: ${(signalAgeMs / 1000 / 60).toFixed(1)} minutes`);
-        console.log(`   💡 New signal allowed when: TP2+ hit, SL hit, or 2+ hours elapsed`);
+        console.log(`   💡 New signal allowed when: status leaves ACTIVE (SL hit, SL-after-BE, any TP hit, or resolved), targetsHit >= 2, or the ${(ACTIVE_SIGNAL_LOCK_RELEASE_MS / 1000 / 60).toFixed(0)}-minute failsafe elapses`);
         return;
       }
       
       console.log(`✅ Lock released - New signal generation allowed:`);
-      if (lockReleased) {
-        console.log(`   - TP2 hit (${activeSignal.targetsHit}/3 targets) - Lock released`);
-        console.log(`   - Previous signal continues to be monitored until terminal status`);
+      if (statusReleased) {
+        console.log(`   - Status resolved to ${activeSignal.status} (no longer ACTIVE) - Lock released`);
       }
-      if (signalAgeMs > activeSignalLockReleaseMs) {
-        console.log(`   - Signal age exceeds ${(ACTIVE_SIGNAL_LOCK_RELEASE_MS / 1000 / 60).toFixed(0)} minutes (${(signalAgeMs / 1000 / 60).toFixed(1)}m)`);
+      if (targetsReleased) {
+        console.log(`   - TP2+ hit (${activeSignal.targetsHit}/3 targets) - Lock released`);
+      }
+      if (failsafeReleased) {
+        console.log(`   - ⚠️ Failsafe triggered: signal age exceeds ${(ACTIVE_SIGNAL_LOCK_RELEASE_MS / 1000 / 60).toFixed(0)} minutes (${(signalAgeMs / 1000 / 60).toFixed(1)}m) without a detected status transition - check status-sync health`);
       }
     }
 

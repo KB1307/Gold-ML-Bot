@@ -107,7 +107,7 @@ interface SRZone {
   rejectionWicks: number;
   avgRejectionSize: number;
   reactionStrength: number;
-  source: 'PRICE_ACTION' | 'PIVOT' | 'FIBONACCI' | 'VOLUME_NODE' | 'PREV_DAY' | 'ASIAN_RANGE' | 'ORH_ORL' | 'WEEKLY';
+  source: 'PRICE_ACTION' | 'PIVOT' | 'FIBONACCI' | 'VOLUME_NODE' | 'PREV_DAY' | 'ASIAN_RANGE' | 'ORH_ORL' | 'WEEKLY' | 'SESSION_BLOCK';
   /**
    * Step 5e: number of distinct source types (PRICE_ACTION, PIVOT, PREV_DAY,
    * ASIAN_RANGE, ORH_ORL, WEEKLY, FIBONACCI, VOLUME_NODE) that cluster onto
@@ -151,6 +151,7 @@ interface MarketFeatures {
   volumeProfile: VolumeProfile;
   marketRegime: MarketRegime;
   priceActionPattern: string;
+  candlestickPattern: string;
   supportStrength: number;
   resistanceStrength: number;
   srZones: SRZone[];
@@ -912,6 +913,17 @@ class SignalGenerationEngine {
   private lastSessionUpdate: number = 0;
   private lastOHLCFetchTime: number = 0;
   private ohlcDataSource: string = 'estimated';
+  /**
+   * Systematic 4-hour UTC block range tracker: six fixed blocks per day
+   * (00-04, 04-08, 08-12, 12-16, 16-20, 20-24 UTC), distinct from the
+   * Asian/London/NY session tracking above. Each block's range is retained
+   * (not discarded) once the clock moves past it — only the currently-active
+   * (unfrozen) block keeps updating.
+   */
+  private sessionBlockHighs: number[] = [0, 0, 0, 0, 0, 0];
+  private sessionBlockLows: number[] = [Infinity, Infinity, Infinity, Infinity, Infinity, Infinity];
+  private sessionBlockFrozen: boolean[] = [false, false, false, false, false, false];
+  private lastSessionBlockDateKey: string = '';
   private lastDailyOHLCRefreshAt: number = 0;
   
   private async fetchAndUpdateOHLCHistory(): Promise<void> {
@@ -1577,6 +1589,69 @@ class SignalGenerationEngine {
     return 'NEUTRAL';
   }
   
+  /**
+   * Candlestick pattern recognition using the existing 5-min OHLC candles.
+   * Order matters: pin bar is checked BEFORE the generic doji check, since a
+   * real pin bar also has a small body and would otherwise be misclassified
+   * as a doji.
+   */
+  private detectCandlestickPattern(candles?: { open: number; high: number; low: number; close: number }[]): string {
+    const source = candles ?? this.fiveMinCandles;
+    if (source.length < 2) return 'NONE';
+
+    const curr = source[source.length - 1];
+    const prev = source[source.length - 2];
+
+    const currBody = Math.abs(curr.close - curr.open);
+    const prevBody = Math.abs(prev.close - prev.open);
+    const currRange = curr.high - curr.low;
+
+    const currBullish = curr.close > curr.open;
+    const prevBullish = prev.close > prev.open;
+
+    // 1) Engulfing: current body fully contains previous body, opposite colors.
+    const currBodyTop = Math.max(curr.open, curr.close);
+    const currBodyBottom = Math.min(curr.open, curr.close);
+    const prevBodyTop = Math.max(prev.open, prev.close);
+    const prevBodyBottom = Math.min(prev.open, prev.close);
+    const engulfs = currBodyTop >= prevBodyTop && currBodyBottom <= prevBodyBottom && currBody > 0 && prevBody > 0;
+
+    if (engulfs && currBullish && !prevBullish) {
+      return 'BULLISH_ENGULFING';
+    }
+    if (engulfs && !currBullish && prevBullish) {
+      return 'BEARISH_ENGULFING';
+    }
+
+    // 2) Pin bar: small body with one wick >= 2x body and the opposite wick <= 0.5x body.
+    if (currRange > 0) {
+      const upperWick = curr.high - Math.max(curr.open, curr.close);
+      const lowerWick = Math.min(curr.open, curr.close) - curr.low;
+      const smallBody = currBody <= currRange * 0.35;
+
+      if (smallBody && currBody > 0) {
+        const bullishPinBar = lowerWick >= currBody * 2 && upperWick <= currBody * 0.5;
+        const bearishPinBar = upperWick >= currBody * 2 && lowerWick <= currBody * 0.5;
+
+        if (bullishPinBar) return 'BULLISH_PIN_BAR';
+        if (bearishPinBar) return 'BEARISH_PIN_BAR';
+      }
+
+      // 3) Doji: body under 10% of full range, and pin-bar conditions didn't match
+      // (i.e. wicks are roughly balanced, not strongly asymmetric).
+      if (currBody < currRange * 0.10) {
+        return 'DOJI';
+      }
+    }
+
+    return 'NONE';
+  }
+
+  /** Candlestick-pattern test seam: swap in injected candle data and return the detected pattern. */
+  public detectCandlestickPatternForTest(candles: { open: number; high: number; low: number; close: number }[]): string {
+    return this.detectCandlestickPattern(candles);
+  }
+
   private detectOrderBlocks(): OrderBlock[] {
     if (this.priceHistory.length < 20 || this.highHistory.length < 20 || this.lowHistory.length < 20) {
       console.log('⚠️ Insufficient data for Order Block detection');
@@ -1755,6 +1830,58 @@ class SignalGenerationEngine {
       state.captured = true;
       console.log(`📐 ${label} Opening Range frozen: ${state.low.toFixed(1)} - ${state.high.toFixed(1)}`);
     }
+  }
+
+  /**
+   * Six fixed 4-hour UTC blocks per day (00-04, 04-08, 08-12, 12-16, 16-20,
+   * 20-24). Resets all six at UTC midnight rollover, freezes any block once
+   * the clock has moved past it (range retained, not discarded), and updates
+   * the running high/low of whichever block is currently active (unfrozen).
+   */
+  private updateSessionBlocks(currentPrice: number): void {
+    const nowDate = new Date();
+    const utcDateStr = nowDate.toISOString().slice(0, 10);
+    if (this.lastSessionBlockDateKey !== utcDateStr) {
+      this.lastSessionBlockDateKey = utcDateStr;
+      this.sessionBlockHighs = [0, 0, 0, 0, 0, 0];
+      this.sessionBlockLows = [Infinity, Infinity, Infinity, Infinity, Infinity, Infinity];
+      this.sessionBlockFrozen = [false, false, false, false, false, false];
+    }
+
+    const activeBlockIndex = Math.floor(nowDate.getUTCHours() / 4);
+    for (let i = 0; i < 6; i++) {
+      if (i === activeBlockIndex) {
+        if (this.sessionBlockFrozen[i]) continue;
+        this.sessionBlockHighs[i] = this.sessionBlockHighs[i] > 0 ? Math.max(this.sessionBlockHighs[i], currentPrice) : currentPrice;
+        this.sessionBlockLows[i] = this.sessionBlockLows[i] < Infinity ? Math.min(this.sessionBlockLows[i], currentPrice) : currentPrice;
+      } else if (i < activeBlockIndex && !this.sessionBlockFrozen[i]) {
+        this.sessionBlockFrozen[i] = true;
+        if (this.sessionBlockHighs[i] > 0) {
+          console.log(`📐 Session Block ${(i * 4).toString().padStart(2, '0')}-${(i * 4 + 4).toString().padStart(2, '0')} UTC frozen: ${this.sessionBlockLows[i].toFixed(1)} - ${this.sessionBlockHighs[i].toFixed(1)}`);
+        }
+      }
+    }
+  }
+
+  /** Returns every block (frozen or still developing) with a real recorded range as SESSION_BLOCK zone candidates. */
+  private getSessionBlockZoneCandidates(): { price: number; source: 'SESSION_BLOCK' }[] {
+    const candidates: { price: number; source: 'SESSION_BLOCK' }[] = [];
+    for (let i = 0; i < 6; i++) {
+      const high = this.sessionBlockHighs[i];
+      const low = this.sessionBlockLows[i];
+      if (high > 0 && low < Infinity) {
+        candidates.push({ price: high, source: 'SESSION_BLOCK' });
+        candidates.push({ price: low, source: 'SESSION_BLOCK' });
+      }
+    }
+    return candidates;
+  }
+
+  /** Session-block test seam: force block state, then read the derived zone candidates. */
+  public getSessionBlocksForTest(highs: number[], lows: number[]): { price: number; source: 'SESSION_BLOCK' }[] {
+    this.sessionBlockHighs = highs;
+    this.sessionBlockLows = lows;
+    return this.getSessionBlockZoneCandidates();
   }
 
   private detectSessionSweeps(): SessionSweep[] {
@@ -1982,6 +2109,7 @@ class SignalGenerationEngine {
   private detectSRZones(): SRZone[] {
     const now = Date.now();
     const currentPrice = this.currentPrice;
+    this.updateSessionBlocks(currentPrice);
     const zones: SRZone[] = [];
     const atr = this.calculateRealATR(14);
     // Bug fix: the previous flat "$2" floor collapsed zone-merge distance to a
@@ -2063,6 +2191,12 @@ class SignalGenerationEngine {
     const { weeklyHigh, weeklyLow } = this.getWeeklyHighLow();
     candidateLevels.push({ price: weeklyHigh, source: 'WEEKLY', alwaysAdmit: true });
     candidateLevels.push({ price: weeklyLow, source: 'WEEKLY', alwaysAdmit: true });
+
+    // 4-hour UTC session block ranges (00-04/04-08/08-12/12-16/16-20/20-24),
+    // distinct from Asian/London/NY session tracking above.
+    for (const blockCandidate of this.getSessionBlockZoneCandidates()) {
+      candidateLevels.push({ price: blockCandidate.price, source: 'SESSION_BLOCK', alwaysAdmit: true });
+    }
 
     const clustered: { price: number; source: ZoneSource; count: number; sources: Set<ZoneSource>; alwaysAdmit: boolean }[] = [];
     for (const level of candidateLevels) {
@@ -2629,6 +2763,7 @@ class SignalGenerationEngine {
     const volumeProfile = this.calculateVolumeProfile();
     const marketRegime = await this.detectMarketRegime();
     const priceActionPattern = this.detectPriceActionPattern();
+    const candlestickPattern = this.detectCandlestickPattern();
     const srStrength = this.calculateSupportResistanceStrength();
     const srZones = this.detectSRZones();
     
@@ -2680,6 +2815,7 @@ class SignalGenerationEngine {
       volumeProfile,
       marketRegime,
       priceActionPattern,
+      candlestickPattern,
       supportStrength: srStrength.supportStrength,
       resistanceStrength: srStrength.resistanceStrength,
       srZones,
@@ -2761,7 +2897,8 @@ class SignalGenerationEngine {
     return { squeeze, expansion, bandwidth: parseFloat(bandwidth.toFixed(5)) };
   }
 
-  private detectMacroEvents(): MacroEvent | undefined {
+  /** Date-pattern NFP/CPI/FOMC heuristic - kept as an explicit fallback for when the real FMP calendar is unavailable. */
+  private detectMacroEventsHeuristic(): MacroEvent | undefined {
     const now = new Date();
     const hour = now.getUTCHours();
     const dayOfWeek = now.getUTCDay();
@@ -2796,6 +2933,86 @@ class SignalGenerationEngine {
     }
     
     return undefined;
+  }
+
+  private macroCalendarCache: { events: { name: string; impact: string; date: string }[]; timestamp: number } | null = null;
+  private lastMacroCalendarFetchAttempt: number = 0;
+  private readonly MACRO_CALENDAR_CLIENT_CACHE_MS = 45 * 60 * 1000;
+
+  /** Fetches the real FMP-backed calendar (server-cached 30-60min), re-fetching client-side at most every 30-60min too. Falls back to the date-pattern heuristic if unreachable/errors/empty. */
+  private async fetchRealMacroCalendar(): Promise<{ name: string; impact: string; date: string }[] | null> {
+    const now = Date.now();
+    if (this.macroCalendarCache && now - this.macroCalendarCache.timestamp < this.MACRO_CALENDAR_CLIENT_CACHE_MS) {
+      return this.macroCalendarCache.events;
+    }
+    if (now - this.lastMacroCalendarFetchAttempt < 60000 && this.macroCalendarCache) {
+      return this.macroCalendarCache.events;
+    }
+    this.lastMacroCalendarFetchAttempt = now;
+
+    try {
+      const result = await trpcClient.economicCalendar.getUpcomingEvents.query();
+      if (result.source === "FMP") {
+        this.macroCalendarCache = { events: result.events, timestamp: now };
+        console.log(`\uD83D\uDCC5 Macro Calendar: real FMP calendar loaded (${result.events.length} gold-relevant high-impact events, cached=${result.cached})`);
+        return result.events;
+      }
+      console.warn("\uD83D\uDCC5 Macro Calendar: FMP unavailable (no server key or fetch failed) - falling back to date-pattern heuristic");
+      return null;
+    } catch (error) {
+      console.warn("\uD83D\uDCC5 Macro Calendar: FMP request failed - falling back to date-pattern heuristic", error instanceof Error ? error.message : "Unknown");
+      return null;
+    }
+  }
+
+  /** Real-calendar-first macro event detector. Same MacroEvent shape as before, so shouldSuppressMacroEvent()/downstream code needs no changes. */
+  private detectMacroEvents(): MacroEvent | undefined {
+    const cachedEvents = this.macroCalendarCache?.events;
+    if (cachedEvents) {
+      return this.nearestMacroEventFromCalendar(cachedEvents) ?? undefined;
+    }
+    void this.fetchRealMacroCalendar();
+    return this.detectMacroEventsHeuristic();
+  }
+
+  private nearestMacroEventFromCalendar(events: { name: string; impact: string; date: string }[]): MacroEvent | null {
+    const now = Date.now();
+    let nearest: MacroEvent | null = null;
+    let nearestAbsMinutes = Infinity;
+    for (const event of events) {
+      const eventTime = new Date(event.date).getTime();
+      if (!Number.isFinite(eventTime)) continue;
+      const minutesUntil = (eventTime - now) / 60000;
+      if (minutesUntil < -240 || minutesUntil > 24 * 60) continue;
+      if (Math.abs(minutesUntil) < nearestAbsMinutes) {
+        nearestAbsMinutes = Math.abs(minutesUntil);
+        nearest = {
+          name: event.name,
+          impact: (event.impact === "HIGH" || event.impact === "MEDIUM" || event.impact === "LOW") ? event.impact : "HIGH",
+          timeUntilEvent: Math.round(minutesUntil),
+        };
+      }
+    }
+    return nearest;
+  }
+
+  /** Next upcoming high-impact event within a 24h look-ahead window, for MarketOutlook.upcomingHighImpactEvent. */
+  private async getUpcomingHighImpactEventForOutlook(): Promise<{ name: string; impact: string; timeUntilEvent: number } | null> {
+    const events = await this.fetchRealMacroCalendar();
+    let source: { name: string; impact: string; date: string }[];
+    if (events) {
+      source = events;
+    } else {
+      const heuristic = this.detectMacroEventsHeuristic();
+      source = heuristic ? [{
+        name: heuristic.name,
+        impact: heuristic.impact,
+        date: new Date(Date.now() + heuristic.timeUntilEvent * 60000).toISOString(),
+      }] : [];
+    }
+    const nearest = this.nearestMacroEventFromCalendar(source);
+    if (!nearest || nearest.timeUntilEvent < 0 || nearest.timeUntilEvent > 24 * 60) return null;
+    return { name: nearest.name, impact: nearest.impact, timeUntilEvent: nearest.timeUntilEvent };
   }
   
   private smoothConfidence(rawConfidence: number): number {
@@ -3452,6 +3669,25 @@ class SignalGenerationEngine {
     } else if (features.priceActionPattern === 'STRONG_DOWNTREND') {
       trendSellContribution += 0.10;
       attentionScores.set('strong_downtrend_pattern', 0.10);
+    }
+    if (features.candlestickPattern === 'BULLISH_ENGULFING') {
+      trendBuyContribution += 0.12;
+      attentionScores.set('bullish_engulfing', 0.12);
+      console.log('✅ BUY: Bullish Engulfing Candle');
+    } else if (features.candlestickPattern === 'BEARISH_ENGULFING') {
+      trendSellContribution += 0.12;
+      attentionScores.set('bearish_engulfing', 0.12);
+      console.log('🔴 SELL: Bearish Engulfing Candle');
+    } else if (features.candlestickPattern === 'BULLISH_PIN_BAR') {
+      trendBuyContribution += 0.09;
+      attentionScores.set('bullish_pin_bar', 0.09);
+      console.log('✅ BUY: Bullish Pin Bar');
+    } else if (features.candlestickPattern === 'BEARISH_PIN_BAR') {
+      trendSellContribution += 0.09;
+      attentionScores.set('bearish_pin_bar', 0.09);
+      console.log('🔴 SELL: Bearish Pin Bar');
+    } else if (features.candlestickPattern === 'DOJI') {
+      attentionScores.set('doji_context', 0);
     }
     const TREND_STACK_CAP = 0.50;
     trendBuyContribution = Math.min(trendBuyContribution, TREND_STACK_CAP);
@@ -6078,6 +6314,7 @@ class SignalGenerationEngine {
         source: zone.source,
         confluenceScore: zone.confluenceScore,
       })),
+      upcomingHighImpactEvent: await this.getUpcomingHighImpactEventForOutlook(),
     };
   }
   

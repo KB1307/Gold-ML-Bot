@@ -61,7 +61,7 @@ export interface DetectedSRZone {
   touches: number;
   rejectionWicks: number;
   reactionStrength: number;
-  source: "PRICE_ACTION" | "PIVOT" | "FIBONACCI" | "VOLUME_NODE" | "PREV_DAY" | "ASIAN_RANGE" | "ORH_ORL" | "WEEKLY";
+  source: "PRICE_ACTION" | "PIVOT" | "FIBONACCI" | "VOLUME_NODE" | "PREV_DAY" | "ASIAN_RANGE" | "ORH_ORL" | "WEEKLY" | "SESSION_BLOCK";
   confluenceScore: number;
 }
 
@@ -86,6 +86,13 @@ export interface MarketOutlook {
    * Camarilla reference pivots, kept for display/fallback only.
    */
   srZones: DetectedSRZone[];
+  /**
+   * Next upcoming high-impact macro event (NFP/CPI/FOMC/PCE/retail sales,
+   * etc.) within a 24h look-ahead window, sourced from the real FMP economic
+   * calendar (falling back to the date-pattern heuristic if FMP is
+   * unreachable). Null when nothing relevant is upcoming.
+   */
+  upcomingHighImpactEvent: { name: string; impact: string; timeUntilEvent: number } | null;
 }
 
 export interface FibonacciLevel {

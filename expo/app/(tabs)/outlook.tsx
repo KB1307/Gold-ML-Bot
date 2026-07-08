@@ -1,6 +1,6 @@
 import { View, Text, StyleSheet, ScrollView, Platform } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { TrendingUp, Clock, Activity, BarChart3, Globe } from "lucide-react-native";
+import { TrendingUp, Clock, Activity, BarChart3, Globe, AlertTriangle } from "lucide-react-native";
 import { useTrading } from "@/contexts/TradingContext";
 import { Stack } from "expo-router";
 
@@ -61,6 +61,17 @@ export default function OutlookScreen() {
                     ? `Active Session: ${marketOutlook.currentSession}`
                     : "Market is currently closed for trading"}
                 </Text>
+                {marketOutlook.upcomingHighImpactEvent && (
+                  <View style={styles.macroEventNotice} testID="outlook-macro-event-notice">
+                    <AlertTriangle size={14} color="#FFA500" />
+                    <Text style={styles.macroEventNoticeText}>
+                      {marketOutlook.upcomingHighImpactEvent.name}{" "}
+                      {marketOutlook.upcomingHighImpactEvent.timeUntilEvent >= 0
+                        ? `in ${Math.round(marketOutlook.upcomingHighImpactEvent.timeUntilEvent)} min`
+                        : `${Math.abs(Math.round(marketOutlook.upcomingHighImpactEvent.timeUntilEvent))} min ago`}
+                    </Text>
+                  </View>
+                )}
               </LinearGradient>
             </View>
 
@@ -338,6 +349,23 @@ const styles = StyleSheet.create({
   statusSubtext: {
     fontSize: 14,
     color: "#999",
+  },
+  macroEventNotice: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 14,
+    padding: 10,
+    backgroundColor: "rgba(255, 165, 0, 0.12)",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(255, 165, 0, 0.3)",
+  },
+  macroEventNoticeText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: "600" as const,
+    color: "#FFA500",
   },
   sessionCard: {
     backgroundColor: "rgba(255, 255, 255, 0.03)",
