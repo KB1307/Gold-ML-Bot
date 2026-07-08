@@ -1,13 +1,10 @@
+import { trpcClient } from "@/lib/trpc";
 import { TradingSignal } from "@/types/trading";
 
-const TELEGRAM_API_URL = "https://api.telegram.org/bot8704113854:AAHebld6qMlK2eKGJB0DND3O7FvuLdPypSQ/sendMessage";
-
-// 🌐 Convert the single ID into an array of targets
-// ⚠️ Note: Telegram channel IDs almost always start with a "-100" prefix (e.g., "-1001234567890")
-const TELEGRAM_CHAT_IDS = [
-  "-1004409610798",   
-  "-1004310142756" 
-];
+// The Telegram bot token and chat IDs now live server-side only
+// (backend/trpc/routes/telegram.ts, TELEGRAM_BOT_TOKEN env var). This file
+// just formats messages and calls the backend — nothing secret is bundled
+// into the client anymore.
 
 function formatPrice(value: number): string {
   return value.toFixed(1);
@@ -25,22 +22,6 @@ function formatEntryZone(entryPrice: number): string {
   return `${formatPrice(low)} - ${formatPrice(high)}`;
 }
 
-function formatConfidence(value: number): string {
-  return (value * 100).toFixed(1);
-}
-
-function extractTelegramError(body: string): string {
-  try {
-    const parsed = JSON.parse(body) as { description?: string };
-    if (parsed && typeof parsed.description === "string" && parsed.description.length > 0) {
-      return parsed.description;
-    }
-  } catch {
-    // body wasn't JSON — fall through to the raw text
-  }
-  return body.slice(0, 160) || "Unknown error";
-}
-
 export interface TelegramSendResult {
   ok: boolean;
   status: number;
@@ -48,9 +29,8 @@ export interface TelegramSendResult {
 }
 
 /**
- * Sends an arbitrary custom message to ALL configured Telegram chats and awaits
- * the results. Resolves with a structured result only after all destinations 
- * have been attempted.
+ * Sends an arbitrary custom message to all configured Telegram chats via the
+ * backend proxy and awaits the result.
  */
 export async function sendTelegramMessage(text: string): Promise<TelegramSendResult> {
   const trimmed = text.trim();
@@ -58,51 +38,14 @@ export async function sendTelegramMessage(text: string): Promise<TelegramSendRes
     return { ok: false, status: 0, error: "Message is empty" };
   }
 
-  // Fire off all requests concurrently using Promise.all
-  const requests = TELEGRAM_CHAT_IDS.map(async (chatId) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
-
-    try {
-      const response = await fetch(TELEGRAM_API_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: trimmed,
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        let body = "";
-        try { body = await response.text(); } catch {}
-        const description = extractTelegramError(body);
-        console.warn(`[Telegram] Message failed for chat ${chatId} (${response.status}): ${description}`);
-        return { ok: false, status: response.status, error: description };
-      }
-
-      console.log(`[Telegram] Message delivered to chat ${chatId}`);
-      return { ok: true, status: response.status };
-    } catch (error: unknown) {
-      clearTimeout(timeoutId);
-      if (error instanceof DOMException && error.name === "AbortError") {
-        return { ok: false, status: 0, error: `Request timed out for chat ${chatId}` };
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[Telegram] Network error sending to chat ${chatId}:`, message);
-      return { ok: false, status: 0, error: message };
-    }
-  });
-
-  const results = await Promise.all(requests);
-  
-  // Surface the first error caught if any room failed
-  const failedResult = results.find((res) => !res.ok);
-  if (failedResult) return failedResult;
-
-  return { ok: true, status: 200 };
+  try {
+    const result = await trpcClient.telegram.sendMessage.mutate({ text: trimmed });
+    return result;
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("[Telegram] sendMessage backend call failed:", message);
+    return { ok: false, status: 0, error: message };
+  }
 }
 
 function buildTelegramMessage(signal: TradingSignal): string {
@@ -129,56 +72,28 @@ function buildTelegramMessage(signal: TradingSignal): string {
 }
 
 /**
- * Sends a Telegram alert for a newly generated trading signal to multiple rooms.
- * Truly fire-and-forget — the fetches are kicked off in parallel without waiting 
- * for Telegram's response, keeping execution time under 100ms.
+ * Sends a Telegram alert for a newly generated trading signal via the
+ * backend proxy. Fire-and-forget from the caller's perspective — the
+ * mutation is dispatched without awaiting so callers keep returning
+ * immediately, matching the previous behavior.
  */
 export function sendTelegramAlert(signal: TradingSignal): void {
   const text = buildTelegramMessage(signal);
   const signalId = signal.id;
 
-  // Spin up background async fetches for each ID concurrently
-  TELEGRAM_CHAT_IDS.forEach((chatId) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-    fetch(TELEGRAM_API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text,
-        parse_mode: "Markdown",
-      }),
-      signal: controller.signal,
+  trpcClient.telegram.sendAlert
+    .mutate({ text })
+    .then((result) => {
+      if (!result.ok) {
+        console.warn(`[Telegram] Alert dispatch reported failures for signal ${signalId}`);
+        return;
+      }
+      console.log(`[Telegram] Alert dispatched for signal ${signalId}`);
     })
-      .then((response) => {
-        clearTimeout(timeoutId);
-        if (!response.ok) {
-          response
-            .text()
-            .then((body) => {
-              console.warn(
-                `[Telegram] Delivery failed for destination ${chatId} (${response.status}): ${body.slice(0, 200)}`
-              );
-            })
-            .catch(() => {});
-          return;
-        }
-        console.log(`[Telegram] Alert dispatched to ${chatId} for signal ${signalId}`);
-      })
-      .catch((error: unknown) => {
-        clearTimeout(timeoutId);
-        if (error instanceof DOMException && error.name === "AbortError") {
-          console.log(
-            `[Telegram] Request timed out for ${chatId} on signal ${signalId} (message likely delivered)`
-          );
-          return;
-        }
-        console.warn(
-          `[Telegram] Network error dispatching alert to ${chatId}:`,
-          error instanceof Error ? error.message : String(error)
-        );
-      });
-  });
+    .catch((error: unknown) => {
+      console.warn(
+        `[Telegram] Network error dispatching alert for signal ${signalId}:`,
+        error instanceof Error ? error.message : String(error),
+      );
+    });
 }
