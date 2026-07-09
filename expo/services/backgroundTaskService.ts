@@ -147,7 +147,7 @@ try {
         // Telegram alert — fire-and-forget, dispatched before any await.
         // Gated by the dedicated notifier toggle so it can be muted during testing.
         if (settings.enableTelegramNotifier !== false) {
-          sendTelegramAlert(signal);
+          sendTelegramAlert(signal, settings.numberOfTPs);
         } else {
           console.log('🔕 Telegram notifier disabled in settings - skipping alert');
         }

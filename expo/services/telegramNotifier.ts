@@ -48,7 +48,7 @@ export async function sendTelegramMessage(text: string): Promise<TelegramSendRes
   }
 }
 
-function buildTelegramMessage(signal: TradingSignal): string {
+function buildTelegramMessage(signal: TradingSignal, numberOfTPs: 1 | 2 | 3 = 3): string {
   const entryPrice = signal.entryPriceWithSlippage || signal.entryPrice;
   const dot = signal.type === "BUY" ? "\u{1F7E2}" : "\u{1F534}"; // ✅ Quote syntax mismatch fixed here
 
@@ -64,9 +64,14 @@ function buildTelegramMessage(signal: TradingSignal): string {
     `*STOP LOSS:* ${formatPrice(signal.sl)}`,
     "",
     `*TAKE PROFIT 1:* ${formatPrice(signal.tp1)}`,
-    `*TAKE PROFIT 2:* ${formatPrice(signal.tp2)}`,
-    `*TAKE PROFIT 3:* ${formatPrice(signal.tp3)}`,
   ];
+
+  if (numberOfTPs >= 2) {
+    lines.push(`*TAKE PROFIT 2:* ${formatPrice(signal.tp2)}`);
+  }
+  if (numberOfTPs >= 3) {
+    lines.push(`*TAKE PROFIT 3:* ${formatPrice(signal.tp3)}`);
+  }
 
   return lines.join("\n");
 }
@@ -77,8 +82,8 @@ function buildTelegramMessage(signal: TradingSignal): string {
  * mutation is dispatched without awaiting so callers keep returning
  * immediately, matching the previous behavior.
  */
-export function sendTelegramAlert(signal: TradingSignal): void {
-  const text = buildTelegramMessage(signal);
+export function sendTelegramAlert(signal: TradingSignal, numberOfTPs: 1 | 2 | 3 = 3): void {
+  const text = buildTelegramMessage(signal, numberOfTPs);
   const signalId = signal.id;
 
   trpcClient.telegram.sendAlert

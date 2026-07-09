@@ -28,17 +28,20 @@ const testSignal: TradingSignal = {
 };
 
 async function main() {
-  console.log("Sending test Telegram alert with signal:");
+  console.log("Sending test Telegram alerts for numberOfTPs = 1, 2, 3:");
   console.log(JSON.stringify(testSignal, null, 2));
   console.log("---");
 
   // sendTelegramAlert is fire-and-forget — the fetch starts immediately.
-  // Wait 3 seconds for it to complete before the script exits.
-  sendTelegramAlert(testSignal);
-  console.log("Alert dispatched. Waiting 3s for delivery...");
-  await new Promise((r) => setTimeout(r, 3000));
+  // Send all three variants back-to-back, waiting between each so the
+  // resulting Telegram messages arrive in a predictable, inspectable order.
+  for (const numberOfTPs of [1, 2, 3] as const) {
+    console.log(`\nDispatching alert with numberOfTPs=${numberOfTPs}...`);
+    sendTelegramAlert({ ...testSignal, id: `TEST-${numberOfTPs}TP-` + Date.now() }, numberOfTPs);
+    await new Promise((r) => setTimeout(r, 3000));
+  }
 
-  console.log("Done. Check your Telegram channel for the alert.");
+  console.log("\nDone. Check your Telegram channel for all three alerts.");
 }
 
 main().catch((e) => {

@@ -2333,7 +2333,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         // dispatches to Telegram in <100ms. Gated by the dedicated notifier
         // toggle so it can be muted during testing/updates.
         if (settings.enableTelegramNotifier) {
-          sendTelegramAlert(signal);
+          sendTelegramAlert(signal, settings.numberOfTPs);
         } else {
           console.log('🔕 Telegram notifier disabled — skipping signal alert');
         }
