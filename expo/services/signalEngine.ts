@@ -872,6 +872,19 @@ class SignalGenerationEngine {
   private successfulSignalsGenerated: number = 0;
   private recentAttemptTimestamps: number[] = [];
   private lastKnownSpreadPips: number = 0;
+  /**
+   * Part B — real order-flow signal. Rolling real tick-arrival timestamps
+   * (retained up to TICK_HISTORY_MAX_AGE_MS) and their raw prices, captured on
+   * EVERY live tick received via syncCurrentPrice — unlike priceHistory, which
+   * is deliberately deduplicated/downsampled for signal-history quality
+   * (MIN_PRICE_HISTORY_CHANGE / MIN_PRICE_HISTORY_SAMPLE_INTERVAL_MS). These
+   * two arrays are the genuine tick-frequency + tick-price record used to
+   * replace the old synthetic momentum-derived order-flow/volume-profile inputs.
+   */
+  private tickTimestamps: number[] = [];
+  private tickPriceSamples: { price: number; timestamp: number }[] = [];
+  /** Rolling history of real bid/ask spread readings (pips), feeding calculateSpreadRatio(). */
+  private spreadHistory: number[] = [];
   private confidenceHistory: number[] = [];
   private lastFeatureCorrelationCheck: number = 0;
   private featureCorrelationStatus: string = 'HEALTHY';
@@ -999,6 +1012,11 @@ class SignalGenerationEngine {
 
     this.currentPrice = price;
     lastPriceSource = source;
+
+    // Part B: record EVERY real tick arrival (not just the deduplicated/downsampled
+    // priceHistory samples above) — this is the genuine tick-frequency + tick-price
+    // record that replaces the old synthetic momentum-derived order-flow inputs.
+    this.recordTickArrival(now, price);
 
     if (shouldSampleHistory) {
       this.lastPriceHistorySampleAt = now;
@@ -1332,6 +1350,122 @@ class SignalGenerationEngine {
     this.syncCurrentPrice(price, source);
   }
   
+  /**
+   * Part B: rolling real tick-arrival tracker. Called on every genuine live
+   * tick (pushExternalPrice/syncCurrentPrice), retaining up to TICK_HISTORY_MAX_AGE_MS
+   * of real arrival timestamps + prices for tick-frequency-based order-flow analysis.
+   */
+  private recordTickArrival(now: number, price: number): void {
+    this.tickTimestamps.push(now);
+    this.tickPriceSamples.push({ price, timestamp: now });
+
+    const TICK_HISTORY_MAX_AGE_MS = 10 * 60 * 1000;
+    while (this.tickTimestamps.length > 0 && now - this.tickTimestamps[0] > TICK_HISTORY_MAX_AGE_MS) {
+      this.tickTimestamps.shift();
+    }
+    while (this.tickPriceSamples.length > 0 && now - this.tickPriceSamples[0].timestamp > TICK_HISTORY_MAX_AGE_MS) {
+      this.tickPriceSamples.shift();
+    }
+    // Hard cap as a safety net independent of timing (e.g. a burst of ticks in a short span)
+    if (this.tickTimestamps.length > 2000) this.tickTimestamps = this.tickTimestamps.slice(-2000);
+    if (this.tickPriceSamples.length > 2000) this.tickPriceSamples = this.tickPriceSamples.slice(-2000);
+  }
+
+  /**
+   * Part B: real tick-arrival-frequency ratio — recent (last 60s) tick rate vs.
+   * the baseline tick rate observed over the retained tick-history window.
+   * ratio > 1 = genuinely busier than the recent baseline (more real market activity);
+   * ratio < 1 = genuinely quieter. Returns sufficient:false (neutral ratio 1.0) when
+   * there isn't yet enough real tick history to trust the comparison — this is a clearly
+   * flagged fallback, not a fabricated synthetic reading.
+   */
+  private calculateTickFrequencyRatio(): { ratio: number; sufficient: boolean } {
+    const now = Date.now();
+    const RECENT_WINDOW_MS = 60 * 1000;
+    const MIN_BASELINE_SPAN_MS = 3 * 60 * 1000;
+    const MIN_BASELINE_TICKS = 10;
+
+    const oldestTick = this.tickTimestamps[0];
+    const baselineSpanMs = oldestTick ? now - oldestTick : 0;
+
+    if (this.tickTimestamps.length < MIN_BASELINE_TICKS || baselineSpanMs < MIN_BASELINE_SPAN_MS) {
+      return { ratio: 1.0, sufficient: false };
+    }
+
+    const recentCount = this.tickTimestamps.filter(t => now - t <= RECENT_WINDOW_MS).length;
+    const baselineTicksPerMinute = this.tickTimestamps.length / (baselineSpanMs / 60000);
+    const recentTicksPerMinute = recentCount / (RECENT_WINDOW_MS / 60000);
+
+    if (baselineTicksPerMinute <= 0) return { ratio: 1.0, sufficient: false };
+
+    return { ratio: parseFloat((recentTicksPerMinute / baselineTicksPerMinute).toFixed(2)), sufficient: true };
+  }
+
+  /**
+   * Part B: real bid/ask spread ratio — the latest genuine spread reading
+   * (from setLastKnownSpread, sourced from real Swissquote bid/ask data) vs.
+   * the rolling average of recent real spread readings. ratio < 1 = tighter/
+   * more liquid than typical; ratio > 1 = wider/thinner than typical.
+   * Returns sufficient:false until enough real spread readings have accumulated.
+   */
+  private calculateSpreadRatio(): { ratio: number; sufficient: boolean } {
+    const MIN_SPREAD_SAMPLES = 5;
+    if (this.lastKnownSpreadPips <= 0 || this.spreadHistory.length < MIN_SPREAD_SAMPLES) {
+      return { ratio: 1.0, sufficient: false };
+    }
+    const avgSpread = this.spreadHistory.reduce((a, b) => a + b, 0) / this.spreadHistory.length;
+    if (avgSpread <= 0) return { ratio: 1.0, sufficient: false };
+
+    return { ratio: parseFloat((this.lastKnownSpreadPips / avgSpread).toFixed(2)), sufficient: true };
+  }
+
+  /**
+   * Test seam (Part B checkpoint): temporarily swap in injected real tick-arrival/
+   * spread data (and optionally priceHistory), run the real calculateOrderFlow(),
+   * then restore prior state. Lets the tick-frequency + spread logic be verified
+   * deterministically without waiting on real wall-clock tick arrivals.
+   */
+  calculateOrderFlowForTest(injected: { tickTimestamps?: number[]; spreadHistory?: number[]; lastKnownSpreadPips?: number; priceHistory?: number[] }): OrderFlowData {
+    const saved = {
+      tickTimestamps: this.tickTimestamps,
+      spreadHistory: this.spreadHistory,
+      lastKnownSpreadPips: this.lastKnownSpreadPips,
+      priceHistory: this.priceHistory,
+    };
+    if (injected.tickTimestamps) this.tickTimestamps = injected.tickTimestamps;
+    if (injected.spreadHistory) this.spreadHistory = injected.spreadHistory;
+    if (injected.lastKnownSpreadPips !== undefined) this.lastKnownSpreadPips = injected.lastKnownSpreadPips;
+    if (injected.priceHistory) this.priceHistory = injected.priceHistory;
+    try {
+      return this.calculateOrderFlow();
+    } finally {
+      this.tickTimestamps = saved.tickTimestamps;
+      this.spreadHistory = saved.spreadHistory;
+      this.lastKnownSpreadPips = saved.lastKnownSpreadPips;
+      this.priceHistory = saved.priceHistory;
+    }
+  }
+
+  /**
+   * Test seam (Part B checkpoint): temporarily swap in injected real tick-price
+   * samples (and optionally priceHistory), run the real calculateVolumeProfile(),
+   * then restore prior state.
+   */
+  calculateVolumeProfileForTest(injected: { tickPriceSamples?: { price: number; timestamp: number }[]; priceHistory?: number[] }): VolumeProfile {
+    const saved = {
+      tickPriceSamples: this.tickPriceSamples,
+      priceHistory: this.priceHistory,
+    };
+    if (injected.tickPriceSamples) this.tickPriceSamples = injected.tickPriceSamples;
+    if (injected.priceHistory) this.priceHistory = injected.priceHistory;
+    try {
+      return this.calculateVolumeProfile();
+    } finally {
+      this.tickPriceSamples = saved.tickPriceSamples;
+      this.priceHistory = saved.priceHistory;
+    }
+  }
+
   private calculateFibonacciLevels(high: number, low: number): FibonacciLevel[] {
     const diff = high - low;
     const levels = [0.236, 0.382, 0.5, 0.618, 0.786];
@@ -1363,41 +1497,58 @@ class SignalGenerationEngine {
       };
     }
 
+    // Direction still needs SOME real signal to know which side (bid/ask) to skew —
+    // price momentum direction (sign only, not magnitude) is used for that, since
+    // there is no real Level 2 bid/ask volume feed available. The MAGNITUDE of the
+    // skew, and largeOrdersDetected/institutionalFootprint, are now driven entirely
+    // by real tick-arrival frequency + real bid/ask spread (Part B) instead of
+    // synthetic price-momentum math.
     const recentPrices = this.priceHistory.slice(-10);
     const priceChange = recentPrices[recentPrices.length - 1] - recentPrices[0];
-    const range = Math.max(...recentPrices) - Math.min(...recentPrices);
-    const momentum = priceChange / (range || 1);
+    const momentumDirection = priceChange > 0 ? 1 : priceChange < 0 ? -1 : 0;
 
-    const volatilityProxy = this.calculateRealTimeVolatility();
-    const baseVolume = 1000 + (volatilityProxy * 50);
+    const tickFreq = this.calculateTickFrequencyRatio();
+    const spread = this.calculateSpreadRatio();
+    const realDataSufficient = tickFreq.sufficient && spread.sufficient;
+
+    let activityScore: number;
+    if (!realDataSufficient) {
+      // Clearly-flagged neutral fallback (not a fabricated synthetic reading) —
+      // genuinely not enough real tick/spread history yet (e.g. early in a session).
+      activityScore = 1.0;
+      console.log(`ℹ️ Order Flow: insufficient REAL tick/spread history yet (tickData:${tickFreq.sufficient ? 'ok' : 'pending'}, spreadData:${spread.sufficient ? 'ok' : 'pending'}) — using neutral activity baseline, not a synthetic substitute`);
+    } else {
+      // recent tick frequency above baseline + spread tighter than baseline = genuinely
+      // more active/liquid conditions. Weighted 60/40 toward tick frequency since it's
+      // the more directly observable real-activity signal.
+      const tickComponent = tickFreq.ratio;
+      const spreadComponent = 2 - Math.min(2, Math.max(0, spread.ratio)); // tighter spread (ratio<1) => >1 contribution
+      activityScore = (tickComponent * 0.6) + (spreadComponent * 0.4);
+    }
+
+    const baseVolume = 1000;
     let bidVolume = baseVolume;
     let askVolume = baseVolume;
 
-    if (momentum > 0.2) {
-      bidVolume *= (1 + momentum);
-    } else if (momentum < -0.2) {
-      askVolume *= (1 + Math.abs(momentum));
-    }
-
-    if (recentPrices.length >= 5) {
-      const midRange = (Math.max(...recentPrices) + Math.min(...recentPrices)) / 2;
-      const currentPrice = recentPrices[recentPrices.length - 1];
-      const positionInRange = (currentPrice - midRange) / (range || 1);
-      bidVolume += baseVolume * 0.1 * Math.max(0, -positionInRange);
-      askVolume += baseVolume * 0.1 * Math.max(0, positionInRange);
+    const activitySkew = Math.max(0, activityScore - 1); // 0 at/below baseline activity
+    if (momentumDirection > 0) {
+      bidVolume *= (1 + activitySkew);
+    } else if (momentumDirection < 0) {
+      askVolume *= (1 + activitySkew);
     }
 
     const volumeImbalance = (bidVolume - askVolume) / (bidVolume + askVolume);
-    
-    // Large orders detected if momentum is high but range is low (absorption)
-    // or if momentum is extremely high (aggression)
-    const isAbsorption = Math.abs(momentum) < 0.3 && range > 5; // Lots of movement but little net change
-    const isAggression = Math.abs(momentum) > 0.8;
-    const largeOrdersDetected = isAbsorption || isAggression;
+
+    // Large orders/institutional footprint now driven by a genuine tick-frequency spike
+    // and/or a genuine spread shock (real conditions), rather than synthetic
+    // momentum-vs-range absorption/aggression heuristics.
+    const tickBurst = realDataSufficient && tickFreq.ratio > 1.8;
+    const spreadShock = realDataSufficient && (spread.ratio > 1.5 || spread.ratio < 0.5);
+    const largeOrdersDetected = tickBurst || spreadShock;
 
     const trendConsistency = this.calculateTrendStrength();
     const institutionalFootprint = (Math.abs(volumeImbalance) * (largeOrdersDetected ? 2 : 1)) * (1 + trendConsistency);
-    
+
     return {
       bidVolume: Math.floor(bidVolume),
       askVolume: Math.floor(askVolume),
@@ -1408,8 +1559,15 @@ class SignalGenerationEngine {
   }
   
   private calculateVolumeProfile(): VolumeProfile {
-    // Synthetic Volume Profile based on recent price history
-    if (this.priceHistory.length < 20) {
+    // Part B: prefer the REAL tick-arrival price samples (every genuine live tick,
+    // undeduplicated) over the downsampled priceHistory — priceHistory intentionally
+    // suppresses ticks that don't move price meaningfully (MIN_PRICE_HISTORY_CHANGE),
+    // which undercounts real activity concentrated at a single price level.
+    const MIN_REAL_TICK_SAMPLES = 20;
+    const realTickPrices = this.tickPriceSamples.map(t => t.price);
+    const usingRealTicks = realTickPrices.length >= MIN_REAL_TICK_SAMPLES;
+
+    if (!usingRealTicks && this.priceHistory.length < 20) {
       // Fallback if not enough data
       return {
         highVolumeNodes: [this.currentPrice],
@@ -1420,9 +1578,10 @@ class SignalGenerationEngine {
       };
     }
 
-    const lookback = Math.min(100, this.priceHistory.length);
-    const prices = this.priceHistory.slice(-lookback);
-    
+    const lookback = Math.min(300, realTickPrices.length || this.priceHistory.length);
+    const prices = usingRealTicks ? realTickPrices.slice(-lookback) : this.priceHistory.slice(-Math.min(100, this.priceHistory.length));
+    console.log(`📊 Volume Profile: built from ${usingRealTicks ? `${prices.length} REAL tick-arrival price samples` : `${prices.length} price-history samples (insufficient real ticks yet)`}`);
+
     // Create buckets
     const buckets = new Map<number, number>();
     const bucketSize = 2.0; // $2 buckets
@@ -6124,6 +6283,12 @@ class SignalGenerationEngine {
   setLastKnownSpread(spreadPips: number): void {
     if (spreadPips > 0 && spreadPips < 20) {
       this.lastKnownSpreadPips = spreadPips;
+      // Part B: retain real spread readings so calculateSpreadRatio() can compare
+      // the latest reading against a genuine rolling baseline, not a single snapshot.
+      this.spreadHistory.push(spreadPips);
+      if (this.spreadHistory.length > 200) {
+        this.spreadHistory.shift();
+      }
     }
   }
   
