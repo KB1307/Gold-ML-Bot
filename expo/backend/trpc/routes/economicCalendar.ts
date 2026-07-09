@@ -15,6 +15,13 @@ export interface CalendarMacroEvent {
   source: "FMP" | "HEURISTIC_FALLBACK";
 }
 
+// "UNAVAILABLE" means the fetch itself failed (bad key, network error, non-OK
+// status such as 403, timeout, or malformed shape) — the client MUST treat
+// this as a trigger to fall back to the date-pattern heuristic. It is
+// distinct from "FMP" + empty events array, which means the fetch genuinely
+// succeeded and FMP reported zero matching events.
+export type CalendarSource = "FMP" | "UNAVAILABLE";
+
 type FmpCalendarEntry = {
   event?: string;
   date?: string;
@@ -69,7 +76,17 @@ function isGoldRelevantHighImpact(entry: FmpCalendarEntry): boolean {
   return impactHigh || nameMatches;
 }
 
-async function fetchFmpCalendar(apiKey: string): Promise<FmpCalendarEntry[]> {
+type FmpFetchResult =
+  | { ok: true; events: FmpCalendarEntry[] }
+  | { ok: false; reason: "HTTP_ERROR" | "BAD_SHAPE" | "NETWORK_ERROR" | "TIMEOUT"; httpStatus?: number; body?: string; message: string };
+
+/**
+ * Fetches FMP's economic calendar. Returns a discriminated result so the
+ * caller can tell a genuine "fetch failed" apart from a genuine "fetch
+ * succeeded, zero matching events" — these must never be conflated (a
+ * failed fetch must never silently look like "0 real events").
+ */
+async function fetchFmpCalendar(apiKey: string): Promise<FmpFetchResult> {
   const now = new Date();
   const from = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const to = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -82,21 +99,24 @@ async function fetchFmpCalendar(apiKey: string): Promise<FmpCalendarEntry[]> {
     clearTimeout(timeoutId);
 
     if (!response.ok) {
-      console.warn(`[EconCalendar] FMP returned ${response.status}`);
-      return [];
+      const body = await response.text().catch(() => "<unreadable body>");
+      console.warn(`[EconCalendar] FMP returned ${response.status}. Body: ${body}`);
+      return { ok: false, reason: "HTTP_ERROR", httpStatus: response.status, body, message: `FMP HTTP ${response.status}` };
     }
 
     const data = (await response.json()) as unknown;
     if (!Array.isArray(data)) {
-      console.warn("[EconCalendar] FMP returned unexpected shape:", data);
-      return [];
+      const bodyPreview = JSON.stringify(data).slice(0, 500);
+      console.warn("[EconCalendar] FMP returned unexpected shape:", bodyPreview);
+      return { ok: false, reason: "BAD_SHAPE", message: "FMP returned non-array shape", body: bodyPreview };
     }
-    return data as FmpCalendarEntry[];
+    return { ok: true, events: data as FmpCalendarEntry[] };
   } catch (error: unknown) {
     clearTimeout(timeoutId);
     const message = error instanceof Error ? error.message : String(error);
-    console.warn("[EconCalendar] FMP fetch failed:", message);
-    return [];
+    const isAbort = error instanceof Error && error.name === "AbortError";
+    console.warn(`[EconCalendar] FMP fetch failed (${isAbort ? "timeout" : "network error"}):`, message);
+    return { ok: false, reason: isAbort ? "TIMEOUT" : "NETWORK_ERROR", message };
   }
 }
 
@@ -104,9 +124,17 @@ export const economicCalendarRouter = createTRPCRouter({
   /**
    * Returns the raw, filtered set of USD-denominated gold-relevant high
    * impact events within [-24h, +72h] of now, cached server-side for
-   * 30-60 minutes. Empty array (not an error) means "no upcoming events" OR
-   * "FMP unreachable" — the client falls back to its own date-pattern
-   * heuristic in either case, so it never silently reports "no macro event".
+   * 30-60 minutes.
+   *
+   * source: "FMP" means the fetch genuinely succeeded (events may still be
+   * an empty array — that's a real "no upcoming events" result, or a stale
+   * cache serve from the last successful fetch).
+   *
+   * source: "UNAVAILABLE" means the fetch itself failed for any reason
+   * (missing key, network error, timeout, or any non-OK HTTP status
+   * including 403) and there is no usable cache to fall back to — the
+   * client MUST treat this as a trigger to use its own date-pattern
+   * heuristic, never as "0 real events".
    */
   getUpcomingEvents: publicProcedure.query(async () => {
     const now = Date.now();
@@ -121,26 +149,37 @@ export const economicCalendarRouter = createTRPCRouter({
 
     const apiKey = getFmpApiKey();
     if (!apiKey) {
-      console.warn("[EconCalendar] FMP_API_KEY not configured on the backend");
+      console.warn("[EconCalendar] FMP_API_KEY not configured on the backend -> source: UNAVAILABLE");
       return { events: [] as NormalizedCalendarEvent[], source: "UNAVAILABLE" as const, cached: false, timestamp: now };
     }
 
-    const rawEvents = await fetchFmpCalendar(apiKey);
-    if (rawEvents.length === 0 && calendarCache) {
-      // FMP failed this cycle — serve stale cache rather than nothing, if we have it.
-      const ageMin = ((now - calendarCache.timestamp) / 60000).toFixed(0);
-      console.warn(`[EconCalendar] FMP fetch failed this cycle, serving stale cache (${ageMin}min old)`);
-      return {
-        events: calendarCache.events.filter(isGoldRelevantHighImpact).map(normalizeFmpEntry),
-        source: "FMP" as const,
-        cached: true,
-        timestamp: calendarCache.timestamp,
-      };
+    const result = await fetchFmpCalendar(apiKey);
+
+    if (!result.ok) {
+      // A genuine fetch failure. If we have any previous successful fetch
+      // cached, serve that stale-but-real data rather than nothing. Only
+      // when there's no cache at all do we report UNAVAILABLE.
+      if (calendarCache) {
+        const ageMin = ((now - calendarCache.timestamp) / 60000).toFixed(0);
+        console.warn(
+          `[EconCalendar] FMP fetch failed this cycle (${result.reason}${result.httpStatus ? ` ${result.httpStatus}` : ""}), serving stale cache (${ageMin}min old) -> source: FMP (cached)`
+        );
+        return {
+          events: calendarCache.events.filter(isGoldRelevantHighImpact).map(normalizeFmpEntry),
+          source: "FMP" as const,
+          cached: true,
+          timestamp: calendarCache.timestamp,
+        };
+      }
+      console.warn(
+        `[EconCalendar] FMP fetch failed (${result.reason}${result.httpStatus ? ` ${result.httpStatus}` : ""}), no cache available -> source: UNAVAILABLE. Detail: ${result.message}${result.body ? ` | body: ${result.body}` : ""}`
+      );
+      return { events: [] as NormalizedCalendarEvent[], source: "UNAVAILABLE" as const, cached: false, timestamp: now };
     }
 
-    calendarCache = { events: rawEvents, timestamp: now };
-    const filtered = rawEvents.filter(isGoldRelevantHighImpact);
-    console.log(`[EconCalendar] FMP success: ${rawEvents.length} raw events, ${filtered.length} gold-relevant high-impact`);
+    calendarCache = { events: result.events, timestamp: now };
+    const filtered = result.events.filter(isGoldRelevantHighImpact);
+    console.log(`[EconCalendar] FMP success: ${result.events.length} raw events, ${filtered.length} gold-relevant high-impact -> source: FMP`);
     return { events: filtered.map(normalizeFmpEntry), source: "FMP" as const, cached: false, timestamp: now };
   }),
 });
