@@ -883,6 +883,20 @@ class SignalGenerationEngine {
    */
   private tickTimestamps: number[] = [];
   private tickPriceSamples: { price: number; timestamp: number }[] = [];
+  /**
+   * Bugfix: recordTickArrival() used to count EVERY raw tick reaching
+   * syncCurrentPrice() toward real tick-frequency/activity, including a lone
+   * uncorroborated glitch tick -- the exact kind of tick the bar-ingest spike
+   * gate in TradingContext.tsx (barGate/classifyTick) exists to reject before
+   * it can contaminate OHLC bars. signalEngine.ts doesn't have access to that
+   * gate's state (it lives in the React context), so this replicates the same
+   * two-tick corroboration standard locally: a tick that jumps further than a
+   * time-scaled budget only counts toward tick-frequency once a second,
+   * independent tick corroborates the new level. This affects ONLY what counts
+   * toward the order-flow tick-frequency signal -- the on-screen price
+   * (currentPrice) is unaffected and still updates on every tick as before.
+   */
+  private tickFrequencyGateState: { lastPrice: number; lastAt: number; pendingPrice: number; pendingAt: number } = { lastPrice: 0, lastAt: 0, pendingPrice: 0, pendingAt: 0 };
   /** Rolling history of real bid/ask spread readings (pips), feeding calculateSpreadRatio(). */
   private spreadHistory: number[] = [];
   private confidenceHistory: number[] = [];
@@ -1356,6 +1370,11 @@ class SignalGenerationEngine {
    * of real arrival timestamps + prices for tick-frequency-based order-flow analysis.
    */
   private recordTickArrival(now: number, price: number): void {
+    if (!this.isTickCorroboratedForFrequency(price, now)) {
+      console.warn(`🛡️ [OrderFlow] Excluding uncorroborated tick ${price.toFixed(1)} from real tick-frequency signal -- awaiting a 2nd corroborating tick (same standard as the bar-ingest spike gate)`);
+      return;
+    }
+
     this.tickTimestamps.push(now);
     this.tickPriceSamples.push({ price, timestamp: now });
 
@@ -1369,6 +1388,61 @@ class SignalGenerationEngine {
     // Hard cap as a safety net independent of timing (e.g. a burst of ticks in a short span)
     if (this.tickTimestamps.length > 2000) this.tickTimestamps = this.tickTimestamps.slice(-2000);
     if (this.tickPriceSamples.length > 2000) this.tickPriceSamples = this.tickPriceSamples.slice(-2000);
+  }
+
+  /**
+   * Lightweight two-tick spike gate mirroring TradingContext.tsx's classifyTick,
+   * scoped to this engine's own tick-frequency counting only. A plausible move
+   * (within the time-scaled budget) is accepted immediately; a jump beyond the
+   * budget is only accepted once a second, independent tick corroborates the
+   * new level within the confirm window -- otherwise it's a lone glitch and is
+   * excluded from the real tick-frequency/activity signal.
+   */
+  private isTickCorroboratedForFrequency(price: number, now: number): boolean {
+    const TICK_FREQ_PIP_VALUE = 0.1;
+    const TICK_FREQ_SPIKE_BASE_PIPS = 8.0;
+    const TICK_FREQ_SPIKE_RATE_PIPS_PER_SEC = 6.0;
+    const TICK_FREQ_SPIKE_BUDGET_CAP_MS = 10000;
+    const TICK_FREQ_CONFIRM_WINDOW_MS = 60000;
+    const TICK_FREQ_CONFIRM_TOL_PIPS = 25;
+
+    const state = this.tickFrequencyGateState;
+
+    if (!(state.lastPrice > 0) || !(state.lastAt > 0) || now < state.lastAt) {
+      state.lastPrice = price;
+      state.lastAt = now;
+      state.pendingPrice = 0;
+      state.pendingAt = 0;
+      return true;
+    }
+
+    const dtMs = now - state.lastAt;
+    const gapPips = Math.abs(price - state.lastPrice) / TICK_FREQ_PIP_VALUE;
+    const effectiveDtMs = Math.min(dtMs, TICK_FREQ_SPIKE_BUDGET_CAP_MS);
+    const budgetPips = TICK_FREQ_SPIKE_BASE_PIPS + TICK_FREQ_SPIKE_RATE_PIPS_PER_SEC * (effectiveDtMs / 1000);
+
+    if (gapPips <= budgetPips) {
+      state.lastPrice = price;
+      state.lastAt = now;
+      state.pendingPrice = 0;
+      state.pendingAt = 0;
+      return true;
+    }
+
+    const pendingFresh = state.pendingAt > 0 && now - state.pendingAt <= TICK_FREQ_CONFIRM_WINDOW_MS;
+    const corroborated = pendingFresh && Math.abs(price - state.pendingPrice) / TICK_FREQ_PIP_VALUE <= TICK_FREQ_CONFIRM_TOL_PIPS;
+
+    if (corroborated) {
+      state.lastPrice = price;
+      state.lastAt = now;
+      state.pendingPrice = 0;
+      state.pendingAt = 0;
+      return true;
+    }
+
+    state.pendingPrice = price;
+    state.pendingAt = now;
+    return false;
   }
 
   /**
@@ -1444,6 +1518,26 @@ class SignalGenerationEngine {
       this.lastKnownSpreadPips = saved.lastKnownSpreadPips;
       this.priceHistory = saved.priceHistory;
     }
+  }
+
+  /**
+   * Test seam (glitch-tick corroboration checkpoint): feeds a raw price through
+   * the exact same public entry point real ticks arrive on (pushExternalPrice ->
+   * syncCurrentPrice -> recordTickArrival), so the corroboration gate is
+   * exercised for real rather than bypassed. Returns how many REAL (corroborated)
+   * tick arrivals are currently retained, so a test can confirm a burst of lone
+   * glitch ticks did NOT inflate the tick-frequency count.
+   */
+  pushTickForTest(price: number): number {
+    this.syncCurrentPrice(price, 'test');
+    return this.tickTimestamps.length;
+  }
+
+  /** Test seam: reset tick-frequency tracking + its corroboration gate to a clean slate. */
+  resetTickFrequencyStateForTest(): void {
+    this.tickTimestamps = [];
+    this.tickPriceSamples = [];
+    this.tickFrequencyGateState = { lastPrice: 0, lastAt: 0, pendingPrice: 0, pendingAt: 0 };
   }
 
   /**
