@@ -28,9 +28,22 @@ export interface TelegramSendResult {
   error?: string;
 }
 
+const RETRYABLE_STATUS_CODES = new Set([0, 408, 429, 500, 502, 503, 504]);
+const MAX_SEND_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 800;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Sends an arbitrary custom message to all configured Telegram chats via the
  * backend proxy and awaits the result.
+ *
+ * Retries a couple of times on transient failures (backend cold start /
+ * capacity blips surface as network errors or 5xx/429 statuses) so a
+ * one-off hiccup doesn't show up to the user as a hard "failed to send"
+ * error when a retry would have gone through fine.
  */
 export async function sendTelegramMessage(text: string): Promise<TelegramSendResult> {
   const trimmed = text.trim();
@@ -38,14 +51,30 @@ export async function sendTelegramMessage(text: string): Promise<TelegramSendRes
     return { ok: false, status: 0, error: "Message is empty" };
   }
 
-  try {
-    const result = await trpcClient.telegram.sendMessage.mutate({ text: trimmed });
-    return result;
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn("[Telegram] sendMessage backend call failed:", message);
-    return { ok: false, status: 0, error: message };
+  let lastResult: TelegramSendResult = { ok: false, status: 0, error: "Unknown error" };
+
+  for (let attempt = 1; attempt <= MAX_SEND_ATTEMPTS; attempt += 1) {
+    try {
+      const result = await trpcClient.telegram.sendMessage.mutate({ text: trimmed });
+      if (result.ok) {
+        return result;
+      }
+      lastResult = result;
+      if (!RETRYABLE_STATUS_CODES.has(result.status)) {
+        return result;
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[Telegram] sendMessage backend call failed (attempt ${attempt}/${MAX_SEND_ATTEMPTS}):`, message);
+      lastResult = { ok: false, status: 0, error: message };
+    }
+
+    if (attempt < MAX_SEND_ATTEMPTS) {
+      await delay(RETRY_DELAY_MS * attempt);
+    }
   }
+
+  return lastResult;
 }
 
 function buildTelegramMessage(signal: TradingSignal, numberOfTPs: 1 | 2 | 3 = 3): string {
@@ -86,19 +115,29 @@ export function sendTelegramAlert(signal: TradingSignal, numberOfTPs: 1 | 2 | 3 
   const text = buildTelegramMessage(signal, numberOfTPs);
   const signalId = signal.id;
 
-  trpcClient.telegram.sendAlert
-    .mutate({ text })
-    .then((result) => {
-      if (!result.ok) {
-        console.warn(`[Telegram] Alert dispatch reported failures for signal ${signalId}`);
+  const attemptSend = async (attempt: number): Promise<void> => {
+    try {
+      const result = await trpcClient.telegram.sendAlert.mutate({ text });
+      if (result.ok) {
+        console.log(`[Telegram] Alert dispatched for signal ${signalId}`);
         return;
       }
-      console.log(`[Telegram] Alert dispatched for signal ${signalId}`);
-    })
-    .catch((error: unknown) => {
+      console.warn(`[Telegram] Alert dispatch reported failures for signal ${signalId} (attempt ${attempt}/${MAX_SEND_ATTEMPTS})`);
+      if (attempt < MAX_SEND_ATTEMPTS) {
+        await delay(RETRY_DELAY_MS * attempt);
+        await attemptSend(attempt + 1);
+      }
+    } catch (error: unknown) {
       console.warn(
-        `[Telegram] Network error dispatching alert for signal ${signalId}:`,
+        `[Telegram] Network error dispatching alert for signal ${signalId} (attempt ${attempt}/${MAX_SEND_ATTEMPTS}):`,
         error instanceof Error ? error.message : String(error),
       );
-    });
+      if (attempt < MAX_SEND_ATTEMPTS) {
+        await delay(RETRY_DELAY_MS * attempt);
+        await attemptSend(attempt + 1);
+      }
+    }
+  };
+
+  void attemptSend(1);
 }
