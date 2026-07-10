@@ -5874,7 +5874,8 @@ class SignalGenerationEngine {
     // reaction. Depends on Step 2's staleness decay already being applied to
     // features.srZones, otherwise a single stale-but-maxed zone can veto
     // almost everything for a full session.
-    const OPPOSING_ZONE_VETO_PROXIMITY = 8;
+    const vetoTargetScalePips = Math.max(settings.tp3Pips, 20);
+    const OPPOSING_ZONE_VETO_PROXIMITY = Math.max(vetoTargetScalePips * 1.1, 15) * pipValue;
     const OPPOSING_ZONE_VETO_MIN_REACTION = 0.3;
     const opposingZoneType = signalType === 'BUY' ? 'RESISTANCE' : 'SUPPORT';
     const favorableReactionType = signalType === 'BUY' ? 'SUPPORT' : 'RESISTANCE';
@@ -5901,13 +5902,13 @@ class SignalGenerationEngine {
 
       const tp2Distance = settings.tp2Pips;
       const tp3Distance = settings.tp3Pips;
-      const requiredRunway = Math.max(tp2Distance * 0.95, settings.slPips * 0.7);
-      const tp2Target = signalType === 'BUY' ? currentPrice + (tp2Distance * pipValue) : currentPrice - (tp2Distance * pipValue);
+      const requiredRunway = Math.max(settings.tp1Pips * 0.95, settings.slPips * 0.7);
+      const tp1Target = signalType === 'BUY' ? currentPrice + (settings.tp1Pips * pipValue) : currentPrice - (settings.tp1Pips * pipValue);
 
       console.log(`   Fixed SL Risk: ${settings.slPips} pips`);
-      console.log(`   TP2 Target: ${tp2Target.toFixed(1)} (${tp2Distance} pips away)`);
+      console.log(`   TP1 Target: ${tp1Target.toFixed(1)} (${settings.tp1Pips} pips away)`);
       console.log(`   TP3 Stretch Target: ${tp3Distance.toFixed(0)} pips`);
-      console.log(`   Required Runway: ${requiredRunway.toFixed(0)} pips (TP2 clearance + managed-runner protection)`);
+      console.log(`   Required Runway: ${requiredRunway.toFixed(0)} pips (TP1 clearance + managed-runner protection)`);
 
       let nearestBarrierDistance = Infinity;
       let barrierType = 'None';
@@ -5982,7 +5983,7 @@ class SignalGenerationEngine {
 
       if (nearestBarrierDistance < requiredRunway) {
         const reason = `PRIMARY TREND REJECTED: Insufficient runway (${nearestBarrierDistance.toFixed(0)} pips < ${requiredRunway.toFixed(0)} pips required)`;
-        const tip = `Price must have ${requiredRunway.toFixed(0)} pips clear space to ${barrierType} so TP2 remains achievable before the next barrier. Market is still too compressed.`;
+        const tip = `Price must have ${requiredRunway.toFixed(0)} pips clear space to ${barrierType} so TP1 remains achievable before the next barrier. Market is still too compressed.`;
         console.log(`   ❌ ${reason}`);
         console.log(`   💡 ${tip}`);
         console.log('='.repeat(60) + '\n');
