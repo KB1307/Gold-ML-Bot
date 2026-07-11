@@ -45,6 +45,12 @@ function formatSignal(signal: TradingSignal, index: number): string {
     const features = signal.topFeatures.map((f) => `${f.feature}=${f.score.toFixed(2)}`).join(", ");
     lines.push(`    top features: ${features}`);
   }
+  if (signal.fullAttentionScores?.length) {
+    lines.push(`    full attention scores (${signal.fullAttentionScores.length} total):`);
+    signal.fullAttentionScores.forEach((f) => {
+      lines.push(`      ${f.feature}=${f.score.toFixed(2)}`);
+    });
+  }
   return lines.join("\n");
 }
 

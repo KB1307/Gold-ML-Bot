@@ -31,6 +31,13 @@ export interface TradingSignal {
   exitTime?: string;
   exitPrice?: number;
   topFeatures: FeatureConfidence[];
+  /**
+   * Part B (diagnostics): EVERY entry from attentionScores at generation time,
+   * not just the top 3 (topFeatures above). Additive only - topFeatures stays
+   * exactly as-is for existing UI display. Lets a full post-hoc reconstruction
+   * of any past signal's complete scoring breakdown actually be possible.
+   */
+  fullAttentionScores?: FeatureConfidence[];
   macroWarning?: MacroEvent;
   riskJustification: string;
   timeToLive?: number;

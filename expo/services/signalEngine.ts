@@ -5564,6 +5564,15 @@ class SignalGenerationEngine {
       feature: feature.replace(/_/g, ' ').toUpperCase(),
       score: parseFloat((Math.abs(score) * 100).toFixed(1)),
     }));
+
+    // Part B (diagnostics): capture EVERY entry in attentionScores, not just
+    // the top 3 above. Purely additive - topFeatures/UI display is unchanged.
+    const fullAttentionScores: FeatureConfidence[] = Array.from(analysis.attentionScores.entries())
+      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+      .map(([feature, score]) => ({
+        feature: feature.replace(/_/g, ' ').toUpperCase(),
+        score: parseFloat((Math.abs(score) * 100).toFixed(1)),
+      }));
     
     const nowLocal = new Date();
     const timeString = `${nowLocal.getHours().toString().padStart(2, "0")}:${nowLocal.getMinutes().toString().padStart(2, "0")}`;
@@ -5638,6 +5647,7 @@ class SignalGenerationEngine {
       targetsHit: 0,
       entryTime: timeString,
       topFeatures,
+      fullAttentionScores,
       macroWarning: macroEvent,
       riskJustification,
       learningContext: {

@@ -159,6 +159,11 @@ const TICK_SPIKE_CONFIRM_TOL_PIPS = 25;
 // level, the trade closes as SL_AFTER_BE banking TP1 + 15 pip lock (WIN).
 const POST_TP1_PROFIT_LOCK_PIPS = 15;
 const PIP_VALUE = 0.1;
+// Part A fix #2: Path 3 (catch-up fallback) no longer echoes signal.sl exactly
+// as the exit price for a confirmed SL_HIT - it now reflects the actual
+// confirmed price read plus a small realistic exit-fill slippage (in the same
+// raw-price-unit convention as SL_CONFIRMATION_MIN_PENETRATION_PIPS above).
+const FALLBACK_SL_EXIT_SLIPPAGE_PIPS = 0.3;
 
 interface TickGateState {
   lastPrice: number;
@@ -372,6 +377,55 @@ export function classifySignalOutcome(signal: TradingSignal, basePositionSize: n
   return "NO_TRADE";
 }
 
+export interface FallbackBreachTrackerState {
+  firstBreachAt: number;
+  maxPenetrationPips: number;
+  lastPrice: number;
+  tickCount: number;
+}
+
+/**
+ * Pure, unit-testable core of Part A's Path 3 (catch-up fallback) hardening.
+ * Mirrors the live tick monitor's confirmSLHit standard (multi-read
+ * corroboration + minimum sustained duration + minimum real penetration), but
+ * is designed to span SEPARATE catch-up passes (the fallback only samples one
+ * price snapshot per pass) rather than live sub-second ticks. A single
+ * bad/stale/glitched read can never alone confirm - `tracker` must already
+ * hold a PRIOR pending candidate for this exact key, and the elapsed/
+ * penetration/tick-count thresholds must all be met, before this returns true.
+ * Mutates `tracker` in place (per-signal, per-kind keyed map).
+ */
+export function evaluateFallbackBreachConfirmation(
+  tracker: Map<string, FallbackBreachTrackerState>,
+  trackKey: string,
+  penetrationPips: number,
+  price: number,
+  now: number,
+  opts: { minDurationMs: number; minPenetrationPips: number; minTicks: number },
+): boolean {
+  if (penetrationPips < 0) {
+    tracker.delete(trackKey);
+    return false;
+  }
+  const existing = tracker.get(trackKey);
+  if (!existing) {
+    tracker.set(trackKey, { firstBreachAt: now, maxPenetrationPips: penetrationPips, lastPrice: price, tickCount: 1 });
+    return false;
+  }
+  existing.maxPenetrationPips = Math.max(existing.maxPenetrationPips, penetrationPips);
+  existing.lastPrice = price;
+  existing.tickCount += 1;
+  const elapsed = now - existing.firstBreachAt;
+  const confirmed = elapsed >= opts.minDurationMs
+    && existing.maxPenetrationPips >= opts.minPenetrationPips
+    && existing.tickCount >= opts.minTicks;
+  if (!confirmed) {
+    return false;
+  }
+  tracker.delete(trackKey);
+  return true;
+}
+
 export function computeSignalPnL(signal: TradingSignal, basePositionSize: number): number {
   const terminalStatuses: SignalStatus[] = [
     "ALL_TARGETS_HIT",
@@ -513,6 +567,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   // Tracks when price first broke the SL; we only confirm SL_HIT after the
   // required duration AND minimum penetration are satisfied.
   const slBreachTrackerRef = useRef<Map<string, { firstBreachAt: number; maxPenetrationPips: number; lastPrice: number; tickCount: number }>>(new Map());
+  // Path 3 (catch-up fallback, fires when NO historical bars are available)
+  // breach confirmation tracker. Hardens the fallback with the SAME standard
+  // Path 1 (confirmSLHit above) already has: a single point-in-time price read
+  // can never alone terminate a signal - it must be corroborated by ANOTHER
+  // read on a LATER catch-up pass, spanning a minimum duration, before a
+  // terminal (SL-side) outcome is confirmed. Key = `${signal.id}:${kind}`.
+  const fallbackBreachTrackerRef = useRef<Map<string, { firstBreachAt: number; maxPenetrationPips: number; lastPrice: number; tickCount: number }>>(new Map());
+  // Diagnostic counters (Part A, item 4): how often each catch-up resolution
+  // path actually fires, to gauge how many existing stored signals may have
+  // been resolved via the (now-hardened) single-snapshot fallback path.
+  const resolutionPathFireCountsRef = useRef<{ path3FallbackEntered: number; path3FallbackTerminalConfirmed: number; path2BarsResolved: number }>({ path3FallbackEntered: 0, path3FallbackTerminalConfirmed: 0, path2BarsResolved: 0 });
   // Two-tick spike gate state for the live signal evaluator (stops an
   // uncorroborated glitch tick from banking a false TP/SL).
   const liveTickGateRef = useRef<TickGateState>(createTickGateState());
@@ -1338,7 +1403,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       const historicalBars = await fetchPriceHistory(signalTime, now);
       
       if (historicalBars.length === 0) {
-        console.log(`   ⚠️ No historical data available - using current price fallback`);
+        resolutionPathFireCountsRef.current.path3FallbackEntered += 1;
+        const signalCreatedAtEpoch = signal.createdAt ?? new Date(signal.timestamp).getTime();
+        console.log(`   ⚠️ No historical data available - using current price fallback [Path 3 - fire count: ${resolutionPathFireCountsRef.current.path3FallbackEntered}]`);
+        console.log(`   🕓 [Path 3 diag] signal.createdAt(epoch ms)=${signalCreatedAtEpoch} now(epoch ms)=${now} currentFallbackPrice=${currentFallbackPrice.toFixed(2)}`);
 
         if (currentFallbackPrice <= 0) {
           console.log(`   ⏳ No fallback live price available - leaving signal unchanged until next reconciliation`);
@@ -1350,61 +1418,82 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         let shouldRecord = false;
         let outcomeResult: 'WIN' | 'LOSS' = 'LOSS';
         let exitPrice = currentPrice;
+
+        // HARDENED (Part A fix): a single point-in-time snapshot must never be
+        // able to single-handedly terminate a signal via SL_HIT. This mirrors
+        // Path 1's confirmSLHit standard (multi-read corroboration + minimum
+        // sustained duration + real confirmed penetration), but spans SEPARATE
+        // catch-up passes (this fallback only samples one price per pass, ~30s
+        // apart) instead of live sub-second ticks. A lone bad/stale/glitched
+        // read is recorded as a pending candidate and can only confirm if it is
+        // STILL past threshold on a LATER pass, satisfying the same duration/
+        // penetration/tick-count thresholds already used live.
+        const confirmFallbackBreach = (kind: 'SL' | 'TP2_RUNNER_RETRACE', penetrationPips: number): boolean => {
+          const trackKey = `${signal.id}:${kind}`;
+          const hadCandidate = fallbackBreachTrackerRef.current.has(trackKey);
+          const confirmed = evaluateFallbackBreachConfirmation(
+            fallbackBreachTrackerRef.current,
+            trackKey,
+            penetrationPips,
+            currentPrice,
+            now,
+            {
+              minDurationMs: SL_CONFIRMATION_MIN_DURATION_MS,
+              minPenetrationPips: SL_CONFIRMATION_MIN_PENETRATION_PIPS,
+              minTicks: SL_CONFIRMATION_MIN_TICKS,
+            },
+          );
+          if (penetrationPips < 0) {
+            if (hadCandidate) {
+              console.log(`   🛡️ [Path 3] breach candidate for ${signal.id.slice(-6)} (${kind}) reset - price recovered past threshold`);
+            }
+            return false;
+          }
+          if (!hadCandidate && !confirmed) {
+            console.log(`   🛡️ [Path 3] BREACH CANDIDATE (pending confirmation on a later pass): ${signal.id.slice(-6)} kind=${kind} penetration=${penetrationPips.toFixed(2)} @ ${currentPrice.toFixed(1)} - needs a corroborating later read (>=${SL_CONFIRMATION_MIN_DURATION_MS}ms elapsed, >=${SL_CONFIRMATION_MIN_TICKS} reads)`);
+            return false;
+          }
+          if (!confirmed) {
+            const existing = fallbackBreachTrackerRef.current.get(trackKey);
+            console.log(`   🛡️ [Path 3] breach ongoing for ${signal.id.slice(-6)} kind=${kind}: maxPen=${existing?.maxPenetrationPips.toFixed(2) ?? '?'} reads=${existing?.tickCount ?? '?'}`);
+            return false;
+          }
+          console.log(`   ✅ [Path 3] BREACH CONFIRMED for ${signal.id.slice(-6)} kind=${kind}: confirmed across separate catch-up passes, pen ${penetrationPips.toFixed(2)}`);
+          resolutionPathFireCountsRef.current.path3FallbackTerminalConfirmed += 1;
+          return true;
+        };
         
         if (signal.type === "BUY") {
-          if (targetsHit >= 2 && currentPrice <= signal.entryPrice) {
-            console.log(`   ✅ CATCH-UP (Fallback): TP2 runner returned to entry @ ${currentPrice.toFixed(1)} - closing as protected partial win`);
-            newStatus = "PARTIAL_WIN_SL_HIT";
-            targetsHit = Math.max(targetsHit, 2);
-            outcomeResult = 'WIN';
-            exitPrice = getProtectedExitPrice(signal, targetsHit);
-            shouldRecord = true;
-          } else if (currentPrice <= signal.sl - SL_CONFIRMATION_MIN_PENETRATION_PIPS) {
-            console.log(`   🚨 CATCH-UP (Fallback): Original SL hit @ ${currentPrice.toFixed(1)} (SL: ${signal.sl.toFixed(1)}) - penetration ${(signal.sl - currentPrice).toFixed(2)} pips meets confirmation threshold`);
-            if (targetsHit >= 2) {
-              newStatus = "PARTIAL_WIN_SL_HIT";
-              targetsHit = Math.max(targetsHit, 2);
-              outcomeResult = 'WIN';
-              exitPrice = getProtectedExitPrice(signal, targetsHit);
-              console.log(`   ✅ Managed runner was already breakeven-protected after TP2 - recording partial win @ ${exitPrice.toFixed(1)}`);
-            } else if (signal.breakevenReached || targetsHit >= 1) {
-              newStatus = "SL_AFTER_BE";
-              targetsHit = Math.max(targetsHit, 1);
-              outcomeResult = 'WIN';
-              exitPrice = getProtectedExitPrice(signal, targetsHit);
-              console.log(`   ⚖️ SL AFTER BREAKEVEN - no capital loss (TP1 banked) @ ${exitPrice.toFixed(1)}`);
-            } else {
-              newStatus = "SL_HIT";
-              outcomeResult = 'LOSS';
-              exitPrice = signal.sl;
-            }
-            shouldRecord = true;
-          } else if (currentPrice >= signal.tp3) {
+          // TP conditions evaluated FIRST (forward price progress), before any
+          // protective-stop / raw-SL condition is even considered.
+          if (currentPrice >= signal.tp3) {
             console.log(`   🎯 CATCH-UP (Fallback): All targets hit @ ${currentPrice.toFixed(1)} (TP3: ${signal.tp3.toFixed(1)})`);
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
             shouldRecord = true;
             outcomeResult = 'WIN';
             exitPrice = signal.tp3;
+            fallbackBreachTrackerRef.current.delete(`${signal.id}:SL`);
+            fallbackBreachTrackerRef.current.delete(`${signal.id}:TP2_RUNNER_RETRACE`);
           } else if (currentPrice >= signal.tp2 && targetsHit < 2) {
             console.log(`   🎯 CATCH-UP (Fallback): TP2 hit @ ${currentPrice.toFixed(1)} (TP2: ${signal.tp2.toFixed(1)})`);
             newStatus = "TP2_HIT";
             targetsHit = 2;
+            fallbackBreachTrackerRef.current.delete(`${signal.id}:SL`);
           } else if (currentPrice >= signal.tp1 && targetsHit < 1) {
             console.log(`   🎯 CATCH-UP (Fallback): TP1 hit @ ${currentPrice.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)})`);
             newStatus = "TP1_HIT";
             targetsHit = 1;
-          }
-        } else {
-          if (targetsHit >= 2 && currentPrice >= signal.entryPrice) {
+            fallbackBreachTrackerRef.current.delete(`${signal.id}:SL`);
+          } else if (targetsHit >= 2 && currentPrice <= signal.entryPrice && confirmFallbackBreach('TP2_RUNNER_RETRACE', (signal.entryPrice - currentPrice))) {
             console.log(`   ✅ CATCH-UP (Fallback): TP2 runner returned to entry @ ${currentPrice.toFixed(1)} - closing as protected partial win`);
             newStatus = "PARTIAL_WIN_SL_HIT";
             targetsHit = Math.max(targetsHit, 2);
             outcomeResult = 'WIN';
             exitPrice = getProtectedExitPrice(signal, targetsHit);
             shouldRecord = true;
-          } else if (currentPrice >= signal.sl + SL_CONFIRMATION_MIN_PENETRATION_PIPS) {
-            console.log(`   🚨 CATCH-UP (Fallback): Original SL hit @ ${currentPrice.toFixed(1)} (SL: ${signal.sl.toFixed(1)}) - penetration ${(currentPrice - signal.sl).toFixed(2)} pips meets confirmation threshold`);
+          } else if (currentPrice <= signal.sl - SL_CONFIRMATION_MIN_PENETRATION_PIPS && confirmFallbackBreach('SL', (signal.sl - currentPrice))) {
+            console.log(`   🚨 CATCH-UP (Fallback): Original SL hit @ ${currentPrice.toFixed(1)} (SL: ${signal.sl.toFixed(1)}) - penetration ${(signal.sl - currentPrice).toFixed(2)} confirmed across separate catch-up passes`);
             if (targetsHit >= 2) {
               newStatus = "PARTIAL_WIN_SL_HIT";
               targetsHit = Math.max(targetsHit, 2);
@@ -1420,24 +1509,61 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             } else {
               newStatus = "SL_HIT";
               outcomeResult = 'LOSS';
-              exitPrice = signal.sl;
+              // Part A fix #2: reflect the actual confirmed read (with a small,
+              // realistic exit-fill slippage), never echo signal.sl exactly.
+              exitPrice = parseFloat((currentPrice - FALLBACK_SL_EXIT_SLIPPAGE_PIPS * PIP_VALUE).toFixed(1));
             }
             shouldRecord = true;
-          } else if (currentPrice <= signal.tp3) {
+          }
+        } else {
+          if (currentPrice <= signal.tp3) {
             console.log(`   🎯 CATCH-UP (Fallback): All targets hit @ ${currentPrice.toFixed(1)} (TP3: ${signal.tp3.toFixed(1)})`);
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
             shouldRecord = true;
             outcomeResult = 'WIN';
             exitPrice = signal.tp3;
+            fallbackBreachTrackerRef.current.delete(`${signal.id}:SL`);
+            fallbackBreachTrackerRef.current.delete(`${signal.id}:TP2_RUNNER_RETRACE`);
           } else if (currentPrice <= signal.tp2 && targetsHit < 2) {
             console.log(`   🎯 CATCH-UP (Fallback): TP2 hit @ ${currentPrice.toFixed(1)} (TP2: ${signal.tp2.toFixed(1)})`);
             newStatus = "TP2_HIT";
             targetsHit = 2;
+            fallbackBreachTrackerRef.current.delete(`${signal.id}:SL`);
           } else if (currentPrice <= signal.tp1 && targetsHit < 1) {
             console.log(`   🎯 CATCH-UP (Fallback): TP1 hit @ ${currentPrice.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)})`);
             newStatus = "TP1_HIT";
             targetsHit = 1;
+            fallbackBreachTrackerRef.current.delete(`${signal.id}:SL`);
+          } else if (targetsHit >= 2 && currentPrice >= signal.entryPrice && confirmFallbackBreach('TP2_RUNNER_RETRACE', (currentPrice - signal.entryPrice))) {
+            console.log(`   ✅ CATCH-UP (Fallback): TP2 runner returned to entry @ ${currentPrice.toFixed(1)} - closing as protected partial win`);
+            newStatus = "PARTIAL_WIN_SL_HIT";
+            targetsHit = Math.max(targetsHit, 2);
+            outcomeResult = 'WIN';
+            exitPrice = getProtectedExitPrice(signal, targetsHit);
+            shouldRecord = true;
+          } else if (currentPrice >= signal.sl + SL_CONFIRMATION_MIN_PENETRATION_PIPS && confirmFallbackBreach('SL', (currentPrice - signal.sl))) {
+            console.log(`   🚨 CATCH-UP (Fallback): Original SL hit @ ${currentPrice.toFixed(1)} (SL: ${signal.sl.toFixed(1)}) - penetration ${(currentPrice - signal.sl).toFixed(2)} confirmed across separate catch-up passes`);
+            if (targetsHit >= 2) {
+              newStatus = "PARTIAL_WIN_SL_HIT";
+              targetsHit = Math.max(targetsHit, 2);
+              outcomeResult = 'WIN';
+              exitPrice = getProtectedExitPrice(signal, targetsHit);
+              console.log(`   ✅ Managed runner was already breakeven-protected after TP2 - recording partial win @ ${exitPrice.toFixed(1)}`);
+            } else if (signal.breakevenReached || targetsHit >= 1) {
+              newStatus = "SL_AFTER_BE";
+              targetsHit = Math.max(targetsHit, 1);
+              outcomeResult = 'WIN';
+              exitPrice = getProtectedExitPrice(signal, targetsHit);
+              console.log(`   ⚖️ SL AFTER BREAKEVEN - no capital loss (TP1 banked) @ ${exitPrice.toFixed(1)}`);
+            } else {
+              newStatus = "SL_HIT";
+              outcomeResult = 'LOSS';
+              // Part A fix #2: reflect the actual confirmed read (with a small,
+              // realistic exit-fill slippage), never echo signal.sl exactly.
+              exitPrice = parseFloat((currentPrice + FALLBACK_SL_EXIT_SLIPPAGE_PIPS * PIP_VALUE).toFixed(1));
+            }
+            shouldRecord = true;
           }
         }
         
@@ -1458,7 +1584,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           };
           
           if (shouldRecord) {
-            console.log(`   📊 Recording ${outcomeResult} outcome for learning engine...`);
+            console.log(`   📊 [Path 3] Recording ${outcomeResult} outcome for learning engine (resolvedAt epoch ms=${exitDate.getTime()})...`);
             await signalEngine.recordTradeOutcome(
               signal.id,
               signal.entryPrice,
@@ -1475,6 +1601,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           console.log(`   ✅ Signal still valid - no changes needed`);
         }
       } else {
+        resolutionPathFireCountsRef.current.path2BarsResolved += 1;
         const barResolution = resolveSignalWithBars(signal, historicalBars, { logPrefix: `   [Resolver ${signal.id.slice(-6)}]` });
         const legacy = await analyzeSignalWithHistoricalData(signal, historicalBars);
         // Bar-based resolver is the AUTHORITATIVE source of truth because it
@@ -1504,7 +1631,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         
         if (analysis.newStatus !== signal.status || analysis.targetsHit !== signal.targetsHit || analysis.breakevenReached !== signal.breakevenReached) {
           hasChanges = true;
-          const exitDate = new Date();
+          // Part A fix #5: use the bar's REAL resolution timestamp
+          // (resolvedAtBarTs) when the bar resolver produced one, instead of
+          // new Date() at whatever moment this reconciliation happens to run -
+          // the old code silently displayed a wall-clock time that could be
+          // minutes/hours after the price actually crossed the level.
+          const exitDate = barResolution.resolvedAtBarTs != null ? new Date(barResolution.resolvedAtBarTs) : new Date();
           
           updatedHistory[i] = {
             ...signal,
@@ -1710,7 +1842,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       if (statusChanged || targetsChanged) {
         corrected++;
-        const exitDate = new Date();
+        // Part A fix #5: prefer the bar's REAL resolution timestamp
+        // (resolvedAtBarTs) over new Date() at whatever moment the audit
+        // happens to run, for the same reason as the catch-up path above.
+        const exitDate = barOutcome.resolvedAtBarTs != null ? new Date(barOutcome.resolvedAtBarTs) : new Date();
         const patched: TradingSignal = {
           ...signal,
           status: analysis.newStatus,
@@ -1718,7 +1853,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           breakevenReached: analysis.breakevenReached ?? signal.breakevenReached,
           breakevenTime: analysis.breakevenTime ?? signal.breakevenTime,
           exitPrice: analysis.exitPrice,
-          exitTime: signal.exitTime ?? exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+          exitTime: statusChanged ? exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) : (signal.exitTime ?? exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })),
         };
         (patched as TradingSignal & { slAuditVersion?: string }).slAuditVersion = SL_AUDIT_VERSION;
         updated.push(patched);
