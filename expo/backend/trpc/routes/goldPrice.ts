@@ -874,7 +874,10 @@ export const goldPriceRouter = createTRPCRouter({
           // by up to 10 hours. The &timezone=UTC parameter is the actual fix - the
           // date string's own ISO formatting does NOT convey this on its own.
           const url = `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=1min&start_date=${startDate}&end_date=${endDate}&outputsize=500&timezone=UTC&apikey=${apiKey}`;
-          console.log(`[GOLD-HISTORY] TwelveData: Fetching (timezone=UTC explicit)...`);
+          // ITEM 5: log the raw request URL (API key redacted) so any future audit
+          // investigation has hard evidence the timezone=UTC parameter is actually
+          // present on the real outbound call, without re-deriving it from scratch.
+          console.log(`[GOLD-HISTORY] TwelveData: Fetching. Raw URL (redacted): ${url.replace(apiKey, '***REDACTED***')}`);
           const response = await fetchWithTimeout(url, 10000);
 
           if (!response.ok) {

@@ -1703,6 +1703,15 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   ): Promise<{ bars: OhlcBar[]; source: string }> => {
     const localBars = await getBars('1m', fromTime, toTime);
 
+    // ITEM 4: local 1m retention is now 7 days (barStore RETENTION_MS['1m']).
+    // Any portion of [fromTime, toTime] older than that boundary structurally
+    // CANNOT have local bars regardless of coverage - flag it distinctly so a
+    // wide (Item 4 safety-net) audit window makes it obvious when a correction
+    // is based on data that could never be cross-checked against local bars.
+    const LOCAL_1M_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+    const localRetentionBoundary = Date.now() - LOCAL_1M_RETENTION_MS;
+    const requestPreDatesLocalRetention = fromTime < localRetentionBoundary;
+
     // Probe: does the chart-derived local history already capture a terminal
     // event (SL / TP / protected exit) for this signal? We replay from scratch
     // purely to locate the resolution point — the real resolution still runs
@@ -1743,12 +1752,20 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     });
 
     const merged = mergeBarsPreferLocal(localBars, remoteBars);
-    const source = localBars.length > 0 ? '🟡 merged (chart-derived + remote gap-fill)' : '🟠 remote feed';
+    // ITEM 4: when the window (or part of it) predates local retention entirely,
+    // tag this distinctly as remote-only-beyond-retention rather than the normal
+    // merged/remote-feed tags, so it's visible this correction could NOT be
+    // cross-checked against any local chart-derived bar for that stretch.
+    const source = localBars.length === 0 && requestPreDatesLocalRetention
+      ? '🟣 remote-only (beyond 7d local retention boundary)'
+      : localBars.length > 0 ? '🟡 merged (chart-derived + remote gap-fill)' : '🟠 remote feed';
     console.log(`   🔀 [Audit ${signal.id.slice(-6)}] ${source}: ${localBars.length} local + ${remoteBars.length} remote → ${merged.length} bars`);
+    // ITEM 5: diagnostic logging - explicit source tag for every getAuditBars call.
+    console.log(`   🧾 [Audit-diagnostic ${signal.id.slice(-6)}] sourceTag="${source}" window=[${new Date(fromTime).toISOString()}, ${new Date(toTime).toISOString()}] preDatesLocalRetention=${requestPreDatesLocalRetention}`);
     return { bars: merged, source };
   }, []);
 
-  const auditTerminalSLSignals = useCallback(async (history: TradingSignal[], opts: { force?: boolean } = {}): Promise<TradingSignal[]> => {
+  const auditTerminalSLSignals = useCallback(async (history: TradingSignal[], opts: { force?: boolean; windowMs?: number } = {}): Promise<TradingSignal[]> => {
     console.log('\n' + '='.repeat(80));
     console.log('🔬 FULL OUTCOME AUDIT: re-evaluating every terminal signal against 1-min bars (catches false SL AND false TP)');
     console.log('='.repeat(80));
@@ -1771,7 +1788,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     }
     const now = Date.now();
     const twoHoursInMs = 2 * 60 * 60 * 1000;
-    const twentyFourHoursInMs = 24 * 60 * 60 * 1000;
+    // ITEM 4 (secondary safety net): callers may pass an explicit windowMs to
+    // look further past signal creation than the default 2h - e.g. a manual
+    // re-investigation of a signal suspected to have resolved later than the
+    // live monitor/first audit pass ever looked. Default is UNCHANGED (2h) so
+    // normal/periodic/daily-sweep audit calls behave exactly as before (this is
+    // required for the byte-identical before/after simulation in this pass's
+    // scope boundary) - only an explicit override widens it.
+    const resolutionWindowMs = typeof opts.windowMs === 'number' && opts.windowMs > 0 ? opts.windowMs : twoHoursInMs;
+    // Bars retention is now 7 days (barStore RETENTION_MS['1m'], Item 2) - the
+    // audit-lock skip below is keyed off that, not the old 24h assumption.
+    const localBarRetentionMs = 7 * 24 * 60 * 60 * 1000;
     let corrected = 0;
     const updated: TradingSignal[] = [];
 
@@ -1779,10 +1806,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       const isTerminal = TERMINAL_SIGNAL_STATUSES.includes(signal.status);
       const signalAgeMs = now - new Date(signal.timestamp).getTime();
       const alreadyAudited = (signal as TradingSignal & { slAuditVersion?: string }).slAuditVersion === SL_AUDIT_VERSION;
-      // Bars retention is 24h. If the signal is older and already audited, we
-      // cannot do better than the prior pass - safe to skip to save CPU.
-      // force=true (manual audit) bypasses both the audit lock and the 24h skip.
-      const tooOldForBars = signalAgeMs > twentyFourHoursInMs;
+      // If the signal is older than local bar retention AND already audited, we
+      // cannot do better than the prior pass using local bars - safe to skip to
+      // save CPU. force=true (manual audit) bypasses both the audit lock and
+      // this skip.
+      const tooOldForBars = signalAgeMs > localBarRetentionMs;
       if (!isTerminal || (!force && alreadyAudited && tooOldForBars)) {
         updated.push(signal);
         continue;
@@ -1790,7 +1818,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       const signalTs = new Date(signal.timestamp).getTime();
       const fromTime = signalTs;
-      const toTime = Math.min(now, signalTs + twoHoursInMs);
+      const toTime = Math.min(now, signalTs + resolutionWindowMs);
 
       console.log(`\n🔍 Auditing ${signal.id.slice(-6)} (${signal.type}, status=${signal.status}) entry=${signal.entryPrice.toFixed(1)} SL=${signal.sl.toFixed(1)} TP1=${signal.tp1.toFixed(1)} TP3=${signal.tp3.toFixed(1)}${alreadyAudited ? ' [RE-AUDIT]' : ''}`);
 
@@ -2915,6 +2943,98 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       clearInterval(historicalReconciliationInterval);
     };
   }, [catchUpAndEvaluateSignals, auditTerminalSLSignals, isLoading]);
+
+  // ITEM 3: guaranteed daily full audit sweep. This is a NEW, fully independent
+  // scheduled task operating ONLY on already-resolved/terminal signal history -
+  // it never touches, blocks, delays, or is called by signal-GENERATION
+  // scheduling (SIGNAL_GENERATION_INTERVAL_MS / registerBackgroundTask), which
+  // continue to run entirely on their own separate timers untouched by this.
+  // Runs once per UTC calendar day, timed to the ~21:00-22:00 UTC low-liquidity
+  // rollover window (NY close / Asia pre-open) so that day's signals' local 1m
+  // bars still exist (well within the 7-day retention from Item 2), giving
+  // every recent signal at least one full, unhurried, force=true audit pass -
+  // not just the opportunistic 30s-interval reconciliation above (which skips
+  // already-audited signals unless they're stale/old).
+  useEffect(() => {
+    if (isLoading) {
+      return;
+    }
+
+    let isMounted = true;
+    const DAILY_SWEEP_UTC_HOUR = 21; // 21:00-22:00 UTC window
+    const DAILY_SWEEP_STORAGE_KEY = 'last_daily_full_audit_sweep_utc_date';
+    const DAILY_SWEEP_CHECK_INTERVAL_MS = 60_000;
+
+    const utcDateString = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
+
+    const runDailyFullAuditSweep = async () => {
+      if (historicalReconciliationInFlightRef.current) {
+        console.log('⏳ [DailySweep] Skipping - historical reconciliation already in flight this tick, will retry next check');
+        return;
+      }
+      historicalReconciliationInFlightRef.current = true;
+      const todayUtc = utcDateString(Date.now());
+      console.log(`\n${'='.repeat(80)}\n🌙 [DailySweep] GUARANTEED DAILY FULL AUDIT SWEEP starting (UTC date ${todayUtc}, rollover window)\n${'='.repeat(80)}`);
+      try {
+        const currentHistory = signalHistoryRef.current;
+        const reconciledHistory = await catchUpAndEvaluateSignals(currentHistory, historicalFallbackPriceRef.current);
+        if (!isMounted) return;
+        // force=true: every recent terminal signal gets a full re-audit, not just
+        // ones that failed the alreadyAudited/tooOldForBars skip check.
+        const auditedHistory = await auditTerminalSLSignals(reconciledHistory, { force: true });
+        if (!isMounted) return;
+
+        const previousSerialized = JSON.stringify(currentHistory);
+        const nextSerialized = JSON.stringify(auditedHistory);
+        if (previousSerialized !== nextSerialized) {
+          signalHistoryRef.current = auditedHistory;
+          setSignalHistory(sanitizeHistoryForRender(auditedHistory));
+          persistSignalHistory(auditedHistory, { immediate: true });
+          setSignalUpdateTrigger(prev => prev + 1);
+          console.log('✅ [DailySweep] Daily full audit sweep corrected one or more signals');
+        } else {
+          console.log('✅ [DailySweep] Daily full audit sweep found no corrections needed');
+        }
+        await AsyncStorage.setItem(DAILY_SWEEP_STORAGE_KEY, todayUtc);
+        console.log(`🌙 [DailySweep] Recorded sweep completion for UTC date ${todayUtc}`);
+      } catch (error) {
+        console.error('❌ [DailySweep] Daily full audit sweep failed:', error);
+      } finally {
+        historicalReconciliationInFlightRef.current = false;
+      }
+    };
+
+    const checkAndMaybeRunDailySweep = async () => {
+      if (!isMounted) return;
+      try {
+        const now = new Date();
+        const utcHour = now.getUTCHours();
+        if (utcHour !== DAILY_SWEEP_UTC_HOUR) {
+          return;
+        }
+        const todayUtc = utcDateString(now.getTime());
+        const lastSweepDate = await AsyncStorage.getItem(DAILY_SWEEP_STORAGE_KEY);
+        if (lastSweepDate === todayUtc) {
+          return; // Already swept today.
+        }
+        console.log(`🌙 [DailySweep] Entering rollover window (UTC hour=${utcHour}), last sweep=${lastSweepDate ?? 'never'} - running now`);
+        await runDailyFullAuditSweep();
+      } catch (err) {
+        console.warn('⚠️ [DailySweep] Check failed (non-blocking):', err instanceof Error ? err.message : 'Unknown');
+      }
+    };
+
+    console.log('🌙 [DailySweep] Guaranteed daily full audit sweep scheduler started (checks every 60s for the 21:00-22:00 UTC window)');
+    void checkAndMaybeRunDailySweep();
+    const dailySweepCheckInterval = setInterval(() => {
+      void checkAndMaybeRunDailySweep();
+    }, DAILY_SWEEP_CHECK_INTERVAL_MS);
+
+    return () => {
+      isMounted = false;
+      clearInterval(dailySweepCheckInterval);
+    };
+  }, [catchUpAndEvaluateSignals, auditTerminalSLSignals, persistSignalHistory, isLoading]);
 
   useEffect(() => {
     if (!isLoggedIn) {

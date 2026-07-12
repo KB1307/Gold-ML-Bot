@@ -273,7 +273,10 @@ const fetchTwelveDataDirect = async (
     // timezone-less date string can be silently misinterpreted by up to 10
     // hours. This explicit parameter is the real fix, not the ISO string shape.
     const url = `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=1min&start_date=${startDate}&end_date=${endDate}&outputsize=500&timezone=UTC&apikey=${apiKey}`;
-    console.log("[History-Direct] Fetching from TwelveData (timezone=UTC explicit)...");
+    // ITEM 5: log the raw request URL (API key redacted) so any future audit
+    // investigation has hard evidence the timezone=UTC parameter is actually
+    // present on the real outbound call, without re-deriving it from scratch.
+    console.log(`[History-Direct] Fetching from TwelveData. Raw URL (redacted): ${url.replace(apiKey, "***REDACTED***")}`);
     const response = await fetchWithClientTimeout(url, 12000);
 
     if (!response.ok) {
