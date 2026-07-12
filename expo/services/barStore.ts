@@ -17,14 +17,20 @@ const TF_MS: Record<Timeframe, number> = {
   '1h': 60 * 60_000,
 };
 
+// ITEM 2: '1m' retention extended from 24h/1440 bars to 7 days/10,080 bars so
+// audits have a much wider local (chart-derived, most-trusted) window to work
+// with before ever needing the remote feed. '5m'/'1h' are left as-is - they
+// already cover 3/14 days respectively, well beyond what a signal audit
+// (which only ever needs the ~2h post-entry window) requires, so widening them
+// further would only grow storage with no audit-reliability benefit.
 const RETENTION_MS: Record<Timeframe, number> = {
-  '1m': 24 * 60 * 60 * 1000,
+  '1m': 7 * 24 * 60 * 60 * 1000,
   '5m': 3 * 24 * 60 * 60 * 1000,
   '1h': 14 * 24 * 60 * 60 * 1000,
 };
 
 const MAX_BARS: Record<Timeframe, number> = {
-  '1m': 1440,
+  '1m': 10_080,
   '5m': 864,
   '1h': 336,
 };

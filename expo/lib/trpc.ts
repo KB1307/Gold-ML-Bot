@@ -267,8 +267,13 @@ const fetchTwelveDataDirect = async (
   try {
     const startDate = new Date(fromTime).toISOString().slice(0, 19);
     const endDate = new Date(toTime).toISOString().slice(0, 19);
-    const url = `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=1min&start_date=${startDate}&end_date=${endDate}&outputsize=500&apikey=${apiKey}`;
-    console.log("[History-Direct] Fetching from TwelveData...");
+    // ITEM 1 FIX: TwelveData defaults Forex symbols (XAU/USD included) to
+    // Australia/Sydney time unless &timezone=UTC is explicitly passed - only
+    // Crypto defaults to UTC per TwelveData's own docs. Without this, a
+    // timezone-less date string can be silently misinterpreted by up to 10
+    // hours. This explicit parameter is the real fix, not the ISO string shape.
+    const url = `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=1min&start_date=${startDate}&end_date=${endDate}&outputsize=500&timezone=UTC&apikey=${apiKey}`;
+    console.log("[History-Direct] Fetching from TwelveData (timezone=UTC explicit)...");
     const response = await fetchWithClientTimeout(url, 12000);
 
     if (!response.ok) {
