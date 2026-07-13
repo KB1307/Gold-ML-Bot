@@ -1428,7 +1428,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         // read is recorded as a pending candidate and can only confirm if it is
         // STILL past threshold on a LATER pass, satisfying the same duration/
         // penetration/tick-count thresholds already used live.
-        const confirmFallbackBreach = (kind: 'SL' | 'TP2_RUNNER_RETRACE', penetrationPips: number): boolean => {
+        // Part A (TP-direction-mixup fix): TP1/TP2/TP3 forward-progress detection
+        // now goes through this SAME corroboration gate as SL/TP2-runner-retrace
+        // below - a single point-in-time snapshot must never be able to bank a new
+        // target level on its own. This closes the gap where a lone bad/stale/
+        // wrong-side price read could falsely credit TP1+TP2 while real price was
+        // actually moving the opposite direction (toward the loss side).
+        const confirmFallbackBreach = (kind: 'SL' | 'TP1' | 'TP2' | 'TP3' | 'TP2_RUNNER_RETRACE', penetrationPips: number): boolean => {
           const trackKey = `${signal.id}:${kind}`;
           const hadCandidate = fallbackBreachTrackerRef.current.has(trackKey);
           const confirmed = evaluateFallbackBreachConfirmation(
@@ -1465,8 +1471,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         
         if (signal.type === "BUY") {
           // TP conditions evaluated FIRST (forward price progress), before any
-          // protective-stop / raw-SL condition is even considered.
-          if (currentPrice >= signal.tp3) {
+          // protective-stop / raw-SL condition is even considered. Each now
+          // requires confirmFallbackBreach corroboration (separate catch-up
+          // passes, min duration, min ticks) - see Part A fix above.
+          if (currentPrice >= signal.tp3 && confirmFallbackBreach('TP3', (currentPrice - signal.tp3))) {
             console.log(`   🎯 CATCH-UP (Fallback): All targets hit @ ${currentPrice.toFixed(1)} (TP3: ${signal.tp3.toFixed(1)})`);
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
@@ -1475,12 +1483,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             exitPrice = signal.tp3;
             fallbackBreachTrackerRef.current.delete(`${signal.id}:SL`);
             fallbackBreachTrackerRef.current.delete(`${signal.id}:TP2_RUNNER_RETRACE`);
-          } else if (currentPrice >= signal.tp2 && targetsHit < 2) {
+          } else if (currentPrice >= signal.tp2 && targetsHit < 2 && confirmFallbackBreach('TP2', (currentPrice - signal.tp2))) {
             console.log(`   🎯 CATCH-UP (Fallback): TP2 hit @ ${currentPrice.toFixed(1)} (TP2: ${signal.tp2.toFixed(1)})`);
             newStatus = "TP2_HIT";
             targetsHit = 2;
             fallbackBreachTrackerRef.current.delete(`${signal.id}:SL`);
-          } else if (currentPrice >= signal.tp1 && targetsHit < 1) {
+          } else if (currentPrice >= signal.tp1 && targetsHit < 1 && confirmFallbackBreach('TP1', (currentPrice - signal.tp1))) {
             console.log(`   🎯 CATCH-UP (Fallback): TP1 hit @ ${currentPrice.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)})`);
             newStatus = "TP1_HIT";
             targetsHit = 1;
@@ -1516,7 +1524,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             shouldRecord = true;
           }
         } else {
-          if (currentPrice <= signal.tp3) {
+          // Same corroboration gate applied to the SELL-side TP conditions (Part A fix).
+          if (currentPrice <= signal.tp3 && confirmFallbackBreach('TP3', (signal.tp3 - currentPrice))) {
             console.log(`   🎯 CATCH-UP (Fallback): All targets hit @ ${currentPrice.toFixed(1)} (TP3: ${signal.tp3.toFixed(1)})`);
             newStatus = "ALL_TARGETS_HIT";
             targetsHit = 3;
@@ -1525,12 +1534,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             exitPrice = signal.tp3;
             fallbackBreachTrackerRef.current.delete(`${signal.id}:SL`);
             fallbackBreachTrackerRef.current.delete(`${signal.id}:TP2_RUNNER_RETRACE`);
-          } else if (currentPrice <= signal.tp2 && targetsHit < 2) {
+          } else if (currentPrice <= signal.tp2 && targetsHit < 2 && confirmFallbackBreach('TP2', (signal.tp2 - currentPrice))) {
             console.log(`   🎯 CATCH-UP (Fallback): TP2 hit @ ${currentPrice.toFixed(1)} (TP2: ${signal.tp2.toFixed(1)})`);
             newStatus = "TP2_HIT";
             targetsHit = 2;
             fallbackBreachTrackerRef.current.delete(`${signal.id}:SL`);
-          } else if (currentPrice <= signal.tp1 && targetsHit < 1) {
+          } else if (currentPrice <= signal.tp1 && targetsHit < 1 && confirmFallbackBreach('TP1', (signal.tp1 - currentPrice))) {
             console.log(`   🎯 CATCH-UP (Fallback): TP1 hit @ ${currentPrice.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)})`);
             newStatus = "TP1_HIT";
             targetsHit = 1;
