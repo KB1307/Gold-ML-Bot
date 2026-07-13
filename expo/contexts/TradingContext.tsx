@@ -16,6 +16,7 @@ import { subscribeToChartPrice, subscribeToChartHeartbeat } from "@/services/cha
 import { ensureBarStoreReady, ingestTickAllTimeframes, upsertBars, getBars, getBarStoreStats, pruneOldBars, getLatestBarTimestamp, type OhlcBar } from "@/services/barStore";
 import { resolveSignalWithBars } from "@/services/signalResolver";
 import { sendTelegramAlert } from "@/services/telegramNotifier";
+import { appendDiagnosticEvent, pruneOldDiagnosticEvents, ensureDiagnosticEventStoreReady, type DiagnosticEventType } from "@/services/diagnosticEventStore";
 
 const INDEPENDENT_POLL_INTERVAL_MS = 12000;
 const INDEPENDENT_POLL_NO_PRICE_INTERVAL_MS = 5000;
@@ -671,6 +672,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       try {
         await ensureBarStoreReady();
         await pruneOldBars();
+        await ensureDiagnosticEventStoreReady();
+        await pruneOldDiagnosticEvents().catch(err => console.warn('⚠️ [DiagnosticEventStore] initial prune failed:', err));
         try {
           const stats = await getBarStoreStats();
           console.log('🗄️ [BarStore] stats at init:', stats);
@@ -1449,6 +1452,22 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
               minTicks: SL_CONFIRMATION_MIN_TICKS,
             },
           );
+          // Item 3: durable structured event log - one row per meaningful Path 3
+          // candidate/confirmation decision. Fire-and-forget, never awaited, so
+          // this can never delay or alter the actual resolution decision above.
+          const isSlKind = kind === 'SL';
+          const eventType: DiagnosticEventType = confirmed
+            ? (isSlKind ? 'PATH3_SL_CONFIRMED' : 'PATH3_TP_CONFIRMED')
+            : (isSlKind ? 'PATH3_SL_CANDIDATE' : 'PATH3_TP_CANDIDATE');
+          if (penetrationPips >= 0) {
+            void appendDiagnosticEvent({
+              ts: now,
+              signalId: signal.id,
+              eventType,
+              price: currentPrice,
+              detail: { kind, penetrationPips: Number(penetrationPips.toFixed(2)), confirmed },
+            }).catch(err => console.warn('⚠️ [DiagnosticEventStore] Path 3 event log failed (non-blocking):', err));
+          }
           if (penetrationPips < 0) {
             if (hadCandidate) {
               console.log(`   🛡️ [Path 3] breach candidate for ${signal.id.slice(-6)} (${kind}) reset - price recovered past threshold`);
@@ -2666,9 +2685,23 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             && existing.tickCount >= SL_CONFIRMATION_MIN_TICKS;
           if (!confirmed) {
             console.log(`🛡️ SL breach ongoing for ${signal.id.slice(-6)}: elapsed=${elapsed}ms (need ${SL_CONFIRMATION_MIN_DURATION_MS}), maxPen=${existing.maxPenetrationPips.toFixed(2)}p (need ${SL_CONFIRMATION_MIN_PENETRATION_PIPS}), ticks=${existing.tickCount} (need ${SL_CONFIRMATION_MIN_TICKS})`);
+            void appendDiagnosticEvent({
+              ts: now,
+              signalId: signal.id,
+              eventType: 'LIVE_TICK_SL_CANDIDATE',
+              price,
+              detail: { refPrice, elapsedMs: elapsed, maxPenetrationPips: Number(existing.maxPenetrationPips.toFixed(2)), tickCount: existing.tickCount },
+            }).catch(err => console.warn('⚠️ [DiagnosticEventStore] live-tick event log failed (non-blocking):', err));
             return false;
           }
           console.log(`✅ SL HIT CONFIRMED for ${signal.id.slice(-6)}: sustained ${elapsed}ms, pen ${existing.maxPenetrationPips.toFixed(2)}p, ${existing.tickCount} ticks (effective SL ${refPrice.toFixed(1)})`);
+          void appendDiagnosticEvent({
+            ts: now,
+            signalId: signal.id,
+            eventType: 'LIVE_TICK_SL_HIT',
+            price,
+            detail: { refPrice, elapsedMs: elapsed, maxPenetrationPips: Number(existing.maxPenetrationPips.toFixed(2)), tickCount: existing.tickCount },
+          }).catch(err => console.warn('⚠️ [DiagnosticEventStore] live-tick event log failed (non-blocking):', err));
           slBreachTrackerRef.current.delete(signal.id);
           return true;
         };

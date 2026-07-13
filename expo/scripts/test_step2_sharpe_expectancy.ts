@@ -63,6 +63,10 @@ async function pruneOldBars(..._args: unknown[]): Promise<void> {}
 async function getLatestBarTimestamp(..._args: unknown[]): Promise<number> { return 0; }
 async function resolveSignalWithBars(..._args: unknown[]): Promise<unknown> { return null; }
 async function sendTelegramAlert(..._args: unknown[]): Promise<void> {}
+async function appendDiagnosticEvent(..._args: unknown[]): Promise<void> {}
+async function pruneOldDiagnosticEvents(..._args: unknown[]): Promise<void> {}
+async function ensureDiagnosticEventStoreReady(..._args: unknown[]): Promise<void> {}
+type DiagnosticEventType = string;
 function createContextHook<T>(factory: () => T): [(props: { children?: unknown }) => unknown, () => T] {
   return [(() => null) as unknown as (props: { children?: unknown }) => unknown, factory];
 }
@@ -88,7 +92,8 @@ function useRef<T>(initial: T): { current: T } { return { current: initial }; }
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/chartPriceBridge["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/barStore["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/signalResolver["'];?\r?\n/m, "")
-    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/telegramNotifier["'];?\r?\n/m, "");
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/telegramNotifier["'];?\r?\n/m, "")
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/diagnosticEventStore["'];?\r?\n/m, "");
 
   await mkdir(sandboxDir, { recursive: true });
   await writeFile(sandboxPath, `${sandboxPrelude}\n${rewritten}`);

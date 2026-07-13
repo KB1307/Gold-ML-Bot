@@ -66,6 +66,10 @@ async function pruneOldBars(..._args: unknown[]): Promise<void> {}
 async function getLatestBarTimestamp(..._args: unknown[]): Promise<number> { return 0; }
 function resolveSignalWithBars(..._args: unknown[]): unknown { return null; }
 async function sendTelegramAlert(..._args: unknown[]): Promise<void> {}
+async function appendDiagnosticEvent(..._args: unknown[]): Promise<void> {}
+async function pruneOldDiagnosticEvents(..._args: unknown[]): Promise<void> {}
+async function ensureDiagnosticEventStoreReady(..._args: unknown[]): Promise<void> {}
+type DiagnosticEventType = string;
 function createContextHook<T>(factory: () => T): [(props: { children?: unknown }) => unknown, () => T] {
   return [(() => null) as unknown as (props: { children?: unknown }) => unknown, factory];
 }
@@ -91,7 +95,8 @@ function useRef<T>(initial: T): { current: T } { return { current: initial }; }
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/chartPriceBridge["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/barStore["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/signalResolver["'];?\r?\n/m, "")
-    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/telegramNotifier["'];?\r?\n/m, "");
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/telegramNotifier["'];?\r?\n/m, "")
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/diagnosticEventStore["'];?\r?\n/m, "");
 
   await mkdir(sandboxDir, { recursive: true });
   await writeFile(sandboxPath, `${sandboxPrelude}\n${rewritten}`);
@@ -186,9 +191,73 @@ async function main(): Promise<void> {
     `confirmed=${insufficientPen} maxPen=0.6 (need >=${MIN_PENETRATION_PIPS})`,
   );
 
+  // --- Test 5 (checkpoint item): forced single-glitch on a TP threshold must
+  // NOT confirm alone. This is the TP-direction-mixup fix's own checkpoint -
+  // the SAME evaluateFallbackBreachConfirmation gate now guards TP1/TP2/TP3
+  // forward-progress detection, not just SL, so a lone bad/wrong-side read
+  // must never bank a target on its own either.
+  console.log("\nTest 5: forced single glitch on a TP threshold (e.g. TP2) does NOT confirm alone");
+  const tracker5 = new Map();
+  const confirmedTpGlitch = mod.evaluateFallbackBreachConfirmation(tracker5, "sig5:TP2", 2.0, 4007.5, t0, opts);
+  check(
+    "Single snapshot past a TP threshold does NOT confirm a target bank",
+    confirmedTpGlitch === false,
+    `confirmed=${confirmedTpGlitch} (a lone glitch/wrong-side tick must never single-handedly bank TP1/TP2/TP3)`,
+  );
+  check(
+    "A pending TP candidate was recorded (so a LATER corroborating read can still confirm)",
+    tracker5.has("sig5:TP2"),
+    `tracker has key=${tracker5.has("sig5:TP2")}`,
+  );
+
+  // --- Test 6 (checkpoint item): a genuine, sustained TP hit still correctly
+  // confirms - the fix must not blunt a real target hit, only reject
+  // uncorroborated single-snapshot ones (mirrors Test 2's SL-side equivalent).
+  console.log("\nTest 6: genuine sustained TP hit (real target reached, corroborated on a later pass) still confirms");
+  const tracker6 = new Map();
+  const confirmedTpFirstPass = mod.evaluateFallbackBreachConfirmation(tracker6, "sig6:TP2", 2.0, 4007.5, t0, opts);
+  check("First pass alone does not confirm the TP bank", confirmedTpFirstPass === false, `confirmed=${confirmedTpFirstPass}`);
+  const confirmedTpSecondPass = mod.evaluateFallbackBreachConfirmation(tracker6, "sig6:TP2", 2.3, 4007.2, t0 + 30_000, opts);
+  check(
+    "A genuinely sustained TP hit (still past the level 30s later) DOES confirm",
+    confirmedTpSecondPass === true,
+    `confirmed=${confirmedTpSecondPass} (the fix must not blunt a real TP hit)`,
+  );
+  check(
+    "Tracker entry is cleared once the TP bank is confirmed (no stale state leaks forward)",
+    !tracker6.has("sig6:TP2"),
+    `tracker still has key=${tracker6.has("sig6:TP2")}`,
+  );
+
+  // --- Test 7 (checkpoint item): a real SL breach candidate must survive (i.e.
+  // keep accumulating toward its OWN confirmation) even when an UNRELATED,
+  // unconfirmed TP reading also exists for the same signal in the same pass -
+  // the two kinds are tracked under independent keys, so one candidate's state
+  // can never be corrupted or reset by another kind's candidate/confirmation.
+  console.log("\nTest 7: a real SL breach candidate survives an unconfirmed TP reading on the same signal");
+  const tracker7 = new Map();
+  // First pass: both an SL candidate AND an (unrelated, wrong-side) TP2 candidate
+  // are recorded for the SAME signal id, under independent kind-scoped keys.
+  const slFirstPass = mod.evaluateFallbackBreachConfirmation(tracker7, "sig7:SL", 5.0, 4108.6, t0, opts);
+  const tpFirstPass = mod.evaluateFallbackBreachConfirmation(tracker7, "sig7:TP2", 1.8, 4007.6, t0, opts);
+  check("SL candidate pending after pass 1", slFirstPass === false, `confirmed=${slFirstPass}`);
+  check("TP2 candidate pending after pass 1", tpFirstPass === false, `confirmed=${tpFirstPass}`);
+  check("Both independent candidates recorded", tracker7.has("sig7:SL") && tracker7.has("sig7:TP2"), `SL=${tracker7.has("sig7:SL")} TP2=${tracker7.has("sig7:TP2")}`);
+  // Second pass, 30s later: the TP2 reading reverts (price recovered - it was
+  // the glitch), clearing ONLY the TP2 candidate. The SL breach is genuinely
+  // sustained and must confirm on schedule, unaffected by the TP2 reset.
+  const tpReverts = mod.evaluateFallbackBreachConfirmation(tracker7, "sig7:TP2", -0.3, 4005.0, t0 + 30_000, opts);
+  const slConfirmsDespiteTpReset = mod.evaluateFallbackBreachConfirmation(tracker7, "sig7:SL", 5.4, 4109.0, t0 + 30_000, opts);
+  check("Unrelated TP2 candidate clears on its own revert", tpReverts === false && !tracker7.has("sig7:TP2"), `tpReverts=${tpReverts} tp2TrackerHas=${tracker7.has("sig7:TP2")}`);
+  check(
+    "Genuine SL breach candidate confirms on schedule, unaffected by the unrelated TP2 candidate/reset",
+    slConfirmsDespiteTpReset === true,
+    `confirmed=${slConfirmsDespiteTpReset} (SL and TP tracking must be fully independent per-kind)`,
+  );
+
   console.log(`\n${pass}/${pass + fail} assertions passed.`);
   if (fail > 0) { console.error(`❌ ${fail} FAILED`); process.exit(1); }
-  else { console.log("✅ Part A verified — Path 3 fallback can no longer be terminated by a single uncorroborated snapshot."); }
+  else { console.log("✅ Part A verified — Path 3 fallback can no longer be terminated by a single uncorroborated snapshot (SL or TP), and genuine sustained breaches on either side still confirm correctly."); }
 }
 
 main().catch((error) => { console.error(error); process.exit(1); });

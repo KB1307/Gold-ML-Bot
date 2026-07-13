@@ -13,6 +13,7 @@ import { sendTelegramMessage } from "@/services/telegramNotifier";
 import { signalEngine } from "@/services/signalEngine";
 import { buildDiagnosticsExportText } from "@/services/diagnosticsExport";
 import { getApiOrigin } from "@/lib/trpc";
+import { getRecentDiagnosticEvents } from "@/services/diagnosticEventStore";
 
 function getProviderLabel(provider: unknown): string {
   if (provider === "google") {
@@ -283,9 +284,10 @@ export default function SettingsScreen() {
     setIsUrlCopied(false);
 
     try {
-      const [modelWeights, modelHealth] = await Promise.all([
+      const [modelWeights, modelHealth, diagnosticEvents] = await Promise.all([
         signalEngine.getRawModelWeightsForExport(),
         Promise.resolve(signalEngine.getModelHealthMetrics()),
+        getRecentDiagnosticEvents(1000).catch(() => []),
       ]);
 
       const content = buildDiagnosticsExportText({
@@ -293,6 +295,7 @@ export default function SettingsScreen() {
         modelWeights,
         modelHealth,
         performanceMetrics,
+        diagnosticEvents,
       });
 
       const response = await fetch(`${getApiOrigin()}/api/trpc/diagnostics.saveExport`, {

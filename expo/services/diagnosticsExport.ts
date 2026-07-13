@@ -1,5 +1,6 @@
 import { PerformanceMetrics, TradingSignal } from "@/types/trading";
 import type { signalEngine } from "@/services/signalEngine";
+import type { DiagnosticEvent } from "@/services/diagnosticEventStore";
 
 export type ModelHealthMetrics = ReturnType<typeof signalEngine.getModelHealthMetrics>;
 export type RawModelWeights = { weights: [string, number][]; lastTrainingTime: number } | null;
@@ -9,6 +10,12 @@ export interface DiagnosticsExportInput {
   modelWeights: RawModelWeights;
   modelHealth: ModelHealthMetrics;
   performanceMetrics: PerformanceMetrics;
+  /**
+   * Item 3: recent (rolling 24h) structured resolution-decision events from
+   * diagnosticEventStore.ts. Optional so callers/tests that predate this field
+   * still compile and produce a valid export (section just reports empty).
+   */
+  diagnosticEvents?: DiagnosticEvent[];
 }
 
 const RULE = "-".repeat(70);
@@ -122,6 +129,21 @@ function formatModelHealthSection(modelHealth: ModelHealthMetrics): string {
   return lines.join("\n");
 }
 
+function formatDiagnosticEventsSection(events: DiagnosticEvent[] | undefined): string {
+  const lines: string[] = [RULE, "SECTION 5 — DIAGNOSTIC RESOLUTION EVENT LOG (rolling 24h)", RULE];
+  if (!events || events.length === 0) {
+    lines.push("No resolution events recorded in the last 24h (or the app hasn't hit a Path 3 catch-up / live-tick SL-breach candidate recently).");
+    return lines.join("\n");
+  }
+  lines.push(`${events.length} event(s), newest first:`);
+  lines.push("");
+  events.forEach((e) => {
+    const detailStr = e.detail ? ` ${JSON.stringify(e.detail)}` : "";
+    lines.push(`  [${safeDate(e.ts)}] ${e.eventType}  signal=${e.signalId.slice(-6)}  price=${e.price.toFixed(2)}${detailStr}`);
+  });
+  return lines.join("\n");
+}
+
 function formatPerformanceMetricsSection(performanceMetrics: PerformanceMetrics): string {
   const lines: string[] = [RULE, "SECTION 4 — PERFORMANCE METRICS", RULE];
   const p = performanceMetrics;
@@ -163,6 +185,8 @@ export function buildDiagnosticsExportText(input: DiagnosticsExportInput): strin
     formatModelHealthSection(input.modelHealth),
     "",
     formatPerformanceMetricsSection(input.performanceMetrics),
+    "",
+    formatDiagnosticEventsSection(input.diagnosticEvents),
     "",
     DRULE,
     "END OF EXPORT",
