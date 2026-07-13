@@ -329,70 +329,10 @@ const fetchTwelveDataDirect = async (
   }
 };
 
-const fetchTiingoDirect = async (
-  fromTime: number,
-  toTime: number,
-): Promise<HistoricalPriceBar[]> => {
-  const apiKey =
-    process.env.EXPO_PUBLIC_TIINGO_API_KEY?.trim() || "";
-  if (!apiKey) {
-    console.log("[History-Direct] Tiingo key not configured");
-    return [];
-  }
-
-  try {
-    const startDate = new Date(fromTime).toISOString();
-    const endDate = new Date(toTime).toISOString();
-    const url = `https://api.tiingo.com/iex/?tickers=xauusd&startDate=${startDate}&endDate=${endDate}&resampleFreq=1min&token=${encodeURIComponent(apiKey)}`;
-    console.log("[History-Direct] Fetching from Tiingo...");
-    const response = await fetchWithClientTimeout(url, 12000, {
-      "Content-Type": "application/json",
-    });
-
-    if (!response.ok) {
-      console.log(`[History-Direct] Tiingo returned ${response.status}`);
-      return [];
-    }
-
-    const data = await response.json();
-    if (!Array.isArray(data) || data.length === 0) {
-      console.log("[History-Direct] Tiingo: No data returned");
-      return [];
-    }
-
-    const bars: HistoricalPriceBar[] = [];
-    for (const item of data) {
-      const ts = new Date(item.date || item.datetime).getTime();
-      const open = parseFloat(item.open);
-      const high = parseFloat(item.high);
-      const low = parseFloat(item.low);
-      const close = parseFloat(item.close);
-      if (
-        !isNaN(ts) &&
-        !isNaN(open) &&
-        !isNaN(high) &&
-        !isNaN(low) &&
-        !isNaN(close) &&
-        open > 1000
-      ) {
-        if (ts >= fromTime && ts <= toTime) {
-          bars.push({ timestamp: ts, open, high, low, close });
-        }
-      }
-    }
-
-    bars.sort((a, b) => a.timestamp - b.timestamp);
-    console.log(`✅ [History-Direct] Tiingo success: ${bars.length} bars`);
-    return bars;
-  } catch (e) {
-    console.warn(
-      "[History-Direct] Tiingo error:",
-      e instanceof Error ? e.message : "Unknown",
-    );
-    return [];
-  }
-};
-
+// Tiingo's IEX endpoint (previously the middle tier here) was removed: verified via a
+// real live call on 2026-07-13 that it returns HTTP 200 with an empty `[]` body for
+// xauusd — it's a US-equities/crypto product with no forex data, so it was a guaranteed
+// wasted round-trip (plus its own timeout) in exactly the worst-case fallback scenario.
 const fetchSwissquoteSyntheticBars = async (
   fromTime: number,
   toTime: number,
@@ -452,9 +392,6 @@ const fetchDirectHistoricalFallback = async (
 
   const twelveDataBars = await fetchTwelveDataDirect(fromTime, toTime);
   if (twelveDataBars.length > 0) return twelveDataBars;
-
-  const tiingoBars = await fetchTiingoDirect(fromTime, toTime);
-  if (tiingoBars.length > 0) return tiingoBars;
 
   const syntheticBars = await fetchSwissquoteSyntheticBars(fromTime, toTime);
   if (syntheticBars.length > 0) return syntheticBars;

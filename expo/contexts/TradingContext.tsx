@@ -1692,9 +1692,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
    *   are the closest possible match to what the user actually saw on the chart.
    *   We trust them whenever they (a) already capture a terminal event for the
    *   signal and (b) densely cover the window up to that resolution point.
-   * Tier 2 (fallback): a remote matched-instrument feed (TwelveData / Tiingo),
-   *   used only to fill the windows the chart-derived bars do not cover. When
-   *   both exist, the chart-derived bar wins on every conflicting minute.
+   * Tier 2 (fallback): a remote matched-instrument feed (Yahoo / TwelveData —
+   *   Tiingo's IEX endpoint was removed from this chain, it never returned forex
+   *   data for XAU/USD), used only to fill the windows the chart-derived bars do
+   *   not cover. When both exist, the chart-derived bar wins on every conflicting
+   *   minute.
    */
   const getAuditBars = useCallback(async (
     signal: TradingSignal,

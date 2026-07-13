@@ -47,7 +47,7 @@ export function resolveSignalWithBars(
   // only ratchet a signal FORWARD, so it can never undo a falsely-recorded
   // terminal — e.g. an ALL_TARGETS_HIT banked off a phantom spike when price
   // never actually reached TP1. The manual/force audit uses fromScratch against
-  // authoritative Tiingo bars so those false wins/losses get corrected.
+  // authoritative remote bars (Yahoo / TwelveData) so those false wins/losses get corrected.
   const fromScratch = opts.fromScratch === true;
 
   const signalCreatedAtMs = signal.createdAt ?? new Date(signal.timestamp).getTime();

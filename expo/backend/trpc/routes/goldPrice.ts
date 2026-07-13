@@ -920,63 +920,6 @@ export const goldPriceRouter = createTRPCRouter({
         }
       }
 
-      // NOTE (verified via a real live call on 2026-07-13): Tiingo's IEX endpoint is a
-      // US-equities/crypto product and has no data for a "xauusd" ticker. A real request
-      // for a recent 2-day window returned HTTP 200 with body `[]` — not an error, just
-      // no rows. That means this tier is currently a no-op fallback for XAU/USD: the
-      // `open > 1000` filter below never actually gets exercised in practice (there are
-      // no rows to filter), it's just extra defense-in-depth left in place in case this
-      // endpoint ever returned an unrelated/bogus row for this ticker.
-      async function fetchTiingoHistory(): Promise<HistBar[]> {
-        const apiKey = getTiingoApiKey();
-        if (!apiKey) {
-          console.log('[GOLD-HISTORY] Tiingo key not configured');
-          return [];
-        }
-
-        try {
-          const startDate = new Date(fromTime).toISOString();
-          const endDate = new Date(toTime).toISOString();
-          const url = `https://api.tiingo.com/iex/?tickers=xauusd&startDate=${startDate}&endDate=${endDate}&resampleFreq=1min&token=${encodeURIComponent(apiKey)}`;
-          console.log(`[GOLD-HISTORY] Tiingo: Fetching...`);
-          const response = await fetchWithTimeout(url, 10000, {
-            'Content-Type': 'application/json',
-          });
-
-          if (!response.ok) {
-            console.log(`[GOLD-HISTORY] Tiingo returned ${response.status}`);
-            return [];
-          }
-
-          const data = await response.json();
-          if (!Array.isArray(data) || data.length === 0) {
-            console.log('[GOLD-HISTORY] Tiingo: No data returned');
-            return [];
-          }
-
-          const bars: HistBar[] = [];
-          for (const item of data) {
-            const ts = new Date(item.date || item.datetime).getTime();
-            const open = parseFloat(item.open);
-            const high = parseFloat(item.high);
-            const low = parseFloat(item.low);
-            const close = parseFloat(item.close);
-            if (!isNaN(ts) && !isNaN(open) && !isNaN(high) && !isNaN(low) && !isNaN(close) && open > 1000) {
-              if (ts >= fromTime && ts <= toTime) {
-                bars.push({ timestamp: ts, open, high, low, close });
-              }
-            }
-          }
-
-          bars.sort((a, b) => a.timestamp - b.timestamp);
-          console.log(`[GOLD-HISTORY] Tiingo success: ${bars.length} bars`);
-          return bars;
-        } catch (e) {
-          console.warn('[GOLD-HISTORY] Tiingo error:', e instanceof Error ? e.message : 'Unknown');
-          return [];
-        }
-      }
-
       console.log(`[GOLD-HISTORY] Fetching bars from ${new Date(fromTime).toISOString()} to ${new Date(toTime).toISOString()}`);
 
       const yahooResult = await fetchYahooHistory();
@@ -986,11 +929,11 @@ export const goldPriceRouter = createTRPCRouter({
       const twelveResult = await fetchTwelveDataHistory();
       if (twelveResult.length > 0) return twelveResult;
 
-      console.log('[GOLD-HISTORY] TwelveData failed, trying Tiingo...');
-      const tiingoResult = await fetchTiingoHistory();
-      if (tiingoResult.length > 0) return tiingoResult;
-
-      console.warn('[GOLD-HISTORY] All historical data sources failed');
+      // Tiingo IEX (previously the 3rd tier here) was removed: verified via a real live
+      // call on 2026-07-13 that it returns HTTP 200 with an empty `[]` body for xauusd —
+      // it's a US-equities/crypto product with no forex data, so it was a guaranteed
+      // wasted round-trip (plus its own timeout) in exactly the worst-case fallback path.
+      console.warn('[GOLD-HISTORY] All historical data sources failed (Yahoo, TwelveData)');
       return [];
     }),
 
