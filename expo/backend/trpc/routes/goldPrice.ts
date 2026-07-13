@@ -920,6 +920,13 @@ export const goldPriceRouter = createTRPCRouter({
         }
       }
 
+      // NOTE (verified via a real live call on 2026-07-13): Tiingo's IEX endpoint is a
+      // US-equities/crypto product and has no data for a "xauusd" ticker. A real request
+      // for a recent 2-day window returned HTTP 200 with body `[]` — not an error, just
+      // no rows. That means this tier is currently a no-op fallback for XAU/USD: the
+      // `open > 1000` filter below never actually gets exercised in practice (there are
+      // no rows to filter), it's just extra defense-in-depth left in place in case this
+      // endpoint ever returned an unrelated/bogus row for this ticker.
       async function fetchTiingoHistory(): Promise<HistBar[]> {
         const apiKey = getTiingoApiKey();
         if (!apiKey) {
