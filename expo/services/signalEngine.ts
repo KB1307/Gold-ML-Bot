@@ -3735,6 +3735,28 @@ class SignalGenerationEngine {
     return this.calculateRealATR(period);
   }
 
+  /**
+   * Item 3 (ATR array-misalignment repro) test seam: mimics EXACTLY the
+   * wholesale-replace assignment fetchAndUpdateOHLCHistory's real-bar branch
+   * performs (`this.highHistory = bars.map(b => b.high); this.lowHistory =
+   * bars.map(b => b.low);`, see the 60s-interval OHLC refresh above) without
+   * touching priceHistory. This lets a test drive highHistory/lowHistory on
+   * their own real 60s-bar-refresh cadence while priceHistory is driven
+   * independently via the REAL production tick path (pushTickForTest ->
+   * syncCurrentPrice), reproducing the two arrays' independent cadences
+   * exactly as they occur in production — purely additive test
+   * infrastructure, does not alter calculateRealATR or any other behavior.
+   */
+  public pushBarRefreshForTest(bars: { high: number; low: number }[]): void {
+    this.highHistory = bars.map(b => b.high);
+    this.lowHistory = bars.map(b => b.low);
+  }
+
+  /** Item 3 test seam: read priceHistory length (to confirm tick cadence actually diverged from bar cadence during a repro run). */
+  public getPriceHistoryLengthForTest(): number {
+    return this.priceHistory.length;
+  }
+
   /** Step 3 investigation seam: read the live, already-computed this.srZones snapshot (top-16, post-decay, as gating actually sees it) without forcing synthetic inputs. */
   public getCurrentSRZonesForTest(): SRZone[] {
     return this.srZones;

@@ -71,6 +71,13 @@ const GUIDE_PRICE_STALE_THRESHOLD_MS = 12000;
 const MIN_MEANINGFUL_PRICE_CHANGE = 0.03;
 const HISTORICAL_RECONCILIATION_INTERVAL_MS = 30000;
 const TERMINAL_SIGNAL_STATUSES: SignalStatus[] = ["CLOSED", "SL_HIT", "SL_AFTER_BE", "ALL_TARGETS_HIT", "TP3_HIT", "PARTIAL_WIN_SL_HIT", "EXPIRED_MISSED_ENTRY"];
+// Item 2 (sweep/force-audit bookkeeping): hoisted to module scope so both the
+// guaranteed daily sweep effect AND runManualAudit share the exact same keys -
+// a manual "Force Audit" must count as satisfying the day's sweep requirement,
+// so the 25h catch-up logic doesn't redundantly re-fire a full sweep shortly
+// after a manual one just ran.
+const DAILY_SWEEP_STORAGE_KEY = 'last_daily_full_audit_sweep_utc_date';
+const DAILY_SWEEP_TS_STORAGE_KEY = 'last_daily_full_audit_sweep_ts';
 
 /**
  * Density/coverage assessment for a set of 1-minute bars over a window.
@@ -2151,7 +2158,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const metrics = calculatePerformanceMetrics(audited);
     setPerformanceMetrics(metrics);
     await AsyncStorage.setItem('performance_metrics', JSON.stringify(metrics));
-    console.log(`🛠️ MANUAL AUDIT complete: ${corrected} of ${terminalCount} terminal signals corrected`);
+    // Item 2: a manual "Force Audit" performs the exact same full-history,
+    // force=true re-evaluation the guaranteed daily sweep does - so it must
+    // count as satisfying today's sweep requirement too. Without this, the
+    // 25h catch-up logic (unaware a manual sweep just ran) could redundantly
+    // re-fire a full automatic sweep shortly after, wastefully re-auditing
+    // everything a second time.
+    const todayUtcForManualAudit = new Date().toISOString().slice(0, 10);
+    await AsyncStorage.setItem(DAILY_SWEEP_STORAGE_KEY, todayUtcForManualAudit);
+    await AsyncStorage.setItem(DAILY_SWEEP_TS_STORAGE_KEY, String(Date.now()));
+    console.log(`🛠️ MANUAL AUDIT complete: ${corrected} of ${terminalCount} terminal signals corrected (also recorded as today's daily sweep, UTC date ${todayUtcForManualAudit})`);
     return { corrected, total: terminalCount };
   }, [auditTerminalSLSignals, catchUpAndEvaluateSignals, calculatePerformanceMetrics]);
 
@@ -3006,8 +3022,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
     let isMounted = true;
     const DAILY_SWEEP_UTC_HOUR = 21; // 21:00-22:00 UTC window
-    const DAILY_SWEEP_STORAGE_KEY = 'last_daily_full_audit_sweep_utc_date';
-    const DAILY_SWEEP_TS_STORAGE_KEY = 'last_daily_full_audit_sweep_ts';
     const DAILY_SWEEP_CHECK_INTERVAL_MS = 60_000;
     // ROOT-CAUSE FIX: this effect only runs while the app's JS context is alive
     // (a foreground useEffect + setInterval), so the "guaranteed" sweep is only
