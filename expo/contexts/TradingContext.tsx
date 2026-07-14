@@ -3007,18 +3007,33 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     let isMounted = true;
     const DAILY_SWEEP_UTC_HOUR = 21; // 21:00-22:00 UTC window
     const DAILY_SWEEP_STORAGE_KEY = 'last_daily_full_audit_sweep_utc_date';
+    const DAILY_SWEEP_TS_STORAGE_KEY = 'last_daily_full_audit_sweep_ts';
     const DAILY_SWEEP_CHECK_INTERVAL_MS = 60_000;
+    // ROOT-CAUSE FIX: this effect only runs while the app's JS context is alive
+    // (a foreground useEffect + setInterval), so the "guaranteed" sweep is only
+    // truly guaranteed if the app happens to be open during the exact 21:00-22:00
+    // UTC hour on a given day. For a user in a timezone where that window falls
+    // late at night (e.g. UTC+2 => 23:00-00:00 local), the app is very likely
+    // closed/backgrounded at that exact hour, so the on-schedule trigger below
+    // can go unmet indefinitely - which is the actual reason previously-flagged
+    // signals stayed uncorrected even after the underlying resolution fixes
+    // shipped (SL_AUDIT_VERSION was NOT the blocker - see report). This adds a
+    // timestamp-based CATCH-UP: if it's been >25h since the last successful
+    // sweep (safety margin over 24h), run immediately on next app-open/check
+    // regardless of the current hour, instead of waiting for the next exact
+    // window (which may also be missed).
+    const DAILY_SWEEP_CATCHUP_MS = 25 * 60 * 60 * 1000;
 
     const utcDateString = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
 
-    const runDailyFullAuditSweep = async () => {
+    const runDailyFullAuditSweep = async (trigger: 'scheduled' | 'catchup') => {
       if (historicalReconciliationInFlightRef.current) {
         console.log('⏳ [DailySweep] Skipping - historical reconciliation already in flight this tick, will retry next check');
         return;
       }
       historicalReconciliationInFlightRef.current = true;
       const todayUtc = utcDateString(Date.now());
-      console.log(`\n${'='.repeat(80)}\n🌙 [DailySweep] GUARANTEED DAILY FULL AUDIT SWEEP starting (UTC date ${todayUtc}, rollover window)\n${'='.repeat(80)}`);
+      console.log(`\n${'='.repeat(80)}\n🌙 [DailySweep] GUARANTEED DAILY FULL AUDIT SWEEP starting (UTC date ${todayUtc}, trigger=${trigger})\n${'='.repeat(80)}`);
       try {
         const currentHistory = signalHistoryRef.current;
         const reconciledHistory = await catchUpAndEvaluateSignals(currentHistory, historicalFallbackPriceRef.current);
@@ -3040,7 +3055,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           console.log('✅ [DailySweep] Daily full audit sweep found no corrections needed');
         }
         await AsyncStorage.setItem(DAILY_SWEEP_STORAGE_KEY, todayUtc);
-        console.log(`🌙 [DailySweep] Recorded sweep completion for UTC date ${todayUtc}`);
+        await AsyncStorage.setItem(DAILY_SWEEP_TS_STORAGE_KEY, String(Date.now()));
+        console.log(`🌙 [DailySweep] Recorded sweep completion for UTC date ${todayUtc} (trigger=${trigger})`);
       } catch (error) {
         console.error('❌ [DailySweep] Daily full audit sweep failed:', error);
       } finally {
@@ -3053,16 +3069,27 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       try {
         const now = new Date();
         const utcHour = now.getUTCHours();
-        if (utcHour !== DAILY_SWEEP_UTC_HOUR) {
-          return;
-        }
         const todayUtc = utcDateString(now.getTime());
         const lastSweepDate = await AsyncStorage.getItem(DAILY_SWEEP_STORAGE_KEY);
         if (lastSweepDate === todayUtc) {
-          return; // Already swept today.
+          return; // Already swept today (on-schedule or catch-up).
         }
-        console.log(`🌙 [DailySweep] Entering rollover window (UTC hour=${utcHour}), last sweep=${lastSweepDate ?? 'never'} - running now`);
-        await runDailyFullAuditSweep();
+
+        const isOnScheduleWindow = utcHour === DAILY_SWEEP_UTC_HOUR;
+        const lastSweepTsRaw = await AsyncStorage.getItem(DAILY_SWEEP_TS_STORAGE_KEY);
+        const lastSweepTs = lastSweepTsRaw ? parseInt(lastSweepTsRaw, 10) : 0;
+        // Never swept before, OR the last successful sweep is more than ~25h ago:
+        // the on-schedule window was missed (app not open at 21:00-22:00 UTC) -
+        // catch up now rather than silently waiting for tomorrow's window too.
+        const missedWindowTooLong = lastSweepTs === 0 || (now.getTime() - lastSweepTs) > DAILY_SWEEP_CATCHUP_MS;
+
+        if (!isOnScheduleWindow && !missedWindowTooLong) {
+          return;
+        }
+
+        const trigger: 'scheduled' | 'catchup' = isOnScheduleWindow ? 'scheduled' : 'catchup';
+        console.log(`🌙 [DailySweep] ${trigger === 'scheduled' ? `Entering rollover window (UTC hour=${utcHour})` : `Catch-up: last sweep was ${lastSweepTs === 0 ? 'never' : `${((now.getTime() - lastSweepTs) / 3_600_000).toFixed(1)}h ago`}, on-schedule window was missed`}, last sweep date=${lastSweepDate ?? 'never'} - running now`);
+        await runDailyFullAuditSweep(trigger);
       } catch (err) {
         console.warn('⚠️ [DailySweep] Check failed (non-blocking):', err instanceof Error ? err.message : 'Unknown');
       }
