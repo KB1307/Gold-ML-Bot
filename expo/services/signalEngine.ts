@@ -5,6 +5,14 @@ import { Platform } from "react-native";
 import { appendOutcome as appendOutcomeToStore, getAllOutcomes as getAllOutcomesFromStore, getOutcomeCount as getOutcomeCountFromStore, migrateLegacyOutcomesIfEmpty, pruneToCap as pruneOutcomeStoreToCap, type StoredTradeOutcome } from "@/services/learningStore";
 import { resolveSignalWithBars } from "@/services/signalResolver";
 import type { OhlcBar } from "@/services/barStore";
+import { appendDiagnosticEvent } from "@/services/diagnosticEventStore";
+
+/**
+ * STEP 2 (GC=F/spot investigation): GENERATION_OHLC_SOURCE events aren't tied to
+ * a specific signal (they're per-refresh, engine-level), but DiagnosticEvent
+ * requires a signalId -- use this sentinel rather than widening the schema.
+ */
+const GENERATION_DIAGNOSTIC_SIGNAL_ID = '__generation__';
 
 interface OrderFlowData {
   bidVolume: number;
@@ -963,7 +971,23 @@ class SignalGenerationEngine {
   private sessionBlockFrozen: boolean[] = [false, false, false, false, false, false];
   private lastSessionBlockDateKey: string = '';
   private lastDailyOHLCRefreshAt: number = 0;
-  
+  /**
+   * STEP 1/STEP 2: granular real-instrument tag for whichever tier actually fed
+   * highHistory/lowHistory/barCloseHistory on the most recent refresh -- e.g.
+   * 'twelvedata-spot', 'yahoo-futures-fallback', 'local-5min-candles',
+   * 'estimated-synthetic'. Deliberately kept SEPARATE from this.ohlcDataSource
+   * (which stays exactly as it was, since existing dataQualityPenalty gating
+   * checks `=== 'estimated'` / `=== '5min-candles'` elsewhere and must not change
+   * behavior) -- this field exists purely so the new diagnostic event log (Step 2)
+   * can report which real instrument actually generated a given signal.
+   */
+  private ohlcSourceDetail: string = 'unknown';
+
+  /** Step 2 diagnostic seam: expose the granular real-instrument tag for logging. */
+  public getOhlcSourceDetail(): string {
+    return this.ohlcSourceDetail;
+  }
+
   private async fetchAndUpdateOHLCHistory(): Promise<void> {
     const now = Date.now();
     const OHLC_FETCH_INTERVAL = 60000;
@@ -988,7 +1012,15 @@ class SignalGenerationEngine {
         this.lowHistory = bars.map((b: { low: number }) => b.low);
         this.barCloseHistory = bars.map((b: { close: number }) => b.close);
         this.ohlcDataSource = 'real-ohlc';
-        console.log(`✅ OHLC: Loaded ${bars.length} real 1-min bars (H/L from Yahoo)`);
+        // STEP 1/STEP 2: bars carry an explicit `source` tag now (see lib/trpc.ts +
+        // backend goldPrice.ts) -- surface the REAL instrument (spot vs futures
+        // fallback) instead of the generic 'real-ohlc' label so a future
+        // investigation never again has to reverse-engineer this from indirect ATR
+        // evidence the way this session had to.
+        const barSource = (bars[0] as { source?: string })?.source;
+        this.ohlcSourceDetail = barSource ?? 'real-ohlc-untagged';
+        console.log(`✅ OHLC: Loaded ${bars.length} real 1-min bars (source=${this.ohlcSourceDetail})`);
+        this.logOhlcSourceDiagnostic(bars.length);
         return;
       }
     } catch (error) {
@@ -1000,7 +1032,9 @@ class SignalGenerationEngine {
       this.lowHistory = this.fiveMinCandles.map(c => c.low);
       this.barCloseHistory = this.fiveMinCandles.map(c => c.close);
       this.ohlcDataSource = '5min-candles';
+      this.ohlcSourceDetail = 'local-5min-candles';
       console.log(`📊 OHLC: Using ${this.fiveMinCandles.length} locally-built 5-min candles for H/L`);
+      this.logOhlcSourceDiagnostic(this.fiveMinCandles.length);
       return;
     }
     
@@ -1037,6 +1071,27 @@ class SignalGenerationEngine {
       this.barCloseHistory.shift();
     }
     this.ohlcDataSource = 'estimated';
+    this.ohlcSourceDetail = 'estimated-synthetic';
+    this.logOhlcSourceDiagnostic(this.highHistory.length);
+  }
+
+  /**
+   * STEP 2 (GC=F/spot investigation): durable, fire-and-forget record of which
+   * real instrument/tier fed highHistory/lowHistory/barCloseHistory on this
+   * refresh cycle. Already naturally throttled to once per
+   * fetchAndUpdateOHLCHistory call (60s), matching the "one row per meaningful
+   * event" standard the rest of the diagnostic event log already follows --
+   * purely additive observability, never awaited, never able to affect
+   * generation/gating.
+   */
+  private logOhlcSourceDiagnostic(barCount: number): void {
+    void appendDiagnosticEvent({
+      ts: Date.now(),
+      signalId: GENERATION_DIAGNOSTIC_SIGNAL_ID,
+      eventType: 'GENERATION_OHLC_SOURCE',
+      price: this.currentPrice,
+      detail: { ohlcDataSource: this.ohlcDataSource, ohlcSourceDetail: this.ohlcSourceDetail, barCount },
+    }).catch(err => console.warn('⚠️ [DiagnosticEventStore] generation-ohlc-source event log failed (non-blocking):', err));
   }
   
   private syncCurrentPrice(price: number, source: string): void {

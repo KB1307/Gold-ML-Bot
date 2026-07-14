@@ -1638,6 +1638,20 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       } else {
         resolutionPathFireCountsRef.current.path2BarsResolved += 1;
         const barResolution = resolveSignalWithBars(signal, historicalBars, { logPrefix: `   [Resolver ${signal.id.slice(-6)}]` });
+        // STEP 2 (GC=F/spot investigation): durable, fire-and-forget record of
+        // which real bar source/instrument fed this resolution decision, so a
+        // future investigation never again has to reverse-engineer this from
+        // indirect evidence. `historicalBars` comes from fetchPriceHistory,
+        // which returns either untagged local (chart-derived) bars or
+        // Step-1-tagged remote bars (source: 'twelvedata-spot' | 'yahoo-futures-fallback' | ...).
+        const barSourceTag = (historicalBars[0] as { source?: string } | undefined)?.source ?? 'local-chart-derived';
+        void appendDiagnosticEvent({
+          ts: Date.now(),
+          signalId: signal.id,
+          eventType: 'RESOLUTION_OUTCOME',
+          price: barResolution.exitPrice,
+          detail: { path: 'catchUpReconciliation', barSource: barSourceTag, newStatus: barResolution.newStatus, targetsHit: barResolution.targetsHit, barCount: historicalBars.length },
+        }).catch(err => console.warn('⚠️ [DiagnosticEventStore] resolution-outcome event log failed (non-blocking):', err));
         const legacy = await analyzeSignalWithHistoricalData(signal, historicalBars);
         // Bar-based resolver is the AUTHORITATIVE source of truth because it
         // walks 1-minute bars tick-by-tick (by wick) from the signal creation
@@ -1882,6 +1896,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         fromScratch: force,
         evalNowMs: now,
       });
+      // STEP 2 (GC=F/spot investigation): durable, fire-and-forget record of
+      // which real bar source/instrument (barSource, already computed by
+      // getAuditBars above) fed this audit decision.
+      void appendDiagnosticEvent({
+        ts: now,
+        signalId: signal.id,
+        eventType: 'RESOLUTION_OUTCOME',
+        price: barOutcome.exitPrice,
+        detail: { path: 'audit', force, barSource, newStatus: barOutcome.newStatus, targetsHit: barOutcome.targetsHit, barCount: bars.length },
+      }).catch(err => console.warn('⚠️ [DiagnosticEventStore] resolution-outcome event log failed (non-blocking):', err));
       // Bar resolver is authoritative for the audit too. Legacy evaluation is
       // kept only for diagnostic comparison.
       const legacyOutcome = await analyzeSignalWithHistoricalData(signal, bars);

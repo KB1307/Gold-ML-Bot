@@ -436,6 +436,7 @@ async function migrateLegacyOutcomesIfEmpty(legacy: unknown[]): Promise<number> 
   sandboxLearningStoreOutcomes.push(...legacy);
   return legacy.length;
 }
+async function appendDiagnosticEvent(_event: unknown): Promise<void> {}
 `;
 
   // Regex-based stripping: match by module specifier, tolerant of the imported
@@ -455,6 +456,7 @@ async function migrateLegacyOutcomesIfEmpty(legacy: unknown[]): Promise<number> 
     "@react-native-async-storage/async-storage",
     "@/lib/trpc",
     "@/services/learningStore",
+    "@/services/diagnosticEventStore",
     "react-native",
   ].reduce(stripImportFrom, source);
 

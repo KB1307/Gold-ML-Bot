@@ -10,6 +10,15 @@ export interface HistoricalPriceBar {
   high: number;
   low: number;
   close: number;
+  /**
+   * STEP 1 FIX (instrument mismatch): which real instrument/tier actually
+   * produced this bar -- 'twelvedata-spot' (correct, primary), 'yahoo-futures-fallback'
+   * (GC=F futures, approximation-only last-real-data resort), 'twelvedata-spot-direct'
+   * (client-side direct fallback when the backend itself is unreachable), or
+   * 'swissquote-synthetic' (single extrapolated point, last resort). Optional so
+   * older cached/test data without this field still type-checks.
+   */
+  source?: string;
 }
 
 export const trpc = createTRPCReact<AppRouter>();
@@ -134,6 +143,20 @@ const isHistoricalPriceBar = (value: unknown): value is HistoricalPriceBar => {
   return [timestamp, open, high, low, close].every(
     (entry) => typeof entry === "number" && Number.isFinite(entry),
   );
+};
+
+/** Normalizes a raw parsed bar into HistoricalPriceBar, preserving an optional `source` tag if present. */
+const withSourceTag = (value: unknown, fallbackSource: string): HistoricalPriceBar => {
+  const record = value as Record<string, unknown>;
+  const rawSource = record.source;
+  return {
+    timestamp: record.timestamp as number,
+    open: record.open as number,
+    high: record.high as number,
+    low: record.low as number,
+    close: record.close as number,
+    source: typeof rawSource === "string" && rawSource.length > 0 ? rawSource : fallbackSource,
+  };
 };
 
 const normalizeHistoricalBars = (value: unknown): HistoricalPriceBar[] => {
@@ -312,7 +335,10 @@ const fetchTwelveDataDirect = async (
         open > 1000
       ) {
         if (ts >= fromTime && ts <= toTime) {
-          bars.push({ timestamp: ts, open, high, low, close });
+          // STEP 1 FIX: this direct client-side fallback already correctly targets
+          // spot XAU/USD (not futures) -- tag it distinctly from the backend's
+          // primary tier so diagnostics can tell the two apart.
+          bars.push({ timestamp: ts, open, high, low, close, source: "twelvedata-spot-direct" });
         }
       }
     }
@@ -369,6 +395,7 @@ const fetchSwissquoteSyntheticBars = async (
       high: price + 0.5,
       low: price - 0.5,
       close: price,
+      source: "swissquote-synthetic",
     };
 
     console.log(

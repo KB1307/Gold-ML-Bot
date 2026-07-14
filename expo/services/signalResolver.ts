@@ -293,6 +293,17 @@ export function resolveSignalWithBars(
     const evalNow = opts.evalNowMs ?? Date.now();
     const matured = evalNow - signalCreatedAtMs >= 2 * 60 * 60 * 1000;
     if (matured) {
+      // STEP 3 FIX (confirmed resolvedAtBarTs gap): this "matured, no terminal bar
+      // event fired" branch never set resolvedAtBarTs before this fix, so it fell
+      // through to whatever the calling code substitutes for a missing bar
+      // timestamp (new Date() at whenever reconciliation happened to run) -- the
+      // exact bug confirmed by two unrelated signals sharing one identical exit
+      // timestamp. There is no genuine terminal-bar EVENT here (nothing in the
+      // real bars actually crossed a level -- that's WHY we're in this branch at
+      // all), so the most honest real timestamp available is the last REAL bar we
+      // actually evaluated -- the same bar already used for this branch's CLOSED
+      // exitPrice fallback below -- not the wall-clock moment this function runs.
+      resolvedAtBarTs = evalBars.length > 0 ? evalBars[evalBars.length - 1].timestamp : signalCreatedAtMs;
       if (currentTargetsHit >= 2) {
         currentStatus = 'PARTIAL_WIN_SL_HIT';
         exitPrice = getProtectedExitPrice(signal, currentTargetsHit);

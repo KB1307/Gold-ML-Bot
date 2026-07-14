@@ -82,6 +82,7 @@ const getOutcomeCountFromStore = __learningStoreModule.getOutcomeCount;
 const pruneOutcomeStoreToCap = __learningStoreModule.pruneToCap;
 const migrateLegacyOutcomesIfEmpty = __learningStoreModule.migrateLegacyOutcomesIfEmpty;
 type StoredTradeOutcome = any;
+async function appendDiagnosticEvent(_event: unknown): Promise<void> {}
 `;
 
   const rewritten = source
@@ -89,6 +90,7 @@ type StoredTradeOutcome = any;
     .replace(/^import\s+AsyncStorage\s+from\s+["']@react-native-async-storage\/async-storage["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/lib\/trpc["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/learningStore["'];?\r?\n/m, "")
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/diagnosticEventStore["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']react-native["'];?\r?\n/m, "");
 
   await mkdir(sandboxDir, { recursive: true });

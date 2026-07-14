@@ -4,6 +4,15 @@ import * as z from "zod";
 let goldPriceCache: { price: number; source: string; timestamp: number } | null = null;
 let livePriceCache: { price: number; source: string; timestamp: number } | null = null;
 const LIVE_PRICE_CACHE_MS = 1500;
+// STEP 1 FIX (instrument mismatch): TwelveData's XAU/USD historical endpoint is a
+// free-tier plan capped at a low daily credit limit (confirmed via a real live call
+// on 2026-07-14: "10135 API credits were used, with the current limit being 800").
+// A plain per-call retry would keep hammering it uselessly for the rest of the day
+// once that ceiling is hit (its 429 is a quota-exhaustion signal, not a transient
+// blip), so track a dedicated longer cooldown distinct from the generic
+// shouldSkipApi()/recordApiFailure() counter used by the spot-price fetchers below.
+let twelveDataHistoryQuotaCooldownUntil = 0;
+const TWELVEDATA_HISTORY_QUOTA_COOLDOWN_MS = 15 * 60 * 1000;
 let tiingoGuideCache: { price: number; source: string; timestamp: number } | null = null;
 let finnhubGuideCache: { price: number; source: string; timestamp: number } | null = null;
 let intermarketCache: { dxy: number; us10y: number; vix: number; timestamp: number } | null = null;
@@ -805,8 +814,31 @@ export const goldPriceRouter = createTRPCRouter({
     .query(async ({ input }) => {
       const { fromTime, toTime } = input;
 
-      type HistBar = { timestamp: number; open: number; high: number; low: number; close: number };
+      type HistBar = { timestamp: number; open: number; high: number; low: number; close: number; source: string };
 
+      // STEP 1 FIX (instrument mismatch): GC=F is a COMEX gold FUTURES contract, not
+      // spot XAU/USD -- its price carries a futures basis (cost-of-carry/contango,
+      // rollover jumps near contract expiry) that can diverge from true spot by a
+      // meaningfully large amount, feeding wrong highHistory/lowHistory/barCloseHistory
+      // into calculateRealATR(), session highs/lows, breakout detection, and pivots for
+      // BOTH live generation and audit/resolution. Verified via real live calls on
+      // 2026-07-14 that Yahoo no longer serves a working spot-equivalent symbol on its
+      // public chart endpoint at all -- 'XAUUSD=X', 'XAU=X', and 'XAUUSD' all return a
+      // Not Found chart error; 'GOLD' resolves to the Barrick Gold Corp EQUITY ticker
+      // (~$39), not gold itself. Only 'GC=F' (futures) still resolves. Per this
+      // investigation's own instruction, since no clean Yahoo spot-equivalent exists,
+      // this tier is now sourced from TwelveData's XAU/USD (a genuine spot forex-style
+      // symbol, already integrated, already correctly targeting spot) INSTEAD --
+      // promoted from 2nd-tier fallback to 1st-tier primary below. Yahoo GC=F is kept
+      // as an explicit, clearly-tagged LAST-REAL-DATA-RESORT (not removed outright)
+      // because a real live call on 2026-07-14 also confirmed TwelveData's free-tier
+      // historical endpoint is capped at a low daily credit limit (confirmed via a real
+      // 429 plus an explicit out-of-credits error body) -- keeping a real-bar (if
+      // wrong-instrument) fallback is safer than falling all the way to synthetic bars
+      // for the rest of the day once that ceiling is hit. Every returned bar carries an
+      // explicit `source` tag so downstream code (Step 2's diagnostic logging) can see
+      // which instrument actually fed a given resolution or generation cycle, instead
+      // of this being invisible as it was before this fix.
       async function fetchYahooHistory(): Promise<HistBar[]> {
         const period1 = Math.floor(fromTime / 1000);
         const period2 = Math.floor(toTime / 1000) + 120;
@@ -815,7 +847,7 @@ export const goldPriceRouter = createTRPCRouter({
         for (const host of hosts) {
           try {
             const url = `https://${host}/v8/finance/chart/GC=F?interval=1m&period1=${period1}&period2=${period2}`;
-            console.log(`[GOLD-HISTORY] Yahoo: Fetching from ${host}`);
+            console.log(`[GOLD-HISTORY] Yahoo (futures fallback): Fetching from ${host}`);
             const response = await fetchWithTimeout(url, 8000);
 
             if (!response.ok) {
@@ -842,12 +874,12 @@ export const goldPriceRouter = createTRPCRouter({
                 const low = quotes.low[i];
                 const close = quotes.close[i];
                 if (open !== null && high !== null && low !== null && close !== null) {
-                  bars.push({ timestamp: barTime, open, high, low, close });
+                  bars.push({ timestamp: barTime, open, high, low, close, source: 'yahoo-futures-fallback' });
                 }
               }
             }
 
-            console.log(`[GOLD-HISTORY] Yahoo success: ${bars.length} bars from ${host}`);
+            console.log(`[GOLD-HISTORY] Yahoo (futures fallback) success: ${bars.length} bars from ${host} -- NOTE: GC=F futures, not spot`);
             return bars;
           } catch (e) {
             console.warn(`[GOLD-HISTORY] Yahoo ${host} error:`, e instanceof Error ? e.message : 'Unknown');
@@ -864,6 +896,13 @@ export const goldPriceRouter = createTRPCRouter({
           return [];
         }
 
+        const nowMs = Date.now();
+        if (nowMs < twelveDataHistoryQuotaCooldownUntil) {
+          const remainingS = Math.ceil((twelveDataHistoryQuotaCooldownUntil - nowMs) / 1000);
+          console.log(`[GOLD-HISTORY] Skipping TwelveData (spot) -- in quota cooldown for ${remainingS}s more`);
+          return [];
+        }
+
         try {
           const startDate = new Date(fromTime).toISOString().slice(0, 19);
           const endDate = new Date(toTime).toISOString().slice(0, 19);
@@ -877,8 +916,14 @@ export const goldPriceRouter = createTRPCRouter({
           // ITEM 5: log the raw request URL (API key redacted) so any future audit
           // investigation has hard evidence the timezone=UTC parameter is actually
           // present on the real outbound call, without re-deriving it from scratch.
-          console.log(`[GOLD-HISTORY] TwelveData: Fetching. Raw URL (redacted): ${url.replace(apiKey, '***REDACTED***')}`);
+          console.log(`[GOLD-HISTORY] TwelveData (spot, primary): Fetching. Raw URL (redacted): ${url.replace(apiKey, '***REDACTED***')}`);
           const response = await fetchWithTimeout(url, 10000);
+
+          if (response.status === 429) {
+            twelveDataHistoryQuotaCooldownUntil = Date.now() + TWELVEDATA_HISTORY_QUOTA_COOLDOWN_MS;
+            console.warn(`[GOLD-HISTORY] TwelveData returned 429 (quota exhausted) -- cooling down for ${TWELVEDATA_HISTORY_QUOTA_COOLDOWN_MS / 60000}min to stop wasting round-trips`);
+            return [];
+          }
 
           if (!response.ok) {
             console.log(`[GOLD-HISTORY] TwelveData returned ${response.status}`);
@@ -887,7 +932,13 @@ export const goldPriceRouter = createTRPCRouter({
 
           const data = await response.json();
           if (data?.status === 'error') {
-            console.log(`[GOLD-HISTORY] TwelveData API error: ${data?.message}`);
+            const message = typeof data?.message === 'string' ? data.message : '';
+            if (/credit|quota|limit/i.test(message)) {
+              twelveDataHistoryQuotaCooldownUntil = Date.now() + TWELVEDATA_HISTORY_QUOTA_COOLDOWN_MS;
+              console.warn(`[GOLD-HISTORY] TwelveData quota-exhausted error (${message}) -- cooling down for ${TWELVEDATA_HISTORY_QUOTA_COOLDOWN_MS / 60000}min`);
+            } else {
+              console.log(`[GOLD-HISTORY] TwelveData API error: ${message}`);
+            }
             return [];
           }
 
@@ -906,13 +957,13 @@ export const goldPriceRouter = createTRPCRouter({
             const close = parseFloat(v.close);
             if (!isNaN(ts) && !isNaN(open) && !isNaN(high) && !isNaN(low) && !isNaN(close) && open > 1000) {
               if (ts >= fromTime && ts <= toTime) {
-                bars.push({ timestamp: ts, open, high, low, close });
+                bars.push({ timestamp: ts, open, high, low, close, source: 'twelvedata-spot' });
               }
             }
           }
 
           bars.sort((a, b) => a.timestamp - b.timestamp);
-          console.log(`[GOLD-HISTORY] TwelveData success: ${bars.length} bars`);
+          console.log(`[GOLD-HISTORY] TwelveData (spot, primary) success: ${bars.length} bars`);
           return bars;
         } catch (e) {
           console.warn('[GOLD-HISTORY] TwelveData error:', e instanceof Error ? e.message : 'Unknown');
@@ -922,18 +973,18 @@ export const goldPriceRouter = createTRPCRouter({
 
       console.log(`[GOLD-HISTORY] Fetching bars from ${new Date(fromTime).toISOString()} to ${new Date(toTime).toISOString()}`);
 
-      const yahooResult = await fetchYahooHistory();
-      if (yahooResult.length > 0) return yahooResult;
-
-      console.log('[GOLD-HISTORY] Yahoo failed, trying TwelveData...');
       const twelveResult = await fetchTwelveDataHistory();
       if (twelveResult.length > 0) return twelveResult;
 
-      // Tiingo IEX (previously the 3rd tier here) was removed: verified via a real live
-      // call on 2026-07-13 that it returns HTTP 200 with an empty `[]` body for xauusd —
+      console.log('[GOLD-HISTORY] TwelveData (spot) unavailable, falling back to Yahoo GC=F (futures -- approximation only)...');
+      const yahooResult = await fetchYahooHistory();
+      if (yahooResult.length > 0) return yahooResult;
+
+      // Tiingo IEX (previously a 3rd tier here) was removed: verified via a real live
+      // call on 2026-07-13 that it returns HTTP 200 with an empty `[]` body for xauusd --
       // it's a US-equities/crypto product with no forex data, so it was a guaranteed
       // wasted round-trip (plus its own timeout) in exactly the worst-case fallback path.
-      console.warn('[GOLD-HISTORY] All historical data sources failed (Yahoo, TwelveData)');
+      console.warn('[GOLD-HISTORY] All historical data sources failed (TwelveData, Yahoo)');
       return [];
     }),
 

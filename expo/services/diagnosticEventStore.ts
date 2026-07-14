@@ -22,7 +22,24 @@ export type DiagnosticEventType =
   | 'PATH3_SL_CANDIDATE'
   | 'PATH3_SL_CONFIRMED'
   | 'LIVE_TICK_SL_CANDIDATE'
-  | 'LIVE_TICK_SL_HIT';
+  | 'LIVE_TICK_SL_HIT'
+  /**
+   * STEP 2 (GC=F/spot investigation): fired whenever the bar-resolver
+   * (resolveSignalWithBars) produces a terminal or changed outcome during
+   * catch-up reconciliation or an audit pass -- records which real bar
+   * source/instrument fed the decision (see detail.barSource) so a future
+   * investigation never again has to reverse-engineer this from indirect
+   * evidence.
+   */
+  | 'RESOLUTION_OUTCOME'
+  /**
+   * STEP 2: fired on every real OHLC refresh in LIVE GENERATION (throttled to
+   * once/60s, matching fetchAndUpdateOHLCHistory's own throttle) -- records
+   * which instrument/tier actually fed highHistory/lowHistory/barCloseHistory
+   * for this cycle (see detail.ohlcSourceDetail). Not tied to a specific
+   * signal, so signalId uses the '__generation__' sentinel.
+   */
+  | 'GENERATION_OHLC_SOURCE';
 
 export interface DiagnosticEvent {
   ts: number;

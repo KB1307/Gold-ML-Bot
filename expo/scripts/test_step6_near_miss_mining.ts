@@ -93,6 +93,7 @@ async function migrateLegacyOutcomesIfEmpty(legacy: unknown[]): Promise<number> 
   sandboxLearningStoreOutcomes.push(...legacy);
   return legacy.length;
 }
+async function appendDiagnosticEvent(_event: unknown): Promise<void> {}
 `;
 
   const rewritten = source
@@ -100,6 +101,7 @@ async function migrateLegacyOutcomesIfEmpty(legacy: unknown[]): Promise<number> 
     .replace(/^import\s+AsyncStorage\s+from\s+["']@react-native-async-storage\/async-storage["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/lib\/trpc["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/learningStore["'];?\r?\n/m, "")
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/diagnosticEventStore["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/signalResolver["'];?\r?\n/m, "")
     .replace(/^import\s+type\s+\{[^}]*\}\s+from\s+["']@\/services\/barStore["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']react-native["'];?\r?\n/m, "")

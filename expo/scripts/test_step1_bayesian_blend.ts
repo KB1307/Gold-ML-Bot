@@ -61,6 +61,7 @@ async function migrateLegacyOutcomesIfEmpty(legacy: unknown[]): Promise<number> 
   sandboxLearningStoreOutcomes.push(...legacy);
   return legacy.length;
 }
+async function appendDiagnosticEvent(_event: unknown): Promise<void> {}
 `;
 
   // CRLF-tolerant regex stripping (Step 1 / Fix A requirement).
@@ -69,6 +70,7 @@ async function migrateLegacyOutcomesIfEmpty(legacy: unknown[]): Promise<number> 
     .replace(/^import\s+AsyncStorage\s+from\s+["']@react-native-async-storage\/async-storage["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/lib\/trpc["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/learningStore["'];?\r?\n/m, "")
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/diagnosticEventStore["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']react-native["'];?\r?\n/m, "");
 
   await mkdir(sandboxDir, { recursive: true });

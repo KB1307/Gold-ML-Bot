@@ -166,6 +166,61 @@ const r12 = resolveSignalWithBars(sellAmbig2, [
 check("S12a", r12.newStatus === "SL_HIT", `status=${r12.newStatus} (SL genuinely closer to open here)`);
 check("S12b", r12.outcomeResult === "LOSS", `outcome=${r12.outcomeResult}`);
 
+// S13-S15: STEP 3 FIX — the fromScratch "matured, no terminal bar event fired"
+// branch (ACTIVE/TP1_HIT/TP2_HIT held past the 2h maturity window with no real
+// SL/TP bar crossing) previously never set resolvedAtBarTs, silently falling
+// back to whatever the caller substitutes for a missing bar timestamp (real
+// wall-clock time at whenever reconciliation happened to run) — the exact
+// mechanism confirmed to produce two UNRELATED signals sharing one identical
+// exit timestamp. Confirm a genuine bar-derived timestamp (the last real bar
+// actually evaluated, NOT Date.now()) is now always set for all three matured
+// sub-outcomes.
+console.log("S13: fromScratch matured PARTIAL_WIN_SL_HIT (TP1+TP2 banked, runner never resolved) now sets a real resolvedAtBarTs");
+const maturedTp2Runner: any = { ...base, id: "matured-tp2-runner", status: "TP2_HIT", targetsHit: 2,
+  timestamp: new Date(threeHoursAgo), createdAt: threeHoursAgo };
+const maturedTp2Bars = [
+  bar(threeHoursAgo + 2*oneMin, P+0.5, P-0.5, P),        // entry fill
+  bar(threeHoursAgo + 3*oneMin, P+4,   P+2,   P+3.5),    // banks TP1 (P+3)
+  bar(threeHoursAgo + 4*oneMin, P+7,   P+4,   P+6.5),    // banks TP2 (P+6), stays below TP3 (P+9)
+  bar(threeHoursAgo + 5*oneMin, P+8,   P+5,   P+7),      // last real bar — stays between TP2/TP3, never breaches entry, never hits TP3
+];
+const lastMaturedTp2BarTs = maturedTp2Bars[maturedTp2Bars.length - 1].timestamp;
+const realNowAtCallTime = Date.now();
+const r13 = resolveSignalWithBars(maturedTp2Runner, maturedTp2Bars, { fromScratch: true, evalNowMs: T0 });
+check("S13a", r13.newStatus === "PARTIAL_WIN_SL_HIT", `status=${r13.newStatus}`);
+check("S13b", r13.resolvedAtBarTs !== undefined, `resolvedAtBarTs=${r13.resolvedAtBarTs} (must not be undefined -- undefined is what previously forced a Date.now() fallback downstream)`);
+check("S13c", r13.resolvedAtBarTs === lastMaturedTp2BarTs, `resolvedAtBarTs=${r13.resolvedAtBarTs} matches last real evaluated bar ${lastMaturedTp2BarTs}, not some other value`);
+check("S13d", r13.resolvedAtBarTs !== undefined && Math.abs((r13.resolvedAtBarTs as number) - realNowAtCallTime) > 60_000, `resolvedAtBarTs (${r13.resolvedAtBarTs}) is genuinely far from wall-clock call time (${realNowAtCallTime}) -- confirms it's bar-derived, not a disguised Date.now()`);
+
+console.log("S14: fromScratch matured SL_AFTER_BE (TP1 banked only, runner never resolved) now sets a real resolvedAtBarTs");
+const maturedTp1Runner: any = { ...base, id: "matured-tp1-runner", status: "TP1_HIT", targetsHit: 1, breakevenReached: true,
+  timestamp: new Date(threeHoursAgo), createdAt: threeHoursAgo };
+const maturedTp1Bars = [
+  bar(threeHoursAgo + 2*oneMin, P+0.5, P-0.5, P),        // entry fill
+  bar(threeHoursAgo + 3*oneMin, P+4,   P+2,   P+3.5),    // banks TP1 (P+3), stays above the 1.5-pip lock throughout
+  bar(threeHoursAgo + 4*oneMin, P+5,   P+3,   P+4.5),    // stays below TP2 (P+6), above lock
+  bar(threeHoursAgo + 5*oneMin, P+5.5, P+3.5, P+4.8),    // last real bar — never retraces to lock, never hits TP2
+];
+const lastMaturedTp1BarTs = maturedTp1Bars[maturedTp1Bars.length - 1].timestamp;
+const r14 = resolveSignalWithBars(maturedTp1Runner, maturedTp1Bars, { fromScratch: true, evalNowMs: T0 });
+check("S14a", r14.newStatus === "SL_AFTER_BE", `status=${r14.newStatus}`);
+check("S14b", r14.resolvedAtBarTs !== undefined, `resolvedAtBarTs=${r14.resolvedAtBarTs} (must not be undefined)`);
+check("S14c", r14.resolvedAtBarTs === lastMaturedTp1BarTs, `resolvedAtBarTs=${r14.resolvedAtBarTs} matches last real evaluated bar ${lastMaturedTp1BarTs}`);
+
+console.log("S15: fromScratch matured CLOSED (entry filled, no TP/SL ever printed) now sets a real resolvedAtBarTs");
+const maturedFlat: any = { ...base, id: "matured-flat", status: "ACTIVE", targetsHit: 0,
+  timestamp: new Date(threeHoursAgo), createdAt: threeHoursAgo };
+const maturedFlatBars = [
+  bar(threeHoursAgo + 2*oneMin, P+0.5, P-0.5, P),
+  bar(threeHoursAgo + 3*oneMin, P+0.8, P-0.3, P+0.2),
+  bar(threeHoursAgo + 4*oneMin, P+0.6, P-0.6, P-0.1),  // last real bar — hovers, never reaches TP1 or SL
+];
+const lastMaturedFlatBarTs = maturedFlatBars[maturedFlatBars.length - 1].timestamp;
+const r15 = resolveSignalWithBars(maturedFlat, maturedFlatBars, { fromScratch: true, evalNowMs: T0 });
+check("S15a", r15.newStatus === "CLOSED", `status=${r15.newStatus}`);
+check("S15b", r15.resolvedAtBarTs !== undefined, `resolvedAtBarTs=${r15.resolvedAtBarTs} (must not be undefined)`);
+check("S15c", r15.resolvedAtBarTs === lastMaturedFlatBarTs, `resolvedAtBarTs=${r15.resolvedAtBarTs} matches last real evaluated bar ${lastMaturedFlatBarTs}`);
+
 console.log(`\n${pass}/${pass+fail} assertions passed.`);
 if (fail > 0) { console.error(`❌ ${fail} FAILED`); process.exit(1); }
 else console.log("✅ All tick-for-tick scenarios verified — resolver correct.");
