@@ -300,3 +300,40 @@ export async function getLatestBarTimestamp(tf: Timeframe): Promise<number | nul
     return null;
   }
 }
+
+/**
+ * Density/coverage assessment for a set of 1-minute bars over a window.
+ * Moved here (from TradingContext.tsx, where it originated as the audit
+ * path's local-vs-remote bar decision) so it is the SINGLE shared
+ * implementation for every caller that needs to decide whether locally-
+ * stored (chart-derived) bars are complete enough to trust over a remote
+ * feed -- both the audit path (TradingContext.tsx's getAuditBars) and the
+ * LIVE GENERATION path (signalEngine.ts's fetchAndUpdateOHLCHistory /
+ * refreshRecentDailyOHLCFromHistory, added when generation was wired to
+ * prefer local bars over the remote/quota-limited tier) now call this exact
+ * same function -- eliminating any risk of the two paths' density
+ * thresholds silently drifting apart. We require the history to start near
+ * the window open and to cover at least ~70% of the expected 1-minute
+ * buckets (markets can have genuinely thin minutes, so we don't demand a
+ * perfect 100%). Logic/thresholds are UNCHANGED from the original.
+ */
+export function assessBarCoverage(
+  bars: { timestamp: number }[],
+  fromTime: number,
+  toTime: number,
+): { dense: boolean; reason: string } {
+  const MINUTE = 60_000;
+  if (bars.length === 0) return { dense: false, reason: "no local bars" };
+  const sorted = [...bars].sort((a, b) => a.timestamp - b.timestamp);
+  const earliest = sorted[0].timestamp;
+  const windowMs = Math.max(MINUTE, toTime - fromTime);
+  const expectedMinutes = Math.max(1, Math.round(windowMs / MINUTE));
+  const within = sorted.filter(b => b.timestamp >= fromTime - MINUTE && b.timestamp <= toTime + MINUTE);
+  const startCovered = earliest <= fromTime + 2 * MINUTE;
+  const density = within.length / expectedMinutes;
+  const dense = startCovered && density >= 0.7;
+  return {
+    dense,
+    reason: `start=${startCovered} density=${(density * 100).toFixed(0)}% (${within.length}/${expectedMinutes}min)`,
+  };
+}
