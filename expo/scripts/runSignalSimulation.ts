@@ -141,39 +141,28 @@ function normalizeRejectionReason(line: string): string | null {
     return null;
   }
 
-  if (line.includes("Dynamic cooldown active")) {
-    return "Dynamic cooldown active";
-  }
+  // Diagnostic-tooling fix (reporting-only -- does not touch signalEngine.ts):
+  // the previous version only special-cased a handful of reasons and fell
+  // through to the RAW line for everything else, verbatim, including any
+  // embedded numeric value (confidence %, ATR pips, strength score, etc.).
+  // Any rejection message with a varying number in it -- which is most of
+  // them: "Winning strength 0.15 below...", "ATR too low (0.2 pips)...",
+  // "Confidence 61.4% below engine floor 58%", etc. -- was therefore
+  // fragmented into one bucket PER DISTINCT VALUE instead of being counted
+  // as a single gate, silently undercounting real gate totals and crowding
+  // legitimate high-count gates out of a small top-N list.
+  // Fix: strip the leading "... REJECTED:" prefix, then replace every
+  // numeric value (with optional decimal/%/sign) with a "#" placeholder so
+  // the message is grouped by its structural TEMPLATE (which gate + which
+  // sub-reason), not by the exact number that happened to trigger it.
+  const withoutPrefix = line.replace(/^.*?❌ REJECTED:\s*/, "").trim();
+  const templated = withoutPrefix
+    .replace(/-?\d+(\.\d+)?%/g, "#%")
+    .replace(/-?\d+(\.\d+)?/g, "#")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  if (line.includes("below threshold") || line.includes("below absolute minimum")) {
-    return "Confidence below threshold";
-  }
-
-  if (line.includes("Structural Validation Failed")) {
-    return "Structural validation failed";
-  }
-
-  if (line.includes("Counter-trend signal requires 5-minute candle confirmation")) {
-    return "Missing 5-minute candle confirmation";
-  }
-
-  if (line.includes("Price Proximity Filter Block")) {
-    return "Price proximity filter block";
-  }
-
-  if (line.includes("Macro event suppression")) {
-    return "Macro event suppression";
-  }
-
-  if (line.includes("Signal conflict prevention")) {
-    return "Signal conflict prevention";
-  }
-
-  if (line.includes("No valid price available yet")) {
-    return "No valid price available";
-  }
-
-  return line.replace(/\s+/g, " ").trim();
+  return templated.length > 0 ? templated : withoutPrefix;
 }
 
 function trackDiagnosticLine(line: string): void {
@@ -571,6 +560,11 @@ function getTopRejectionReasons(limit: number): RejectionSummaryEntry[] {
     .slice(0, limit);
 }
 
+/** Full, unlimited rejection-reason breakdown (every distinct templated reason, not just the top N). */
+function getAllRejectionReasons(): RejectionSummaryEntry[] {
+  return getTopRejectionReasons(Number.MAX_SAFE_INTEGER);
+}
+
 function getMaxGapHours(signalTimestamps: number[]): number {
   if (signalTimestamps.length < 2) {
     return 0;
@@ -705,10 +699,11 @@ async function run(): Promise<void> {
     print(`   Engine win rate: ${(performanceMetrics.recentWinRate * 100).toFixed(1)}%`);
     print(`   Engine profit factor: ${performanceMetrics.profitFactor.toFixed(2)}`);
 
-    const topRejectionReasons = getTopRejectionReasons(5);
-    if (topRejectionReasons.length > 0) {
-      print("   Top rejection reasons:");
-      topRejectionReasons.forEach((entry) => {
+    const allRejectionReasons = getAllRejectionReasons();
+    const totalRejections = allRejectionReasons.reduce((sum, entry) => sum + entry.count, 0);
+    if (allRejectionReasons.length > 0) {
+      print(`   Full rejection-reason breakdown (${allRejectionReasons.length} distinct reasons, ${totalRejections} total):`);
+      allRejectionReasons.forEach((entry) => {
         print(`     - ${entry.reason}: ${entry.count}`);
       });
     }
