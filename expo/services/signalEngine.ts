@@ -848,6 +848,17 @@ class SignalGenerationEngine {
   private highHistory: number[] = [];
   private lowHistory: number[] = [];
   private closeHistory: number[] = [];
+  /**
+   * Item 3 fix: bar-aligned close series, built in LOCKSTEP with
+   * highHistory/lowHistory (same source, same wholesale-replace/push calls,
+   * same length at all times) -- unlike priceHistory/closeHistory, which are
+   * grown independently on the tick-arrival cadence. calculateRealATR() reads
+   * prevClose from THIS array specifically so that highs[i]/lows[i]/closes[i]
+   * always refer to the same underlying bar, eliminating the array-misalignment
+   * defect where a tick-cadence close was paired with a bar-cadence high/low
+   * purely by shared array index.
+   */
+  private barCloseHistory: number[] = [];
   private lastPriceHistorySampleAt: number = 0;
   private volumeHistory: number[] = [];
   private tradeOutcomes: TradeOutcome[] = [];
@@ -975,6 +986,7 @@ class SignalGenerationEngine {
       if (bars && bars.length > 0) {
         this.highHistory = bars.map((b: { high: number }) => b.high);
         this.lowHistory = bars.map((b: { low: number }) => b.low);
+        this.barCloseHistory = bars.map((b: { close: number }) => b.close);
         this.ohlcDataSource = 'real-ohlc';
         console.log(`✅ OHLC: Loaded ${bars.length} real 1-min bars (H/L from Yahoo)`);
         return;
@@ -986,6 +998,7 @@ class SignalGenerationEngine {
     if (this.fiveMinCandles.length >= 5) {
       this.highHistory = this.fiveMinCandles.map(c => c.high);
       this.lowHistory = this.fiveMinCandles.map(c => c.low);
+      this.barCloseHistory = this.fiveMinCandles.map(c => c.close);
       this.ohlcDataSource = '5min-candles';
       console.log(`📊 OHLC: Using ${this.fiveMinCandles.length} locally-built 5-min candles for H/L`);
       return;
@@ -1010,10 +1023,18 @@ class SignalGenerationEngine {
     
     this.highHistory.push(estimatedHigh);
     this.lowHistory.push(estimatedLow);
+    // Estimated fallback pushes one bar-equivalent at a time (unlike the two
+    // wholesale-replace branches above) -- mirror that single push into
+    // barCloseHistory using the actual current price as this synthetic bar's
+    // close, keeping all three arrays the same length/order at all times.
+    this.barCloseHistory.push(this.currentPrice);
     
     if (this.highHistory.length > 100) {
       this.highHistory.shift();
       this.lowHistory.shift();
+    }
+    if (this.barCloseHistory.length > 100) {
+      this.barCloseHistory.shift();
     }
     this.ohlcDataSource = 'estimated';
   }
@@ -3717,6 +3738,7 @@ class SignalGenerationEngine {
     this.highHistory = highs;
     this.lowHistory = lows;
     this.priceHistory = closes;
+    this.barCloseHistory = closes; // test-provided closes are already bar-aligned with highs/lows
     if (priorDayBar) {
       this.dailyOHLCHistory = [{
         date: "test-day",
@@ -3747,9 +3769,10 @@ class SignalGenerationEngine {
    * exactly as they occur in production — purely additive test
    * infrastructure, does not alter calculateRealATR or any other behavior.
    */
-  public pushBarRefreshForTest(bars: { high: number; low: number }[]): void {
+  public pushBarRefreshForTest(bars: { high: number; low: number; close: number }[]): void {
     this.highHistory = bars.map(b => b.high);
     this.lowHistory = bars.map(b => b.low);
+    this.barCloseHistory = bars.map(b => b.close);
   }
 
   /** Item 3 test seam: read priceHistory length (to confirm tick cadence actually diverged from bar cadence during a repro run). */
@@ -3774,6 +3797,7 @@ class SignalGenerationEngine {
     this.highHistory = highs;
     this.lowHistory = lows;
     this.priceHistory = closes;
+    this.barCloseHistory = closes; // test-provided closes are already bar-aligned with highs/lows
     if (priorDayBar) {
       this.dailyOHLCHistory = [{
         date: "test-day",
@@ -4477,20 +4501,29 @@ class SignalGenerationEngine {
   }
 
   private calculateRealATR(period: number = 14): number {
-    if (this.highHistory.length < period || this.lowHistory.length < period || this.priceHistory.length < period) {
+    // Item 3 fix: highs/lows/closes are all sliced from arrays built in
+    // LOCKSTEP (highHistory/lowHistory/barCloseHistory), so index i always
+    // refers to the SAME underlying bar across all three -- unlike the old
+    // version, which paired a bar-cadence high/low with a tick-cadence
+    // priceHistory close purely by shared array index, even though the two
+    // arrays are populated on completely independent cadences (60s bar
+    // refresh vs tick-driven sampling). A period+1-length window is needed so
+    // every one of the `period` true-range calculations has a genuine
+    // previous bar to read its prevClose from.
+    if (this.highHistory.length < period + 1 || this.lowHistory.length < period + 1 || this.barCloseHistory.length < period + 1) {
       console.log('⚠️ ATR: Insufficient data, using default value 10');
       return 10;
     }
 
     const trueRanges: number[] = [];
-    const highs = this.highHistory.slice(-period);
-    const lows = this.lowHistory.slice(-period);
-    const closes = this.priceHistory.slice(-(period + 1));
+    const highs = this.highHistory.slice(-(period + 1));
+    const lows = this.lowHistory.slice(-(period + 1));
+    const closes = this.barCloseHistory.slice(-(period + 1));
 
-    for (let i = 0; i < period; i++) {
+    for (let i = 1; i <= period; i++) {
       const high = highs[i];
       const low = lows[i];
-      const prevClose = closes[i];
+      const prevClose = closes[i - 1]; // genuine previous bar's close -- same aligned series as high/low
 
       const tr = Math.max(
         high - low,
@@ -4501,7 +4534,7 @@ class SignalGenerationEngine {
     }
 
     const atr = trueRanges.reduce((sum, tr) => sum + tr, 0) / period;
-    console.log(`✅ ATR (${period}): ${atr.toFixed(1)} (True Range avg)`);
+    console.log(`✅ ATR (${period}): ${atr.toFixed(1)} (True Range avg, bar-aligned prevClose)`);
     return parseFloat(atr.toFixed(1));
   }
 

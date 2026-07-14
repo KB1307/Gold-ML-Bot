@@ -45,7 +45,7 @@ import { pathToFileURL } from "node:url";
  */
 
 interface Engine {
-  pushBarRefreshForTest(bars: { high: number; low: number }[]): void;
+  pushBarRefreshForTest(bars: { high: number; low: number; close: number }[]): void;
   pushTickForTest(price: number): number;
   getRealATRForTest(period?: number): number;
   getPriceHistoryLengthForTest(): number;
@@ -184,9 +184,9 @@ async function main(): Promise<void> {
 
   console.log(`After independent tick stream (${tickPrices.length} real ticks via pushTickForTest) + real bar-refresh replace (${totalBars} bars via pushBarRefreshForTest):`);
   console.log(`  priceHistory length after throttle: ${priceHistoryLen} (built on ITS OWN cadence, independent of the ${totalBars}-bar refresh)`);
-  console.log(`  calculateRealATR(${period}) via REAL production code: $${reproducedAtr.toFixed(2)}`);
+  console.log(`  calculateRealATR(${period}) via REAL production code (FIXED): $${reproducedAtr.toFixed(2)}`);
   console.log(`  Ground-truth ATR(${period}) (same bars, correctly time-aligned prevClose): $${gt.toFixed(2)}`);
-  console.log(`  Spurious inflation: ${(reproducedAtr / gt).toFixed(1)}x ground truth\n`);
+  console.log(`  Ratio vs ground truth: ${(reproducedAtr / gt).toFixed(2)}x\n`);
 
   check(
     "Ground-truth ATR reflects the genuinely quiet regime (< $2)",
@@ -194,12 +194,12 @@ async function main(): Promise<void> {
     `ground-truth ATR=$${gt.toFixed(2)}`
   );
   check(
-    "REPRODUCED: real calculateRealATR() output is materially inflated vs ground truth due to array misalignment",
-    reproducedAtr > gt * 1.5,
-    `reproduced=$${reproducedAtr.toFixed(2)} vs ground-truth=$${gt.toFixed(2)} (ratio ${(reproducedAtr / gt).toFixed(2)}x)`
+    "FIXED: real calculateRealATR() output now closely matches ground truth (array-misalignment bug eliminated) instead of being inflated",
+    Math.abs(reproducedAtr - gt) <= 0.15,
+    `reproduced=$${reproducedAtr.toFixed(2)} vs ground-truth=$${gt.toFixed(2)} (ratio ${(reproducedAtr / gt).toFixed(2)}x, was 1.5x+ before the fix)`
   );
   check(
-    "priceHistory and highHistory/lowHistory genuinely have INDEPENDENT lengths/cadences (confirms misalignment precondition, not coincidence)",
+    "priceHistory and highHistory/lowHistory genuinely have INDEPENDENT lengths/cadences (confirms the misalignment PRECONDITION still exists -- it's calculateRealATR's source array choice that was fixed, not the arrays' independent cadences)",
     priceHistoryLen !== totalBars,
     `priceHistory length=${priceHistoryLen} vs bar count=${totalBars}`
   );
@@ -234,8 +234,8 @@ async function main(): Promise<void> {
 
   const reproducedAtr2 = signalEngine.getRealATRForTest(period);
   console.log(`  Ground-truth ATR(${period}) for this quiet bar series: $${gt2.toFixed(2)}`);
-  console.log(`  Reproduced (real code) ATR(${period}) with stale/off-cadence priceHistory tail: $${reproducedAtr2.toFixed(2)}`);
-  console.log(`  Spurious inflation: ${(reproducedAtr2 / gt2).toFixed(1)}x ground truth\n`);
+  console.log(`  Reproduced (real code, FIXED) ATR(${period}) with a stale/off-cadence priceHistory tail present: $${reproducedAtr2.toFixed(2)}`);
+  console.log(`  Ratio vs ground truth: ${(reproducedAtr2 / gt2).toFixed(2)}x (previously ~103.9x before the fix)\n`);
 
   check(
     "Scenario 2 ground truth also reflects a quiet regime (< $2)",
@@ -243,16 +243,16 @@ async function main(): Promise<void> {
     `ground-truth ATR=$${gt2.toFixed(2)}`
   );
   check(
-    "Scenario 2 REPRODUCES an implausibly large ATR spike (same class as the real 118.2 reading) purely from array misalignment, no other change",
-    reproducedAtr2 > gt2 * 20,
-    `reproduced=$${reproducedAtr2.toFixed(2)} vs ground-truth=$${gt2.toFixed(2)} (ratio ${(reproducedAtr2 / gt2).toFixed(1)}x, real flagged signals showed ATR readings up to 118.2)`
+    "FIXED: the signature implausible ATR spike (previously ~103.9x, same class as the real 118.2 reading) is ELIMINATED -- priceHistory's stale/off-cadence tail no longer feeds prevClose at all",
+    reproducedAtr2 <= gt2 * 1.5,
+    `reproduced=$${reproducedAtr2.toFixed(2)} vs ground-truth=$${gt2.toFixed(2)} (ratio ${(reproducedAtr2 / gt2).toFixed(2)}x, was ~103.9x before the fix)`
   );
 
   console.log(`\n${pass}/${pass + fail} assertions passed.`);
   if (fail > 0) { console.error(`❌ ${fail} FAILED`); process.exit(1); }
   else {
-    console.log("✅ ATR array-misalignment REPRODUCED deterministically using real production code paths (pushTickForTest -> syncCurrentPrice, pushBarRefreshForTest mirroring fetchAndUpdateOHLCHistory, and the unmodified calculateRealATR).");
-    console.log("   NO FIX has been implemented in this pass, per the instruction to reproduce first and propose separately.");
+    console.log("✅ ATR array-misalignment FIX CONFIRMED using real production code paths (pushTickForTest -> syncCurrentPrice, pushBarRefreshForTest mirroring fetchAndUpdateOHLCHistory's real-bar branch including its close, and the FIXED calculateRealATR reading prevClose from the bar-aligned barCloseHistory array instead of the tick-cadence priceHistory).");
+    console.log("   Both previously-inflated scenarios now resolve to within a small margin of their independently-computed ground-truth ATR.");
   }
 }
 
