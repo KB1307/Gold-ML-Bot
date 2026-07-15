@@ -170,11 +170,14 @@ const cases: Case[] = [
     tpLevelsKnown: false,
   },
   {
-    label: "signal_1784024912333_grgvcf14c (SELL entry 4016.6, 07-14 12:28 UTC+2) - TP1-3 NOT in evidence trail",
+    label: "signal_1784024912333_grgvcf14c (SELL entry 4016.6, 07-14 12:28 UTC+2) - TP1-3 now supplied by user",
     signal: makeSignal({
       id: "signal_1784024912333_grgvcf14c",
       type: "SELL",
       entryPrice: 4016.6,
+      tp1: 4014.1,
+      tp2: 4012.0,
+      tp3: 4009.7,
       sl: 4022.3,
       createdAt: new Date("2026-07-14T10:28:32.333Z").getTime(),
     }),
@@ -182,8 +185,8 @@ const cases: Case[] = [
     recordedStatus: "SL_HIT",
     recordedExit: 4022.3,
     recordedExitTimeUtc2: "12:30 (2 min after entry)",
-    realChartAccount: "user's real chart: followed price DOWN toward TP before the recorded premature SL (exact TP level not in evidence trail).",
-    tpLevelsKnown: false,
+    realChartAccount: "user's real chart: followed price DOWN toward TP before the recorded premature SL - now testing with the real TP1/TP2/TP3 the user just supplied (4014.1/4012.0/4009.7).",
+    tpLevelsKnown: true,
   },
   {
     label: "signal_1784022475559_heaxlv7rm (BUY, 07-14 11:47 UTC+2) - ALL_TARGETS_HIT exit 4026.2 recorded at 13:39 (same ts as eok7tb6qb)",
