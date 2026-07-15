@@ -34,7 +34,11 @@ function buildTradingViewHTML(instanceId: string): string {
       html, body { height: 100%; width: 100%; overflow: hidden; background: #0F0F0F; }
       body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
       #tv_chart_container { height: 100%; width: 100%; }
-      .tradingview-widget-copyright { display: none !important; }
+      /* Kept minimally visible (not display:none) intentionally: fully hiding
+         TradingView's attribution can trigger their widget's anti-tamper
+         logic to reassert itself in the DOM, which can race with React's
+         own reconciliation of the host page. */
+      .tradingview-widget-copyright { opacity: 0.35; transform: scale(0.85); transform-origin: bottom left; }
     </style>
   </head>
   <body>
@@ -264,12 +268,24 @@ const WebChartFrame = React.memo(({ html, onLoad }: { html: string; onLoad: () =
   // attachment / detached-node repositioning) so React always has full
   // ownership of this node's lifecycle — avoids "removeChild: node is not
   // a child" races when the surrounding tree unmounts/remounts.
+  //
+  // IMPORTANT: deliberately NOT including 'allow-same-origin' alongside
+  // 'allow-scripts'. On a srcDoc iframe, that combination makes the frame
+  // share the SAME origin as this host page, which hands the third-party
+  // TradingView script real read/write access to window.parent.document —
+  // i.e. our actual app DOM. Its internal logic (attribution reassertion,
+  // popups, fullscreen) can then insert/move nodes outside React's
+  // bookkeeping, which is exactly what produces "removeChild: the node to
+  // be removed is not a child of this node" once React reconciles next.
+  // Dropping allow-same-origin gives the iframe a unique opaque origin so
+  // no script inside it can ever reach our DOM — postMessage still works
+  // across origins by design, so the price bridge is unaffected.
   return React.createElement('iframe', {
     ref: iframeRef,
     title: 'TradingView XAUUSD chart',
     srcDoc: html,
     onLoad: handleIframeLoad,
-    sandbox: 'allow-scripts allow-same-origin allow-popups allow-forms',
+    sandbox: 'allow-scripts allow-popups allow-forms',
     loading: 'eager',
     referrerPolicy: 'origin',
     'data-testid': 'tradingview-chart-web',
