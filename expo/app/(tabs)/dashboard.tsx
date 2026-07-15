@@ -579,9 +579,9 @@ export default function DashboardScreen() {
                             <Text style={styles.featureScoreLabel}>Confidence Contribution:</Text>
                             <View style={styles.featureScoreBarWrapper}>
                               <View style={styles.featureScoreContainer}>
-                                <View style={[styles.featureBar, { width: `${feature.score * 100}%`, backgroundColor: impactColor }]} />
+                                <View style={[styles.featureBar, { width: `${Math.min(feature.score, 100)}%`, backgroundColor: impactColor }]} />
                               </View>
-                              <Text style={[styles.featureScore, { color: impactColor }]}>{(feature.score * 100).toFixed(0)}%</Text>
+                              <Text style={[styles.featureScore, { color: impactColor }]}>{feature.score.toFixed(0)}%</Text>
                             </View>
                           </View>
                         </View>
