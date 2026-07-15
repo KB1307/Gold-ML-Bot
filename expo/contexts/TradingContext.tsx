@@ -13,7 +13,7 @@ import {
   sendSignalNotification
 } from "@/services/backgroundTaskService";
 import { subscribeToChartPrice, subscribeToChartHeartbeat } from "@/services/chartPriceBridge";
-import { ensureBarStoreReady, ingestTickAllTimeframes, upsertBars, getBars, getBarStoreStats, pruneOldBars, getLatestBarTimestamp, assessBarCoverage, type OhlcBar } from "@/services/barStore";
+import { ensureBarStoreReady, ingestTickAllTimeframes, upsertBars, getBars, getBarStoreStats, pruneOldBars, getLatestBarTimestamp, type OhlcBar } from "@/services/barStore";
 import { resolveSignalWithBars } from "@/services/signalResolver";
 import { sendTelegramAlert } from "@/services/telegramNotifier";
 import { appendDiagnosticEvent, pruneOldDiagnosticEvents, ensureDiagnosticEventStoreReady, type DiagnosticEventType } from "@/services/diagnosticEventStore";
@@ -78,6 +78,35 @@ const TERMINAL_SIGNAL_STATUSES: SignalStatus[] = ["CLOSED", "SL_HIT", "SL_AFTER_
 // after a manual one just ran.
 const DAILY_SWEEP_STORAGE_KEY = 'last_daily_full_audit_sweep_utc_date';
 const DAILY_SWEEP_TS_STORAGE_KEY = 'last_daily_full_audit_sweep_ts';
+
+/**
+ * Density/coverage assessment for a set of 1-minute bars over a window.
+ * Used to decide whether locally-stored (chart-derived) bars are complete
+ * enough to be the authoritative audit source, or whether a remote feed is
+ * needed to fill gaps. We require the history to start near the window open and
+ * to cover at least ~70% of the expected 1-minute buckets (markets can have
+ * genuinely thin minutes, so we don't demand a perfect 100%).
+ */
+function assessBarCoverage(
+  bars: { timestamp: number }[],
+  fromTime: number,
+  toTime: number,
+): { dense: boolean; reason: string } {
+  const MINUTE = 60_000;
+  if (bars.length === 0) return { dense: false, reason: "no local bars" };
+  const sorted = [...bars].sort((a, b) => a.timestamp - b.timestamp);
+  const earliest = sorted[0].timestamp;
+  const windowMs = Math.max(MINUTE, toTime - fromTime);
+  const expectedMinutes = Math.max(1, Math.round(windowMs / MINUTE));
+  const within = sorted.filter(b => b.timestamp >= fromTime - MINUTE && b.timestamp <= toTime + MINUTE);
+  const startCovered = earliest <= fromTime + 2 * MINUTE;
+  const density = within.length / expectedMinutes;
+  const dense = startCovered && density >= 0.7;
+  return {
+    dense,
+    reason: `start=${startCovered} density=${(density * 100).toFixed(0)}% (${within.length}/${expectedMinutes}min)`,
+  };
+}
 
 /**
  * Merge locally-stored (chart-derived) bars with remote bars on a 1-minute

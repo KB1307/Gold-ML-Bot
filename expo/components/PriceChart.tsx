@@ -23,6 +23,252 @@ interface ChartBridgeMessage {
   source?: string;
 }
 
+let sharedWebIframe: HTMLIFrameElement | null = null;
+let sharedWebIframeHtml = "";
+let persistentChartLayer: HTMLDivElement | null = null;
+let activePlaceholder: HTMLDivElement | null = null;
+let layerResizeObserver: ResizeObserver | null = null;
+let layerIntersectionObserver: IntersectionObserver | null = null;
+let placeholderIsIntersecting: boolean = false;
+let layerRafHandle: number | null = null;
+
+function getPersistentChartLayer(): HTMLDivElement | null {
+  if (typeof document === "undefined") {
+    return null;
+  }
+
+  if (!persistentChartLayer) {
+    persistentChartLayer = document.createElement("div");
+    persistentChartLayer.setAttribute("data-testid", "tradingview-persistent-layer");
+    persistentChartLayer.style.position = "fixed";
+    persistentChartLayer.style.left = "0";
+    persistentChartLayer.style.top = "0";
+    persistentChartLayer.style.width = "0";
+    persistentChartLayer.style.height = "0";
+    persistentChartLayer.style.pointerEvents = "none";
+    persistentChartLayer.style.zIndex = "1";
+    persistentChartLayer.style.overflow = "hidden";
+    persistentChartLayer.style.backgroundColor = "#0F0F0F";
+    persistentChartLayer.style.borderRadius = "8px";
+    persistentChartLayer.style.visibility = "hidden";
+    document.body.appendChild(persistentChartLayer);
+    console.log("[PriceChart] Created persistent chart layer at document.body");
+  }
+
+  return persistentChartLayer;
+}
+
+function isPlaceholderActuallyVisible(placeholder: HTMLDivElement): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  if (!placeholder.isConnected) {
+    return false;
+  }
+
+  if (placeholder.offsetParent === null) {
+    const computed = window.getComputedStyle(placeholder);
+    if (computed.position !== "fixed") {
+      return false;
+    }
+  }
+
+  let node: HTMLElement | null = placeholder;
+  while (node) {
+    const computed = window.getComputedStyle(node);
+    if (computed.display === "none" || computed.visibility === "hidden" || computed.opacity === "0") {
+      return false;
+    }
+    if (node.getAttribute && (node.getAttribute("aria-hidden") === "true" || node.getAttribute("hidden") !== null)) {
+      return false;
+    }
+    node = node.parentElement;
+  }
+
+  return true;
+}
+
+function isPlaceholderInViewport(placeholder: HTMLDivElement): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const rect = placeholder.getBoundingClientRect();
+  const vw = window.innerWidth || document.documentElement.clientWidth;
+  const vh = window.innerHeight || document.documentElement.clientHeight;
+  if (rect.width <= 0 || rect.height <= 0) {
+    return false;
+  }
+  if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= vw || rect.top >= vh) {
+    return false;
+  }
+  return true;
+}
+
+function syncLayerToPlaceholder(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const layer = persistentChartLayer;
+  const placeholder = activePlaceholder;
+
+  if (!layer) {
+    return;
+  }
+
+  if (!placeholder || !placeholder.isConnected || !isPlaceholderActuallyVisible(placeholder) || !isPlaceholderInViewport(placeholder) || !placeholderIsIntersecting) {
+    layer.style.visibility = "hidden";
+    layer.style.pointerEvents = "none";
+    layer.style.width = "0";
+    layer.style.height = "0";
+    return;
+  }
+
+  const rect = placeholder.getBoundingClientRect();
+
+  if (rect.width <= 0 || rect.height <= 0) {
+    layer.style.visibility = "hidden";
+    layer.style.pointerEvents = "none";
+    layer.style.width = "0";
+    layer.style.height = "0";
+    return;
+  }
+
+  layer.style.visibility = "visible";
+  layer.style.pointerEvents = "auto";
+  layer.style.transform = `translate3d(${rect.left}px, ${rect.top}px, 0)`;
+  layer.style.width = `${rect.width}px`;
+  layer.style.height = `${rect.height}px`;
+}
+
+function scheduleLayerSync(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  if (layerRafHandle !== null) {
+    return;
+  }
+
+  layerRafHandle = window.requestAnimationFrame(() => {
+    layerRafHandle = null;
+    syncLayerToPlaceholder();
+  });
+}
+
+function ensureLayerObservers(): void {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return;
+  }
+
+  if (!layerResizeObserver && typeof ResizeObserver !== "undefined") {
+    layerResizeObserver = new ResizeObserver(() => {
+      scheduleLayerSync();
+    });
+  }
+
+  if (!layerIntersectionObserver && typeof IntersectionObserver !== "undefined") {
+    layerIntersectionObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.target === activePlaceholder) {
+          placeholderIsIntersecting = entry.isIntersecting && entry.intersectionRatio > 0;
+          scheduleLayerSync();
+        }
+      }
+    }, { threshold: [0, 0.01, 0.1] });
+  }
+
+  const globalWindow = window as Window & { __priceChartLayerBound?: boolean; __priceChartLayerPoller?: number };
+  if (!globalWindow.__priceChartLayerBound) {
+    globalWindow.__priceChartLayerBound = true;
+    window.addEventListener("scroll", scheduleLayerSync, true);
+    window.addEventListener("resize", scheduleLayerSync);
+
+    if (!globalWindow.__priceChartLayerPoller) {
+      globalWindow.__priceChartLayerPoller = window.setInterval(() => {
+        scheduleLayerSync();
+      }, 400);
+    }
+  }
+}
+
+function bindPlaceholder(placeholder: HTMLDivElement | null): void {
+  if (typeof document === "undefined") {
+    return;
+  }
+
+  ensureLayerObservers();
+
+  if (activePlaceholder && layerResizeObserver) {
+    try {
+      layerResizeObserver.unobserve(activePlaceholder);
+    } catch {
+    }
+  }
+  if (activePlaceholder && layerIntersectionObserver) {
+    try {
+      layerIntersectionObserver.unobserve(activePlaceholder);
+    } catch {
+    }
+  }
+
+  activePlaceholder = placeholder;
+  placeholderIsIntersecting = placeholder ? false : false;
+
+  if (placeholder && layerResizeObserver) {
+    try {
+      layerResizeObserver.observe(placeholder);
+    } catch {
+    }
+  }
+  if (placeholder && layerIntersectionObserver) {
+    try {
+      layerIntersectionObserver.observe(placeholder);
+    } catch {
+    }
+  }
+
+  scheduleLayerSync();
+}
+
+function attachIframeToPersistentLayer(html: string): HTMLIFrameElement | null {
+  const layer = getPersistentChartLayer();
+  if (!layer) {
+    return null;
+  }
+
+  const iframe = getOrCreateSharedWebIframe(html);
+
+  if (iframe.parentNode !== layer) {
+    layer.appendChild(iframe);
+    console.log("[PriceChart] Mounted iframe into persistent chart layer (one-time)");
+  }
+
+  return iframe;
+}
+
+function getOrCreateSharedWebIframe(html: string): HTMLIFrameElement {
+  if (!sharedWebIframe) {
+    sharedWebIframe = document.createElement('iframe');
+    sharedWebIframe.title = 'TradingView XAUUSD chart';
+    sharedWebIframe.style.width = '100%';
+    sharedWebIframe.style.height = '100%';
+    sharedWebIframe.style.border = '0';
+    sharedWebIframe.style.backgroundColor = '#0F0F0F';
+    sharedWebIframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms');
+    sharedWebIframe.setAttribute('loading', 'eager');
+    sharedWebIframe.setAttribute('referrerpolicy', 'origin');
+    sharedWebIframe.setAttribute('data-testid', 'tradingview-chart-web');
+    sharedWebIframe.srcdoc = html;
+    sharedWebIframeHtml = html;
+    console.log('[PriceChart] Created shared persistent web iframe');
+    return sharedWebIframe;
+  }
+
+  return sharedWebIframe;
+}
+
 function buildTradingViewHTML(instanceId: string): string {
   return `
 <!DOCTYPE html>
@@ -34,11 +280,7 @@ function buildTradingViewHTML(instanceId: string): string {
       html, body { height: 100%; width: 100%; overflow: hidden; background: #0F0F0F; }
       body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
       #tv_chart_container { height: 100%; width: 100%; }
-      /* Kept minimally visible (not display:none) intentionally: fully hiding
-         TradingView's attribution can trigger their widget's anti-tamper
-         logic to reassert itself in the DOM, which can race with React's
-         own reconciliation of the host page. */
-      .tradingview-widget-copyright { opacity: 0.35; transform: scale(0.85); transform-origin: bottom left; }
+      .tradingview-widget-copyright { display: none !important; }
     </style>
   </head>
   <body>
@@ -234,17 +476,24 @@ function buildTradingViewHTML(instanceId: string): string {
 }
 
 const WebChartFrame = React.memo(({ html, onLoad }: { html: string; onLoad: () => void }) => {
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const placeholderRef = useRef<HTMLDivElement | null>(null);
 
-  const handleIframeLoad = useCallback(() => {
-    onLoad();
-  }, [onLoad]);
+  const handlePlaceholderRef = useCallback((node: HTMLDivElement | null) => {
+    placeholderRef.current = node;
+    bindPlaceholder(node);
+  }, []);
 
   useEffect(() => {
-    const iframe = iframeRef.current;
+    const iframe = attachIframeToPersistentLayer(html);
     if (!iframe) {
       return;
     }
+
+    const handleIframeLoad = () => {
+      onLoad();
+    };
+
+    iframe.addEventListener('load', handleIframeLoad);
 
     let readyFrameTimer: ReturnType<typeof setTimeout> | null = null;
     try {
@@ -254,48 +503,36 @@ const WebChartFrame = React.memo(({ html, onLoad }: { html: string; onLoad: () =
         }, 0);
       }
     } catch (error) {
-      console.warn('[PriceChart] Unable to inspect iframe readiness:', error);
+      console.warn('[PriceChart] Unable to inspect shared iframe readiness:', error);
     }
 
+    scheduleLayerSync();
+
     return () => {
+      iframe.removeEventListener('load', handleIframeLoad);
       if (readyFrameTimer) {
         clearTimeout(readyFrameTimer);
       }
+      console.log('[PriceChart] WebChartFrame unmounting — iframe remains in persistent layer');
     };
   }, [html, onLoad]);
 
-  // Rendered as a normal React-owned element (no manual document.body
-  // attachment / detached-node repositioning) so React always has full
-  // ownership of this node's lifecycle — avoids "removeChild: node is not
-  // a child" races when the surrounding tree unmounts/remounts.
-  //
-  // IMPORTANT: deliberately NOT including 'allow-same-origin' alongside
-  // 'allow-scripts'. On a srcDoc iframe, that combination makes the frame
-  // share the SAME origin as this host page, which hands the third-party
-  // TradingView script real read/write access to window.parent.document —
-  // i.e. our actual app DOM. Its internal logic (attribution reassertion,
-  // popups, fullscreen) can then insert/move nodes outside React's
-  // bookkeeping, which is exactly what produces "removeChild: the node to
-  // be removed is not a child of this node" once React reconciles next.
-  // Dropping allow-same-origin gives the iframe a unique opaque origin so
-  // no script inside it can ever reach our DOM — postMessage still works
-  // across origins by design, so the price bridge is unaffected.
-  return React.createElement('iframe', {
-    ref: iframeRef,
-    title: 'TradingView XAUUSD chart',
-    srcDoc: html,
-    onLoad: handleIframeLoad,
-    sandbox: 'allow-scripts allow-popups allow-forms',
-    loading: 'eager',
-    referrerPolicy: 'origin',
-    'data-testid': 'tradingview-chart-web',
+  useEffect(() => {
+    return () => {
+      if (placeholderRef.current && activePlaceholder === placeholderRef.current) {
+        bindPlaceholder(null);
+      }
+    };
+  }, []);
+
+  return React.createElement('div', {
+    ref: handlePlaceholderRef,
     style: {
       width: '100%',
       height: '100%',
-      border: 0,
       backgroundColor: '#0F0F0F',
-      display: 'block',
     },
+    'data-testid': 'tradingview-chart-web-wrapper',
   });
 }, (prevProps, nextProps) => prevProps.html === nextProps.html && prevProps.onLoad === nextProps.onLoad);
 

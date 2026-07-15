@@ -988,188 +988,19 @@ class SignalGenerationEngine {
     return this.ohlcSourceDetail;
   }
 
-  /**
-   * LOCAL-BAR-FIRST FIX: barStore.ts's spike-gated 1-minute tick bars are
-   * built directly from the exact live chart price stream signal entries
-   * already use (see TradingContext.tsx's commitSignalPrice ->
-   * ingestTickAllTimeframes) -- unlike the remote TwelveData/Yahoo tier,
-   * which (a) is a DIFFERENT instrument-cadence source than what price
-   * signals are entered/exited against and (b) is a shared, exhaustible
-   * daily-quota resource already confirmed to run out under live generation's
-   * own call volume alone. Preferring local bars whenever they densely cover
-   * the requested window keeps ATR/session-high-low/breakout/pivot detection
-   * consistent with the live entry price AND removes most of generation's
-   * load on the remote quota -- falling back to the remote tier only when
-   * local coverage is thin (e.g. right after a fresh reload, given the
-   * confirmed in-memory-only/no-durability finding on web).
-   *
-   * Both fields below exist ONLY so a sandboxed test (which cannot load the
-   * real react-native-backed barStore.ts module) can exercise this exact
-   * selection logic via real production code, mirroring the
-   * pushBarRefreshForTest/pushTickForTest seam pattern already used for the
-   * ATR array-misalignment fix. Production leaves both null and reaches the
-   * real barStore.ts via the dynamic import in fetchLocalOHLCBars below.
-   */
-  private localBarsProviderForTest: ((fromTime: number, toTime: number) => Promise<{ timestamp: number; open: number; high: number; low: number; close: number }[]>) | null = null;
-  private localBarCoverageAssessorForTest: ((bars: { timestamp: number }[], fromTime: number, toTime: number) => { dense: boolean; reason: string }) | null = null;
-
-  /** Test seam: inject a stand-in local-bars provider (bypasses the real dynamic barStore import, which cannot load under a plain Node/bun sandbox). Pass null to restore production behavior. */
-  public setLocalBarsProviderForTest(fn: ((fromTime: number, toTime: number) => Promise<{ timestamp: number; open: number; high: number; low: number; close: number }[]>) | null): void {
-    this.localBarsProviderForTest = fn;
-  }
-
-  /** Test seam: inject a stand-in coverage assessor (typically the REAL barStore.ts assessBarCoverage, loaded via the same sandbox-rewrite pattern used for signalEngine.ts itself, so the test exercises the actual shared function, not a reimplementation). Pass null to restore production behavior. */
-  public setLocalBarCoverageAssessorForTest(fn: ((bars: { timestamp: number }[], fromTime: number, toTime: number) => { dense: boolean; reason: string }) | null): void {
-    this.localBarCoverageAssessorForTest = fn;
-  }
-
-  /**
-   * Local bars must not only be DENSE (assessBarCoverage) but FRESH -- the
-   * newest local bar must be within this many ms of "now", matching the exact
-   * threshold TradingContext.tsx's fetchPriceHistory already uses to decide
-   * local sqlite ring-buffer bars "cover" a live window. Density alone isn't
-   * enough for the GENERATION path specifically (unlike the audit path, which
-   * only ever looks at historical/completed windows): a dense-but-stale local
-   * series (e.g. ticks stopped flowing while the app was backgrounded) would
-   * otherwise silently feed calculateRealATR()/session-high-low/breakout
-   * detection a frozen snapshot instead of triggering the remote fallback.
-   */
-  private static readonly LOCAL_BAR_FRESHNESS_MS = 90_000;
-
-  /**
-   * Cached probe result for the dynamic barStore.ts import, shared by both
-   * fetchLocalOHLCBars and assessLocalOHLCCoverage below -- undefined means
-   * "not probed yet", null means "confirmed unavailable in this runtime".
-   *
-   * WHY THIS CACHE EXISTS (found via the 72h simulation checkpoint, not
-   * theorized): fetchAndUpdateOHLCHistory is invoked fire-and-forget (never
-   * awaited) on every live tick, throttled to actually do work once per 60s
-   * of real time -- in production that's ample time for even a slow dynamic
-   * import to resolve well before the next throttled call. But the FIRST
-   * version of this fix re-attempted `await import('@/services/barStore')`
-   * on every one of those throttled calls with no caching. Under the
-   * accelerated-clock 72h simulation harness (runSignalSimulation.ts), the
-   * virtual clock advances far faster than real wall-clock time, so
-   * thousands of these fire-and-forget calls got queued up before their
-   * (real-time-costly, always-failing-in-that-non-Metro sandbox) import
-   * attempts could resolve -- a backlog of orphaned promises that only
-   * drained AFTER the simulation's main loop and cleanup had already run,
-   * surfacing as spurious "context not initialized" errors and a materially
-   * different signal count purely as a TEST-HARNESS timing artifact, not a
-   * real behavior change. Since this specific failure mode (barStore.ts's
-   * transitive react-native import failing to parse outside Metro) is
-   * structural and deterministic -- never transient -- probing it ONCE per
-   * process and reusing the cached result is both the fix for that backlog
-   * AND a genuine production efficiency win (avoids a redundant dynamic
-   * import on every single 60s refresh once the module is already resolved).
-   */
-  private cachedBarStoreModule: { getBars: (tf: '1m', fromTime: number, toTime: number) => Promise<{ timestamp: number; open: number; high: number; low: number; close: number }[]>; assessBarCoverage: (bars: { timestamp: number }[], fromTime: number, toTime: number) => { dense: boolean; reason: string } } | null | undefined = undefined;
-
-  private async getRealBarStoreModule(): Promise<{ getBars: (tf: '1m', fromTime: number, toTime: number) => Promise<{ timestamp: number; open: number; high: number; low: number; close: number }[]>; assessBarCoverage: (bars: { timestamp: number }[], fromTime: number, toTime: number) => { dense: boolean; reason: string } } | null> {
-    if (this.cachedBarStoreModule !== undefined) {
-      return this.cachedBarStoreModule;
-    }
-    try {
-      // Dynamic (not static top-level) import deliberately: barStore.ts
-      // transitively imports react-native's Platform, which a plain Node/bun
-      // script (as every sandboxed test_*.ts/verify_*.ts in this repo runs
-      // under) cannot parse -- confirmed directly: attempting it throws
-      // "Unexpected typeof" from react-native/index.js's Flow-typed
-      // `import typeof * as ReactNativePublicAPI from './index.js.flow'`
-      // line. A dynamic import here rejects gracefully (caught below) in that
-      // environment while resolving normally under Metro/Expo at runtime,
-      // so every existing sandboxed regression test keeps working with ZERO
-      // changes to any of their loaders, while real production wiring reaches
-      // the genuine barStore.ts.
-      const barStoreModule = await import('@/services/barStore');
-      this.cachedBarStoreModule = { getBars: barStoreModule.getBars, assessBarCoverage: barStoreModule.assessBarCoverage };
-    } catch (err) {
-      console.warn('⚠️ [OHLC] Local bar store unavailable in this runtime (non-fatal, falling back to remote) -- caching this result for the rest of the process to avoid repeatedly retrying an import that fails identically every time:', err instanceof Error ? err.message : 'Unknown');
-      this.cachedBarStoreModule = null;
-    }
-    return this.cachedBarStoreModule;
-  }
-
-  private async fetchLocalOHLCBars(fromTime: number, toTime: number): Promise<{ timestamp: number; open: number; high: number; low: number; close: number }[]> {
-    if (this.localBarsProviderForTest) {
-      return this.localBarsProviderForTest(fromTime, toTime);
-    }
-    const barStoreModule = await this.getRealBarStoreModule();
-    if (!barStoreModule) {
-      return [];
-    }
-    try {
-      return await barStoreModule.getBars('1m', fromTime, toTime);
-    } catch (err) {
-      console.warn('⚠️ [OHLC] Local bar store getBars() call failed (non-fatal, falling back to remote):', err instanceof Error ? err.message : 'Unknown');
-      return [];
-    }
-  }
-
-  private async assessLocalOHLCCoverage(
-    bars: { timestamp: number }[],
-    fromTime: number,
-    toTime: number,
-  ): Promise<{ sufficient: boolean; reason: string }> {
-    if (bars.length === 0) {
-      return { sufficient: false, reason: 'no local bars' };
-    }
-    let coverage: { dense: boolean; reason: string };
-    if (this.localBarCoverageAssessorForTest) {
-      coverage = this.localBarCoverageAssessorForTest(bars, fromTime, toTime);
-    } else {
-      const barStoreModule = await this.getRealBarStoreModule();
-      if (!barStoreModule) {
-        return { sufficient: false, reason: 'coverage check unavailable: local bar store not loadable in this runtime' };
-      }
-      coverage = barStoreModule.assessBarCoverage(bars, fromTime, toTime);
-    }
-    const sorted = [...bars].sort((a, b) => a.timestamp - b.timestamp);
-    const newestTs = sorted[sorted.length - 1].timestamp;
-    const freshnessMs = toTime - newestTs;
-    const fresh = freshnessMs <= SignalGenerationEngine.LOCAL_BAR_FRESHNESS_MS;
-    return {
-      sufficient: coverage.dense && fresh,
-      reason: `${coverage.reason}, freshness=${(freshnessMs / 1000).toFixed(0)}s${fresh ? ' (fresh)' : ' (STALE)'}`,
-    };
-  }
-
   private async fetchAndUpdateOHLCHistory(): Promise<void> {
     const now = Date.now();
     const OHLC_FETCH_INTERVAL = 60000;
-
+    
     if (now - this.lastOHLCFetchTime < OHLC_FETCH_INTERVAL) {
       return;
     }
     this.lastOHLCFetchTime = now;
-
-    const toTime = now;
-    const fromTime = now - (100 * 60 * 1000);
-
+    
     try {
-      const localBars = await this.fetchLocalOHLCBars(fromTime, toTime);
-      const coverage = await this.assessLocalOHLCCoverage(localBars, fromTime, toTime);
-      if (coverage.sufficient) {
-        const sortedLocalBars = [...localBars].sort((a, b) => a.timestamp - b.timestamp);
-        this.highHistory = sortedLocalBars.map(b => b.high);
-        this.lowHistory = sortedLocalBars.map(b => b.low);
-        this.barCloseHistory = sortedLocalBars.map(b => b.close);
-        this.ohlcDataSource = 'real-ohlc';
-        this.ohlcSourceDetail = 'local-1m-chart-bars';
-        console.log(`✅ OHLC: Loaded ${sortedLocalBars.length} LOCAL chart-derived 1-min bars (${coverage.reason}) — remote fetch skipped`);
-        this.logOhlcSourceDiagnostic(sortedLocalBars.length);
-        return;
-      }
-      console.log(`ℹ️ OHLC: local bars insufficient (${coverage.reason}) — falling back to remote fetch`);
-    } catch (err) {
-      console.warn('⚠️ OHLC local-bar-first check failed (non-fatal, falling back to remote):', err instanceof Error ? err.message : 'Unknown');
-    }
-
-    await this.fetchAndUpdateOHLCHistoryRemoteAndFallback(fromTime, toTime);
-  }
-
-  private async fetchAndUpdateOHLCHistoryRemoteAndFallback(fromTime: number, toTime: number): Promise<void> {
-    try {
+      const toTime = now;
+      const fromTime = now - (100 * 60 * 1000);
+      
       const bars = await fetchHistoricalData({
         fromTime,
         toTime,
@@ -1561,38 +1392,9 @@ class SignalGenerationEngine {
     this.lastDailyOHLCRefreshAt = now;
     console.log('📊 Refreshing daily OHLC cache from recent historical minute bars...');
 
-    const dailyFromTime = now - DAILY_OHLC_REFRESH_LOOKBACK_MS;
-    // LOCAL-BAR-FIRST FIX: same rationale/mechanism as fetchAndUpdateOHLCHistory
-    // above -- prefer barStore.ts's chart-derived local bars over the
-    // remote/quota-limited tier whenever they densely+freshly cover this 72h
-    // lookback window. Local 1m retention (7 days) comfortably exceeds this
-    // window, so a continuously-running session should satisfy this often.
-    try {
-      const localBars = await this.fetchLocalOHLCBars(dailyFromTime, now);
-      const coverage = await this.assessLocalOHLCCoverage(localBars, dailyFromTime, now);
-      if (coverage.sufficient) {
-        const rebuiltDailyBars = this.buildDailyOHLCBarsFromHistoricalBars(localBars, now);
-        if (rebuiltDailyBars.length > 0) {
-          const historyChanged = this.mergeDailyOHLCBars(rebuiltDailyBars);
-          if (historyChanged) {
-            await this.saveDailyOHLCHistory();
-            console.log(`✅ Daily OHLC refresh rebuilt ${rebuiltDailyBars.length} completed trading day bar(s) from ${localBars.length} LOCAL chart-derived bars (${coverage.reason}) — remote fetch skipped`);
-          } else {
-            console.log('ℹ️ Daily OHLC refresh (local bars) found no changes');
-          }
-          return;
-        }
-        console.warn('⚠️ Daily OHLC refresh: local bars densely covered the window but derived no completed daily bars — falling back to remote');
-      } else {
-        console.log(`ℹ️ Daily OHLC refresh: local bars insufficient (${coverage.reason}) — falling back to remote fetch`);
-      }
-    } catch (err) {
-      console.warn('⚠️ Daily OHLC refresh local-bar-first check failed (non-fatal, falling back to remote):', err instanceof Error ? err.message : 'Unknown');
-    }
-
     try {
       const minuteBars = await fetchHistoricalData({
-        fromTime: dailyFromTime,
+        fromTime: now - DAILY_OHLC_REFRESH_LOOKBACK_MS,
         toTime: now,
         timeoutMs: 20000,
       });
@@ -1812,22 +1614,6 @@ class SignalGenerationEngine {
     this.tickTimestamps = [];
     this.tickPriceSamples = [];
     this.tickFrequencyGateState = { lastPrice: 0, lastAt: 0, pendingPrice: 0, pendingAt: 0 };
-  }
-
-  /**
-   * Local-bar-first test seam: force-invoke fetchAndUpdateOHLCHistory bypassing
-   * its 60s throttle (so a test can drive repeated, deterministic calls) and
-   * await its result directly (production calls it fire-and-forget from
-   * syncCurrentPrice). Exercises the REAL selection logic unmodified.
-   */
-  public async fetchAndUpdateOHLCHistoryForTest(): Promise<void> {
-    this.lastOHLCFetchTime = 0;
-    await this.fetchAndUpdateOHLCHistory();
-  }
-
-  /** Local-bar-first test seam: force-invoke refreshRecentDailyOHLCFromHistory(force=true) and await it directly. */
-  public async refreshRecentDailyOHLCFromHistoryForTest(): Promise<void> {
-    await this.refreshRecentDailyOHLCFromHistory(true);
   }
 
   /**
