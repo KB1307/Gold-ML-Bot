@@ -17,6 +17,7 @@ import { ensureBarStoreReady, ingestTickAllTimeframes, upsertBars, getBars, getB
 import { resolveSignalWithBars } from "@/services/signalResolver";
 import { sendTelegramAlert } from "@/services/telegramNotifier";
 import { appendDiagnosticEvent, pruneOldDiagnosticEvents, ensureDiagnosticEventStoreReady, type DiagnosticEventType } from "@/services/diagnosticEventStore";
+import { supabase } from "@/lib/supabase";
 
 const INDEPENDENT_POLL_INTERVAL_MS = 12000;
 const INDEPENDENT_POLL_NO_PRICE_INTERVAL_MS = 5000;
@@ -120,6 +121,45 @@ function mergeBarsPreferLocal(local: OhlcBar[], remote: OhlcBar[]): OhlcBar[] {
   for (const b of remote) byMinute.set(Math.floor(b.timestamp / MINUTE) * MINUTE, b);
   for (const b of local) byMinute.set(Math.floor(b.timestamp / MINUTE) * MINUTE, b);
   return Array.from(byMinute.values()).sort((a, b) => a.timestamp - b.timestamp);
+}
+
+/**
+ * TIER 0 audit source: durably-imported, manually-verified real broker
+ * (Exness) 1-minute bars stored in Supabase's `gold_m1_bars` table. This is
+ * an audit-only read (SELECT-only RLS policy) - it never feeds live signal
+ * generation. Populated so far for 2026-07-13/2026-07-14 to correct a batch
+ * of confirmed-wrong false-SL audits from that window; the table grows over
+ * time as more verified windows are imported. Returns [] whenever Supabase
+ * isn't configured, the query errors, or no rows exist for the window - all
+ * silent, non-blocking fallbacks so the existing local/remote audit chain is
+ * unaffected outside the windows this table actually covers.
+ */
+async function fetchSupabaseGoldBars(fromTime: number, toTime: number): Promise<OhlcBar[]> {
+  if (!supabase) return [];
+  try {
+    const { data, error } = await supabase
+      .from('gold_m1_bars')
+      .select('timestamp, open, high, low, close, volume')
+      .gte('timestamp', new Date(fromTime).toISOString())
+      .lte('timestamp', new Date(toTime).toISOString())
+      .order('timestamp', { ascending: true });
+    if (error) {
+      console.warn('⚠️ [SupabaseGoldBars] query failed:', error.message);
+      return [];
+    }
+    if (!data || data.length === 0) return [];
+    return data.map((row): OhlcBar => ({
+      timestamp: new Date(row.timestamp as string).getTime(),
+      open: Number(row.open),
+      high: Number(row.high),
+      low: Number(row.low),
+      close: Number(row.close),
+      volume: row.volume != null ? Number(row.volume) : undefined,
+    }));
+  } catch (err) {
+    console.warn('⚠️ [SupabaseGoldBars] fetch threw:', err instanceof Error ? err.message : 'Unknown');
+    return [];
+  }
 }
 const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;
 
@@ -1752,7 +1792,14 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     fromTime: number,
     toTime: number,
   ): Promise<{ bars: OhlcBar[]; source: string }> => {
+    // TIER 0: durably-imported, manually-verified real broker (Exness) bars in
+    // Supabase (see fetchSupabaseGoldBars). Currently covers 2026-07-13/14.
+    // When present for the requested window, treated as MORE authoritative
+    // than the chart-derived local bars.
+    const supabaseBars = await fetchSupabaseGoldBars(fromTime, toTime);
+
     const localBars = await getBars('1m', fromTime, toTime);
+    const primaryBars = supabaseBars.length > 0 ? mergeBarsPreferLocal(supabaseBars, localBars) : localBars;
 
     // ITEM 4: local 1m retention is now 7 days (barStore RETENTION_MS['1m']).
     // Any portion of [fromTime, toTime] older than that boundary structurally
@@ -1763,25 +1810,28 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const localRetentionBoundary = Date.now() - LOCAL_1M_RETENTION_MS;
     const requestPreDatesLocalRetention = fromTime < localRetentionBoundary;
 
-    // Probe: does the chart-derived local history already capture a terminal
-    // event (SL / TP / protected exit) for this signal? We replay from scratch
-    // purely to locate the resolution point — the real resolution still runs
-    // later with the caller's chosen mode.
-    const probe = resolveSignalWithBars(signal, localBars, {
+    // Probe: does the primary (Supabase-verified + chart-derived) history
+    // already capture a terminal event (SL / TP / protected exit) for this
+    // signal? We replay from scratch purely to locate the resolution point —
+    // the real resolution still runs later with the caller's chosen mode.
+    const probe = resolveSignalWithBars(signal, primaryBars, {
       fromScratch: true,
       evalNowMs: Date.now(),
       logPrefix: `   [Audit-probe ${signal.id.slice(-6)}]`,
     });
     const resolutionTs = probe.resolvedAtBarTs;
-    const localResolvesTerminal = resolutionTs != null;
-    const coverage = assessBarCoverage(localBars, fromTime, resolutionTs ?? toTime);
+    const primaryResolvesTerminal = resolutionTs != null;
+    const coverage = assessBarCoverage(primaryBars, fromTime, resolutionTs ?? toTime);
 
-    if (localResolvesTerminal && coverage.dense) {
-      console.log(`   📈 [Audit ${signal.id.slice(-6)}] Using TradingView chart-derived bars (authoritative): ${localBars.length} local bars, ${coverage.reason}`);
-      return { bars: localBars, source: '🟢 chart-derived (local)' };
+    if (primaryResolvesTerminal && coverage.dense) {
+      const source = supabaseBars.length > 0
+        ? `🔵 imported real-broker bars (Supabase, verified)${localBars.length > 0 ? ' + chart-derived' : ''}`
+        : '🟢 chart-derived (local)';
+      console.log(`   📈 [Audit ${signal.id.slice(-6)}] Using ${source}: ${primaryBars.length} bars, ${coverage.reason}`);
+      return { bars: primaryBars, source };
     }
 
-    console.log(`   🌐 [Audit ${signal.id.slice(-6)}] Chart-derived bars insufficient (terminal=${localResolvesTerminal}, ${coverage.reason}) — pulling remote feed to fill gaps`);
+    console.log(`   🌐 [Audit ${signal.id.slice(-6)}] Primary bars insufficient (terminal=${primaryResolvesTerminal}, ${coverage.reason}) — pulling remote feed to fill gaps`);
     let remoteBars: OhlcBar[] = [];
     try {
       remoteBars = await fetchHistoricalData({ fromTime, toTime, timeoutMs: 15000 });
@@ -1790,9 +1840,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     }
 
     if (remoteBars.length === 0) {
-      if (localBars.length > 0) {
-        console.log(`   ↩️ [Audit ${signal.id.slice(-6)}] remote empty — using ${localBars.length} chart-derived bars anyway`);
-        return { bars: localBars, source: '🟢 chart-derived (local, remote empty)' };
+      if (primaryBars.length > 0) {
+        const source = supabaseBars.length > 0 ? '🔵 imported real-broker bars (Supabase, remote empty)' : '🟢 chart-derived (local, remote empty)';
+        console.log(`   ↩️ [Audit ${signal.id.slice(-6)}] remote empty — using ${primaryBars.length} primary bars anyway`);
+        return { bars: primaryBars, source };
       }
       return { bars: [], source: 'none' };
     }
@@ -1802,15 +1853,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.warn(`   ⚠️ [Audit ${signal.id.slice(-6)}] failed to persist remote bars:`, err instanceof Error ? err.message : 'Unknown');
     });
 
-    const merged = mergeBarsPreferLocal(localBars, remoteBars);
+    const merged = mergeBarsPreferLocal(primaryBars, remoteBars);
     // ITEM 4: when the window (or part of it) predates local retention entirely,
     // tag this distinctly as remote-only-beyond-retention rather than the normal
     // merged/remote-feed tags, so it's visible this correction could NOT be
     // cross-checked against any local chart-derived bar for that stretch.
-    const source = localBars.length === 0 && requestPreDatesLocalRetention
+    const source = primaryBars.length === 0 && requestPreDatesLocalRetention
       ? '🟣 remote-only (beyond 7d local retention boundary)'
-      : localBars.length > 0 ? '🟡 merged (chart-derived + remote gap-fill)' : '🟠 remote feed';
-    console.log(`   🔀 [Audit ${signal.id.slice(-6)}] ${source}: ${localBars.length} local + ${remoteBars.length} remote → ${merged.length} bars`);
+      : primaryBars.length > 0
+        ? (supabaseBars.length > 0 ? '🟡 merged (Supabase-verified + chart-derived + remote gap-fill)' : '🟡 merged (chart-derived + remote gap-fill)')
+        : '🟠 remote feed';
+    console.log(`   🔀 [Audit ${signal.id.slice(-6)}] ${source}: ${primaryBars.length} primary + ${remoteBars.length} remote → ${merged.length} bars`);
     // ITEM 5: diagnostic logging - explicit source tag for every getAuditBars call.
     console.log(`   🧾 [Audit-diagnostic ${signal.id.slice(-6)}] sourceTag="${source}" window=[${new Date(fromTime).toISOString()}, ${new Date(toTime).toISOString()}] preDatesLocalRetention=${requestPreDatesLocalRetention}`);
     return { bars: merged, source };
