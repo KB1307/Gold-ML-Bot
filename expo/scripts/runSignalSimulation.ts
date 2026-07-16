@@ -72,6 +72,14 @@ declare global {
 const TERMINAL_STATUSES: TerminalStatus[] = ["CLOSED", "SL_HIT", "ALL_TARGETS_HIT", "PARTIAL_WIN_SL_HIT"];
 const OBSERVED_HOURS = Math.max(1, Number(process.env.SIGNAL_SIM_HOURS ?? "24"));
 const VERBOSE_SIMULATION = process.env.SIGNAL_SIM_VERBOSE === "1";
+// One-off harness flag for the mandated TIER0-active before/after comparison
+// (Option A sr_zones_v1 checkpoint). When unset, behavior is byte-identical
+// to before this change: trpcClient.srZones is undefined, the engine's own
+// defensive guard in maybeRefreshTier0SRZones() short-circuits, and every
+// simulated signal is generated on TIER 1 local detectSRZones() exactly as
+// it always has been. This is test-harness-only -- it does not touch
+// signalEngine.ts or any production code path.
+const SIM_TIER0_SRZONES = process.env.SIGNAL_SIM_TIER0_SRZONES === "1";
 const DEFAULT_SETTINGS: SimulationSettings = {
   tp1Pips: 20,
   tp2Pips: 40,
@@ -416,6 +424,44 @@ const AsyncStorage = {
     },
   },
 };
+if (${SIM_TIER0_SRZONES}) {
+  (globalThis.__SANDBOX_TRPC__ as any).srZones = {
+    // Fixed, pre-warmed TIER 0 payload standing in for a populated sr_zones_v1
+    // cache -- shape matches the real getZones() response exactly, sourced
+    // from the real durable zones actually returned by the deployed
+    // srZones.getZones route against gold_m1_bars moments before this run.
+    getZones: {
+      async query() {
+        return {
+          available: true,
+          tier: "TIER_0_SERVER",
+          zones: [
+            // NOTE: same touches/rejectionWicks/reactionStrength/confluenceScore/source
+            // shape as the real zones pulled from the live sr_zones_v1 cache moments
+            // before this run, but PRICE-SHIFTED (-970 to -975) to land inside this
+            // synthetic simulation's ~$3010-3055 price band instead of the live
+            // ~$3990-4091 gold range -- otherwise every zone would sit thousands of
+            // dollars away from every simulated candle and the TIER0/TIER1 comparison
+            // would be meaningless (no zone could ever be in proximity of any signal).
+            { price: 3025.1, type: "RESISTANCE", touches: 96, rejectionWicks: 5, reactionStrength: 0.078, source: "PRICE_ACTION", confluenceScore: 1, lastTouchTs: "2026-07-13T16:23:00.000Z" },
+            { price: 3015.3, type: "SUPPORT", touches: 7, rejectionWicks: 2, reactionStrength: 0.078, source: "PRICE_ACTION", confluenceScore: 2, lastTouchTs: "2026-07-13T16:39:00.000Z" },
+            { price: 3050.6, type: "RESISTANCE", touches: 434, rejectionWicks: 5, reactionStrength: 0.07, source: "PRICE_ACTION", confluenceScore: 1, lastTouchTs: "2026-07-13T13:47:00.000Z" },
+            { price: 3042.2, type: "RESISTANCE", touches: 29, rejectionWicks: 2, reactionStrength: 0.069, source: "PRICE_ACTION", confluenceScore: 1, lastTouchTs: "2026-07-13T14:04:00.000Z" },
+            { price: 3021.9, type: "RESISTANCE", touches: 117, rejectionWicks: 1, reactionStrength: 0.069, source: "PRICE_ACTION", confluenceScore: 1, lastTouchTs: "2026-07-13T16:28:00.000Z" },
+            { price: 3018.5, type: "RESISTANCE", touches: 24, rejectionWicks: 1, reactionStrength: 0.069, source: "PRICE_ACTION", confluenceScore: 1, lastTouchTs: "2026-07-13T16:39:00.000Z" },
+            { price: 3010.5, type: "SUPPORT", touches: 8, rejectionWicks: 2, reactionStrength: 0.09, source: "PRICE_ACTION", confluenceScore: 2, lastTouchTs: "2026-07-13T15:10:00.000Z" },
+            { price: 3055.6, type: "RESISTANCE", touches: 18, rejectionWicks: 1, reactionStrength: 0.04, source: "WEEKLY", confluenceScore: 1, lastTouchTs: "2026-07-13T01:50:00.000Z" },
+          ],
+        };
+      },
+    },
+    refreshZones: {
+      async mutate() {
+        return { success: true, zoneCount: 8 };
+      },
+    },
+  };
+}
 
 const trpcClient = (globalThis as Record<string, unknown>).__SANDBOX_TRPC__ as any;
 
