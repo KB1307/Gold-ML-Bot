@@ -58,6 +58,17 @@ function formatSignal(signal: TradingSignal, index: number): string {
       lines.push(`      ${f.feature}=${f.score.toFixed(2)}`);
     });
   }
+  if (signal.srZonesSnapshot?.length) {
+    lines.push(`    srZones snapshot at generation time (${signal.srZonesSnapshot.length} zone(s)):`);
+    signal.srZonesSnapshot
+      .slice()
+      .sort((a, b) => b.reactionStrength - a.reactionStrength)
+      .forEach((z) => {
+        lines.push(
+          `      ${z.type} @ ${z.price.toFixed(1)}  touches=${z.touches}  reaction=${(z.reactionStrength * 100).toFixed(0)}%  confluence=${z.confluenceScore}  source=${z.source}`,
+        );
+      });
+  }
   return lines.join("\n");
 }
 

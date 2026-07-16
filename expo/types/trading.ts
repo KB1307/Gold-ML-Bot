@@ -38,6 +38,14 @@ export interface TradingSignal {
    * of any past signal's complete scoring breakdown actually be possible.
    */
   fullAttentionScores?: FeatureConfidence[];
+  /**
+   * Per-signal S/R zone snapshot: the exact detectSRZones() output (post-decay,
+   * as gating actually saw it) at the moment this signal was generated. Additive
+   * only, same pattern as fullAttentionScores above - lets "was this level really
+   * evidenced" be answered per-signal from the signal record itself, without
+   * depending on log retention or reconstructing state after the fact.
+   */
+  srZonesSnapshot?: DetectedSRZone[];
   macroWarning?: MacroEvent;
   riskJustification: string;
   timeToLive?: number;

@@ -1,4 +1,4 @@
-import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC, SignalLearningContext } from "@/types/trading";
+import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC, SignalLearningContext, DetectedSRZone } from "@/types/trading";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { fetchHistoricalData, trpcClient } from "@/lib/trpc";
 import { Platform } from "react-native";
@@ -5683,6 +5683,20 @@ class SignalGenerationEngine {
         feature: feature.replace(/_/g, ' ').toUpperCase(),
         score: parseFloat((Math.abs(score) * 100).toFixed(1)),
       }));
+
+    // Per-signal srZones snapshot: capture the exact detectSRZones() output
+    // (post-decay, as opposing-structure veto / confluence gating actually saw
+    // it for THIS signal) at generation time. Additive only, same pattern as
+    // fullAttentionScores above -- no change to gating/scoring/generation logic.
+    const srZonesSnapshot: DetectedSRZone[] = features.srZones.map(zone => ({
+      price: zone.price,
+      type: zone.type,
+      touches: zone.touches,
+      rejectionWicks: zone.rejectionWicks,
+      reactionStrength: zone.reactionStrength,
+      source: zone.source,
+      confluenceScore: zone.confluenceScore,
+    }));
     
     const nowLocal = new Date();
     const timeString = `${nowLocal.getHours().toString().padStart(2, "0")}:${nowLocal.getMinutes().toString().padStart(2, "0")}`;
@@ -5758,6 +5772,7 @@ class SignalGenerationEngine {
       entryTime: timeString,
       topFeatures,
       fullAttentionScores,
+      srZonesSnapshot,
       macroWarning: macroEvent,
       riskJustification,
       learningContext: {
