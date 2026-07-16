@@ -65,7 +65,7 @@ function formatSignal(signal: TradingSignal, index: number): string {
       .sort((a, b) => b.reactionStrength - a.reactionStrength)
       .forEach((z) => {
         lines.push(
-          `      ${z.type} @ ${z.price.toFixed(1)}  touches=${z.touches}  reaction=${(z.reactionStrength * 100).toFixed(0)}%  confluence=${z.confluenceScore}  source=${z.source}`,
+          `      ${z.type} @ ${z.price.toFixed(1)}  touches=${z.touches}  reaction=${(z.reactionStrength * 100).toFixed(0)}%  confluence=${z.confluenceScore}  source=${z.source}  tier=${z.tier ?? 'TIER_1_LOCAL'}`,
         );
       });
   }

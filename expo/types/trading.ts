@@ -78,6 +78,14 @@ export interface DetectedSRZone {
   reactionStrength: number;
   source: "PRICE_ACTION" | "PIVOT" | "FIBONACCI" | "VOLUME_NODE" | "PREV_DAY" | "ASIAN_RANGE" | "ORH_ORL" | "WEEKLY" | "SESSION_BLOCK";
   confluenceScore: number;
+  /**
+   * Which tier supplied this zone at generation time: 'TIER_0_SERVER'
+   * (durable, multi-day sr_zones_v1 cache computed from gold_m1_bars) or
+   * 'TIER_1_LOCAL' (in-memory detectSRZones() fallback, reset on reload).
+   * Optional so older cached/exported signals without this field still
+   * type-check.
+   */
+  tier?: "TIER_0_SERVER" | "TIER_1_LOCAL";
 }
 
 export interface MarketOutlook {

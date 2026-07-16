@@ -123,6 +123,15 @@ interface SRZone {
    * timeframes/methods is structurally stronger than one seen only once.
    */
   confluenceScore: number;
+  /**
+   * Which tier actually supplied this zone: 'TIER_0_SERVER' (durable,
+   * multi-day sr_zones_v1 cache computed server-side from gold_m1_bars) or
+   * 'TIER_1_LOCAL' (this instance's own in-memory detectSRZones(), reset on
+   * every reload). Mirrors the existing ohlcSourceDetail "which source fed
+   * this decision" pattern. Defaults to TIER_1_LOCAL for any zone built by
+   * the local computation path below.
+   */
+  tier: 'TIER_0_SERVER' | 'TIER_1_LOCAL';
 }
 
 interface SRZoneReaction {
@@ -971,6 +980,21 @@ class SignalGenerationEngine {
   private sessionBlockFrozen: boolean[] = [false, false, false, false, false, false];
   private lastSessionBlockDateKey: string = '';
   private lastDailyOHLCRefreshAt: number = 0;
+  /**
+   * Option A (S/R zone persistence): durable TIER 0 zones read from the
+   * server-side sr_zones_v1 cache (computed from gold_m1_bars). Null until
+   * the first successful fetch, or if the fetch fails/returns nothing -- in
+   * either case detectSRZones() falls back to its own TIER 1 local
+   * computation below, exactly as it did before this change.
+   */
+  private tier0SRZones: SRZone[] | null = null;
+  private tier0SRZonesFetchedAt: number = 0;
+  private lastTier0SRZonesFetchAttemptAt: number = 0;
+  private lastServerSRZonesRefreshTriggerAt: number = 0;
+  /** How long a successful TIER 0 fetch stays valid before requiring a refetch. */
+  private static readonly TIER0_SRZONES_TTL_MS = 15 * 60 * 1000;
+  /** Throttle for both the TIER 0 read and the fire-and-forget server recompute trigger. */
+  private static readonly TIER0_SRZONES_FETCH_INTERVAL_MS = 10 * 60 * 1000;
   /**
    * STEP 1/STEP 2: granular real-instrument tag for whichever tier actually fed
    * highHistory/lowHistory/barCloseHistory on the most recent refresh -- e.g.
@@ -2435,10 +2459,93 @@ class SignalGenerationEngine {
     };
   }
 
+  /**
+   * Option A (S/R zone persistence): async TIER 0 fetch from the durable
+   * server-side sr_zones_v1 cache. Throttled to TIER0_SRZONES_FETCH_INTERVAL_MS
+   * and fully fire-and-forget -- never awaited by detectSRZones() itself, so
+   * generation stays synchronous exactly as before. Also fires the (equally
+   * throttled, equally non-blocking) server-side recompute so the cache keeps
+   * accumulating evidence from fresh gold_m1_bars over time.
+   */
+  private maybeRefreshTier0SRZones(): void {
+    const now = Date.now();
+    if (now - this.lastTier0SRZonesFetchAttemptAt < SignalGenerationEngine.TIER0_SRZONES_FETCH_INTERVAL_MS) {
+      return;
+    }
+    this.lastTier0SRZonesFetchAttemptAt = now;
+
+    // Defensive: some sandboxed test harnesses stub trpcClient as `{}` (no
+    // real router). Guard both calls below so this never throws synchronously
+    // and test scripts that don't wire a full tRPC client keep working exactly
+    // as before (falling straight through to TIER 1 local detection).
+    const srZonesClient = (trpcClient as { srZones?: { getZones?: { query?: unknown }; refreshZones?: { mutate?: unknown } } })?.srZones;
+    if (typeof srZonesClient?.getZones?.query !== 'function') {
+      return;
+    }
+
+    trpcClient.srZones.getZones.query()
+      .then((result) => {
+        if (result?.available && Array.isArray(result.zones) && result.zones.length > 0) {
+          this.tier0SRZones = result.zones.map((z): SRZone => ({
+            price: z.price,
+            type: z.type,
+            touches: z.touches,
+            lastTouch: z.lastTouchTs ? new Date(z.lastTouchTs).getTime() : 0,
+            rejectionWicks: z.rejectionWicks,
+            avgRejectionSize: 0,
+            reactionStrength: z.reactionStrength,
+            source: z.source,
+            confluenceScore: z.confluenceScore,
+            tier: 'TIER_0_SERVER',
+          }));
+          this.tier0SRZonesFetchedAt = Date.now();
+          console.log(`✅ SR-ZONES: TIER 0 server cache loaded (${this.tier0SRZones.length} durable zone(s))`);
+        } else {
+          console.log('ℹ️ SR-ZONES: TIER 0 server cache empty/unavailable -- will use TIER 1 local detection');
+        }
+      })
+      .catch((err) => {
+        console.warn('⚠️ SR-ZONES: TIER 0 fetch failed (non-blocking, falling back to TIER 1 local):', err instanceof Error ? err.message : 'Unknown');
+      });
+
+    if (now - this.lastServerSRZonesRefreshTriggerAt >= SignalGenerationEngine.TIER0_SRZONES_FETCH_INTERVAL_MS && typeof srZonesClient?.refreshZones?.mutate === 'function') {
+      this.lastServerSRZonesRefreshTriggerAt = now;
+      trpcClient.srZones.refreshZones.mutate()
+        .then((result) => {
+          if (result?.success) {
+            console.log(`✅ SR-ZONES: server-side recompute triggered (${result.zoneCount ?? 0} zone(s))`);
+          } else {
+            console.log(`ℹ️ SR-ZONES: server-side recompute skipped (${result?.reason ?? 'unknown'})`);
+          }
+        })
+        .catch((err) => {
+          console.warn('⚠️ SR-ZONES: server-side recompute trigger failed (non-blocking):', err instanceof Error ? err.message : 'Unknown');
+        });
+    }
+  }
+
   private detectSRZones(): SRZone[] {
     const now = Date.now();
     const currentPrice = this.currentPrice;
     this.updateSessionBlocks(currentPrice);
+
+    // Kick off (throttled, non-blocking) TIER 0 refresh for the NEXT call --
+    // never awaited here, so this stays synchronous like before.
+    this.maybeRefreshTier0SRZones();
+
+    // TIER 0: if a fresh, non-empty durable server cache is available, use it
+    // directly instead of the local TIER 1 computation below. This is the
+    // evidence base that survives a browser refresh (computed server-side from
+    // days of real gold_m1_bars), unlike this.srZones/this.priceHistory which
+    // reset to empty on every reload.
+    const tier0Fresh = this.tier0SRZones !== null
+      && this.tier0SRZones.length > 0
+      && (now - this.tier0SRZonesFetchedAt) < SignalGenerationEngine.TIER0_SRZONES_TTL_MS;
+    if (tier0Fresh) {
+      this.srZones = this.tier0SRZones!.slice(0, 16);
+      return this.srZones;
+    }
+
     const zones: SRZone[] = [];
     const atr = this.calculateRealATR(14);
     // Bug fix: the previous flat "$2" floor collapsed zone-merge distance to a
@@ -2633,6 +2740,7 @@ class SignalGenerationEngine {
           reactionStrength: parseFloat(reactionStrength.toFixed(3)),
           source: cluster.source,
           confluenceScore,
+          tier: 'TIER_1_LOCAL',
         });
       }
     }
@@ -5696,6 +5804,7 @@ class SignalGenerationEngine {
       reactionStrength: zone.reactionStrength,
       source: zone.source,
       confluenceScore: zone.confluenceScore,
+      tier: zone.tier ?? 'TIER_1_LOCAL',
     }));
     
     const nowLocal = new Date();
@@ -6708,6 +6817,7 @@ class SignalGenerationEngine {
         reactionStrength: zone.reactionStrength,
         source: zone.source,
         confluenceScore: zone.confluenceScore,
+        tier: zone.tier ?? 'TIER_1_LOCAL',
       })),
       upcomingHighImpactEvent: await this.getUpcomingHighImpactEventForOutlook(),
     };
