@@ -48,6 +48,48 @@ export type Database = {
         }
         Relationships: []
       }
+      sr_zones_v1: {
+        Row: {
+          confluence_score: number
+          first_seen_ts: string
+          id: number
+          last_touch_ts: string | null
+          price: number
+          reaction_strength: number
+          rejection_wicks: number
+          source: string
+          touches: number
+          type: string
+          updated_at: string
+        }
+        Insert: {
+          confluence_score?: number
+          first_seen_ts?: string
+          id?: never
+          last_touch_ts?: string | null
+          price: number
+          reaction_strength?: number
+          rejection_wicks?: number
+          source: string
+          touches?: number
+          type: string
+          updated_at?: string
+        }
+        Update: {
+          confluence_score?: number
+          first_seen_ts?: string
+          id?: never
+          last_touch_ts?: string | null
+          price?: number
+          reaction_strength?: number
+          rejection_wicks?: number
+          source?: string
+          touches?: number
+          type?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
