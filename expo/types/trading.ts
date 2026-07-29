@@ -130,13 +130,104 @@ export interface SentimentData {
   source: string;
 }
 
+/**
+ * Feature vector persisted with every resolved trade outcome.
+ *
+ * v1 (the six always-present scalars below) was too narrow to support the
+ * Module B diagnostics the forensic audit asks for: feature importance,
+ * false-positive drivers, session/regime attribution and precision-vs-recall
+ * work all need the state the engine ACTUALLY scored on, not just RSI/ATR/
+ * volume/DXY/time/sentiment.
+ *
+ * v2 adds the rest of that state as OPTIONAL fields, so:
+ *   - every existing record (and every existing call site) stays valid;
+ *   - `schemaVersion` tells any analysis code whether the wide fields can be
+ *     expected, instead of it having to guess from `undefined`.
+ * All fields are JSON-primitive (number/boolean/string) on purpose - this is
+ * serialized into SQLite and into the `features` jsonb column in Supabase.
+ */
 export interface SignalLearningContext {
+  // ---- v1: always present ----
   rsi: number;
   atr: number;
   volumeRatio: number;
   dxyChange: number;
   timeWindowFactor: number;
   sentiment: SentimentData;
+
+  // ---- v2: wide vector (optional; present when schemaVersion >= 2) ----
+  /** 1 = legacy six-scalar record, 2 = wide vector below. */
+  schemaVersion?: number;
+
+  // momentum / trend
+  macdHistogram?: number;
+  emaCrossover?: number;
+  adx?: number | null;
+  /** currentPrice - VWAP in dollars (null when VWAP unavailable). */
+  vwapDelta?: number | null;
+  htfTrend?: string;
+
+  // volatility
+  /** ATR as a fraction of price - comparable across gold price regimes. */
+  atrPercentOfPrice?: number;
+  bollingerBandwidth?: number | null;
+  bollingerSqueeze?: boolean;
+  bollingerExpansion?: boolean;
+  sessionVolatilityIndex?: number;
+
+  // regime
+  regimeType?: 'TRENDING' | 'RANGING' | 'VOLATILE' | 'QUIET';
+  regimeStrength?: number;
+  regimeConfidence?: number;
+
+  // structure / key levels
+  priceActionPattern?: string;
+  candlestickPattern?: string;
+  supportStrength?: number;
+  resistanceStrength?: number;
+  srZoneCount?: number;
+  /** Distance from entry to the nearest detected zone, in ATR units. */
+  nearestZoneDistanceAtr?: number;
+  activeSRReactionType?: string | null;
+  activeSRReactionStrength?: number;
+  activeSRReactionConfirmed?: boolean;
+  orderBlockCount?: number;
+  quasimodoCount?: number;
+
+  // liquidity sweeps (Module A)
+  sweepCount?: number;
+  confirmedSweepType?: string | null;
+  confirmedSweepSession?: string | null;
+  sweepPenetrationDepth?: number;
+  sweepReclaimLatencyMs?: number;
+
+  // microstructure (Module C)
+  orderFlowImbalance?: number;
+  institutionalFootprint?: number;
+  largeOrdersDetected?: boolean;
+  /** currentPrice - point of control, in dollars. */
+  pocDelta?: number;
+
+  // intermarket
+  us10yChange?: number;
+  vixChange?: number;
+  goldDxyCorrelation?: number;
+  goldYieldCorrelation?: number;
+
+  // session / time (Module C session attribution)
+  sessionName?: string;
+  liquidityScore?: number;
+  hourUtc?: number;
+  minuteOfDayUtc?: number;
+  dayOfWeekUtc?: number;
+  timeToSessionEnd?: number;
+
+  // entry geometry as scored (Module D)
+  entryPrice?: number;
+  slDistance?: number;
+  tp1Distance?: number;
+  plannedRR?: number;
+  confidenceAtEntry?: number;
 }
 
 export interface PerformanceMetrics {

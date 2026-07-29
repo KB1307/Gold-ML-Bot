@@ -2,7 +2,7 @@ import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { fetchHistoricalData, trpcClient } from "@/lib/trpc";
 import { Platform } from "react-native";
-import { appendOutcome as appendOutcomeToStore, getAllOutcomes as getAllOutcomesFromStore, getOutcomeCount as getOutcomeCountFromStore, migrateLegacyOutcomesIfEmpty, pruneToCap as pruneOutcomeStoreToCap, type StoredTradeOutcome } from "@/services/learningStore";
+import { appendOutcome as appendOutcomeToStore, getAllOutcomes as getAllOutcomesFromStore, getOutcomeCount as getOutcomeCountFromStore, migrateLegacyOutcomesIfEmpty, pruneToCap as pruneOutcomeStoreToCap, pushOutcomesToRemote, hydrateFromRemote as hydrateLearningStoreFromRemote, type StoredTradeOutcome } from "@/services/learningStore";
 import { resolveSignalWithBars } from "@/services/signalResolver";
 import type { OhlcBar } from "@/services/barStore";
 import { appendDiagnosticEvent } from "@/services/diagnosticEventStore";
@@ -64,6 +64,12 @@ interface TradeOutcome {
    * exit as a full WIN teaches the model that a scratch is a success.
    */
   isScratch?: boolean;
+  /**
+   * Schema version of `features`: 1 = the legacy six scalars only, 2 = the wide
+   * vector (see SignalLearningContext). Lets diagnostics select only records
+   * that actually carry the wide fields instead of inferring it from undefined.
+   */
+  featureSchemaVersion?: number;
 }
 
 interface IntermarketData {
@@ -494,6 +500,12 @@ const TIME_WEIGHTS = {
   EUROPE_OPEN: 1.5,
   POWER_HOUR: 2.0,
 };
+
+/**
+ * Version stamped onto every newly-captured learning feature vector.
+ * 1 = the legacy six scalars only; 2 = the wide vector (see SignalLearningContext).
+ */
+const LEARNING_FEATURE_SCHEMA_VERSION = 2;
 
 function createDefaultLearningContext(): SignalLearningContext {
   return {
@@ -5257,17 +5269,122 @@ class SignalGenerationEngine {
     return false;
   }
   
+  /**
+   * Builds the v2 (wide) learning feature vector from the exact MarketFeatures
+   * the signal was scored on, plus the realised entry geometry.
+   *
+   * The v1 six scalars keep identical semantics and positions, so anything
+   * reading `rsi/atr/volumeRatio/dxyChange/timeWindowFactor/sentiment` is
+   * unaffected. Everything else is additive and marked with schemaVersion 2 so
+   * diagnostics can tell a wide record from a legacy one without guessing.
+   */
+  private buildLearningContext(
+    features: MarketFeatures,
+    geometry: { entryPrice: number; slDistance: number; tp1Distance: number; confidence: number },
+  ): SignalLearningContext {
+    const now = new Date();
+    const price = geometry.entryPrice;
+    const atr = Math.max(features.atr, 0.01);
+
+    const nearestZoneDistance = features.srZones.length > 0
+      ? Math.min(...features.srZones.map(z => Math.abs(z.price - price)))
+      : undefined;
+
+    const confirmedSweep = features.sessionSweeps.find(s => s.reversalConfirmed)
+      ?? features.sessionSweeps[features.sessionSweeps.length - 1];
+
+    return {
+      rsi: features.rsi,
+      atr: features.atr,
+      volumeRatio: features.volumeRatio,
+      dxyChange: features.dxyChange,
+      timeWindowFactor: features.timeWindowFactor,
+      sentiment: features.sentiment ?? { score: 0, confidence: 0, source: 'engine-default' },
+
+      schemaVersion: LEARNING_FEATURE_SCHEMA_VERSION,
+
+      macdHistogram: features.macdHistogram,
+      emaCrossover: features.emaCrossover,
+      adx: features.adx,
+      vwapDelta: features.vwap !== null ? parseFloat((price - features.vwap).toFixed(2)) : null,
+      htfTrend: this.detectHTFTrend(features),
+
+      atrPercentOfPrice: price > 0 ? parseFloat((features.atr / price).toFixed(6)) : undefined,
+      bollingerBandwidth: features.bollingerBandwidth,
+      bollingerSqueeze: features.bollingerSqueeze,
+      bollingerExpansion: features.bollingerExpansion,
+      sessionVolatilityIndex: features.sessionVolatilityIndex,
+
+      regimeType: features.marketRegime.type,
+      regimeStrength: features.marketRegime.strength,
+      regimeConfidence: features.marketRegime.confidence,
+
+      priceActionPattern: features.priceActionPattern,
+      candlestickPattern: features.candlestickPattern,
+      supportStrength: features.supportStrength,
+      resistanceStrength: features.resistanceStrength,
+      srZoneCount: features.srZones.length,
+      nearestZoneDistanceAtr: nearestZoneDistance !== undefined
+        ? parseFloat((nearestZoneDistance / atr).toFixed(3))
+        : undefined,
+      activeSRReactionType: features.activeSRReaction?.reactionType ?? null,
+      activeSRReactionStrength: features.activeSRReaction?.strength,
+      activeSRReactionConfirmed: features.activeSRReaction?.confirmed,
+      orderBlockCount: features.orderBlocks.length,
+      quasimodoCount: features.quasimodolLevels.length,
+
+      sweepCount: features.sessionSweeps.length,
+      confirmedSweepType: confirmedSweep?.reversalConfirmed ? confirmedSweep.type : null,
+      confirmedSweepSession: confirmedSweep?.reversalConfirmed ? confirmedSweep.sessionType : null,
+      sweepPenetrationDepth: confirmedSweep?.penetrationDepth,
+      sweepReclaimLatencyMs: confirmedSweep?.reclaimLatencyMs,
+
+      orderFlowImbalance: features.orderFlow.volumeImbalance,
+      institutionalFootprint: features.orderFlow.institutionalFootprint,
+      largeOrdersDetected: features.orderFlow.largeOrdersDetected,
+      pocDelta: Number.isFinite(features.volumeProfile.pointOfControl)
+        ? parseFloat((price - features.volumeProfile.pointOfControl).toFixed(2))
+        : undefined,
+
+      us10yChange: features.intermarketData?.us10yChange,
+      vixChange: features.intermarketData?.vixChange,
+      goldDxyCorrelation: features.intermarketData?.goldDxyCorrelation,
+      goldYieldCorrelation: features.intermarketData?.goldYieldCorrelation,
+
+      sessionName: features.liquidityWindow?.sessionName,
+      liquidityScore: features.liquidityWindow?.score,
+      hourUtc: now.getUTCHours(),
+      minuteOfDayUtc: now.getUTCHours() * 60 + now.getUTCMinutes(),
+      dayOfWeekUtc: now.getUTCDay(),
+      timeToSessionEnd: features.timeToSessionEnd,
+
+      entryPrice: parseFloat(price.toFixed(2)),
+      slDistance: parseFloat(geometry.slDistance.toFixed(2)),
+      tp1Distance: parseFloat(geometry.tp1Distance.toFixed(2)),
+      plannedRR: geometry.slDistance > 0
+        ? parseFloat((geometry.tp1Distance / geometry.slDistance).toFixed(3))
+        : undefined,
+      confidenceAtEntry: parseFloat(geometry.confidence.toFixed(4)),
+    };
+  }
+
   async recordTradeOutcome(signalId: string, entryPrice: number, exitPrice: number, result: 'WIN' | 'LOSS', features?: Partial<SignalLearningContext>, misleadingFeatures?: FeatureConfidence[], signalDuration?: number, confidence?: number, stopDistance?: number): Promise<void> {
     const pnl = result === 'WIN' ? Math.abs(exitPrice - entryPrice) : -Math.abs(exitPrice - entryPrice);
     const normalizedConfidence = Math.max(0.42, Math.min(0.95, confidence ?? this.performanceMetrics.avgConfidence ?? 0.72));
     const defaultContext = createDefaultLearningContext();
+    // The six v1 scalars are still normalized with explicit fallbacks (they are
+    // REQUIRED and read unconditionally by drift/correlation code). Every wide
+    // v2 field is carried through verbatim via the spread: absent stays absent,
+    // so a legacy record is never back-filled with invented values.
     const normalizedFeatures: SignalLearningContext = {
+      ...(features ?? {}),
       rsi: typeof features?.rsi === 'number' ? features.rsi : defaultContext.rsi,
       atr: typeof features?.atr === 'number' ? features.atr : defaultContext.atr,
       volumeRatio: typeof features?.volumeRatio === 'number' ? features.volumeRatio : defaultContext.volumeRatio,
       dxyChange: typeof features?.dxyChange === 'number' ? features.dxyChange : defaultContext.dxyChange,
       timeWindowFactor: typeof features?.timeWindowFactor === 'number' ? features.timeWindowFactor : defaultContext.timeWindowFactor,
       sentiment: features?.sentiment ?? defaultContext.sentiment,
+      schemaVersion: features?.schemaVersion ?? 1,
     };
     
     // PHASE 2 (C4): infer direction from realised geometry so no call site has
@@ -5306,6 +5423,7 @@ class SignalGenerationEngine {
       direction,
       realizedR,
       isScratch,
+      featureSchemaVersion: normalizedFeatures.schemaVersion,
     };
     
     // PHASE 2 (A2): remember confirmed stop-outs per direction. Direction is
@@ -5412,7 +5530,17 @@ class SignalGenerationEngine {
       await appendOutcomeToStore(outcome as unknown as StoredTradeOutcome);
       await pruneOutcomeStoreToCap(MAX_STORED_OUTCOMES);
     } catch (error) {
-      console.error('Failed to persist trade outcome to SQLite learning store:', error);
+      console.error('Failed to persist trade outcome to local learning store:', error);
+    }
+
+    // Durable tier: upsert into Supabase (`trade_outcomes_v1`) so the model's
+    // memory survives a browser reload and is shared across devices. Keyed by
+    // signalId, so this is idempotent and never double-counts a trade. Failure
+    // is non-fatal - the row stays queued in learningStore for the next push.
+    try {
+      await pushOutcomesToRemote([outcome as unknown as StoredTradeOutcome]);
+    } catch (error) {
+      console.warn('Durable learning-corpus push failed (queued for retry):', error);
     }
   }
   
@@ -5647,6 +5775,18 @@ class SignalGenerationEngine {
             console.log(`✓ Migrated ${migratedCount} legacy trade outcomes from AsyncStorage into SQLite learning store`);
           }
         }
+        // Durable tier merge: pull the Supabase corpus in BEFORE reading the
+        // local store, so a reloaded web session / fresh device starts with the
+        // full shared history instead of an empty (or install-local) one.
+        try {
+          const hydration = await hydrateLearningStoreFromRemote({ limit: 300, cap: MAX_STORED_OUTCOMES });
+          if (hydration.available) {
+            console.log(`✓ Durable learning corpus: pulled ${hydration.pulled}, merged ${hydration.merged} new, backfilled ${hydration.backfilled}`);
+          }
+        } catch (hydrateError) {
+          console.warn('Durable learning corpus hydrate skipped:', hydrateError);
+        }
+
         const storedOutcomes = await getAllOutcomesFromStore();
         this.tradeOutcomes = (storedOutcomes.length > MAX_STORED_OUTCOMES
           ? storedOutcomes.slice(-MAX_STORED_OUTCOMES)
@@ -6374,14 +6514,12 @@ class SignalGenerationEngine {
       srZonesSnapshot,
       macroWarning: macroEvent,
       riskJustification,
-      learningContext: {
-        rsi: features.rsi,
-        atr: features.atr,
-        volumeRatio: features.volumeRatio,
-        dxyChange: features.dxyChange,
-        timeWindowFactor: features.timeWindowFactor,
-        sentiment: features.sentiment ?? { score: 0, confidence: 0, source: 'engine-default' },
-      },
+      learningContext: this.buildLearningContext(features, {
+        entryPrice: entryPriceWithSlippage,
+        slDistance: Math.abs(entryPriceWithSlippage - sl),
+        tp1Distance: Math.abs(tp1 - entryPriceWithSlippage),
+        confidence: analysis.confidence,
+      }),
       timeToLive: timeToLiveMinutes,
       nextMoveContext,
       latencyWarning,

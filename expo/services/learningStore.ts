@@ -1,7 +1,24 @@
 import { Platform } from 'react-native';
+import { trpcClient } from '@/lib/trpc';
 
 /**
  * Step 3 — persisted learning memory storage.
+ *
+ * DURABILITY UPGRADE (Supabase-backed): the local tier below (SQLite on native,
+ * in-memory on web) is now a CACHE in front of the durable `trade_outcomes_v1`
+ * table, reached through the backend `learning.*` tRPC routes (service-role
+ * writes; the table only exposes a public SELECT policy).
+ *
+ * Why: SQLite made the corpus durable per install but never shared it, and on
+ * web/preview the store was purely in-memory, so every browser reload reset the
+ * "self-learning" memory to zero. With the remote tier:
+ *   - every resolved outcome is upserted server-side, keyed by signalId, so a
+ *     re-push is idempotent and can never double-count a trade;
+ *   - `hydrateFromRemote()` merges the durable corpus back into the local tier
+ *     on startup (union by signalId, re-sorted by timestamp), so a fresh device
+ *     or a reloaded browser tab starts with the full history, not an empty one.
+ * Remote failures are non-fatal: the local tier keeps working offline and
+ * unsynced rows are retried on the next append/hydrate.
  *
  * Previously trade outcomes lived entirely in a single AsyncStorage JSON blob
  * (`trade_outcomes_learning`), capped at 100 entries in-memory. That has two
@@ -27,6 +44,73 @@ export interface StoredTradeOutcome {
   timestamp: string | number | Date;
   misleadingFeatures?: unknown;
   signalDuration?: number;
+  direction?: 'BUY' | 'SELL';
+  realizedR?: number;
+  isScratch?: boolean;
+  /** Feature-vector schema version of `features` (1 = legacy 6-scalar, 2 = wide). */
+  featureSchemaVersion?: number;
+}
+
+/** Outcomes queued for the remote corpus because a push failed (or was offline). */
+let pendingRemotePush: StoredTradeOutcome[] = [];
+const MAX_PENDING_REMOTE_PUSH = 200;
+let remoteSyncEnabled = true;
+
+/** Test seam: disables the remote tier so unit tests exercise the local store only. */
+export function setRemoteSyncEnabledForTest(enabled: boolean): void {
+  remoteSyncEnabled = enabled;
+}
+
+function toRemotePayload(outcome: StoredTradeOutcome) {
+  return {
+    signalId: outcome.signalId,
+    timestamp: typeof outcome.timestamp === 'number'
+      ? outcome.timestamp
+      : new Date(outcome.timestamp).toISOString(),
+    entryPrice: outcome.entryPrice,
+    exitPrice: outcome.exitPrice,
+    result: outcome.result,
+    pnl: outcome.pnl,
+    confidence: outcome.confidence,
+    direction: outcome.direction,
+    realizedR: outcome.realizedR,
+    isScratch: outcome.isScratch,
+    signalDuration: outcome.signalDuration,
+    features: outcome.features ?? {},
+    misleadingFeatures: outcome.misleadingFeatures ?? undefined,
+    featureSchemaVersion: outcome.featureSchemaVersion,
+  };
+}
+
+/**
+ * Best-effort push of one or more outcomes into the durable corpus. Never
+ * throws: on failure the rows are queued and retried on the next push/hydrate.
+ */
+export async function pushOutcomesToRemote(outcomes: StoredTradeOutcome[]): Promise<{ upserted: number; queued: number }> {
+  if (!remoteSyncEnabled) return { upserted: 0, queued: 0 };
+  const batch = [...pendingRemotePush, ...outcomes];
+  if (batch.length === 0) return { upserted: 0, queued: 0 };
+
+  try {
+    const result = await trpcClient.learning.pushOutcomes.mutate({
+      outcomes: batch.slice(-MAX_PENDING_REMOTE_PUSH).map(toRemotePayload),
+    });
+    if (result.success) {
+      pendingRemotePush = [];
+      return { upserted: result.upserted, queued: 0 };
+    }
+    pendingRemotePush = batch.slice(-MAX_PENDING_REMOTE_PUSH);
+    console.warn(`⚠️ [LearningStore] Remote push rejected (${result.reason}) - ${pendingRemotePush.length} outcome(s) queued`);
+    return { upserted: 0, queued: pendingRemotePush.length };
+  } catch (err) {
+    pendingRemotePush = batch.slice(-MAX_PENDING_REMOTE_PUSH);
+    console.warn('⚠️ [LearningStore] Remote push failed, outcomes queued for retry:', err instanceof Error ? err.message : err);
+    return { upserted: 0, queued: pendingRemotePush.length };
+  }
+}
+
+export function getPendingRemotePushCount(): number {
+  return pendingRemotePush.length;
 }
 
 type SqliteDatabase = {
@@ -89,6 +173,90 @@ export async function appendOutcome(outcome: StoredTradeOutcome): Promise<void> 
     'INSERT INTO trade_outcomes (ts, data) VALUES (?, ?)',
     [ts, JSON.stringify(outcome)],
   );
+}
+
+/**
+ * Replaces the entire local tier with `outcomes` (already in the desired order).
+ * Used by hydrateFromRemote() so a merged local+remote corpus can be written
+ * back in true timestamp order rather than accidental insertion order.
+ */
+async function replaceAllOutcomes(outcomes: StoredTradeOutcome[]): Promise<void> {
+  await ensureLearningStoreReady();
+  if (Platform.OS === 'web' || !db) {
+    webOutcomes = outcomes.map(o => ({ ...o }));
+    return;
+  }
+  await db.runAsync('DELETE FROM trade_outcomes');
+  for (const outcome of outcomes) {
+    await db.runAsync(
+      'INSERT INTO trade_outcomes (ts, data) VALUES (?, ?)',
+      [toTimestampMs(outcome.timestamp), JSON.stringify(outcome)],
+    );
+  }
+}
+
+/**
+ * Merges the durable Supabase corpus into the local tier.
+ *
+ * - union by `signalId` (remote rows the local tier has never seen are added;
+ *   a signalId already present locally is left untouched, so a local record is
+ *   never clobbered by a remote copy of the same trade);
+ * - the merged set is re-sorted by timestamp and rewritten, so `getAllOutcomes()`
+ *   stays genuinely oldest-first after a merge;
+ * - any local rows missing from the remote corpus are pushed up, so an existing
+ *   on-device history is backfilled into Supabase on first run.
+ *
+ * Never throws — a remote failure leaves the local tier exactly as it was.
+ */
+export async function hydrateFromRemote(options?: { limit?: number; cap?: number }): Promise<{
+  available: boolean;
+  pulled: number;
+  merged: number;
+  backfilled: number;
+  total: number;
+}> {
+  await ensureLearningStoreReady();
+  const local = await getAllOutcomes();
+
+  if (!remoteSyncEnabled) {
+    return { available: false, pulled: 0, merged: 0, backfilled: 0, total: local.length };
+  }
+
+  let remote: StoredTradeOutcome[] = [];
+  let available = false;
+  try {
+    const response = await trpcClient.learning.getOutcomes.query({ limit: options?.limit ?? 300 });
+    available = response.available;
+    remote = (response.outcomes ?? []) as unknown as StoredTradeOutcome[];
+  } catch (err) {
+    console.warn('⚠️ [LearningStore] Remote hydrate failed, keeping local corpus:', err instanceof Error ? err.message : err);
+    return { available: false, pulled: 0, merged: 0, backfilled: 0, total: local.length };
+  }
+
+  const localIds = new Set(local.map(o => o.signalId));
+  const remoteIds = new Set(remote.map(o => o.signalId));
+  const newFromRemote = remote.filter(o => !localIds.has(o.signalId));
+
+  let merged = 0;
+  if (newFromRemote.length > 0) {
+    const cap = options?.cap ?? 500;
+    const combined = [...local, ...newFromRemote]
+      .sort((a, b) => toTimestampMs(a.timestamp) - toTimestampMs(b.timestamp))
+      .slice(-cap);
+    await replaceAllOutcomes(combined);
+    merged = newFromRemote.length;
+  }
+
+  const missingRemotely = local.filter(o => !remoteIds.has(o.signalId));
+  let backfilled = 0;
+  if (missingRemotely.length > 0) {
+    const pushResult = await pushOutcomesToRemote(missingRemotely);
+    backfilled = pushResult.upserted;
+  }
+
+  const total = await getOutcomeCount();
+  console.log(`🔄 [LearningStore] Remote hydrate: pulled ${remote.length}, merged ${merged} new, backfilled ${backfilled} local-only, total ${total}`);
+  return { available, pulled: remote.length, merged, backfilled, total };
 }
 
 /** Delete the oldest rows beyond `cap`, keeping the most recent `cap` by insertion order. */

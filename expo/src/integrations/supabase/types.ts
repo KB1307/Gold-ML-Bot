@@ -90,6 +90,66 @@ export type Database = {
         }
         Relationships: []
       }
+      trade_outcomes_v1: {
+        Row: {
+          confidence: number | null
+          created_at: string
+          device_id: string | null
+          direction: string | null
+          entry_price: number
+          exit_price: number
+          feature_schema_version: number
+          features: Json
+          is_scratch: boolean | null
+          misleading_features: Json | null
+          pnl: number
+          realized_r: number | null
+          result: string
+          signal_duration_ms: number | null
+          signal_id: string
+          ts: string
+          updated_at: string
+        }
+        Insert: {
+          confidence?: number | null
+          created_at?: string
+          device_id?: string | null
+          direction?: string | null
+          entry_price: number
+          exit_price: number
+          feature_schema_version?: number
+          features?: Json
+          is_scratch?: boolean | null
+          misleading_features?: Json | null
+          pnl: number
+          realized_r?: number | null
+          result: string
+          signal_duration_ms?: number | null
+          signal_id: string
+          ts: string
+          updated_at?: string
+        }
+        Update: {
+          confidence?: number | null
+          created_at?: string
+          device_id?: string | null
+          direction?: string | null
+          entry_price?: number
+          exit_price?: number
+          feature_schema_version?: number
+          features?: Json
+          is_scratch?: boolean | null
+          misleading_features?: Json | null
+          pnl?: number
+          realized_r?: number | null
+          result?: string
+          signal_duration_ms?: number | null
+          signal_id?: string
+          ts?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
