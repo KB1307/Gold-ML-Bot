@@ -67,6 +67,7 @@ async function appendDiagnosticEvent(..._args: unknown[]): Promise<void> {}
 async function pruneOldDiagnosticEvents(..._args: unknown[]): Promise<void> {}
 async function ensureDiagnosticEventStoreReady(..._args: unknown[]): Promise<void> {}
 type DiagnosticEventType = string;
+const supabase = {} as any;
 function createContextHook<T>(factory: () => T): [(props: { children?: unknown }) => unknown, () => T] {
   return [(() => null) as unknown as (props: { children?: unknown }) => unknown, factory];
 }
@@ -93,7 +94,11 @@ function useRef<T>(initial: T): { current: T } { return { current: initial }; }
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/barStore["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/signalResolver["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/telegramNotifier["'];?\r?\n/m, "")
-    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/diagnosticEventStore["'];?\r?\n/m, "");
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/diagnosticEventStore["'];?\r?\n/m, "")
+    // Added with the Phase 2 checkpoint: TradingContext gained a Supabase import
+    // after this harness was written, which pulled react-native in transitively
+    // and broke module loading before any assertion could run.
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/lib\/supabase["'];?\r?\n/m, "");
 
   await mkdir(sandboxDir, { recursive: true });
   await writeFile(sandboxPath, `${sandboxPrelude}\n${rewritten}`);
@@ -175,8 +180,15 @@ async function main(): Promise<void> {
   check("Trade B risk computed from entry->SL distance (8x wider)", Math.abs(riskB - 40 * basePositionSize * 100) < 1e-6, `riskB=${riskB}`);
   check("Same raw $ pnl produces very different R when risk differs", Math.abs(pnlA - pnlB) < 1e-6 && rA > rB * 5,
     `pnlA=${pnlA.toFixed(2)} pnlB=${pnlB.toFixed(2)} rA=${rA.toFixed(3)} rB=${rB.toFixed(3)}`);
-  check("Tight-risk winner captures a full 2R (10pt reward vs 5pt risk)", Math.abs(rA - 2.0) < 1e-6, `rA=${rA.toFixed(4)}`);
-  check("Same setup with 8x wider risk scores proportionally lower (0.25R)", Math.abs(rB - 0.25) < 1e-6, `rB=${rB.toFixed(4)}`);
+  // PHASE 2 (A5): P/L is now NET of the $0.05 round-trip execution cost, so the
+  // gross 2.00R / 0.25R become (10 - 0.05)/5 = 1.99R and (10 - 0.05)/40 = 0.24875R.
+  // The cost is a fixed price-unit charge, so it bites proportionally harder on
+  // the tighter-risk trade - which is exactly the real-world scalping penalty
+  // the frictionless resolver used to hide.
+  const COST = 0.05;
+  check("Tight-risk winner captures ~2R NET of execution cost", Math.abs(rA - (10 - COST) / 5) < 1e-6, `rA=${rA.toFixed(5)} expected=${((10 - COST) / 5).toFixed(5)}`);
+  check("Same setup with 8x wider risk scores proportionally lower, net of cost", Math.abs(rB - (10 - COST) / 40) < 1e-6, `rB=${rB.toFixed(5)} expected=${((10 - COST) / 40).toFixed(5)}`);
+  check("Execution cost is actually charged (gross R would have been higher)", rA < 2.0 && rB < 0.25, `rA=${rA.toFixed(5)} rB=${rB.toFixed(5)}`);
 
   // --- Part 2: Sharpe scales with sqrt(trades/day), not a fixed constant --
   // Same synthetic R-multiple return series, replicated at two trade

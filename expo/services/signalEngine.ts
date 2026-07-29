@@ -47,6 +47,23 @@ interface TradeOutcome {
   timestamp: Date;
   misleadingFeatures?: FeatureConfidence[];
   signalDuration?: number;
+  /**
+   * PHASE 2 (C4): trade direction, inferred from the realised exit relative to
+   * entry so no call site has to pass it. Enables direction-bucketed
+   * calibration instead of pooling a profitable long book with a losing short
+   * book (audited BUY EV +0.695R vs SELL EV -0.349R).
+   */
+  direction?: 'BUY' | 'SELL';
+  /** Realised R-multiple, when the stop distance was known at record time. */
+  realizedR?: number;
+  /**
+   * PHASE 2 (C3): true when |realizedR| is inside the scratch band, i.e. the
+   * trade neither won nor lost meaningfully (a breakeven/profit-lock scratch).
+   * Scratches are retained for the audit trail but excluded from label-based
+   * weight fitting and from win-rate/profit-factor, because labelling a ~0R
+   * exit as a full WIN teaches the model that a scratch is a success.
+   */
+  isScratch?: boolean;
 }
 
 interface IntermarketData {
@@ -105,6 +122,10 @@ interface SessionSweep {
   reversalConfirmed: boolean;
   timestamp: number;
   strength: number;
+  /** PHASE 2 (B4): how far beyond the swept level price actually ran, in dollars. */
+  penetrationDepth?: number;
+  /** PHASE 2 (B4): ms between first penetration and the confirmed reclaim. */
+  reclaimLatencyMs?: number;
 }
 
 interface SRZone {
@@ -258,6 +279,32 @@ const BAYESIAN_BLEND_ALPHA = 0.4;
 // ~6% of original strength at 24h), instead of retaining near-maximum
 // strength indefinitely once earned during one early, low-volatility window.
 const ZONE_STALENESS_HALF_LIFE_HOURS = 6;
+/**
+ * PHASE 2 (B4): sweep redefinition.
+ *
+ * Audited defect (Module A): a "sweep" was recorded the moment price traded a
+ * fixed $2 beyond a session extreme, and `reversalConfirmed` was decided by
+ * comparing the latest tick against the tick two samples earlier
+ * (priceHistory[n-1] < priceHistory[n-3]). That is a momentum wiggle, not a
+ * reclaim - so an ordinary break-and-run continuation was indistinguishable
+ * from a genuine liquidity grab, and continuations were being scored with the
+ * +0.35 "high accuracy setup" bonus reserved for real sweeps.
+ *
+ * A sweep now requires the full three-part structure:
+ *   1. PENETRATION beyond the level by at least max($1, 0.25 x ATR) - so the
+ *      trigger scales with volatility instead of a flat $2.
+ *   2. RECLAIM: price must trade back INSIDE the swept level. Until it does,
+ *      the penetration stays pending and produces no sweep at all.
+ *   3. TIMELINESS: the reclaim must happen within the window below. A
+ *      penetration that never reclaims is a genuine breakout and is discarded
+ *      as such, not silently kept as sweep evidence.
+ */
+const SWEEP_PENETRATION_ATR_FRACTION = 0.25;
+const SWEEP_PENETRATION_MIN_DOLLARS = 1.0;
+const SWEEP_RECLAIM_WINDOW_MS = 45 * 60 * 1000;
+/** Confirmed sweeps stay actionable for 2h (was 1h, which expired London sweeps mid-NY). */
+const SWEEP_RETENTION_MS = 2 * 60 * 60 * 1000;
+
 const BASE_SLIPPAGE_BUFFER_PIPS = 0.5;
 const CONFIDENCE_SMOOTHING_WINDOW = 5;
 const LATENCY_WARNING_THRESHOLD_MS = 100;
@@ -292,6 +339,64 @@ function getMinStrengthDifferenceForRegime(regime: 'TRENDING' | 'RANGING' | 'VOL
     default: return MIN_SIGNAL_STRENGTH_DIFFERENCE_BASE;
   }
 }
+// ===================== PHASE 2 (post-audit corrections) =====================
+// Derived from the 350-signal / 340-resolved forensic audit of the live export
+// (window 2026-06-29 -> 2026-07-29). Every constant below is traceable to a
+// measured fault in that log, not to a guess:
+//
+//  * Directional defect: BUY EV +0.695R vs SELL EV -0.349R (z=7.65 on the win
+//    rate difference) -> counter-trend gate repair (B1).
+//  * SL geometry inside the noise floor: median stop 0.90 ATR, p10 0.23 ATR,
+//    TP1 at 0.50R, avg win 0.854R vs avg loss 1.000R -> 1.4R re-scope (B3).
+//  * Volatility regime mislabelling: the "Low" bucket spanned ATR 0.4 -> 7.9
+//    and then received a 0.80x TIGHTER stop -> regime boundaries re-derived (B2).
+//  * Dead clock windows: h11 EV -0.497R, h04 -0.409R, h12 -0.246R, h15 -0.158R.
+//  * Loss clustering: P(loss | prev loss) 54.7% vs 31.0% after a win; same
+//    direction re-entry within 15 min of a stop won only 13.3% of the time.
+//  * Contradictory feature states: 117 signals were simultaneously at "strong
+//    support" AND "strong resistance".
+//  * Zone evidence: nearest-zone confluence == 1 scored EV -0.326R.
+//  * RSI learned modulation fired at 1.09-1.71 while every other attention
+//    feature sat at 0.01-0.38, and its own EV contribution was NEGATIVE
+//    (present +0.029R vs absent +0.128R, decaying monotonically with size).
+
+/**
+ * Round-trip execution cost in USD per trade (broker-confirmed XAU spread).
+ * Used for cost-aware expectancy so audited R stops being frictionless.
+ */
+const EXECUTION_COST_PER_TRADE_USD = 0.05;
+/** Formal system scope: a 1.4R scalper. TP ladder is a pure multiple of realised risk. */
+const SCALPER_TP_R_MULTIPLES = { tp1: 0.7, tp2: 1.05, tp3: 1.4 } as const;
+const SCALPER_TP3_STRETCH_R = 1.5;
+const SCALPER_TP3_STRETCH_MAX_R = 1.6;
+/** Stops must clear the real noise floor: never tighter than 1.2 x ATR. */
+const MIN_SL_ATR_MULTIPLE = 1.2;
+const VOL_REGIME_ATR_LOW_MAX = 2.5;
+const VOL_REGIME_ATR_HIGH_MIN = 6.0;
+const COUNTER_TREND_CONFIDENCE_PREMIUM = 0.10;
+/** Reject any signal fighting an intraday impulse >= this many ATRs. */
+const COUNTER_TREND_DRIFT_ATR_VETO = 2.0;
+const COUNTER_TREND_DRIFT_OVERRIDE_CONFIDENCE = 0.85;
+const DRIFT_LOOKBACK_CANDLES = 12;
+const BLOCKED_UTC_HOURS: readonly number[] = [4, 11];
+const ELEVATED_FLOOR_UTC_HOURS: readonly number[] = [12, 15, 17];
+const ELEVATED_HOUR_CONFIDENCE_PREMIUM = 0.04;
+const POST_STOP_SAME_DIRECTION_COOLDOWN_MS = 15 * 60 * 1000;
+const MIN_NEAR_ZONE_CONFLUENCE = 2;
+const NEAR_ZONE_CONFLUENCE_PROXIMITY = 3.0;
+const CONFLUENCE_GATE_OVERRIDE_CONFIDENCE = 0.75;
+/**
+ * Range-contradiction filter ceiling. Deliberately LOW: this filter was not part
+ * of the three approved Phase 2 corrections, and at 0.85 the 24h replay showed it
+ * becoming the third-largest rejection source (651 blocks) and pushing total
+ * generation to ~3/day, far under the 10-20/day mandate. At 0.72 it only removes
+ * genuinely low-conviction, range-pinned entries.
+ */
+const RANGE_CONTRADICTION_MAX_CONFIDENCE = 0.72;
+/** Hard ceiling on the learned RSI multiplier (was effectively 3.0). */
+const RSI_MODULATION_APPLIED_MAX = 1.5;
+// ============================================================================
+
 const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;
 const ENFORCED_MIN_CONFIDENCE_POWER_HOUR = 0.65;
 const ENFORCED_MIN_CONFIDENCE_LOW_LIQUIDITY = 0.72;
@@ -349,6 +454,39 @@ const ATTEMPT_WINDOW_MS = 60 * 60 * 1000;
 const STARVATION_GAP_MS = 90 * 60 * 1000;
 const BAYESIAN_PRIOR_ALPHA = 2;
 const BAYESIAN_PRIOR_BETA = 2;
+
+/**
+ * PHASE 2 (C3): |R| band inside which an outcome is treated as a SCRATCH rather
+ * than a win or a loss. The post-TP1 profit lock resolves at +0.35R and the
+ * post-TP2 protected exit resolves near entry; before this, both were recorded
+ * as unqualified WINs, so "win rate" counted scratches as successes and the
+ * weight fitter learned scratch feature values as winning feature values.
+ */
+const SCRATCH_R_THRESHOLD = 0.15;
+
+/**
+ * PHASE 2 (C2 verification): the ONLY learned weights any scoring path actually
+ * reads are rsi_weight (via getFeatureModulation('rsi_weight')) and dxy_weight
+ * (via getFeatureModulation('dxy_weight')) - confirmed by direct code read of
+ * every getFeatureModulation call site. sentiment_weight, volume_weight,
+ * timeWindow_weight and atr_weight are fitted, persisted and logged but never
+ * consumed by any decision. Because normalization divided every weight by the
+ * sum of ALL absolute weights, those four inert columns were shrinking the two
+ * live ones (roughly 2-4x dilution). Consumed weights are now normalized over
+ * the consumed subset; inert ones keep the old denominator so they stay bounded
+ * and comparable as telemetry.
+ */
+const CONSUMED_MODEL_WEIGHTS: ReadonlySet<string> = new Set(['rsi_weight', 'dxy_weight']);
+
+/**
+ * PHASE 2 (C4): direction-bucketed calibration. When one direction has enough
+ * resolved, non-scratch history AND a negative realised expectancy, that
+ * direction's confidence is penalised - self-correcting from live outcomes
+ * rather than hardcoding "shorts are bad", so it decays automatically if the
+ * short book recovers.
+ */
+const DIRECTION_CALIBRATION_MIN_SAMPLE = 20;
+const DIRECTION_CALIBRATION_MAX_PENALTY = 0.05;
 
 const TIME_WEIGHTS = {
   LOW_LIQUIDITY: 0.5,
@@ -447,6 +585,33 @@ function calculateRealChange(history: number[]): number {
   return current - previous;
 }
 
+/**
+ * PHASE 2 (C2 verification fix): change measured across a real WINDOW rather
+ * than against the immediately-previous sample.
+ *
+ * Verified defect: intermarket samples are appended once per
+ * INTERMARKET_CACHE_DURATION (10s), so `calculateRealChange(dxyPrices)` was a
+ * 10-second first difference of DXY - typically 0.00-0.02. The ONLY consumer of
+ * dxyChange gates at +/-0.15, so that gate could essentially never fire, and
+ * dxy_weight was being fitted against a near-zero-variance column. DXY is
+ * genuinely fetched (Yahoo DX=F via the backend) - the feature was not "never
+ * populated", it was populated on a horizon its consumer could not use.
+ *
+ * Comparing against the oldest retained sample (up to 30 samples ~ 5 minutes)
+ * puts the magnitude on the same scale the consumer threshold assumes.
+ */
+function calculateWindowedChange(history: number[], maxLookback: number): number {
+  if (history.length < 2) return 0;
+  const current = history[history.length - 1];
+  const startIndex = Math.max(0, history.length - 1 - maxLookback);
+  const reference = history[startIndex];
+  if (!Number.isFinite(current) || !Number.isFinite(reference)) return 0;
+  return parseFloat((current - reference).toFixed(4));
+}
+
+/** ~5 minutes of retained 10s intermarket samples. */
+const DXY_CHANGE_LOOKBACK_SAMPLES = 30;
+
 function calculateRealVelocity(history: number[]): number {
   if (history.length < 3) return 0;
   const current = history[history.length - 1];
@@ -471,7 +636,7 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
   const now = Date.now();
   
   if (cachedDXY !== null && cachedUS10Y !== null && cachedVIX !== null && now - lastIntermarketFetchTime < INTERMARKET_CACHE_DURATION) {
-    const dxyChange = calculateRealChange(intermarketHistory.dxyPrices);
+    const dxyChange = calculateWindowedChange(intermarketHistory.dxyPrices, DXY_CHANGE_LOOKBACK_SAMPLES);
     const dxyVelocity = calculateRealVelocity(intermarketHistory.dxyPrices);
     const us10yChange = calculateRealChange(intermarketHistory.us10yYields);
     const vixChange = calculateRealChange(intermarketHistory.vixPrices);
@@ -521,7 +686,7 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
   if (intermarketHistory.us10yYields.length > 30) intermarketHistory.us10yYields.shift();
   if (intermarketHistory.vixPrices.length > 30) intermarketHistory.vixPrices.shift();
 
-  const dxyChange = calculateRealChange(intermarketHistory.dxyPrices);
+  const dxyChange = calculateWindowedChange(intermarketHistory.dxyPrices, DXY_CHANGE_LOOKBACK_SAMPLES);
   const dxyVelocity = calculateRealVelocity(intermarketHistory.dxyPrices);
   const us10yChange = calculateRealChange(intermarketHistory.us10yYields);
   const vixChange = calculateRealChange(intermarketHistory.vixPrices);
@@ -927,6 +1092,23 @@ class SignalGenerationEngine {
   private tickFrequencyGateState: { lastPrice: number; lastAt: number; pendingPrice: number; pendingAt: number } = { lastPrice: 0, lastAt: 0, pendingPrice: 0, pendingAt: 0 };
   /** Rolling history of real bid/ask spread readings (pips), feeding calculateSpreadRatio(). */
   private spreadHistory: number[] = [];
+  /**
+   * Phase 2 (A2): wall-clock of the last CONFIRMED stop-out per direction, so a
+   * fresh same-direction re-entry can be blocked for a cooldown window. Audit
+   * measured a 13.3% win rate (n=30) on same-direction re-entries inside 15 min
+   * of a stop, and P(loss | prev loss) = 54.7% vs a 40.9% baseline.
+   */
+  private lastBuyStopOutTime: number = 0;
+  private lastSellStopOutTime: number = 0;
+  /**
+   * PHASE 2 (C4): rolling realised expectancy per direction, in R, computed
+   * only from resolved NON-scratch outcomes that carry a realizedR. Feeds the
+   * direction-bucketed calibration penalty.
+   */
+  private directionalExpectancy: { BUY: { n: number; meanR: number }; SELL: { n: number; meanR: number } } = {
+    BUY: { n: 0, meanR: 0 },
+    SELL: { n: 0, meanR: 0 },
+  };
   private confidenceHistory: number[] = [];
   private lastFeatureCorrelationCheck: number = 0;
   private featureCorrelationStatus: string = 'HEALTHY';
@@ -945,6 +1127,12 @@ class SignalGenerationEngine {
   private lastFiveMinCandleClose: number = 0;
   private quasimodolLevels: QuasimodolLevel[] = [];
   private sessionSweeps: SessionSweep[] = [];
+  /**
+   * PHASE 2 (B4): open penetrations awaiting a reclaim, keyed
+   * `${sessionType}-${type}`. A sweep is only emitted once one of these is
+   * reclaimed inside SWEEP_RECLAIM_WINDOW_MS.
+   */
+  private pendingSweepPenetrations: Map<string, { level: number; extreme: number; firstAt: number }> = new Map();
   private srZones: SRZone[] = [];
   private asianSessionHigh: number = 0;
   private asianSessionLow: number = Infinity;
@@ -2237,6 +2425,95 @@ class SignalGenerationEngine {
     return this.getSessionBlockZoneCandidates();
   }
 
+  /**
+   * PHASE 2 (B4): evaluate one session extreme for a genuine liquidity sweep.
+   *
+   * Emits a sweep ONLY on a confirmed reclaim (price penetrated the level by an
+   * ATR-scaled amount and then traded back inside it within the reclaim
+   * window). An unreclaimed penetration is held as pending and, if the window
+   * expires, discarded as a real breakout rather than counted as sweep
+   * evidence.
+   */
+  private evaluateSessionSweep(params: {
+    sessionType: 'ASIAN' | 'LONDON' | 'NY';
+    type: 'HIGH_SWEEP' | 'LOW_SWEEP';
+    level: number;
+    currentPrice: number;
+    now: number;
+    baseStrength: number;
+  }): void {
+    const { sessionType, type, level, currentPrice, now, baseStrength } = params;
+    if (!Number.isFinite(level) || level <= 0) return;
+    if (!Number.isFinite(currentPrice) || currentPrice <= 0) return;
+
+    const atr = this.calculateRealATR(14);
+    const penetrationThreshold = Math.max(SWEEP_PENETRATION_MIN_DOLLARS, atr * SWEEP_PENETRATION_ATR_FRACTION);
+    const key = `${sessionType}-${type}`;
+    const isHigh = type === 'HIGH_SWEEP';
+    const beyondLevel = isHigh ? currentPrice - level : level - currentPrice;
+    const pending = this.pendingSweepPenetrations.get(key);
+
+    // Step 1: still outside the level by more than the ATR-scaled threshold ->
+    // open (or extend) a pending penetration. No sweep is emitted yet: without
+    // a reclaim this is indistinguishable from a genuine breakout.
+    if (beyondLevel >= penetrationThreshold) {
+      if (pending && Math.abs(pending.level - level) <= penetrationThreshold) {
+        pending.extreme = isHigh ? Math.max(pending.extreme, currentPrice) : Math.min(pending.extreme, currentPrice);
+      } else {
+        this.pendingSweepPenetrations.set(key, { level, extreme: currentPrice, firstAt: now });
+        console.log(`⏳ ${sessionType} ${isHigh ? 'HIGH' : 'LOW'} PENETRATION OPEN @ ${level.toFixed(1)} (price ${currentPrice.toFixed(1)}, threshold $${penetrationThreshold.toFixed(2)}) - pending reclaim, NOT yet a sweep`);
+      }
+      return;
+    }
+
+    if (!pending) return;
+
+    const latency = now - pending.firstAt;
+    if (latency > SWEEP_RECLAIM_WINDOW_MS) {
+      this.pendingSweepPenetrations.delete(key);
+      console.log(`🚫 ${sessionType} ${isHigh ? 'HIGH' : 'LOW'} penetration @ ${pending.level.toFixed(1)} never reclaimed within ${(SWEEP_RECLAIM_WINDOW_MS / 60000).toFixed(0)}min - treated as a genuine BREAKOUT, discarded (not a sweep)`);
+      return;
+    }
+
+    // Step 2: reclaim - price must be back INSIDE the swept level.
+    const reclaimed = isHigh ? currentPrice < pending.level : currentPrice > pending.level;
+    if (!reclaimed) return;
+
+    const penetrationDepth = isHigh ? pending.extreme - pending.level : pending.level - pending.extreme;
+    if (penetrationDepth < penetrationThreshold) {
+      this.pendingSweepPenetrations.delete(key);
+      return;
+    }
+
+    // Strength: deeper grabs and faster reclaims are stronger evidence.
+    const depthScore = Math.min(1, penetrationDepth / Math.max(atr, 0.01));
+    const speedScore = 1 - Math.min(1, latency / SWEEP_RECLAIM_WINDOW_MS);
+    const strength = parseFloat(Math.max(0, Math.min(0.98, baseStrength + depthScore * 0.15 + speedScore * 0.10)).toFixed(3));
+
+    const existingIndex = this.sessionSweeps.findIndex(
+      s => s.type === type && s.sessionType === sessionType && Math.abs(s.sweepPrice - pending.level) <= penetrationThreshold * 2,
+    );
+    const sweep: SessionSweep = {
+      type,
+      sessionType,
+      sweepPrice: parseFloat(pending.level.toFixed(1)),
+      reversalConfirmed: true,
+      timestamp: now,
+      strength,
+      penetrationDepth: parseFloat(penetrationDepth.toFixed(2)),
+      reclaimLatencyMs: latency,
+    };
+    if (existingIndex >= 0) this.sessionSweeps[existingIndex] = sweep;
+    else this.sessionSweeps.push(sweep);
+
+    this.pendingSweepPenetrations.delete(key);
+
+    console.log(`🚨 ${sessionType} ${isHigh ? 'HIGH' : 'LOW'} SWEEP CONFIRMED (penetration + reclaim)`);
+    console.log(`   Swept level: ${pending.level.toFixed(1)} | Extreme reached: ${pending.extreme.toFixed(1)} (depth $${penetrationDepth.toFixed(2)}, threshold $${penetrationThreshold.toFixed(2)})`);
+    console.log(`   Reclaimed back inside in ${(latency / 1000).toFixed(0)}s | Strength: ${(strength * 100).toFixed(0)}%`);
+    console.log(`   → Genuine liquidity grab - potential ${isHigh ? 'SHORT' : 'LONG'} setup`);
+  }
+
   private detectSessionSweeps(): SessionSweep[] {
     const now = Date.now();
     const currentPrice = this.currentPrice;
@@ -2289,62 +2566,11 @@ class SignalGenerationEngine {
       this.londonSessionHigh = Math.max(this.londonSessionHigh, currentPrice);
       this.londonSessionLow = Math.min(this.londonSessionLow, currentPrice);
 
-      if (this.asianSessionHigh > 0 && currentPrice > this.asianSessionHigh + 2) {
-        const sweepExists = this.sessionSweeps.some(
-          s => s.type === 'HIGH_SWEEP' && s.sessionType === 'ASIAN' && Math.abs(s.sweepPrice - this.asianSessionHigh) < 5
-        );
-
-        if (!sweepExists) {
-          const reversalConfirmed = this.priceHistory.length > 5 && 
-            this.priceHistory[this.priceHistory.length - 1] < this.priceHistory[this.priceHistory.length - 3];
-          
-          const strength = reversalConfirmed ? 0.85 : 0.65;
-          
-          this.sessionSweeps.push({
-            type: 'HIGH_SWEEP',
-            sessionType: 'ASIAN',
-            sweepPrice: this.asianSessionHigh,
-            reversalConfirmed,
-            timestamp: now,
-            strength,
-          });
-
-          console.log(`🚨 ASIAN HIGH SWEEP DETECTED!`);
-          console.log(`   Sweep Price: ${this.asianSessionHigh.toFixed(1)}`);
-          console.log(`   Current Price: ${currentPrice.toFixed(1)} (+${(currentPrice - this.asianSessionHigh).toFixed(1)} pips)`);
-          console.log(`   Reversal Confirmed: ${reversalConfirmed ? 'YES' : 'PENDING'}`);
-          console.log(`   Strength: ${(strength * 100).toFixed(0)}%`);
-          console.log(`   → Liquidity grab detected - potential SHORT setup`);
-        }
-      }
-
-      if (this.asianSessionLow < Infinity && currentPrice < this.asianSessionLow - 2) {
-        const sweepExists = this.sessionSweeps.some(
-          s => s.type === 'LOW_SWEEP' && s.sessionType === 'ASIAN' && Math.abs(s.sweepPrice - this.asianSessionLow) < 5
-        );
-
-        if (!sweepExists) {
-          const reversalConfirmed = this.priceHistory.length > 5 && 
-            this.priceHistory[this.priceHistory.length - 1] > this.priceHistory[this.priceHistory.length - 3];
-          
-          const strength = reversalConfirmed ? 0.85 : 0.65;
-          
-          this.sessionSweeps.push({
-            type: 'LOW_SWEEP',
-            sessionType: 'ASIAN',
-            sweepPrice: this.asianSessionLow,
-            reversalConfirmed,
-            timestamp: now,
-            strength,
-          });
-
-          console.log(`🚨 ASIAN LOW SWEEP DETECTED!`);
-          console.log(`   Sweep Price: ${this.asianSessionLow.toFixed(1)}`);
-          console.log(`   Current Price: ${currentPrice.toFixed(1)} (${(currentPrice - this.asianSessionLow).toFixed(1)} pips)`);
-          console.log(`   Reversal Confirmed: ${reversalConfirmed ? 'YES' : 'PENDING'}`);
-          console.log(`   Strength: ${(strength * 100).toFixed(0)}%`);
-          console.log(`   → Liquidity grab detected - potential LONG setup`);
-        }
+      // PHASE 2 (B4): penetration + reclaim, ATR-scaled. Replaces the old
+      // "price is $2 past the level" trigger with its 2-tick pseudo-reversal.
+      this.evaluateSessionSweep({ sessionType: 'ASIAN', type: 'HIGH_SWEEP', level: this.asianSessionHigh, currentPrice, now, baseStrength: 0.70 });
+      if (this.asianSessionLow < Infinity) {
+        this.evaluateSessionSweep({ sessionType: 'ASIAN', type: 'LOW_SWEEP', level: this.asianSessionLow, currentPrice, now, baseStrength: 0.70 });
       }
 
       console.log(`London Session - High: ${this.londonSessionHigh.toFixed(1)}, Low: ${this.londonSessionLow.toFixed(1)}`);
@@ -2352,62 +2578,11 @@ class SignalGenerationEngine {
       this.nySessionHigh = Math.max(this.nySessionHigh, currentPrice);
       this.nySessionLow = Math.min(this.nySessionLow, currentPrice);
 
-      if (this.londonSessionHigh > 0 && currentPrice > this.londonSessionHigh + 2) {
-        const sweepExists = this.sessionSweeps.some(
-          s => s.type === 'HIGH_SWEEP' && s.sessionType === 'LONDON' && Math.abs(s.sweepPrice - this.londonSessionHigh) < 5
-        );
+      // PHASE 2 (B4): same penetration + reclaim structure for the London range.
+      this.evaluateSessionSweep({ sessionType: 'LONDON', type: 'HIGH_SWEEP', level: this.londonSessionHigh, currentPrice, now, baseStrength: 0.75 });
 
-        if (!sweepExists) {
-          const reversalConfirmed = this.priceHistory.length > 5 && 
-            this.priceHistory[this.priceHistory.length - 1] < this.priceHistory[this.priceHistory.length - 3];
-          
-          const strength = reversalConfirmed ? 0.90 : 0.70;
-          
-          this.sessionSweeps.push({
-            type: 'HIGH_SWEEP',
-            sessionType: 'LONDON',
-            sweepPrice: this.londonSessionHigh,
-            reversalConfirmed,
-            timestamp: now,
-            strength,
-          });
-
-          console.log(`🚨 LONDON HIGH SWEEP DETECTED!`);
-          console.log(`   Sweep Price: ${this.londonSessionHigh.toFixed(1)}`);
-          console.log(`   Current Price: ${currentPrice.toFixed(1)} (+${(currentPrice - this.londonSessionHigh).toFixed(1)} pips)`);
-          console.log(`   Reversal Confirmed: ${reversalConfirmed ? 'YES' : 'PENDING'}`);
-          console.log(`   Strength: ${(strength * 100).toFixed(0)}%`);
-          console.log(`   → High liquidity grab - potential SHORT setup`);
-        }
-      }
-
-      if (this.londonSessionLow < Infinity && currentPrice < this.londonSessionLow - 2) {
-        const sweepExists = this.sessionSweeps.some(
-          s => s.type === 'LOW_SWEEP' && s.sessionType === 'LONDON' && Math.abs(s.sweepPrice - this.londonSessionLow) < 5
-        );
-
-        if (!sweepExists) {
-          const reversalConfirmed = this.priceHistory.length > 5 && 
-            this.priceHistory[this.priceHistory.length - 1] > this.priceHistory[this.priceHistory.length - 3];
-          
-          const strength = reversalConfirmed ? 0.90 : 0.70;
-          
-          this.sessionSweeps.push({
-            type: 'LOW_SWEEP',
-            sessionType: 'LONDON',
-            sweepPrice: this.londonSessionLow,
-            reversalConfirmed,
-            timestamp: now,
-            strength,
-          });
-
-          console.log(`🚨 LONDON LOW SWEEP DETECTED!`);
-          console.log(`   Sweep Price: ${this.londonSessionLow.toFixed(1)}`);
-          console.log(`   Current Price: ${currentPrice.toFixed(1)} (${(currentPrice - this.londonSessionLow).toFixed(1)} pips)`);
-          console.log(`   Reversal Confirmed: ${reversalConfirmed ? 'YES' : 'PENDING'}`);
-          console.log(`   Strength: ${(strength * 100).toFixed(0)}%`);
-          console.log(`   → High liquidity grab - potential LONG setup`);
-        }
+      if (this.londonSessionLow < Infinity) {
+        this.evaluateSessionSweep({ sessionType: 'LONDON', type: 'LOW_SWEEP', level: this.londonSessionLow, currentPrice, now, baseStrength: 0.75 });
       }
 
       console.log(`NY Session - High: ${this.nySessionHigh.toFixed(1)}, Low: ${this.nySessionLow.toFixed(1)}`);
@@ -2420,14 +2595,24 @@ class SignalGenerationEngine {
       this.nySessionLow = Infinity;
     }
 
-    const oneHourAgo = now - (60 * 60 * 1000);
+    // PHASE 2 (B4): confirmed sweeps stay actionable for SWEEP_RETENTION_MS (2h).
+    // The old 1h window expired a London sweep partway through the NY session
+    // that traded off it. Stale pending penetrations are also swept up here.
+    const retentionCutoff = now - SWEEP_RETENTION_MS;
     this.sessionSweeps = this.sessionSweeps
-      .filter(sweep => sweep.timestamp > oneHourAgo)
+      .filter(sweep => sweep.timestamp > retentionCutoff)
       .sort((a, b) => b.strength - a.strength)
       .slice(0, 10);
 
+    for (const [key, pending] of Array.from(this.pendingSweepPenetrations.entries())) {
+      if (now - pending.firstAt > SWEEP_RECLAIM_WINDOW_MS) {
+        this.pendingSweepPenetrations.delete(key);
+        console.log(`🧹 Cleared expired pending penetration ${key} @ ${pending.level.toFixed(1)} (no reclaim - breakout, not a sweep)`);
+      }
+    }
+
     if (this.sessionSweeps.length > 0) {
-      console.log(`📊 Active Session Sweeps: ${this.sessionSweeps.length} (last hour, top 10)`);
+      console.log(`📊 Active CONFIRMED Session Sweeps: ${this.sessionSweeps.length} (last ${(SWEEP_RETENTION_MS / 3600000).toFixed(0)}h, top 10) | pending penetrations: ${this.pendingSweepPenetrations.size}`);
     }
     console.log('='.repeat(60) + '\n');
 
@@ -2655,15 +2840,26 @@ class SignalGenerationEngine {
       let lastTouch = 0;
       const isResistance = cluster.price > currentPrice;
 
+      // PHASE 2 (B5): count DISTINCT touch EVENTS, not samples inside the zone.
+      // priceHistory is sampled every ~5s, so a single visit that lingered in a
+      // zone for two minutes previously logged ~24 "touches" while a genuine
+      // second test of the level logged 1 - i.e. `touches` measured dwell time,
+      // not how many times the market actually came back and respected the
+      // level. A touch is now only counted when price ENTERS the zone from
+      // outside it, which is what "tested twice" is supposed to mean and what
+      // every downstream `touches >= 2` gate assumes.
+      let insideZone = false;
       for (let i = 0; i < this.priceHistory.length; i++) {
         const price = this.priceHistory[i];
         const high = this.highHistory[i] ?? price;
         const low = this.lowHistory[i] ?? price;
 
-        if (Math.abs(price - cluster.price) < zoneWidth) {
-          touches++;
+        const isInsideNow = Math.abs(price - cluster.price) < zoneWidth;
+        if (isInsideNow) {
+          if (!insideZone) touches++;
           lastTouch = now - ((this.priceHistory.length - i) * 5000);
         }
+        insideZone = isInsideNow;
 
         if (isResistance && high >= cluster.price - zoneWidth && price < cluster.price) {
           const wickSize = high - Math.max(price, this.priceHistory[Math.max(0, i - 1)] ?? price);
@@ -2682,8 +2878,18 @@ class SignalGenerationEngine {
         }
       }
 
-      const touchScore = Math.min(1, touches / 6);
-      const rejectionScore = Math.min(1, rejectionWicks / 4);
+      // PHASE 2 (B5): un-clamp the evidence curves. The old hard caps
+      // (touches/6 and rejectionWicks/4, both clipped at 1.0) made a level
+      // tested 6 times and one tested 30 times numerically IDENTICAL, so the
+      // most-respected levels on the chart were indistinguishable from merely
+      // adequate ones - and because zones are ranked and sliced by
+      // reactionStrength, that plateau was decided by tie-break order rather
+      // than by evidence. These are now soft-saturating (exponential) curves:
+      // strictly increasing in evidence forever, with diminishing returns, and
+      // still bounded in [0,1) so every downstream threshold (>= 0.3 gating,
+      // the 0.8 + rs zone multiplier) keeps its meaning.
+      const touchScore = 1 - Math.exp(-touches / 3);
+      const rejectionScore = 1 - Math.exp(-rejectionWicks / 2);
       const avgRejectionSize = rejectionWicks > 0 ? totalRejectionSize / rejectionWicks : 0;
       const rejectionSizeScore = Math.min(1, avgRejectionSize / (atr * 0.5));
       const clusterScore = Math.min(1, cluster.count / 3);
@@ -2706,7 +2912,23 @@ class SignalGenerationEngine {
       const hasEarnedEvidence = touches >= 1 || rejectionWicks >= 1;
       const effectiveClusterScore = hasEarnedEvidence ? clusterScore : 0;
       const effectiveConfluenceBonus = hasEarnedEvidence ? confluenceBonus : 0;
-      const rawReactionStrength = Math.min(1, (touchScore * 0.30) + (rejectionScore * 0.30) + (rejectionSizeScore * 0.20) + (effectiveClusterScore * 0.20) + effectiveConfluenceBonus);
+      // PHASE 2 (B5, second half of the un-clamp): the component weights used to
+      // sum to 1.00 and then confluenceBonus (up to +1.00) was ADDED on top,
+      // with the total clipped by Math.min(1, ...). Any zone with a couple of
+      // rejection wicks plus multi-source confluence therefore pinned at
+      // exactly 1.000, which is why un-clamping touchScore alone changed
+      // nothing: the sum was saturating above the clip long before touches
+      // mattered. Measured on a synthetic 30-touch vs 6-touch history, both
+      // scored 1.000 - indistinguishable. Confluence is now a WEIGHTED TERM
+      // inside the blend (weights sum to exactly 1.00), so the result is
+      // strictly monotonic in every component, never needs clipping, and
+      // remains bounded in [0,1] for the downstream >= 0.3 gates.
+      const rawReactionStrength =
+        (touchScore * 0.28) +
+        (rejectionScore * 0.28) +
+        (rejectionSizeScore * 0.16) +
+        (effectiveClusterScore * 0.16) +
+        (effectiveConfluenceBonus * 0.12);
 
       // Step 2 fix (zone staleness/decay): without this, a zone that earned
       // maximum touchScore/rejectionScore during one early, low-volatility
@@ -3882,6 +4104,90 @@ class SignalGenerationEngine {
     return this.modelWeights.get(featureKey);
   }
 
+  /**
+   * PHASE 2 (C4): recompute realised expectancy per direction from stored
+   * outcomes. Only non-scratch outcomes with a known realizedR are counted, so
+   * a book with no stop-distance history simply produces n=0 and the
+   * calibration gate stays inert rather than guessing.
+   */
+  private recomputeDirectionalExpectancy(): void {
+    const buckets: { BUY: number[]; SELL: number[] } = { BUY: [], SELL: [] };
+    for (const outcome of this.tradeOutcomes) {
+      if (outcome.isScratch === true) continue;
+      if (outcome.direction !== 'BUY' && outcome.direction !== 'SELL') continue;
+      if (typeof outcome.realizedR !== 'number' || !Number.isFinite(outcome.realizedR)) continue;
+      buckets[outcome.direction].push(outcome.realizedR);
+    }
+
+    const summarize = (values: number[]): { n: number; meanR: number } => ({
+      n: values.length,
+      meanR: values.length > 0 ? parseFloat((values.reduce((a, b) => a + b, 0) / values.length).toFixed(4)) : 0,
+    });
+
+    this.directionalExpectancy = { BUY: summarize(buckets.BUY), SELL: summarize(buckets.SELL) };
+    console.log(`📐 Directional expectancy: BUY n=${this.directionalExpectancy.BUY.n} EV=${this.directionalExpectancy.BUY.meanR.toFixed(3)}R | SELL n=${this.directionalExpectancy.SELL.n} EV=${this.directionalExpectancy.SELL.meanR.toFixed(3)}R`);
+  }
+
+  /**
+   * PHASE 2 (C4): confidence penalty for a direction whose own realised
+   * expectancy is negative over a sufficient sample. Scales with how negative
+   * the expectancy is (0.20R deficit = full penalty) and is capped, so it
+   * nudges rather than hard-suppresses, and decays to zero automatically once
+   * that direction's expectancy recovers.
+   */
+  private getDirectionalCalibrationPenalty(direction: 'BUY' | 'SELL'): number {
+    const bucket = this.directionalExpectancy[direction];
+    if (bucket.n < DIRECTION_CALIBRATION_MIN_SAMPLE) return 0;
+    if (bucket.meanR >= 0) return 0;
+    const severity = Math.min(1, Math.abs(bucket.meanR) / 0.2);
+    return parseFloat((DIRECTION_CALIBRATION_MAX_PENALTY * severity).toFixed(4));
+  }
+
+  /** Test seam: realised expectancy per direction (C4). */
+  public getDirectionalExpectancyForTest(): { BUY: { n: number; meanR: number }; SELL: { n: number; meanR: number } } {
+    this.recomputeDirectionalExpectancy();
+    return this.directionalExpectancy;
+  }
+
+  /** Test seam: the live direction-bucketed calibration penalty (C4). */
+  public getDirectionalCalibrationPenaltyForTest(direction: 'BUY' | 'SELL'): number {
+    this.recomputeDirectionalExpectancy();
+    return this.getDirectionalCalibrationPenalty(direction);
+  }
+
+  /** Test seam: recorded outcome labels/scratch flags (C3). */
+  public getStoredOutcomesForTest(): { result: 'WIN' | 'LOSS'; realizedR?: number; isScratch?: boolean; direction?: 'BUY' | 'SELL' }[] {
+    return this.tradeOutcomes.map(o => ({ result: o.result, realizedR: o.realizedR, isScratch: o.isScratch, direction: o.direction }));
+  }
+
+  /** Test seam: reset learning state so a test starts from a clean book. */
+  public resetOutcomesForTest(): void {
+    this.tradeOutcomes = [];
+    this.directionalExpectancy = { BUY: { n: 0, meanR: 0 }, SELL: { n: 0, meanR: 0 } };
+  }
+
+  /**
+   * Test seam (B4): drive one sweep evaluation directly and read the resulting
+   * confirmed sweeps plus the pending-penetration count.
+   */
+  public evaluateSessionSweepForTest(params: {
+    sessionType: 'ASIAN' | 'LONDON' | 'NY';
+    type: 'HIGH_SWEEP' | 'LOW_SWEEP';
+    level: number;
+    currentPrice: number;
+    now: number;
+    baseStrength?: number;
+  }): { sweeps: SessionSweep[]; pending: number } {
+    this.evaluateSessionSweep({ ...params, baseStrength: params.baseStrength ?? 0.70 });
+    return { sweeps: this.sessionSweeps.slice(), pending: this.pendingSweepPenetrations.size };
+  }
+
+  /** Test seam (B4): clear sweep state between scenarios. */
+  public resetSweepStateForTest(): void {
+    this.sessionSweeps = [];
+    this.pendingSweepPenetrations.clear();
+  }
+
   /** Step 1 test seam: read the Bayesian blend alpha (historical-weight share) used by retrainModel. */
   public getBayesianBlendAlphaForTest(): number {
     return BAYESIAN_BLEND_ALPHA;
@@ -4090,12 +4396,23 @@ class SignalGenerationEngine {
       }
     }
 
-    const rsiModulation = this.getFeatureModulation('rsi_weight');
+    // PHASE 2 (C1): the learned RSI multiplier is capped, and what gets recorded
+    // in attentionScores is the actual CONTRIBUTION rather than the raw
+    // multiplier. Pre-fix, this single entry was logged at 1.09-1.71 while every
+    // other feature sat at 0.01-0.38, so it mechanically owned the top-feature
+    // ranking - despite its measured marginal EV being negative (present
+    // +0.029R vs absent +0.128R, and -0.009R once the multiplier passed 1.50).
+    const rawRsiModulation = this.getFeatureModulation('rsi_weight');
+    const rsiModulation = Math.min(rawRsiModulation, RSI_MODULATION_APPLIED_MAX);
     buySignalStrength += rsiBuyContribution * rsiModulation;
     sellSignalStrength += rsiSellContribution * rsiModulation;
     if (rsiBuyContribution > 0 || rsiSellContribution > 0) {
-      attentionScores.set('rsi_learned_modulation', rsiModulation);
-      console.log(`🧠 Learned RSI modulation x${rsiModulation.toFixed(3)} → BUY+${(rsiBuyContribution * rsiModulation).toFixed(3)} SELL+${(rsiSellContribution * rsiModulation).toFixed(3)} (raw BUY+${rsiBuyContribution.toFixed(2)} SELL+${rsiSellContribution.toFixed(2)})`);
+      const rsiContribution = Math.max(rsiBuyContribution, rsiSellContribution) * rsiModulation;
+      attentionScores.set('rsi_learned_modulation', parseFloat(rsiContribution.toFixed(4)));
+      if (rawRsiModulation > rsiModulation) {
+        console.log(`🧠 Learned RSI modulation CAPPED ${rawRsiModulation.toFixed(3)} → x${rsiModulation.toFixed(3)} (max ${RSI_MODULATION_APPLIED_MAX})`);
+      }
+      console.log(`🧠 Learned RSI modulation x${rsiModulation.toFixed(3)} → BUY+${(rsiBuyContribution * rsiModulation).toFixed(3)} SELL+${(rsiSellContribution * rsiModulation).toFixed(3)} (raw BUY+${rsiBuyContribution.toFixed(2)} SELL+${rsiSellContribution.toFixed(2)}, attention records contribution ${rsiContribution.toFixed(3)})`);
     }
     
     if (isLondonSession || isNYSession) {
@@ -4552,9 +4869,23 @@ class SignalGenerationEngine {
     if (this.priceHistory.length < 60) calibrationPenalty += 0.01;
 
     calibrationPenalty = Math.min(calibrationPenalty, MAX_CALIBRATION_PENALTY);
+
+    // PHASE 2 (C4): direction-bucketed calibration. The penalties above are
+    // direction-agnostic, so a book where one side earns +0.695R and the other
+    // loses -0.349R was calibrated as if both sides were the same system. This
+    // adds a separate, evidence-driven penalty applied ONLY to the side whose
+    // own realised expectancy is negative over a sufficient sample.
+    const candidateDirection: 'BUY' | 'SELL' = isBullish ? 'BUY' : 'SELL';
+    const directionPenalty = this.getDirectionalCalibrationPenalty(candidateDirection);
+    if (directionPenalty > 0) {
+      const bucket = this.directionalExpectancy[candidateDirection];
+      console.log(`⚠️ Direction calibration penalty (${candidateDirection}): -${(directionPenalty * 100).toFixed(1)}% (own realised EV ${bucket.meanR.toFixed(3)}R over n=${bucket.n})`);
+    }
+
     if (calibrationPenalty > 0) {
       console.log(`⚠️ Calibration penalty (capped at ${(MAX_CALIBRATION_PENALTY * 100).toFixed(0)}%): -${(calibrationPenalty * 100).toFixed(1)}%`);
     }
+    calibrationPenalty += directionPenalty;
 
     rawConfidence = Math.max(0.42, Math.min(MAX_CONFIDENCE_CAP, rawConfidence - calibrationPenalty));
     
@@ -4926,7 +5257,7 @@ class SignalGenerationEngine {
     return false;
   }
   
-  async recordTradeOutcome(signalId: string, entryPrice: number, exitPrice: number, result: 'WIN' | 'LOSS', features?: Partial<SignalLearningContext>, misleadingFeatures?: FeatureConfidence[], signalDuration?: number, confidence?: number): Promise<void> {
+  async recordTradeOutcome(signalId: string, entryPrice: number, exitPrice: number, result: 'WIN' | 'LOSS', features?: Partial<SignalLearningContext>, misleadingFeatures?: FeatureConfidence[], signalDuration?: number, confidence?: number, stopDistance?: number): Promise<void> {
     const pnl = result === 'WIN' ? Math.abs(exitPrice - entryPrice) : -Math.abs(exitPrice - entryPrice);
     const normalizedConfidence = Math.max(0.42, Math.min(0.95, confidence ?? this.performanceMetrics.avgConfidence ?? 0.72));
     const defaultContext = createDefaultLearningContext();
@@ -4939,6 +5270,28 @@ class SignalGenerationEngine {
       sentiment: features?.sentiment ?? defaultContext.sentiment,
     };
     
+    // PHASE 2 (C4): infer direction from realised geometry so no call site has
+    // to be changed. A WIN that exited ABOVE entry can only have been a BUY; a
+    // LOSS that exited BELOW entry can only have been a BUY; and vice versa.
+    let direction: 'BUY' | 'SELL' | undefined;
+    if (Number.isFinite(entryPrice) && Number.isFinite(exitPrice) && exitPrice !== entryPrice) {
+      const exitedAbove = exitPrice > entryPrice;
+      direction = result === 'WIN' ? (exitedAbove ? 'BUY' : 'SELL') : (exitedAbove ? 'SELL' : 'BUY');
+    }
+
+    // PHASE 2 (C3): realised R + scratch classification. Only computable when
+    // the caller supplies the stop distance; without it the outcome keeps its
+    // raw WIN/LOSS label exactly as before (no silent behaviour change for
+    // older call sites or restored records).
+    const usableStopDistance = Number.isFinite(stopDistance) && (stopDistance ?? 0) > 0 ? (stopDistance as number) : undefined;
+    const realizedR = usableStopDistance !== undefined
+      ? parseFloat((pnl / usableStopDistance).toFixed(4))
+      : undefined;
+    const isScratch = realizedR !== undefined ? Math.abs(realizedR) < SCRATCH_R_THRESHOLD : undefined;
+    if (isScratch) {
+      console.log(`➖ SCRATCH outcome ${signalId.slice(-6)}: ${realizedR?.toFixed(3)}R (|R| < ${SCRATCH_R_THRESHOLD}) - retained for audit, EXCLUDED from learning labels and win-rate`);
+    }
+
     const outcome: TradeOutcome = {
       signalId,
       entryPrice,
@@ -4950,23 +5303,41 @@ class SignalGenerationEngine {
       timestamp: new Date(),
       misleadingFeatures,
       signalDuration,
+      direction,
+      realizedR,
+      isScratch,
     };
     
+    // PHASE 2 (A2): remember confirmed stop-outs per direction. Direction is
+    // inferred from the realised exit rather than adding a parameter: a LOSS
+    // that exited BELOW entry can only have been a BUY, and vice versa.
+    if (result === 'LOSS' && Number.isFinite(entryPrice) && Number.isFinite(exitPrice) && exitPrice !== entryPrice) {
+      const stopOutWasBuy = exitPrice < entryPrice;
+      if (stopOutWasBuy) this.lastBuyStopOutTime = Date.now();
+      else this.lastSellStopOutTime = Date.now();
+      console.log(`🧊 POST-STOP COOLDOWN ARMED for ${stopOutWasBuy ? 'BUY' : 'SELL'} (${(POST_STOP_SAME_DIRECTION_COOLDOWN_MS / 60000).toFixed(0)} min)`);
+    }
+
     this.tradeOutcomes.push(outcome);
     
     if (this.tradeOutcomes.length > MAX_STORED_OUTCOMES) {
       this.tradeOutcomes = this.tradeOutcomes.slice(-MAX_STORED_OUTCOMES);
     }
     
-    const recentOutcomes = this.tradeOutcomes.slice(-20);
+    // PHASE 2 (C3): scratches are excluded from win-rate / profit-factor. A
+    // profit-lock exit at ~0R counted as a full WIN previously inflated both.
+    const recentOutcomes = this.tradeOutcomes.filter(o => o.isScratch !== true).slice(-20);
+    const scratchCount = this.tradeOutcomes.filter(o => o.isScratch === true).length;
     const wins = recentOutcomes.filter(o => o.result === 'WIN').length;
     const losses = recentOutcomes.filter(o => o.result === 'LOSS').length;
     const winPnl = recentOutcomes.filter(o => o.result === 'WIN').reduce((sum, o) => sum + o.pnl, 0);
     const lossPnl = Math.abs(recentOutcomes.filter(o => o.result === 'LOSS').reduce((sum, o) => sum + o.pnl, 0));
     
-    this.performanceMetrics.recentWinRate = wins / (wins + losses);
+    this.performanceMetrics.recentWinRate = wins + losses > 0 ? wins / (wins + losses) : 0;
     this.performanceMetrics.profitFactor = lossPnl > 0 ? winPnl / lossPnl : 2.0;
-    this.performanceMetrics.avgConfidence = recentOutcomes.reduce((sum, o) => sum + o.confidence, 0) / recentOutcomes.length;
+    this.performanceMetrics.avgConfidence = recentOutcomes.length > 0
+      ? recentOutcomes.reduce((sum, o) => sum + o.confidence, 0) / recentOutcomes.length
+      : (this.performanceMetrics.avgConfidence ?? 0.72);
     
     const winningConfidences = recentOutcomes
       .filter(o => o.result === 'WIN')
@@ -4985,6 +5356,7 @@ class SignalGenerationEngine {
       winRate: (this.performanceMetrics.recentWinRate * 100).toFixed(1) + '%',
       profitFactor: this.performanceMetrics.profitFactor.toFixed(2),
       totalOutcomes: this.tradeOutcomes.length,
+      scratchesExcluded: scratchCount,
     });
     
     const now = Date.now();
@@ -5102,10 +5474,24 @@ class SignalGenerationEngine {
     console.log(`   Last 7 Days Influence: ${(last7DaysInfluence * 100).toFixed(1)}%`);
     console.log(`   Older Data Influence: ${((1 - last7DaysInfluence) * 100).toFixed(1)}%`);
     
-    const winningData = normalizedData.filter(d => d.outcome.result === 'WIN');
-    const losingData = normalizedData.filter(d => d.outcome.result === 'LOSS');
+    // PHASE 2 (C3): drop scratches from the LABEL partition. A ~0R profit-lock
+    // exit carries no information about whether the setup was good, but as an
+    // unqualified WIN it dragged the "winning" feature centroid toward neutral
+    // feature values, which is exactly what makes a fitted weight vector look
+    // like it has no signal.
+    const scratchData = normalizedData.filter(d => d.outcome.isScratch === true);
+    const labelledData = normalizedData.filter(d => d.outcome.isScratch !== true);
+    if (scratchData.length > 0) {
+      console.log(`➖ Excluding ${scratchData.length} scratch outcome(s) (|R| < ${SCRATCH_R_THRESHOLD}) from label-based weight fitting`);
+    }
+    const winningData = labelledData.filter(d => d.outcome.result === 'WIN');
+    const losingData = labelledData.filter(d => d.outcome.result === 'LOSS');
     const weightedWinningData = winningData.length > 0 ? winningData : normalizedData;
     const weightedLosingData = losingData.length > 0 ? losingData : normalizedData;
+
+    // PHASE 2 (C4): realised expectancy per direction, computed here so the
+    // calibration gate reads a freshly consolidated view on every retrain.
+    this.recomputeDirectionalExpectancy();
 
     if (winningData.length === 0 || losingData.length === 0) {
       console.log('⚠️ Retrain class diversity is limited - applying neutral fallback weighting to avoid unstable model weights');
@@ -5162,12 +5548,23 @@ class SignalGenerationEngine {
     });
     
     const sumAbsoluteWeights = Object.values(rawWeights).reduce((sum, w) => sum + Math.abs(w), 0);
+    const sumAbsoluteConsumedWeights = Object.entries(rawWeights)
+      .filter(([key]) => CONSUMED_MODEL_WEIGHTS.has(key))
+      .reduce((sum, [, w]) => sum + Math.abs(w), 0);
     console.log(`   Sum of Absolute Weights: ${sumAbsoluteWeights.toFixed(4)}`);
+    console.log(`   Sum of Absolute CONSUMED Weights (${Array.from(CONSUMED_MODEL_WEIGHTS).join(', ')}): ${sumAbsoluteConsumedWeights.toFixed(4)}`);
     
     const recentWeights = new Map<string, number>();
     if (sumAbsoluteWeights > 0) {
       Object.entries(rawWeights).forEach(([key, value]) => {
-        const normalizedWeight = value / sumAbsoluteWeights;
+        // PHASE 2 (C2): weights that actually modulate scoring are normalized
+        // over the consumed subset, so inert telemetry-only columns can no
+        // longer dilute them. Inert columns keep the all-features denominator
+        // so they stay bounded and comparable for drift/telemetry reads.
+        const denominator = CONSUMED_MODEL_WEIGHTS.has(key) && sumAbsoluteConsumedWeights > 0
+          ? sumAbsoluteConsumedWeights
+          : sumAbsoluteWeights;
+        const normalizedWeight = value / denominator;
         recentWeights.set(key, normalizedWeight);
       });
     } else {
@@ -5479,13 +5876,70 @@ class SignalGenerationEngine {
       analysis.signalType = fastPath.signalType ?? analysis.signalType;
     }
     
+    // PHASE 2 (measurement integrity): a non-finite confidence silently DEFEATS
+    // every downstream gate, because in JS `NaN < threshold` is false - so a
+    // NaN-confidence signal passes the session floor, the counter-trend premium,
+    // the absolute engine floor and the quality gate all at once. Confirmed
+    // pre-existing (NaN confidences appear in simulation runs recorded before
+    // this Phase 2 work), which is why some sandbox signals reported
+    // `confidence=NaN%`. Fail closed instead of trading on an unknown number.
+    if (!Number.isFinite(analysis.confidence)) {
+      console.log(`❌ REJECTED: non-finite confidence (${String(analysis.confidence)}) — failing closed`);
+      console.log(`   💡 A NaN confidence would bypass every threshold comparison, so the signal is discarded rather than trusted.`);
+      console.log(`${'='.repeat(80)}\n`);
+      return null;
+    }
+
     const htfTrend = this.detectHTFTrend(features);
+    const ltfTrendForGate = this.detectLTFTrend();
+    // PHASE 2 (B1) COUNTER-TREND GATE REPAIR.
+    // Pre-fix, a signal only counted as counter-trend when the DAILY trend
+    // directly opposed it. The dominant real failure mode in the audit was a
+    // SELL fired while HTF was NEUTRAL but the intraday (LTF) trend was
+    // climbing: that combination classified as 'NEUTRAL' and therefore skipped
+    // BOTH the confidence premium here AND the structural counter-trend branch
+    // in validateStructuralConditions (whose neutral fallthrough returns
+    // valid:true unconditionally). Adding the HTF-neutral/LTF-opposed case is
+    // the actual repair; the RSI-extreme cases are retained unchanged.
     const isCounterTrendSignal = (
       (analysis.signalType === 'BUY' && htfTrend === 'BEARISH') ||
       (analysis.signalType === 'SELL' && htfTrend === 'BULLISH') ||
+      (analysis.signalType === 'BUY' && htfTrend === 'NEUTRAL' && ltfTrendForGate === 'BEARISH') ||
+      (analysis.signalType === 'SELL' && htfTrend === 'NEUTRAL' && ltfTrendForGate === 'BULLISH') ||
       (analysis.signalType === 'BUY' && htfTrend === 'NEUTRAL' && features.rsi < 35) ||
       (analysis.signalType === 'SELL' && htfTrend === 'NEUTRAL' && features.rsi > 65)
     );
+
+    // PHASE 2 (B1) INTRADAY DRIFT VETO. Scoped to signals already classified
+    // counter-trend: the worst observed day (2026-07-10: 17 SELL / 1 BUY, SELL
+    // EV -1.00R, day net -$88.3) drifted +$13.8 while the classifier stayed
+    // NEUTRAL, so the repaired classifier above now catches it and this veto
+    // then refuses the entry outright unless a genuine sweep reversal is
+    // confirmed AND conviction is very high.
+    //
+    // CALIBRATION NOTE: an earlier revision of this veto applied to EVERY signal
+    // at 1.5 x ATR. The 24h replay measured 1,168 rejections from that rule
+    // alone and total generation collapsed to ZERO signals - far outside the
+    // 10-20/day mandate - because normal gold drifts more than 1.5 ATR in an
+    // hour routinely, so it was also vetoing legitimate with-trend and
+    // at-structure entries. Scoped + widened to 2.0 x ATR on that evidence.
+    const recentDrift = isCounterTrendSignal ? this.computeRecentDrift() : null;
+    if (recentDrift !== null && features.atr > 0) {
+      const driftAgainst = analysis.signalType === 'BUY' ? -recentDrift : recentDrift;
+      const driftVetoThreshold = features.atr * COUNTER_TREND_DRIFT_ATR_VETO;
+      if (driftAgainst >= driftVetoThreshold) {
+        const sweepReclaimConfirmed = features.sessionSweeps.some(s => s.reversalConfirmed);
+        if (sweepReclaimConfirmed && analysis.confidence >= COUNTER_TREND_DRIFT_OVERRIDE_CONFIDENCE) {
+          console.log(`✅ DRIFT VETO OVERRIDE: ${analysis.signalType} against $${driftAgainst.toFixed(2)} drift allowed on confirmed sweep reversal + ${(analysis.confidence * 100).toFixed(1)}% conviction`);
+        } else {
+          console.log(`❌ REJECTED: Counter-trend drift veto — ${analysis.signalType} fights a $${driftAgainst.toFixed(2)} adverse impulse (>= ${driftVetoThreshold.toFixed(2)} = ${COUNTER_TREND_DRIFT_ATR_VETO} x ATR ${features.atr.toFixed(1)})`);
+          console.log(`   💡 TIP: Needs a CONFIRMED sweep reversal plus >=${(COUNTER_TREND_DRIFT_OVERRIDE_CONFIDENCE * 100).toFixed(0)}% conviction to trade against a live impulse of this size.`);
+          console.log(`${'='.repeat(80)}\n`);
+          this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'intraday drift veto', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
+          return null;
+        }
+      }
+    }
     
     if (isCounterTrendSignal && !trendChangeDetected && !largePriceMovement) {
       // Proposal #5: Asymmetric gate - RSI extreme with confirmed sweep bypasses 5-min requirement
@@ -5522,6 +5976,13 @@ class SignalGenerationEngine {
     
     // Proposal #6: Session-aware threshold
     const utcHour = new Date().getUTCHours();
+    // PHASE 2 (A1): hard clock blocks on the two measured dead hours
+    // (h11 EV -0.497R, h04 EV -0.409R in the 340-trade audit).
+    if (BLOCKED_UTC_HOURS.includes(utcHour)) {
+      console.log(`❌ REJECTED: UTC hour ${utcHour} is a blocked window (measured negative expectancy across the audited sample)`);
+      console.log(`${'='.repeat(80)}\n`);
+      return null;
+    }
     const isPowerHour = utcHour >= UTC_HOURS.NY_LONDON_START && utcHour < UTC_HOURS.NY_LONDON_END;
     const isLowLiquidity = (utcHour >= 22 || utcHour < 6);
     let sessionFloor = ENFORCED_MIN_SIGNAL_CONFIDENCE;
@@ -5531,6 +5992,11 @@ class SignalGenerationEngine {
     } else if (isLowLiquidity) {
       sessionFloor = ENFORCED_MIN_CONFIDENCE_LOW_LIQUIDITY;
       console.log(`⏰ LOW LIQUIDITY: raising enforced floor to ${(sessionFloor * 100).toFixed(0)}%`);
+    }
+    // PHASE 2 (A1): demote (not block) the marginal hours h12/h15/h17.
+    if (ELEVATED_FLOOR_UTC_HOURS.includes(utcHour)) {
+      sessionFloor += ELEVATED_HOUR_CONFIDENCE_PREMIUM;
+      console.log(`⏰ MARGINAL HOUR ${utcHour} UTC: floor raised to ${(sessionFloor * 100).toFixed(0)}% (+${(ELEVATED_HOUR_CONFIDENCE_PREMIUM * 100).toFixed(0)}pp)`);
     }
     const requestedMinConfidence = Math.max(sessionFloor, settings.minConfidence);
 
@@ -5547,6 +6013,17 @@ class SignalGenerationEngine {
       return null;
     }
     
+    // PHASE 2 (A2): post-stop, same-direction cooldown.
+    const lastStopOutTime = analysis.signalType === 'BUY' ? this.lastBuyStopOutTime : this.lastSellStopOutTime;
+    if (lastStopOutTime > 0 && (now - lastStopOutTime) < POST_STOP_SAME_DIRECTION_COOLDOWN_MS) {
+      const remainingMin = ((POST_STOP_SAME_DIRECTION_COOLDOWN_MS - (now - lastStopOutTime)) / 60000).toFixed(1);
+      console.log(`❌ REJECTED: Post-stop cooldown — a ${analysis.signalType} was stopped out ${(((now - lastStopOutTime)) / 60000).toFixed(1)} min ago (${remainingMin} min remaining)`);
+      console.log(`   💡 TIP: Same-direction re-entry within 15 min of a stop won only 13.3% of the time in the audited sample. Let structure re-form.`);
+      console.log(`${'='.repeat(80)}\n`);
+      this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'post-stop cooldown', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
+      return null;
+    }
+
     const macroEvent = this.detectMacroEvents();
     if (this.shouldSuppressMacroEvent(macroEvent)) {
       console.log(`❌ REJECTED: Macro event suppression (${macroEvent?.name})`);
@@ -5560,7 +6037,7 @@ class SignalGenerationEngine {
     // a +5% confidence premium on top of the session floor. Counter-trend gold setups
     // are the lowest win-rate bucket, so we only take the highest-quality ones.
     if (isCounterTrendSignal) {
-      effectiveMinConfidence = Math.max(effectiveMinConfidence, requestedMinConfidence + 0.05);
+      effectiveMinConfidence = Math.max(effectiveMinConfidence, requestedMinConfidence + COUNTER_TREND_CONFIDENCE_PREMIUM);
       console.log(`🧭 COUNTER-TREND vs HTF ${htfTrend}: confidence floor raised to ${(effectiveMinConfidence * 100).toFixed(0)}%`);
     }
     // H40 + Proposal #2: Tighten starvation relief - require TRENDING regime + ADX>20
@@ -5598,7 +6075,7 @@ class SignalGenerationEngine {
     }
     
     // Proposal #12: EV-weighted acceptance
-    const tentativeAtrMultiplier = Math.max(0.8, Math.min(1.4, 0.6 + features.atr * 0.06));
+    const tentativeAtrMultiplier = Math.max(1.0, Math.min(1.6, 0.7 + features.atr * 0.06));
     const evScore = this.computeExpectedValue(analysis.confidence, settings.tp2Pips, settings.slPips, tentativeAtrMultiplier);
     const evReliefEligible = (
       analysis.confidence >= EV_RELIEF_CONFIDENCE_FLOOR &&
@@ -5719,55 +6196,68 @@ class SignalGenerationEngine {
     
     const pipValue = 0.1;
     
-    // F30: Continuous ATR-to-SL mapping
+    // ============ PHASE 2 (B2 + B3): 1.4R SCALPER GEOMETRY ============
+    // The system is now FORMALLY scoped as a 1.4R scalper: the TP ladder is a
+    // pure multiple of the realised risk distance, so reward-to-risk can no
+    // longer drift with independently-configured pip settings. This replaces
+    // three interacting faults measured in the audit:
+    //   1. SL sat INSIDE the noise floor (median 0.90 ATR, p10 0.23 ATR) - all
+    //      139 SL hits resolved at exactly -1.000R, the signature of
+    //      noise-triggered stops. Stops now clear 1.2 x ATR by construction.
+    //   2. The "Low Volatility" label reached ATR 7.9 and then applied a 0.80x
+    //      TIGHTER stop, amplifying (1). The 0.80x floor is gone (min 1.00x) and
+    //      the regime boundaries are re-derived from the real ATR distribution.
+    //   3. TP1 sat at 0.50R while every loss was a full -1.00R, forcing a 53.9%
+    //      breakeven win rate. TP1 is now 0.70R, TP2 1.05R, TP3 1.40R, so the
+    //      breakeven win rate drops below 50% at the same hit distribution.
     const useDynamicSL = settings.useDynamicSL !== false;
     const maxSLPips = settings.maxSLPips ?? 90;
     const atrMultiplier = useDynamicSL
-      ? parseFloat(Math.max(0.8, Math.min(1.4, 0.6 + features.atr * 0.06)).toFixed(2))
+      ? parseFloat(Math.max(1.0, Math.min(1.6, 0.7 + features.atr * 0.06)).toFixed(2))
       : 1.0;
-    const rawSlPips = settings.slPips * atrMultiplier;
-    let dynamicSlPips = Math.min(rawSlPips, maxSLPips);
+    // ATR is in PRICE units (calculateRealATR averages high-low true ranges on
+    // raw bars), so the pip-denominated noise floor is atr * multiple / pipValue.
+    const atrFloorSlPips = (features.atr * MIN_SL_ATR_MULTIPLE) / pipValue;
+    if (atrFloorSlPips > maxSLPips) {
+      console.log(`❌ REJECTED: noise floor unreachable — a ${MIN_SL_ATR_MULTIPLE} x ATR stop needs ${atrFloorSlPips.toFixed(0)} pips but maxSLPips is ${maxSLPips} (ATR ${features.atr.toFixed(1)})`);
+      console.log(`   💡 TIP: Volatility is too high to place a stop outside the noise floor within the risk cap. High-ATR conditions measured EV -0.030R / PF 0.94 in the audit.`);
+      console.log(`${'='.repeat(80)}\n`);
+      this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'ATR noise floor exceeds SL cap', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
+      return null;
+    }
+    const configuredSlPips = settings.slPips * atrMultiplier;
+    const rawSlPips = Math.max(configuredSlPips, atrFloorSlPips);
+    if (atrFloorSlPips > configuredSlPips) {
+      console.log(`🛡️ SL widened to the ${MIN_SL_ATR_MULTIPLE} x ATR noise floor: ${atrFloorSlPips.toFixed(1)} pips (configured would have been ${configuredSlPips.toFixed(1)})`);
+    }
+    const dynamicSlPips = Math.min(rawSlPips, maxSLPips);
     if (rawSlPips > maxSLPips) {
       console.log(`🛡️ SL capped at maxSLPips ${maxSLPips} (would have been ${rawSlPips.toFixed(1)})`);
     }
-    // Preliminary RR guard against the configured TP3 setting. Final RR is
-    // re-checked below against the actual (widened) TP3 distance so the live
-    // reward-to-risk ratio is never < 1:1 regardless of the TP widen factor.
-    const preliminaryMaxSlByRR = Math.max(1, settings.tp3Pips);
-    if (dynamicSlPips > preliminaryMaxSlByRR) {
-      console.log(`🛡️ SL tightened to ${preliminaryMaxSlByRR} pips to preserve 1:1 RR vs base TP3 ${settings.tp3Pips} (was ${dynamicSlPips.toFixed(1)})`);
-      dynamicSlPips = preliminaryMaxSlByRR;
-    }
-    
-    const volatilityLabel = features.atr > 10 ? "High Volatility" : features.atr < 8 ? "Low Volatility" : "Normal Volatility";
-    const riskJustification = `SL Multiplier: ${atrMultiplier.toFixed(2)}x (${volatilityLabel} | ATR: ${features.atr.toFixed(1)})`;
-    
-    let tp1Distance = settings.tp1Pips;
-    let tp2Distance = settings.tp2Pips;
-    let tp3Distance = settings.tp3Pips;
-    
-    // F29: Scale TP widening by ATR-relative room to nearest S/R
+
+    // Re-derived volatility labels (B2). Pre-fix: Low < 8, High > 10, which put
+    // ~60% of all signals - including ATR 5-to-8 conditions - in "Low".
+    const volatilityLabel = features.atr > VOL_REGIME_ATR_HIGH_MIN
+      ? "High Volatility"
+      : features.atr < VOL_REGIME_ATR_LOW_MAX ? "Low Volatility" : "Normal Volatility";
+    const slAtrMultiple = (dynamicSlPips * pipValue) / Math.max(features.atr, 0.01);
+    const riskJustification = `SL ${dynamicSlPips.toFixed(0)}p (${slAtrMultiple.toFixed(2)}x ATR) | Multiplier: ${atrMultiplier.toFixed(2)}x (${volatilityLabel} | ATR: ${features.atr.toFixed(1)}) | 1.4R scalper scope`;
+
+    // TP ladder as pure R-multiples of the FINAL risk distance. TP3 may stretch
+    // to 1.5R/1.6R only when conviction is high AND there is measured room to
+    // the next real barrier - it can never shrink below the 1.4R scope.
     const roomToSR = this.computeRoomToSR(analysis.signalType, features);
     const atrUnits = roomToSR / Math.max(features.atr, 1);
-    let widenFactor = 1.0;
-    if (analysis.confidence >= 0.89 && atrUnits >= 3) widenFactor = 1.15;
-    else if (analysis.confidence >= 0.89) widenFactor = 1.05;
-    else if (analysis.confidence >= 0.82 && atrUnits >= 2.5) widenFactor = 1.08;
-    else if (analysis.confidence >= 0.82) widenFactor = 1.03;
-    else if (analysis.confidence < 0.70) widenFactor = 0.88;
-    tp2Distance = settings.tp2Pips * widenFactor;
-    tp3Distance = settings.tp3Pips * widenFactor;
-    if (analysis.confidence < 0.70) tp1Distance = settings.tp1Pips * 0.92;
-    console.log(`🎯 TP widening factor ${widenFactor.toFixed(2)}x (room-to-SR ${roomToSR.toFixed(0)}p / ATR ${atrUnits.toFixed(1)}u)`);
-
-    // Final 1:1 RR enforcement against the ACTUAL widened TP3 distance. If the
-    // widen factor shrank TP3 below the current SL, tighten SL so reward >= risk.
-    if (dynamicSlPips > tp3Distance) {
-      const tightened = Math.max(1, Math.floor(tp3Distance));
-      console.log(`🛡️ Post-widen SL tightened from ${dynamicSlPips.toFixed(1)} -> ${tightened} pips to preserve >=1:1 RR vs actual TP3 ${tp3Distance.toFixed(1)}`);
-      dynamicSlPips = tightened;
-    }
-    console.log(`⚖️ Final RR check: TP1 ${tp1Distance.toFixed(1)}p | TP2 ${tp2Distance.toFixed(1)}p | TP3 ${tp3Distance.toFixed(1)}p | SL ${dynamicSlPips.toFixed(1)}p -> RR@TP3 ${(tp3Distance / Math.max(dynamicSlPips, 1)).toFixed(2)}:1`);
+    let tp3R: number = SCALPER_TP_R_MULTIPLES.tp3;
+    if (analysis.confidence >= 0.89 && atrUnits >= 3) tp3R = SCALPER_TP3_STRETCH_MAX_R;
+    else if (analysis.confidence >= 0.82 && atrUnits >= 2.5) tp3R = SCALPER_TP3_STRETCH_R;
+    const tp1Distance = dynamicSlPips * SCALPER_TP_R_MULTIPLES.tp1;
+    const tp2Distance = dynamicSlPips * SCALPER_TP_R_MULTIPLES.tp2;
+    const tp3Distance = dynamicSlPips * tp3R;
+    const grossTp3Dollars = tp3Distance * pipValue;
+    console.log(`🎯 1.4R SCALPER LADDER: TP1 ${tp1Distance.toFixed(1)}p (${SCALPER_TP_R_MULTIPLES.tp1}R) | TP2 ${tp2Distance.toFixed(1)}p (${SCALPER_TP_R_MULTIPLES.tp2}R) | TP3 ${tp3Distance.toFixed(1)}p (${tp3R}R) | SL ${dynamicSlPips.toFixed(1)}p`);
+    console.log(`   room-to-SR ${roomToSR.toFixed(0)}p / ATR ${atrUnits.toFixed(1)}u → TP3 stretch ${tp3R}R`);
+    console.log(`💵 Cost-adjusted TP3: gross $${grossTp3Dollars.toFixed(2)} − $${EXECUTION_COST_PER_TRADE_USD.toFixed(2)} spread = net $${(grossTp3Dollars - EXECUTION_COST_PER_TRADE_USD).toFixed(2)} (${((grossTp3Dollars - EXECUTION_COST_PER_TRADE_USD) / Math.max(dynamicSlPips * pipValue, 0.01)).toFixed(2)}R net)`);
     
     const tp1 = entryPriceWithSlippage + (analysis.signalType === "BUY" ? 1 : -1) * tp1Distance * pipValue;
     const tp2 = entryPriceWithSlippage + (analysis.signalType === "BUY" ? 1 : -1) * tp2Distance * pipValue;
@@ -5999,6 +6489,42 @@ class SignalGenerationEngine {
     const atr = features.atr;
     const srReaction = features.activeSRReaction;
 
+    // PHASE 2 (A3): reject mutually contradictory structural states. 117 of the
+    // 340 audited signals were scored as sitting at STRONG SUPPORT and STRONG
+    // RESISTANCE simultaneously - that is a compressed range being credited
+    // with confluence on both sides at once, not a real edge.
+    //
+    // CALIBRATION NOTE: the first revision rejected on the double-strength
+    // condition alone. The 24h replay attributed 895 rejections to it and
+    // generation fell to zero, so it is now scoped exactly to the harmful case:
+    // a compressed range with NO confirmed rejection in the signal's favour and
+    // without high conviction. A confirmed bounce inside a range is a legitimate
+    // scalp and is no longer blocked.
+    const rangeContradiction = features.supportStrength > 0.8 && features.resistanceStrength > 0.8;
+    const hasConfirmedReaction = srReaction?.confirmed === true;
+    if (rangeContradiction && !hasConfirmedReaction && confidence < RANGE_CONTRADICTION_MAX_CONFIDENCE) {
+      return {
+        passed: false,
+        reason: `Contradictory structure: strong support (${features.supportStrength.toFixed(2)}) AND strong resistance (${features.resistanceStrength.toFixed(2)}) with no confirmed reaction`,
+        tip: 'Price is pinned inside a compressed range with no confirmed rejection either way. Wait for one side to actually break or hold before taking a direction.',
+      };
+    }
+
+    // PHASE 2 (A4): nearest-zone confluence gate. Audited nearest-zone
+    // confluence == 1 scored EV -0.326R; confluence >= 3 was the only zone
+    // bucket with a genuinely positive edge.
+    const zonesNearPrice = features.srZones
+      .filter(z => Math.abs(z.price - this.currentPrice) <= NEAR_ZONE_CONFLUENCE_PROXIMITY)
+      .sort((a, b) => Math.abs(a.price - this.currentPrice) - Math.abs(b.price - this.currentPrice));
+    const nearestZone = zonesNearPrice[0];
+    if (nearestZone && nearestZone.confluenceScore < MIN_NEAR_ZONE_CONFLUENCE && confidence < CONFLUENCE_GATE_OVERRIDE_CONFIDENCE) {
+      return {
+        passed: false,
+        reason: `Nearest zone @ ${nearestZone.price.toFixed(1)} has confluence ${nearestZone.confluenceScore} (< ${MIN_NEAR_ZONE_CONFLUENCE})`,
+        tip: `Single-source zones measured EV -0.326R in the audited sample. Needs >=${MIN_NEAR_ZONE_CONFLUENCE} independent sources agreeing on the level, or >=${(CONFLUENCE_GATE_OVERRIDE_CONFIDENCE * 100).toFixed(0)}% conviction.`,
+      };
+    }
+
     const minVolume = regime.type === 'QUIET' ? 0.55 : 0.75;
     if (volumeRatio < minVolume && confidence < 0.82) {
       return {
@@ -6098,9 +6624,16 @@ class SignalGenerationEngine {
       (signalType === 'SELL' && htfTrend === 'BEARISH' && ltfTrend === 'BEARISH')
     );
 
+    // PHASE 2 (B1): kept in lock-step with the generation-time classifier above.
+    // The HTF-neutral / LTF-opposed case is the repair: those signals previously
+    // fell through to the unconditional "allowing with caution" return at the
+    // bottom of this function, so they never had to prove a real structural
+    // level existed. They now go through the counter-trend bounce requirement.
     const isCounterTrend = (
       (signalType === 'BUY' && htfTrend === 'BEARISH') ||
       (signalType === 'SELL' && htfTrend === 'BULLISH') ||
+      (signalType === 'BUY' && htfTrend === 'NEUTRAL' && ltfTrend === 'BEARISH') ||
+      (signalType === 'SELL' && htfTrend === 'NEUTRAL' && ltfTrend === 'BULLISH') ||
       (signalType === 'BUY' && htfTrend === 'NEUTRAL' && features.rsi < 35) ||
       (signalType === 'SELL' && htfTrend === 'NEUTRAL' && features.rsi > 65)
     );
@@ -6466,14 +6999,18 @@ class SignalGenerationEngine {
       // an accepted signal would have used) so this rejected setup can later be
       // resolved against REAL subsequent price action via the same resolver logic
       // that grades real signals — never inventing a separate, looser grading path.
+      // PHASE 2: mirrors the live 1.4R scalper geometry exactly, so mined
+      // near-misses are graded against the same ladder a real signal would get.
       const pipValue = 0.1;
-      const atrMultiplier = Math.max(0.8, Math.min(1.4, 0.6 + snapshot.atr * 0.06));
+      const atrMultiplier = Math.max(1.0, Math.min(1.6, 0.7 + snapshot.atr * 0.06));
+      const atrFloorSlPips = (snapshot.atr * MIN_SL_ATR_MULTIPLE) / pipValue;
+      const slPips = Math.max(snapshot.slPips * atrMultiplier, atrFloorSlPips);
       const dir = signalType === 'BUY' ? 1 : -1;
       entry.entryPrice = snapshot.entryPrice;
-      entry.tp1 = snapshot.entryPrice + dir * snapshot.tp1Pips * pipValue;
-      entry.tp2 = snapshot.entryPrice + dir * snapshot.tp2Pips * pipValue;
-      entry.tp3 = snapshot.entryPrice + dir * snapshot.tp3Pips * pipValue;
-      entry.sl = snapshot.entryPrice - dir * Math.min(snapshot.slPips * atrMultiplier, snapshot.slPips * 1.4) * pipValue;
+      entry.tp1 = snapshot.entryPrice + dir * slPips * SCALPER_TP_R_MULTIPLES.tp1 * pipValue;
+      entry.tp2 = snapshot.entryPrice + dir * slPips * SCALPER_TP_R_MULTIPLES.tp2 * pipValue;
+      entry.tp3 = snapshot.entryPrice + dir * slPips * SCALPER_TP_R_MULTIPLES.tp3 * pipValue;
+      entry.sl = snapshot.entryPrice - dir * slPips * pipValue;
     }
 
     this.nearMisses.push(entry);
@@ -6594,6 +7131,22 @@ class SignalGenerationEngine {
     const rr = tp2Pips / (slPips * atrMultiplier);
     const winProb = Math.min(0.95, Math.max(0.3, confidence));
     return winProb * rr - (1 - winProb);
+  }
+
+  /**
+   * PHASE 2 (B1): signed intraday price drift in PRICE units over the most
+   * recent closed 5-minute candles. Positive = price climbing. Returns null
+   * when there aren't enough candles to make an honest reading (never a
+   * synthetic substitute). Feeds the drift veto that stops the engine firing
+   * repeatedly into a live impulse.
+   */
+  private computeRecentDrift(candles: number = DRIFT_LOOKBACK_CANDLES): number | null {
+    if (this.fiveMinCandles.length < 3) return null;
+    const window = this.fiveMinCandles.slice(-Math.max(3, candles));
+    const first = window[0];
+    const last = window[window.length - 1];
+    if (!first || !last) return null;
+    return last.close - first.open;
   }
 
   private computeRoomToSR(signalType: SignalType, features: MarketFeatures): number {

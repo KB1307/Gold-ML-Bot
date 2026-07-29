@@ -65,6 +65,22 @@ async function getBarStoreStats(..._args: unknown[]): Promise<unknown> { return 
 async function pruneOldBars(..._args: unknown[]): Promise<void> {}
 async function getLatestBarTimestamp(..._args: unknown[]): Promise<number> { return 0; }
 function resolveSignalWithBars(..._args: unknown[]): unknown { return null; }
+// PHASE 2 (open item 2): TradingContext now delegates the post-TP1 lock to
+// signalResolver's R-based implementation, so the sandbox mirrors that exact
+// math (0.35R of the realised stop, floored at 5 pips, capped at 90% of TP1)
+// rather than stubbing it out and silently testing different geometry.
+const POST_TP1_PROFIT_LOCK_R = 0.35;
+function computePostTP1LockPrice(signal: { type: string; entryPrice: number; sl: number; tp1: number }): number {
+  const stopDistance = Math.abs(signal.entryPrice - signal.sl);
+  const minDelta = 5 * 0.1;
+  const rBased = Number.isFinite(stopDistance) && stopDistance > 0 ? stopDistance * POST_TP1_PROFIT_LOCK_R : minDelta;
+  const tp1Distance = Math.abs(signal.tp1 - signal.entryPrice);
+  const ceiling = Number.isFinite(tp1Distance) && tp1Distance > 0 ? tp1Distance * 0.9 : Number.POSITIVE_INFINITY;
+  const delta = Math.min(Math.max(rBased, minDelta), ceiling);
+  const raw = signal.type === 'BUY' ? signal.entryPrice + delta : signal.entryPrice - delta;
+  return Number(raw.toFixed(1));
+}
+const supabase = { from() { return { select() { return { data: null, error: null }; } }; } } as any;
 async function sendTelegramAlert(..._args: unknown[]): Promise<void> {}
 async function appendDiagnosticEvent(..._args: unknown[]): Promise<void> {}
 async function pruneOldDiagnosticEvents(..._args: unknown[]): Promise<void> {}
@@ -96,7 +112,11 @@ function useRef<T>(initial: T): { current: T } { return { current: initial }; }
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/barStore["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/signalResolver["'];?\r?\n/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/telegramNotifier["'];?\r?\n/m, "")
-    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/diagnosticEventStore["'];?\r?\n/m, "");
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/services\/diagnosticEventStore["'];?\r?\n/m, "")
+    // TradingContext gained a `@/lib/supabase` import earlier in this session;
+    // without stripping it the sandbox pulls in react-native and esbuild fails
+    // on react-native/index.js before a single assertion runs.
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["']@\/lib\/supabase["'];?\r?\n/m, "");
 
   await mkdir(sandboxDir, { recursive: true });
   await writeFile(sandboxPath, `${sandboxPrelude}\n${rewritten}`);

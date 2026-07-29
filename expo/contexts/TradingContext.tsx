@@ -14,7 +14,7 @@ import {
 } from "@/services/backgroundTaskService";
 import { subscribeToChartPrice, subscribeToChartHeartbeat } from "@/services/chartPriceBridge";
 import { ensureBarStoreReady, ingestTickAllTimeframes, upsertBars, getBars, getBarStoreStats, pruneOldBars, getLatestBarTimestamp, type OhlcBar } from "@/services/barStore";
-import { resolveSignalWithBars } from "@/services/signalResolver";
+import { resolveSignalWithBars, getPostTP1LockPrice as computePostTP1LockPrice, POST_TP1_PROFIT_LOCK_R } from "@/services/signalResolver";
 import { sendTelegramAlert } from "@/services/telegramNotifier";
 import { appendDiagnosticEvent, pruneOldDiagnosticEvents, ensureDiagnosticEventStoreReady, type DiagnosticEventType } from "@/services/diagnosticEventStore";
 import { supabase } from "@/lib/supabase";
@@ -23,10 +23,26 @@ const INDEPENDENT_POLL_INTERVAL_MS = 12000;
 const INDEPENDENT_POLL_NO_PRICE_INTERVAL_MS = 5000;
 const PRICE_STALE_THRESHOLD_FOR_POLL_MS = 20000;
 
+/**
+ * PHASE 2 (A5): broker-confirmed round-trip XAU execution cost in PRICE units
+ * ($0.05). Charged once per trade that actually took a position, so every
+ * downstream metric (P/L, expectancy, R-multiples, Sharpe, profit factor,
+ * drawdown) is net of real friction. Pre-fix, all 139 audited SL hits resolved
+ * at exactly -1.000R with zero slippage or spread - a frictionless resolver
+ * that made every reported number 0.03-0.10R too optimistic.
+ */
+export const EXECUTION_COST_PRICE_UNITS = 0.05;
+
+/**
+ * PHASE 2 (B3): defaults re-scoped for the 1.4R scalper. The engine now derives
+ * the live TP ladder as R-multiples of the realised stop distance, so these pip
+ * settings are kept coherent with that scope (0.7R / 1.05R / 1.4R of slPips)
+ * because structural runway + opposing-zone veto sizing still read them.
+ */
 const DEFAULT_SETTINGS: Settings = {
-  tp1Pips: 30,
-  tp2Pips: 60,
-  tp3Pips: 90,
+  tp1Pips: 49,
+  tp2Pips: 74,
+  tp3Pips: 98,
   slPips: 70,
   numberOfTPs: 3,
   minConfidence: 0.68,
@@ -48,6 +64,8 @@ const DEFAULT_METRICS: PerformanceMetrics = {
   maxDrawdown: 0,
   currentDrawdown: 0,
   sharpeRatio: 0,
+  sharpeRatioAnnualized: 0,
+  netExpectancyR: 0,
   profitFactor: 0,
   winRate: 0,
   averageWin: 0,
@@ -203,9 +221,11 @@ const TICK_SPIKE_CONFIRM_WINDOW_MS = 60000;
 const TICK_SPIKE_CONFIRM_TOL_PIPS = 25;
 // Profit-lock after TP1: replaces the previous cosmetic "breakeven" indicator
 // with a real trailing stop. Once TP1 is achieved, the effective SL becomes
-// entry + 15 pips (BUY) or entry - 15 pips (SELL). If price retraces to that
-// level, the trade closes as SL_AFTER_BE banking TP1 + 15 pip lock (WIN).
-const POST_TP1_PROFIT_LOCK_PIPS = 15;
+// entry +/- 0.35 x realised stop distance (half of the 0.70R TP1 under the
+// 1.4R scope). The single source of truth is getPostTP1LockPrice() in
+// signalResolver.ts - this context deliberately re-exports that same function
+// instead of keeping a second copy of the geometry, which is how the old fixed
+// 15-pip constant silently drifted out of step with the R-based ladder.
 const PIP_VALUE = 0.1;
 // Part A fix #2: Path 3 (catch-up fallback) no longer echoes signal.sl exactly
 // as the exit price for a confirmed SL_HIT - it now reflects the actual
@@ -352,9 +372,7 @@ function sanitizeHistoryForRender(history: TradingSignal[]): TradingSignal[] {
 }
 
 export function getPostTP1LockPrice(signal: TradingSignal): number {
-  const delta = POST_TP1_PROFIT_LOCK_PIPS * PIP_VALUE;
-  const raw = signal.type === 'BUY' ? signal.entryPrice + delta : signal.entryPrice - delta;
-  return Number(raw.toFixed(1));
+  return computePostTP1LockPrice(signal);
 }
 
 function getProtectedExitPrice(signal: TradingSignal, targetsHit: number): number {
@@ -365,8 +383,8 @@ function getProtectedExitPrice(signal: TradingSignal, targetsHit: number): numbe
   }
 
   if (normalizedTargetsHit === 1) {
-    // Post-TP1 protected exit = 15 pip profit lock (entry +/- 15 pips).
-    // This banks TP1 runner + 15 pip lock when price retraces past the lock.
+    // Post-TP1 protected exit = 0.35R profit lock. This banks the TP1 runner
+    // plus half of TP1 when price retraces past the lock.
     return getPostTP1LockPrice(signal);
   }
 
@@ -509,7 +527,16 @@ export function computeSignalPnL(signal: TradingSignal, basePositionSize: number
   const riskDistance = Math.abs(entry - signal.sl);
   const clampedDirectional = Math.max(-riskDistance, Math.min(rewardDistance, rawDirectional));
 
-  return clampedDirectional * basePositionSize * contractSize;
+  // PHASE 2 (A5): charge the real round-trip execution cost on any trade where a
+  // position was actually opened. EXPIRED_MISSED_ENTRY never filled, so it pays
+  // nothing. This is deliberately applied AFTER the structural clamp: a genuine
+  // stop-out costs slightly MORE than a clean -1R, which is what really happens.
+  const positionWasTaken = signal.status !== "EXPIRED_MISSED_ENTRY";
+  const netDirectional = positionWasTaken
+    ? clampedDirectional - EXECUTION_COST_PRICE_UNITS
+    : clampedDirectional;
+
+  return netDirectional * basePositionSize * contractSize;
 }
 
 /**
@@ -1442,7 +1469,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           'LOSS',
           signal.learningContext,
           undefined,
-          signalAge
+          signalAge,
+          undefined,
+          Math.abs(signal.entryPrice - signal.sl)
         ).catch(err => {
           console.error(`Failed to record expired signal outcome:`, err);
         });
@@ -1667,7 +1696,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
               outcomeResult,
               signal.learningContext,
               undefined,
-              signalAge
+              signalAge,
+              undefined,
+              Math.abs(signal.entryPrice - signal.sl)
             ).catch(err => {
               console.error(`Failed to record catch-up outcome:`, err);
             });
@@ -1750,7 +1781,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
               analysis.outcomeResult,
               signal.learningContext,
               undefined,
-              signalAge
+              signalAge,
+              undefined,
+              Math.abs(signal.entryPrice - signal.sl)
             ).catch(err => {
               console.error(`Failed to record catch-up outcome:`, err);
             });
@@ -2012,7 +2045,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             'WIN',
             signal.learningContext,
             undefined,
-            now - signalTs
+            now - signalTs,
+            undefined,
+            Math.abs(signal.entryPrice - signal.sl)
           ).catch(err => console.error('Failed to record corrected WIN outcome:', err));
         } else if (originalOutcomeWasWin && newOutcomeIsLoss) {
           console.log(`   🧠 Submitting corrected LOSS outcome to learning engine (was false TP)`);
@@ -2023,7 +2058,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             'LOSS',
             signal.learningContext,
             undefined,
-            now - signalTs
+            now - signalTs,
+            undefined,
+            Math.abs(signal.entryPrice - signal.sl)
           ).catch(err => console.error('Failed to record corrected LOSS outcome:', err));
         } else if (!originalOutcomeWasLoss && newOutcomeIsLoss) {
           console.log(`   🧠 Submitting corrected LOSS outcome to learning engine`);
@@ -2034,7 +2071,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             'LOSS',
             signal.learningContext,
             undefined,
-            now - signalTs
+            now - signalTs,
+            undefined,
+            Math.abs(signal.entryPrice - signal.sl)
           ).catch(err => console.error('Failed to record corrected LOSS outcome:', err));
         }
       } else {
@@ -2178,7 +2217,15 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const spanDays = Math.max(spanMs / (1000 * 60 * 60 * 24), 1);
     const tradesPerDay = totalTrades > 0 ? totalTrades / spanDays : 0;
     const annualizationFactor = tradesPerDay > 0 ? Math.sqrt(tradesPerDay * 252) : 0;
-    const sharpeRatio = stdDev > 0 ? (avgReturn / stdDev) * annualizationFactor : 0;
+    // PHASE 2 (C5): the HEADLINE Sharpe is now the per-trade figure (mean R /
+    // stdev R). The annualized value is retained but demoted to a secondary
+    // field: on the audited sample it read 5.010 while the true per-trade Sharpe
+    // was 0.10, so every dashboard risk read was ~50x optimistic. Annualizing a
+    // per-trade series by sqrt(trades/day * 252) is mathematically fine as a
+    // scaling convention, but it must never be the number a human reads as
+    // "is this strategy good".
+    const sharpeRatio = stdDev > 0 ? avgReturn / stdDev : 0;
+    const sharpeRatioAnnualized = stdDev > 0 ? (avgReturn / stdDev) * annualizationFactor : 0;
 
     const healthMetrics = safeGetModelHealth();
 
@@ -2190,7 +2237,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       totalLoss: parseFloat(totalLoss.toFixed(2)),
       maxDrawdown: parseFloat(maxDrawdown.toFixed(2)),
       currentDrawdown: parseFloat(currentDrawdown.toFixed(2)),
-      sharpeRatio: parseFloat(sharpeRatio.toFixed(2)),
+      sharpeRatio: parseFloat(sharpeRatio.toFixed(3)),
+      sharpeRatioAnnualized: parseFloat(sharpeRatioAnnualized.toFixed(2)),
+      netExpectancyR: parseFloat(expectancy.toFixed(3)),
       profitFactor: parseFloat(profitFactor.toFixed(2)),
       winRate: parseFloat(winRate.toFixed(2)),
       averageWin: parseFloat(averageWin.toFixed(2)),
@@ -2807,7 +2856,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             updated = true;
             immediateUpdate = true;
           } else if (hasTP1 && !hasTP2 && price <= postTP1Lock && confirmSLHit(postTP1Lock)) {
-            console.log(`⚖️ 15-PIP PROFIT LOCK HIT: BUY signal ${signal.id.slice(-6)} retraced to entry+15 (${postTP1Lock.toFixed(1)}) after TP1 - banking lock @ ${price.toFixed(1)}`);
+            console.log(`⚖️ ${POST_TP1_PROFIT_LOCK_R}R PROFIT LOCK HIT: BUY signal ${signal.id.slice(-6)} retraced to lock ${postTP1Lock.toFixed(1)} after TP1 - banking lock @ ${price.toFixed(1)}`);
             newStatus = "SL_AFTER_BE";
             targetsHit = Math.max(targetsHit, 1);
             updated = true;
@@ -2855,7 +2904,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             updated = true;
             immediateUpdate = true;
           } else if (hasTP1 && !hasTP2 && price >= postTP1Lock && confirmSLHit(postTP1Lock)) {
-            console.log(`⚖️ 15-PIP PROFIT LOCK HIT: SELL signal ${signal.id.slice(-6)} retraced to entry-15 (${postTP1Lock.toFixed(1)}) after TP1 - banking lock @ ${price.toFixed(1)}`);
+            console.log(`⚖️ ${POST_TP1_PROFIT_LOCK_R}R PROFIT LOCK HIT: SELL signal ${signal.id.slice(-6)} retraced to lock ${postTP1Lock.toFixed(1)} after TP1 - banking lock @ ${price.toFixed(1)}`);
             newStatus = "SL_AFTER_BE";
             targetsHit = Math.max(targetsHit, 1);
             updated = true;
@@ -2928,7 +2977,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
               result,
               signal.learningContext,
               undefined,
-              now - new Date(signal.timestamp).getTime()
+              now - new Date(signal.timestamp).getTime(),
+              undefined,
+              Math.abs(signal.entryPrice - signal.sl)
             ).catch(err => {
               console.error(`Failed to record trade outcome for ${signal.id}:`, err);
             });

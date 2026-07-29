@@ -293,8 +293,8 @@ export default function TelemetryScreen() {
               />
               <MetricTile
                 icon={<Gauge size={16} color="#FFD700" />}
-                label="Sharpe"
-                value={performanceMetrics.sharpeRatio.toFixed(2)}
+                label="Sharpe / trade"
+                value={performanceMetrics.sharpeRatio.toFixed(3)}
                 accent="#FFD700"
               />
             </View>

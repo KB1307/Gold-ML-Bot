@@ -670,9 +670,9 @@ export default function DashboardScreen() {
                     </Text>
                   </View>
                   <View style={styles.metricBox}>
-                    <Text style={styles.metricLabel}>Sharpe Ratio</Text>
-                    <Text style={[styles.metricValue, { color: performanceMetrics.sharpeRatio >= 1.5 ? "#22c55e" : "#ef4444" }]}>
-                      {performanceMetrics.sharpeRatio.toFixed(2)}
+                    <Text style={styles.metricLabel}>Sharpe (per trade)</Text>
+                    <Text style={[styles.metricValue, { color: performanceMetrics.sharpeRatio >= 0.15 ? "#22c55e" : "#ef4444" }]}>
+                      {performanceMetrics.sharpeRatio.toFixed(3)}
                     </Text>
                   </View>
                 </View>

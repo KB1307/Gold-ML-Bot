@@ -147,7 +147,16 @@ export interface PerformanceMetrics {
   totalLoss: number;
   maxDrawdown: number;
   currentDrawdown: number;
+  /**
+   * PER-TRADE risk-adjusted return (mean R / stdev R). This is the honest
+   * headline figure: the previously-reported annualized number read 5.010 on a
+   * sample whose true per-trade Sharpe was 0.10, i.e. ~50x optimistic on every
+   * risk read. The annualized value is still exposed separately below.
+   */
   sharpeRatio: number;
+  sharpeRatioAnnualized?: number;
+  /** Mean per-trade expectancy in R AFTER the configured execution cost. */
+  netExpectancyR?: number;
   profitFactor: number;
   winRate: number;
   averageWin: number;
