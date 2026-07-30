@@ -7,7 +7,7 @@
  * Treatment: for SELL signals ONLY, move the entry 40 pips ($4.00) HIGHER
  * than the recorded entry (a limit-sell at a better price — the retest-up
  * the user keeps pointing at), then apply a fixed geometry:
- *   SL  = entry + $7.00  (70 pips above the new entry)
+ *   SL  = entry + $4.50  (45 pips above the new entry)
  *   TP1 = entry - $3.00  (30 pips)
  *   TP2 = entry - $6.00  (60 pips)
  *   TP3 = entry - $9.00  (90 pips)
@@ -205,21 +205,21 @@ const FOUR_HOURS_MS = 4 * 60 * 60 * 1000;
 const ENTRY_SHIFT_DOLLARS = 4.0;
 const ENTRY_SHIFT_PIPS = ENTRY_SHIFT_DOLLARS / PIP; // 40
 
-/** Fixed SELL geometry: SL 70 pips, TP1 30, TP2 60, TP3 90 pips. */
-const SL_DISTANCE_DOLLARS = 7.0;   // 70 pips
+/** Fixed SELL geometry: SL 45 pips, TP1 30, TP2 60, TP3 90 pips. */
+const SL_DISTANCE_DOLLARS = 4.5;   // 45 pips
 const TP1_DISTANCE_DOLLARS = 3.0;  // 30 pips
 const TP2_DISTANCE_DOLLARS = 6.0;  // 60 pips
 const TP3_DISTANCE_DOLLARS = 9.0;  // 90 pips
-const SL_DISTANCE_PIPS = SL_DISTANCE_DOLLARS / PIP;     // 70
+const SL_DISTANCE_PIPS = SL_DISTANCE_DOLLARS / PIP;     // 45
 const TP1_DISTANCE_PIPS = TP1_DISTANCE_DOLLARS / PIP;   // 30
 const TP2_DISTANCE_PIPS = TP2_DISTANCE_DOLLARS / PIP;   // 60
 const TP3_DISTANCE_PIPS = TP3_DISTANCE_DOLLARS / PIP;   // 90
 
-/** R multiples of the new SELL geometry (1R = $7.00 = 70 pips). */
+/** R multiples of the new SELL geometry (1R = $4.50 = 45 pips). */
 const NEW_R_DOLLARS = SL_DISTANCE_DOLLARS;
-const TP1_R = TP1_DISTANCE_DOLLARS / NEW_R_DOLLARS; // 0.4286
-const TP2_R = TP2_DISTANCE_DOLLARS / NEW_R_DOLLARS; // 0.8571
-const TP3_R = TP3_DISTANCE_DOLLARS / NEW_R_DOLLARS; // 1.2857
+const TP1_R = TP1_DISTANCE_DOLLARS / NEW_R_DOLLARS; // 0.6667
+const TP2_R = TP2_DISTANCE_DOLLARS / NEW_R_DOLLARS; // 1.3333
+const TP3_R = TP3_DISTANCE_DOLLARS / NEW_R_DOLLARS; // 2.0000
 
 /** Pre-registered baseline EV from Phase R1 (original-R units). */
 const BASELINE_EV_R = 0.0806;
