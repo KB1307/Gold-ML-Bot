@@ -1,4 +1,5 @@
 import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC, SignalLearningContext, DetectedSRZone } from "@/types/trading";
+import { pushShadowSellRecord, type ShadowSellRecord } from "@/services/shadowSignalService";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { fetchHistoricalData, trpcClient } from "@/lib/trpc";
 import { Platform } from "react-native";
@@ -3843,7 +3844,7 @@ class SignalGenerationEngine {
     if (!winRateDrift && this.lastDriftCheck > 0 && now - this.lastDriftCheck < DRIFT_CHECK_INTERVAL) {
       const nextCheck = new Date(this.lastDriftCheck + DRIFT_CHECK_INTERVAL);
       const hoursRemaining = ((this.lastDriftCheck + DRIFT_CHECK_INTERVAL - now) / (1000 * 60 * 60)).toFixed(1);
-      console.log(`⏰ Next Drift Check in ${hoursRemaining}h (scheduled: ${nextCheck.toLocaleTimeString()})`);
+      console.log(`⏰ Next Drift Check in ${hoursRemaining}h (scheduled: ${nextCheck.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })})`);
       return;
     }
     
@@ -5930,7 +5931,7 @@ class SignalGenerationEngine {
   }
   
   async generateSignal(
-    settings: { tp1Pips: number; tp2Pips: number; tp3Pips: number; slPips: number; minConfidence: number; useDynamicSL?: boolean; maxSLPips?: number },
+    settings: { tp1Pips: number; tp2Pips: number; tp3Pips: number; slPips: number; minConfidence: number; useDynamicSL?: boolean; maxSLPips?: number; allowShortSignals?: boolean },
     accountBalance: number = 10000,
     activeSignals: TradingSignal[] = []
   ): Promise<TradingSignal | null> {
@@ -6437,6 +6438,72 @@ class SignalGenerationEngine {
       tier: zone.tier ?? 'TIER_1_LOCAL',
     }));
     
+    // ── SELL SUPPRESSION CHECK ──────────────────────────────────────────────
+    // Placed AFTER all geometry is computed but BEFORE any internal state
+    // mutations (lastSignalType, lastSignalTime, cooldown, active-signal-lock,
+    // successfulSignalsGenerated). A suppressed SELL never consumes the
+    // cooldown or active-signal lock and can never block the next BUY.
+    // The engine still fully scored and geometry-computed this SELL — only
+    // the emission is suppressed. A shadow record is pushed (fire-and-forget)
+    // to the durable shadow_signals_v1 Supabase table so the decision stays
+    // monitorable against real forward data.
+    const allowShortSignals = settings.allowShortSignals !== false;
+    if (!allowShortSignals && analysis.signalType === 'SELL') {
+      const shadowId = `signal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const htfTrendForShadow = this.detectHTFTrend(features);
+      const ltfTrendForShadow = this.detectLTFTrend();
+      const utcHourForShadow = new Date().getUTCHours();
+      const sessionName = utcHourForShadow >= 0 && utcHourForShadow < 7 ? 'ASIA'
+        : utcHourForShadow >= 7 && utcHourForShadow < 12 ? 'LONDON'
+        : utcHourForShadow >= 12 && utcHourForShadow < 17 ? 'NY'
+        : 'NY_PM';
+      // +40pip shifted entry variant (77% fill rate in counterfactual)
+      const shiftPips = 40;
+      const entryShifted = entryPriceWithSlippage + shiftPips * pipValue;
+      const slShifted = entryShifted + 70 * pipValue; // 70-pip SL
+      const tp1Shifted = entryShifted - 30 * pipValue;
+      const tp2Shifted = entryShifted - 60 * pipValue;
+      const tp3Shifted = entryShifted - 90 * pipValue;
+
+      console.log(`\n${'='.repeat(80)}`);
+      console.log(`🚫 SELL SUPPRESSED (allowShortSignals=false)`);
+      console.log(`${'='.repeat(80)}`);
+      console.log(`📈 Type: SELL @ ${entryPriceWithSlippage.toFixed(1)} | Confidence: ${(analysis.confidence * 100).toFixed(1)}%`);
+      console.log(`📊 Shadow record pushed to shadow_signals_v1 for forward monitoring`);
+      console.log(`   Original:  entry=${entryPriceWithSlippage.toFixed(1)} SL=${sl.toFixed(1)} TP1=${tp1.toFixed(1)} TP2=${tp2.toFixed(1)} TP3=${tp3.toFixed(1)}`);
+      console.log(`   Shifted:   entry=${entryShifted.toFixed(1)} SL=${slShifted.toFixed(1)} TP1=${tp1Shifted.toFixed(1)} TP2=${tp2Shifted.toFixed(1)} TP3=${tp3Shifted.toFixed(1)}`);
+      console.log(`${'='.repeat(80)}\n`);
+
+      const shadowRecord: ShadowSellRecord = {
+        signalId: shadowId,
+        createdAt: Date.now(),
+        direction: 'SELL',
+        entry: parseFloat(entryPriceWithSlippage.toFixed(1)),
+        sl: parseFloat(sl.toFixed(1)),
+        tp1: parseFloat(tp1.toFixed(1)),
+        tp2: parseFloat(tp2.toFixed(1)),
+        tp3: parseFloat(tp3.toFixed(1)),
+        confidence: analysis.confidence,
+        entryShifted: parseFloat(entryShifted.toFixed(1)),
+        slShifted: parseFloat(slShifted.toFixed(1)),
+        tp1Shifted: parseFloat(tp1Shifted.toFixed(1)),
+        tp2Shifted: parseFloat(tp2Shifted.toFixed(1)),
+        tp3Shifted: parseFloat(tp3Shifted.toFixed(1)),
+        slMultiplier: parseFloat(atrMultiplier.toFixed(2)),
+        atr: features.atr,
+        regime: features.marketRegime.type,
+        sessionName,
+        hourUtc: utcHourForShadow,
+        srZonesSnapshot: srZonesSnapshot,
+        attentionScores: fullAttentionScores.map(f => ({ feature: f.feature, score: f.score })),
+        htfTrend: htfTrendForShadow,
+        ltfTrend: ltfTrendForShadow,
+        rsi: features.rsi,
+      };
+      pushShadowSellRecord(shadowRecord);
+      return null;
+    }
+
     const nowLocal = new Date();
     const timeString = `${nowLocal.getHours().toString().padStart(2, "0")}:${nowLocal.getMinutes().toString().padStart(2, "0")}`;
     
@@ -6565,7 +6632,7 @@ class SignalGenerationEngine {
         const previousCandle = this.fiveMinCandles[this.fiveMinCandles.length - 2];
         this.lastFiveMinCandleClose = previousCandle.timestamp;
         console.log(`📊 NEW 5-MIN CANDLE CLOSED:`);
-        console.log(`   Time: ${new Date(previousCandle.timestamp).toLocaleTimeString()}`);
+        console.log(`   Time: ${new Date(previousCandle.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
         console.log(`   O: ${previousCandle.open.toFixed(1)} | H: ${previousCandle.high.toFixed(1)} | L: ${previousCandle.low.toFixed(1)} | C: ${previousCandle.close.toFixed(1)}`);
       }
       

@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 
 import type { Settings, SignalStatus, TradingSignal } from "../types/trading";
 
-type SimulationSettings = Pick<Settings, "tp1Pips" | "tp2Pips" | "tp3Pips" | "slPips" | "minConfidence" | "useDynamicSL" | "maxSLPips">;
+type SimulationSettings = Pick<Settings, "tp1Pips" | "tp2Pips" | "tp3Pips" | "slPips" | "minConfidence" | "useDynamicSL" | "maxSLPips" | "allowShortSignals">;
 type TerminalStatus = Extract<SignalStatus, "CLOSED" | "SL_HIT" | "ALL_TARGETS_HIT" | "PARTIAL_WIN_SL_HIT">;
 
 interface SimulationBar {
@@ -80,6 +80,7 @@ const VERBOSE_SIMULATION = process.env.SIGNAL_SIM_VERBOSE === "1";
 // it always has been. This is test-harness-only -- it does not touch
 // signalEngine.ts or any production code path.
 const SIM_TIER0_SRZONES = process.env.SIGNAL_SIM_TIER0_SRZONES === "1";
+const SIM_ALLOW_SHORTS = process.env.SIGNAL_SIM_ALLOW_SHORTS === "1";
 const DEFAULT_SETTINGS: SimulationSettings = {
   tp1Pips: 20,
   tp2Pips: 40,
@@ -88,6 +89,7 @@ const DEFAULT_SETTINGS: SimulationSettings = {
   minConfidence: 0.85,
   useDynamicSL: true,
   maxSLPips: 60,
+  allowShortSignals: SIM_ALLOW_SHORTS,
 };
 const ACCOUNT_BALANCE = 10_000;
 const STEP_MS = 30_000;

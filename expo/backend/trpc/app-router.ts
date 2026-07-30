@@ -6,6 +6,7 @@ import { telegramRouter } from "./routes/telegram";
 import { economicCalendarRouter } from "./routes/economicCalendar";
 import { srZonesRouter } from "./routes/srZones";
 import { learningRouter } from "./routes/learning";
+import { shadowRouter } from "./routes/shadowSignals";
 
 export const appRouter = createTRPCRouter({
   example: exampleRouter,
@@ -15,6 +16,7 @@ export const appRouter = createTRPCRouter({
   economicCalendar: economicCalendarRouter,
   srZones: srZonesRouter,
   learning: learningRouter,
+  shadow: shadowRouter,
 });
 
 export type AppRouter = typeof appRouter;

@@ -48,6 +48,93 @@ export type Database = {
         }
         Relationships: []
       }
+      shadow_signals_v1: {
+        Row: {
+          id: number
+          signal_id: string
+          created_at: string
+          direction: string
+          entry: number
+          sl: number
+          tp1: number
+          tp2: number
+          tp3: number
+          confidence: number
+          entry_shifted: number
+          sl_shifted: number
+          tp1_shifted: number
+          tp2_shifted: number
+          tp3_shifted: number
+          sl_multiplier: number
+          atr: number
+          regime: string
+          session_name: string
+          hour_utc: number
+          sr_zones_snapshot: Json | null
+          attention_scores: Json | null
+          htf_trend: string | null
+          ltf_trend: string | null
+          rsi: number | null
+          feature_schema_version: number
+        }
+        Insert: {
+          id?: never
+          signal_id: string
+          created_at?: string
+          direction?: string
+          entry: number
+          sl: number
+          tp1: number
+          tp2: number
+          tp3: number
+          confidence: number
+          entry_shifted: number
+          sl_shifted: number
+          tp1_shifted: number
+          tp2_shifted: number
+          tp3_shifted: number
+          sl_multiplier: number
+          atr: number
+          regime: string
+          session_name: string
+          hour_utc: number
+          sr_zones_snapshot?: Json | null
+          attention_scores?: Json | null
+          htf_trend?: string | null
+          ltf_trend?: string | null
+          rsi?: number | null
+          feature_schema_version?: number
+        }
+        Update: {
+          id?: never
+          signal_id?: string
+          created_at?: string
+          direction?: string
+          entry?: number
+          sl?: number
+          tp1?: number
+          tp2?: number
+          tp3?: number
+          confidence?: number
+          entry_shifted?: number
+          sl_shifted?: number
+          tp1_shifted?: number
+          tp2_shifted?: number
+          tp3_shifted?: number
+          sl_multiplier?: number
+          atr?: number
+          regime?: string
+          session_name?: string
+          hour_utc?: number
+          sr_zones_snapshot?: Json | null
+          attention_scores?: Json | null
+          htf_trend?: string | null
+          ltf_trend?: string | null
+          rsi?: number | null
+          feature_schema_version?: number
+        }
+        Relationships: []
+      }
       sr_zones_v1: {
         Row: {
           confluence_score: number

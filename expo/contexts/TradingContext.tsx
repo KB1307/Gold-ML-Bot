@@ -53,6 +53,7 @@ const DEFAULT_SETTINGS: Settings = {
   useKellyCriterion: true,
   useDynamicSL: true,
   maxSLPips: 90,
+  allowShortSignals: false,
 };
 
 const DEFAULT_METRICS: PerformanceMetrics = {
@@ -337,6 +338,7 @@ function sanitizeSettings(settings: Settings): Settings {
     maxSLPips: typeof settings.maxSLPips === 'number' && Number.isFinite(settings.maxSLPips) ? settings.maxSLPips : DEFAULT_SETTINGS.maxSLPips,
     useDynamicSL: typeof settings.useDynamicSL === 'boolean' ? settings.useDynamicSL : DEFAULT_SETTINGS.useDynamicSL,
     enableTelegramNotifier: typeof settings.enableTelegramNotifier === 'boolean' ? settings.enableTelegramNotifier : DEFAULT_SETTINGS.enableTelegramNotifier,
+    allowShortSignals: typeof settings.allowShortSignals === 'boolean' ? settings.allowShortSignals : DEFAULT_SETTINGS.allowShortSignals,
   };
 }
 
@@ -1206,28 +1208,28 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         if (touchedEntryZone) {
           entryConfirmed = true;
           console.log(`   ✅ ENTRY CONFIRMED on bar ${i + 1}/${historicalBars.length}`);
-          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
           console.log(`      Bar H/L: ${bar.high.toFixed(1)}/${bar.low.toFixed(1)}`);
         } else if (tpReachedFromEntry || slReachedFromEntry) {
           entryConfirmed = true;
           console.log(`   ✅ ENTRY AUTO-CONFIRMED on bar ${i + 1}: price reached ${tpReachedFromEntry ? 'TP1' : 'SL'} so must have traversed entry zone`);
-          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
         } else if (crossedEntryByExtendedZone) {
           entryConfirmed = true;
           console.log(`   ✅ ENTRY CONFIRMED (extended ±${EXTENDED_ENTRY_TOLERANCE} tolerance) on bar ${i + 1} - gapped fill`);
-          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
           console.log(`      Bar H/L: ${bar.high.toFixed(1)}/${bar.low.toFixed(1)}`);
         } else {
           continue;
         }
       }
       
-      console.log(`   [Bar ${i+1}] ${new Date(bar.timestamp).toLocaleTimeString()} - H:${bar.high.toFixed(1)} L:${bar.low.toFixed(1)} C:${bar.close.toFixed(1)}`);
+      console.log(`   [Bar ${i+1}] ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })} - H:${bar.high.toFixed(1)} L:${bar.low.toFixed(1)} C:${bar.close.toFixed(1)}`);
       
       if (signal.type === "BUY") {
         if (bar.low <= signal.sl) {
           console.log(`   🚨 ORIGINAL SL HIT on bar ${i + 1}/${historicalBars.length}`);
-          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
           console.log(`      Bar Low: ${bar.low.toFixed(1)} <= Original SL: ${signal.sl.toFixed(1)}`);
 
           if (currentTargetsHit >= 2) {
@@ -1254,7 +1256,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         
         if (bar.high >= signal.tp3 && currentTargetsHit < 3) {
           console.log(`   🎯🎯🎯 TP3 HIT on bar ${i + 1}/${historicalBars.length}`);
-          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
           console.log(`      Bar High: ${bar.high.toFixed(1)} >= TP3: ${signal.tp3.toFixed(1)}`);
           currentStatus = "ALL_TARGETS_HIT";
           currentTargetsHit = 3;
@@ -1264,7 +1266,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           break;
         } else if (bar.high >= signal.tp2 && currentTargetsHit < 2) {
           console.log(`   🎯🎯 TP2 HIT on bar ${i + 1}/${historicalBars.length}`);
-          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
           console.log(`      Bar High: ${bar.high.toFixed(1)} >= TP2: ${signal.tp2.toFixed(1)}`);
           currentStatus = "TP2_HIT";
           currentTargetsHit = 2;
@@ -1273,7 +1275,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           console.log(`      📋 Breakeven indicator active at entry - trade continues to TP3 or original SL`);
         } else if (bar.high >= signal.tp1 && currentTargetsHit < 1) {
           console.log(`   🎯 TP1 HIT on bar ${i + 1}/${historicalBars.length}`);
-          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
           console.log(`      Bar High: ${bar.high.toFixed(1)} >= TP1: ${signal.tp1.toFixed(1)}`);
           currentStatus = "TP1_HIT";
           currentTargetsHit = 1;
@@ -1301,7 +1303,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       } else {
         if (bar.high >= signal.sl) {
           console.log(`   🚨 ORIGINAL SL HIT on bar ${i + 1}/${historicalBars.length}`);
-          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
           console.log(`      Bar High: ${bar.high.toFixed(1)} >= Original SL: ${signal.sl.toFixed(1)}`);
 
           if (currentTargetsHit >= 2) {
@@ -1328,7 +1330,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         
         if (bar.low <= signal.tp3 && currentTargetsHit < 3) {
           console.log(`   🎯🎯🎯 TP3 HIT on bar ${i + 1}/${historicalBars.length}`);
-          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
           console.log(`      Bar Low: ${bar.low.toFixed(1)} <= TP3: ${signal.tp3.toFixed(1)}`);
           currentStatus = "ALL_TARGETS_HIT";
           currentTargetsHit = 3;
@@ -1338,7 +1340,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           break;
         } else if (bar.low <= signal.tp2 && currentTargetsHit < 2) {
           console.log(`   🎯🎯 TP2 HIT on bar ${i + 1}/${historicalBars.length}`);
-          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
           console.log(`      Bar Low: ${bar.low.toFixed(1)} <= TP2: ${signal.tp2.toFixed(1)}`);
           currentStatus = "TP2_HIT";
           currentTargetsHit = 2;
@@ -1347,7 +1349,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           console.log(`      📋 Breakeven indicator active at entry - trade continues to TP3 or original SL`);
         } else if (bar.low <= signal.tp1 && currentTargetsHit < 1) {
           console.log(`   🎯 TP1 HIT on bar ${i + 1}/${historicalBars.length}`);
-          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString()}`);
+          console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
           console.log(`      Bar Low: ${bar.low.toFixed(1)} <= TP1: ${signal.tp1.toFixed(1)}`);
           currentStatus = "TP1_HIT";
           currentTargetsHit = 1;
@@ -1400,7 +1402,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     console.log(`   Exit Price: ${exitPrice.toFixed(1)}`);
     console.log(`   Outcome: ${outcomeResult || 'N/A'}`);
     if (tp1HitTime) {
-      console.log(`   TP1 Hit Time: ${new Date(tp1HitTime).toLocaleTimeString()}`);
+      console.log(`   TP1 Hit Time: ${new Date(tp1HitTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
     }
     
     return {
@@ -2590,7 +2592,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     const now = new Date();
     
     console.log(`\n${'='.repeat(60)}`);
-    console.log(`🔍 SIGNAL CHECK [${now.toLocaleTimeString()}]`);
+    console.log(`🔍 SIGNAL CHECK [${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}]`);
     console.log(`${'='.repeat(60)}`);
     console.log(`Market Open: ${outlook.isMarketOpen}`);
     console.log(`Current Session: ${outlook.currentSession}`);

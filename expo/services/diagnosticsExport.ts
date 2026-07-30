@@ -5,6 +5,23 @@ import type { DiagnosticEvent } from "@/services/diagnosticEventStore";
 export type ModelHealthMetrics = ReturnType<typeof signalEngine.getModelHealthMetrics>;
 export type RawModelWeights = { weights: [string, number][]; lastTrainingTime: number } | null;
 
+export interface ShadowSellSummary {
+  count: number;
+  dateRange: { oldest: string; newest: string } | null;
+  sessionBreakdown: Record<string, number>;
+  htfBreakdown: Record<string, number>;
+  avgGeometry: {
+    entry: number;
+    sl: number;
+    tp1: number;
+    tp2: number;
+    tp3: number;
+    atr: number;
+    confidence: number;
+  } | null;
+  recent: Array<Record<string, unknown>>;
+}
+
 export interface DiagnosticsExportInput {
   signalHistory: TradingSignal[];
   modelWeights: RawModelWeights;
@@ -16,6 +33,12 @@ export interface DiagnosticsExportInput {
    * still compile and produce a valid export (section just reports empty).
    */
   diagnosticEvents?: DiagnosticEvent[];
+  /**
+   * Shadow SELL suppression summary, sourced from the durable
+   * shadow_signals_v1 Supabase table. Optional so callers without
+   * a backend connection still produce a valid export.
+   */
+  shadowSellSummary?: ShadowSellSummary | null;
 }
 
 const RULE = "-".repeat(70);
@@ -140,6 +163,49 @@ function formatModelHealthSection(modelHealth: ModelHealthMetrics): string {
   return lines.join("\n");
 }
 
+function formatShadowSellSection(summary: ShadowSellSummary | null | undefined): string {
+  const lines: string[] = [RULE, "SECTION 6 — SHADOW SELL SUPPRESSION SUMMARY (shadow_signals_v1)", RULE];
+  if (!summary || summary.count === 0) {
+    lines.push("No SELL signals suppressed (or allowShortSignals is currently true).");
+    lines.push("When allowShortSignals=false, qualifying SELLs are fully scored but not emitted.");
+    lines.push("A shadow record is pushed to shadow_signals_v1 for forward monitoring.");
+    return lines.join("\n");
+  }
+  lines.push(`Total suppressed SELLs: ${summary.count}`);
+  if (summary.dateRange) {
+    lines.push(`Date range: ${summary.dateRange.oldest} to ${summary.dateRange.newest}`);
+  }
+  lines.push("");
+  lines.push("Session breakdown:");
+  for (const [s, c] of Object.entries(summary.sessionBreakdown).sort((a, b) => b[1] - a[1])) {
+    lines.push(`  ${s}: ${c}`);
+  }
+  lines.push("");
+  lines.push("HTF trend breakdown:");
+  for (const [h, c] of Object.entries(summary.htfBreakdown).sort((a, b) => b[1] - a[1])) {
+    lines.push(`  ${h}: ${c}`);
+  }
+  if (summary.avgGeometry) {
+    lines.push("");
+    lines.push("Aggregate geometry (avg):");
+    lines.push(`  entry=${summary.avgGeometry.entry.toFixed(1)}  sl=${summary.avgGeometry.sl.toFixed(1)}  atr=${summary.avgGeometry.atr.toFixed(2)}`);
+    lines.push(`  tp1=${summary.avgGeometry.tp1.toFixed(1)}  tp2=${summary.avgGeometry.tp2.toFixed(1)}  tp3=${summary.avgGeometry.tp3.toFixed(1)}`);
+    lines.push(`  avg confidence=${(summary.avgGeometry.confidence * 100).toFixed(1)}%`);
+  }
+  lines.push("");
+  lines.push(`Most recent ${summary.recent.length} record(s) (spot-check):`);
+  for (const r of summary.recent) {
+    const ts = r.created_at as string;
+    const entry = Number(r.entry);
+    const sl = Number(r.sl);
+    const conf = Number(r.confidence);
+    const sess = r.session_name as string;
+    const htf = (r.htf_trend as string) ?? "?";
+    lines.push(`  [${ts}] SELL @ ${entry.toFixed(1)}  SL=${sl.toFixed(1)}  conf=${(conf * 100).toFixed(1)}%  session=${sess}  htf=${htf}`);
+  }
+  return lines.join("\n");
+}
+
 function formatDiagnosticEventsSection(events: DiagnosticEvent[] | undefined): string {
   const lines: string[] = [RULE, "SECTION 5 — DIAGNOSTIC RESOLUTION EVENT LOG (rolling 24h)", RULE];
   if (!events || events.length === 0) {
@@ -198,6 +264,8 @@ export function buildDiagnosticsExportText(input: DiagnosticsExportInput): strin
     formatPerformanceMetricsSection(input.performanceMetrics),
     "",
     formatDiagnosticEventsSection(input.diagnosticEvents),
+    "",
+    formatShadowSellSection(input.shadowSellSummary),
     "",
     DRULE,
     "END OF EXPORT",

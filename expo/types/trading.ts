@@ -306,4 +306,13 @@ export interface Settings {
   useKellyCriterion: boolean;
   useDynamicSL: boolean;
   maxSLPips: number;
+  /**
+   * SELL suppression toggle (default false). When false, qualifying SELL
+   * signals are fully scored and geometry-computed but NOT emitted as live
+   * signals and NOT sent to Telegram. A shadow record is pushed to the
+   * durable shadow_signals_v1 Supabase table so the decision stays
+   * monitorable against real forward data. Gold's long bias is structural
+   * today but could change — this is flippable back on without a code change.
+   */
+  allowShortSignals: boolean;
 }

@@ -146,6 +146,7 @@ export default function SettingsScreen() {
       useDynamicSL,
       minConfidence: normalizedMinConfidence,
       numberOfTPs,
+      allowShortSignals: settings.allowShortSignals,
     });
 
     setMinConfidence((normalizedMinConfidence * 100).toFixed(0));
@@ -284,10 +285,14 @@ export default function SettingsScreen() {
     setIsUrlCopied(false);
 
     try {
-      const [modelWeights, modelHealth, diagnosticEvents] = await Promise.all([
+      const [modelWeights, modelHealth, diagnosticEvents, shadowSellSummary] = await Promise.all([
         signalEngine.getRawModelWeightsForExport(),
         Promise.resolve(signalEngine.getModelHealthMetrics()),
         getRecentDiagnosticEvents(1000).catch(() => []),
+        fetch(`${getApiOrigin()}/api/trpc/shadow.summary?input=${encodeURIComponent(JSON.stringify({ json: { days: 30 } }))}`)
+          .then(r => r.ok ? r.json() : null)
+          .then(d => d?.result?.data?.json ?? null)
+          .catch(() => null),
       ]);
 
       const content = buildDiagnosticsExportText({
@@ -296,6 +301,7 @@ export default function SettingsScreen() {
         modelHealth,
         performanceMetrics,
         diagnosticEvents,
+        shadowSellSummary,
       });
 
       const response = await fetch(`${getApiOrigin()}/api/trpc/diagnostics.saveExport`, {
@@ -742,6 +748,40 @@ export default function SettingsScreen() {
                 ]}>
                   <Text style={styles.statusBadgeText}>
                     {settings.enableTelegramNotifier ? "NOTIFIER ON" : "NOTIFIER OFF"}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <Shield size={20} color="#FFD700" />
+                <Text style={styles.sectionTitle}>Signal Direction Control</Text>
+              </View>
+
+              <View style={styles.switchRow}>
+                <View style={styles.switchInfo}>
+                  <Text style={styles.switchLabel}>Allow Short (SELL) Signals</Text>
+                  <Text style={styles.switchHelper}>
+                    Default OFF. Six counterfactuals confirmed SELLs are structurally marginal on 1-min gold. When off, qualifying SELLs are fully scored but not emitted — a shadow record is logged for forward monitoring.
+                  </Text>
+                </View>
+                <Switch
+                  value={settings.allowShortSignals}
+                  onValueChange={(value) => updateSettings({ allowShortSignals: value })}
+                  trackColor={{ false: "#333", true: "rgba(255, 215, 0, 0.3)" }}
+                  thumbColor={settings.allowShortSignals ? "#FFD700" : "#666"}
+                  ios_backgroundColor="#333"
+                />
+              </View>
+
+              <View style={styles.notifierStatusRow}>
+                <View style={[
+                  styles.statusBadge,
+                  settings.allowShortSignals ? styles.statusBadgeActive : styles.statusBadgeInactive,
+                ]}>
+                  <Text style={styles.statusBadgeText}>
+                    {settings.allowShortSignals ? "SELLS ENABLED" : "SELLS SUPPRESSED"}
                   </Text>
                 </View>
               </View>

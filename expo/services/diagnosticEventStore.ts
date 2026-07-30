@@ -39,7 +39,14 @@ export type DiagnosticEventType =
    * for this cycle (see detail.ohlcSourceDetail). Not tied to a specific
    * signal, so signalId uses the '__generation__' sentinel.
    */
-  | 'GENERATION_OHLC_SOURCE';
+  | 'GENERATION_OHLC_SOURCE'
+  /**
+   * SELL suppression: fired when a qualifying SELL is suppressed by
+   * allowShortSignals=false. The durable record of truth is the
+   * shadow_signals_v1 Supabase table; this event provides a local
+   * in-memory trace for the rolling 24h diagnostic log.
+   */
+  | 'SHADOW_SELL_SUPPRESSED';
 
 export interface DiagnosticEvent {
   ts: number;
