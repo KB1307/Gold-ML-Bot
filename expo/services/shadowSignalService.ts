@@ -63,6 +63,31 @@ export interface ShadowSellRecord {
  */
 let shadowClient: SupabaseClient | null = null;
 
+/**
+ * Lightweight in-memory counter of shadow-write failures since process start.
+ * Incremented every time a Supabase insert fails or throws. Surfaced in the
+ * diagnostics export (SECTION 6) so a broken shadow path is VISIBLE in a
+ * future export rather than silent. Reset only on full app reload.
+ */
+let shadowWriteFailures = 0;
+
+/**
+ * Returns the number of shadow-write failures since process start.
+ * Used by the diagnostics export to surface a broken write path.
+ */
+export function getShadowWriteFailures(): number {
+  return shadowWriteFailures;
+}
+
+/**
+ * Returns the number of shadow records successfully pushed since process start.
+ * Paired with the failure counter so the export shows success:failure ratio.
+ */
+let shadowWriteSuccesses = 0;
+export function getShadowWriteSuccesses(): number {
+  return shadowWriteSuccesses;
+}
+
 const getShadowClient = (): SupabaseClient | null => {
   if (shadowClient) return shadowClient;
 
@@ -135,14 +160,18 @@ export function pushShadowSellRecord(record: ShadowSellRecord): void {
         .from('shadow_signals_v1')
         .insert(toRow(record));
       if (error) {
+        shadowWriteFailures += 1;
         console.warn(
-          '[ShadowSell] insert failed (fire-and-forget):',
+          '[ShadowSell] SHADOW_WRITE_FAILED (fire-and-forget):',
           error instanceof Error ? error.message : String(error),
         );
+      } else {
+        shadowWriteSuccesses += 1;
       }
     } catch (err: unknown) {
+      shadowWriteFailures += 1;
       console.warn(
-        '[ShadowSell] insert error (fire-and-forget):',
+        '[ShadowSell] SHADOW_WRITE_ERROR (fire-and-forget):',
         err instanceof Error ? err.message : 'unknown',
       );
     }

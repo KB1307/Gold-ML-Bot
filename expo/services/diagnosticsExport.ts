@@ -39,6 +39,14 @@ export interface DiagnosticsExportInput {
    * a backend connection still produce a valid export.
    */
   shadowSellSummary?: ShadowSellSummary | null;
+  /**
+   * Lightweight in-memory counters from the shadow write path
+   * (shadowSignalService.ts), capturing fire-and-forget insert success/failure
+   * since process start. Surfacing these makes a BROKEN shadow write path
+   * VISIBLE in a future export rather than silent. Both default to 0.
+   */
+  shadowWriteFailures?: number;
+  shadowWriteSuccesses?: number;
 }
 
 const RULE = "-".repeat(70);
@@ -163,8 +171,25 @@ function formatModelHealthSection(modelHealth: ModelHealthMetrics): string {
   return lines.join("\n");
 }
 
-function formatShadowSellSection(summary: ShadowSellSummary | null | undefined): string {
+function formatShadowSellSection(
+  summary: ShadowSellSummary | null | undefined,
+  writeFailures: number,
+  writeSuccesses: number,
+): string {
   const lines: string[] = [RULE, "SECTION 6 — SHADOW SELL SUPPRESSION SUMMARY (shadow_signals_v1)", RULE];
+  // Write-path health — surfaced FIRST so a broken path is immediately visible.
+  if (writeFailures > 0) {
+    lines.push(`⚠ SHADOW WRITE PATH FAILURES: ${writeFailures} since process start (successes: ${writeSuccesses}).`);
+    lines.push(`  The fire-and-forget insert to shadow_signals_v1 has been failing. Suppressed SELLs`);
+    lines.push(`  are NOT being logged durably. Check: Supabase reachability, anon-key validity, and`);
+    lines.push(`  whether migration 003_shadow_signals_anon_insert.sql is applied. Liveness check:`);
+    lines.push(`  query shadow_signals_v1 for rows in the last N hours; if suppression is active and`);
+    lines.push(`  zero rows exist, the write path is broken.`);
+    lines.push("");
+  } else {
+    lines.push(`Shadow write path health: OK (successes: ${writeSuccesses}, failures: 0 since process start).`);
+    lines.push("");
+  }
   if (!summary || summary.count === 0) {
     lines.push("No SELL signals suppressed (or allowShortSignals is currently true).");
     lines.push("When allowShortSignals=false, qualifying SELLs are fully scored but not emitted.");
@@ -265,7 +290,11 @@ export function buildDiagnosticsExportText(input: DiagnosticsExportInput): strin
     "",
     formatDiagnosticEventsSection(input.diagnosticEvents),
     "",
-    formatShadowSellSection(input.shadowSellSummary),
+    formatShadowSellSection(
+      input.shadowSellSummary,
+      input.shadowWriteFailures ?? 0,
+      input.shadowWriteSuccesses ?? 0,
+    ),
     "",
     DRULE,
     "END OF EXPORT",

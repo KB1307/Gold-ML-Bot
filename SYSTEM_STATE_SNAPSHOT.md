@@ -52,6 +52,8 @@ The shadow record captures the full would-be geometry PLUS the +40pip entry-shif
 - Regression suite: `runChecks` green.
 - Service key leak check: grep for key VALUE across all source files = 0 matches; grep for key NAME = only in `expo/backend/` and `expo/scripts/` (never imported by client code); `shadowSignalService.ts` uses only `EXPO_PUBLIC_SUPABASE_ANON_KEY`.
 
+**Write-path failure visibility (durability, verified 2026-07-31):** the shadow write is fire-and-forget and never blocks generation, but a failure is NOT silent. On insert failure or throw, `pushShadowSellRecord` (a) logs a distinct, greppable warning tagged `[ShadowSell] SHADOW_WRITE_FAILED` / `SHADOW_WRITE_ERROR`, and (b) increments an in-memory counter (`shadowWriteFailures` in `shadowSignalService.ts`). Both `shadowWriteFailures` and `shadowWriteSuccesses` are surfaced in the diagnostics export — SECTION 6 prints the counts at the top of the shadow section, with an explicit ⚠ alert line and remediation instructions when `shadowWriteFailures > 0`. This makes a broken shadow path VISIBLE in a future export rather than invisible. The counters reset on app reload (they are process-lifetime, not persistent — by design, since they monitor the current process's write path).
+
 ---
 
 ## 3. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
@@ -73,3 +75,16 @@ Specifically:
 2. **Run forward for at least 2-3 weeks** on the corrected engine (gold_m1_bars as primary OHLC + SELL suppressed + shadow logging live).
 3. **Re-export diagnostics** and re-run the drift-veto-on-BUY analysis against the new forward data before deciding whether to adjust the veto threshold.
 4. **Monitor `shadow_signals_v1`** to confirm suppression is still the right call — if a future regime shift toward gold weakness is detected (shadow SELLs start showing positive EV against real bars), flip `allowShortSignals` back on.
+
+### LIVENESS CHECK — repeatable, anyone can run later
+
+To confirm shadow logging is actually working at any later date (no need to re-derive the architecture):
+
+```sql
+-- In the Supabase SQL editor or via the anon client:
+SELECT count(*) AS recent_shadow_sells
+FROM shadow_signals_v1
+WHERE created_at > now() - interval '6 hours';
+```
+
+**Interpretation:** if `allowShortSignals` is currently `false` (the default) and `recent_shadow_sells = 0`, the shadow write path is broken — suppressed SELLs are NOT being logged durably. Check in order: (1) the Supabase project is reachable and `shadow_signals_v1` exists (migration `003_shadow_signals_anon_insert.sql` applied); (2) `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY` are set in the client env; (3) the RLS INSERT policy on `shadow_signals_v1` is still present (`SELECT polname FROM pg_policies WHERE tablename = 'shadow_signals_v1'`). If all three are fine, export diagnostics from the app and check SECTION 6 — the `shadowWriteFailures` counter will be > 0 if the live process has been seeing insert failures. A zero-rows + zero-failures result means suppression is genuinely inactive (no qualifying SELLs in the window), not a broken path.
