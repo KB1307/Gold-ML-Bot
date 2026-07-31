@@ -47,6 +47,38 @@ export interface DiagnosticsExportInput {
    */
   shadowWriteFailures?: number;
   shadowWriteSuccesses?: number;
+  /**
+   * B2(c): TIER_0 S/R zone read-path health, from srZoneTier0Service.ts plus the
+   * engine's degradation counters. TIER_0 failed THREE separate ways on 31 July
+   * (backend 503 on both URLs, sr_zones_v1 empty during the signal window, and
+   * every surviving zone below the 0.3 consumer threshold) and every one of them
+   * was INVISIBLE in the export. Surfacing these makes a silent fallback to
+   * TIER_1_LOCAL micro-zones impossible to miss.
+   */
+  tier0ZoneHealth?: Tier0ZoneHealth | null;
+}
+
+/** TIER_0 S/R zone read-path health counters for SECTION 7. */
+export interface Tier0ZoneHealth {
+  reads: number;
+  successes: number;
+  failures: number;
+  notConfigured: number;
+  readErrors: number;
+  emptyTable: number;
+  allExpired: number;
+  belowThreshold: number;
+  tier1FallbackUses: number;
+  lastFailureReason: string | null;
+  lastFailureDetail: string | null;
+  lastFailureAt: number | null;
+  lastSuccessAt: number | null;
+  lastZoneCount: number;
+  lastMaxReactionStrength: number | null;
+  /** From the engine: signals blocked because a TIER_1-only zone was dominant. */
+  tier1DominantSuppressions?: number;
+  /** From the engine: signals emitted with the degraded-confidence penalty. */
+  tier0DegradedPenaltyApplications?: number;
 }
 
 const RULE = "-".repeat(70);
@@ -267,6 +299,58 @@ function formatPerformanceMetricsSection(performanceMetrics: PerformanceMetrics)
   return lines.join("\n");
 }
 
+function formatTier0ZoneSection(h: Tier0ZoneHealth | null | undefined): string {
+  const lines: string[] = [RULE, "SECTION 7 — TIER_0 S/R ZONE READ-PATH HEALTH (sr_zones_v1)", RULE];
+  if (!h) {
+    lines.push("No TIER_0 zone health data supplied by the caller.");
+    lines.push("NOTE: this is itself a gap — if the engine ran, this section should be populated.");
+    return lines.join("\n");
+  }
+
+  lines.push("Read path: DIRECT Supabase sr_zones_v1 via the anon key (no Rork backend).");
+  lines.push("The backend is retained ONLY for the refresh/compute WRITE, which needs the service key.");
+  lines.push("");
+
+  if (h.failures > 0 || h.tier1FallbackUses > 0) {
+    lines.push(`⚠ TIER_0 ZONE PATH DEGRADED: ${h.failures} failed read(s), ${h.tier1FallbackUses} generation pass(es) fell back to TIER_1_LOCAL.`);
+    lines.push("  TIER_1_LOCAL zones are computed from ~100 minutes of in-memory M1 samples. That input");
+    lines.push("  supplied the dominant scoring feature in all four losing BUYs on 31 July 2026.");
+    lines.push("");
+    lines.push("  Failure breakdown:");
+    lines.push(`    NOT_CONFIGURED (missing url/anon key):        ${h.notConfigured}`);
+    lines.push(`    READ_ERROR (Supabase unreachable / RLS):      ${h.readErrors}`);
+    lines.push(`    EMPTY_TABLE (refresh WRITE never populated):  ${h.emptyTable}`);
+    lines.push(`    ALL_EXPIRED (refresh WRITE stale):            ${h.allExpired}`);
+    lines.push(`    BELOW_CONSUMER_THRESHOLD (rows too weak):     ${h.belowThreshold}`);
+    if (h.lastFailureReason) {
+      lines.push("");
+      lines.push(`  Most recent failure: ${h.lastFailureReason}`);
+      lines.push(`    detail: ${h.lastFailureDetail ?? "n/a"}`);
+      lines.push(`    at: ${h.lastFailureAt ? safeDate(h.lastFailureAt) : "n/a"}`);
+    }
+  } else {
+    lines.push(`TIER_0 zone path health: OK (${h.successes} successful read(s) of ${h.reads}, 0 failures, 0 TIER_1 fallbacks).`);
+  }
+
+  lines.push("");
+  lines.push(`Reads attempted: ${h.reads}    successes: ${h.successes}    failures: ${h.failures}`);
+  lines.push(`Last successful read: ${h.lastSuccessAt ? safeDate(h.lastSuccessAt) : "never"}`);
+  lines.push(`Zones usable at last success: ${h.lastZoneCount}`);
+  lines.push(
+    `Max reactionStrength last seen: ${h.lastMaxReactionStrength !== null ? h.lastMaxReactionStrength.toFixed(3) : "n/a"}  (consumer threshold is 0.30)`,
+  );
+  lines.push("");
+  lines.push("B2(c) degradation policy outcomes:");
+  lines.push(`  signals SUPPRESSED (TIER_1-only zone was the dominant feature): ${h.tier1DominantSuppressions ?? 0}`);
+  lines.push(`  signals emitted with reduced-confidence penalty (x0.85):        ${h.tier0DegradedPenaltyApplications ?? 0}`);
+  lines.push("");
+  lines.push("Greppable log tags for this path: [SRZoneTier0] TIER0_UNAVAILABLE,");
+  lines.push("  [SRZoneTier0] TIER0_FALLBACK_TO_TIER1, [SRZoneTier0] SIGNAL_SUPPRESSED.");
+  lines.push("Liveness check (source of truth, independent of this export):");
+  lines.push("  select count(*), max(updated_at), max(reaction_strength) from sr_zones_v1;");
+  return lines.join("\n");
+}
+
 /**
  * Builds the full human-readable diagnostics export as plain text (not JSON),
  * combining signal history, raw persisted model weights, model health/drift
@@ -295,6 +379,8 @@ export function buildDiagnosticsExportText(input: DiagnosticsExportInput): strin
       input.shadowWriteFailures ?? 0,
       input.shadowWriteSuccesses ?? 0,
     ),
+    "",
+    formatTier0ZoneSection(input.tier0ZoneHealth),
     "",
     DRULE,
     "END OF EXPORT",

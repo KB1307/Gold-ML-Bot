@@ -68,21 +68,49 @@ async function computeZonesFromBars(): Promise<ServerSRZone[] | null> {
   const now = Date.now();
   const fromTs = new Date(now - LOOKBACK_HOURS * 60 * 60 * 1000).toISOString();
 
-  const { data: bars, error } = await client
-    .from("gold_m1_bars")
-    .select("timestamp, open, high, low, close")
-    .gte("timestamp", fromTs)
-    .order("timestamp", { ascending: true })
-    .limit(10000);
+  // B2(b) FIX — PostgREST caps every response at 1000 rows regardless of the
+  // requested .limit(). The previous `.limit(10000)` therefore returned only
+  // 1000 rows, and because the order is ASCENDING those were the OLDEST 1000
+  // bars of the 120h window - the compute window ended ~103h before now, so
+  // every zone's last_touch_ts was days stale and the 18h-half-life recency
+  // decay crushed reactionStrength to ~0.02, far under the 0.3 threshold every
+  // downstream consumer requires. Measured live: capped=1000 bars -> 0 zones
+  // over 0.3; paginated=7040 bars -> 20 zones over 0.3 (max 0.902).
+  // Paginate explicitly so the compute actually sees the most recent bars.
+  const bars: { timestamp: string; open: number; high: number; low: number; close: number }[] = [];
+  const PAGE_SIZE = 1000;
+  let pageOffset = 0;
+  for (;;) {
+    const { data: page, error } = await client
+      .from("gold_m1_bars")
+      .select("timestamp, open, high, low, close")
+      .gte("timestamp", fromTs)
+      .order("timestamp", { ascending: true })
+      .range(pageOffset, pageOffset + PAGE_SIZE - 1);
 
-  if (error) {
-    console.error("[SR-ZONES] gold_m1_bars fetch failed:", error.message);
+    if (error) {
+      console.error("[SR-ZONES] gold_m1_bars fetch failed:", error.message);
+      return null;
+    }
+    const rows = (page ?? []) as typeof bars;
+    bars.push(...rows);
+    if (rows.length < PAGE_SIZE) break;
+    pageOffset += PAGE_SIZE;
+    // Hard ceiling: 120h of M1 bars is at most 7200 rows. This guards against
+    // an unbounded loop if the range semantics ever change.
+    if (pageOffset > 20000) {
+      console.warn("[SR-ZONES] pagination ceiling hit at 20000 rows - stopping");
+      break;
+    }
+  }
+
+  if (bars.length < 50) {
+    console.log(`[SR-ZONES] Not enough durable bars yet (${bars.length}) - skipping compute`);
     return null;
   }
-  if (!bars || bars.length < 50) {
-    console.log(`[SR-ZONES] Not enough durable bars yet (${bars?.length ?? 0}) - skipping compute`);
-    return null;
-  }
+  console.log(
+    `[SR-ZONES] Fetched ${bars.length} durable bar(s) across ${Math.ceil(bars.length / PAGE_SIZE)} page(s); window ${bars[0].timestamp} -> ${bars[bars.length - 1].timestamp}`,
+  );
 
   const highs = bars.map((b) => Number(b.high));
   const lows = bars.map((b) => Number(b.low));

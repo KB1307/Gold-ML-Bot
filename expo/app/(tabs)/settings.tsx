@@ -15,6 +15,7 @@ import { buildDiagnosticsExportText } from "@/services/diagnosticsExport";
 import { getApiOrigin } from "@/lib/trpc";
 import { getRecentDiagnosticEvents } from "@/services/diagnosticEventStore";
 import { getShadowWriteFailures, getShadowWriteSuccesses } from "@/services/shadowSignalService";
+import { getTier0Counters } from "@/services/srZoneTier0Service";
 
 function getProviderLabel(provider: unknown): string {
   if (provider === "google") {
@@ -305,6 +306,10 @@ export default function SettingsScreen() {
         shadowSellSummary,
         shadowWriteFailures: getShadowWriteFailures(),
         shadowWriteSuccesses: getShadowWriteSuccesses(),
+        tier0ZoneHealth: {
+          ...getTier0Counters(),
+          ...signalEngine.getTier0DegradationStats(),
+        },
       });
 
       const response = await fetch(`${getApiOrigin()}/api/trpc/diagnostics.saveExport`, {

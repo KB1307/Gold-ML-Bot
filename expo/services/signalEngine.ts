@@ -7,6 +7,7 @@ import { appendOutcome as appendOutcomeToStore, getAllOutcomes as getAllOutcomes
 import { resolveSignalWithBars } from "@/services/signalResolver";
 import type { OhlcBar } from "@/services/barStore";
 import { appendDiagnosticEvent } from "@/services/diagnosticEventStore";
+import { fetchTier0SRZones, recordTier0FallbackUse } from "@/services/srZoneTier0Service";
 
 /**
  * STEP 2 (GC=F/spot investigation): GENERATION_OHLC_SOURCE events aren't tied to
@@ -1192,6 +1193,78 @@ class SignalGenerationEngine {
   private tier0SRZonesFetchedAt: number = 0;
   private lastTier0SRZonesFetchAttemptAt: number = 0;
   private lastServerSRZonesRefreshTriggerAt: number = 0;
+  /**
+   * B2(c): true when the most recent detectSRZones() pass had to score off
+   * TIER_1_LOCAL micro-zones because TIER_0 was empty/stale/unreachable/too weak.
+   * Consumed by the emission path to suppress or penalise signals that lean on
+   * ~100 minutes of in-memory micro-structure.
+   */
+  private tier0DegradedThisPass: boolean = false;
+  /** Signals suppressed because a TIER_1-only zone was the dominant feature. */
+  private tier1DominantSuppressions: number = 0;
+  /** Signals emitted with the reduced-confidence TIER_0-degraded penalty applied. */
+  private tier0DegradedPenaltyApplications: number = 0;
+  /** Confidence multiplier when TIER_0 is degraded but a TIER_1 zone is NOT dominant. */
+  private static readonly TIER0_DEGRADED_CONFIDENCE_MULTIPLIER = 0.85;
+
+  /** B2(c) counters, surfaced in the diagnostics export. */
+  public getTier0DegradationStats(): { tier1DominantSuppressions: number; tier0DegradedPenaltyApplications: number; tier0DegradedNow: boolean } {
+    return {
+      tier1DominantSuppressions: this.tier1DominantSuppressions,
+      tier0DegradedPenaltyApplications: this.tier0DegradedPenaltyApplications,
+      tier0DegradedNow: this.tier0DegradedThisPass,
+    };
+  }
+
+  /**
+   * B2(c) POLICY. When TIER_0 zones are unavailable the engine scores off
+   * TIER_1_LOCAL micro-zones built from ~100 minutes of in-memory M1 samples.
+   * On 31 July that input supplied the top-scoring feature (SR ZONE STRONG
+   * REVERSAL, 28-37 pts) in all four losing BUYs, so continuing to trade at
+   * full confidence off it is itself the defect.
+   *
+   * Chosen behaviour, graded by how much the signal actually leans on the
+   * degraded input rather than a blanket stand-aside:
+   *   - dominant (top-ranked) feature is an S/R-zone feature AND the zones are
+   *     TIER_1-only  -> SUPPRESS. The signal's main reason to exist is
+   *     un-evidenced ~100-minute micro-structure.
+   *   - otherwise -> confidence penalty, because the zone input still feeds
+   *     gating and geometry but is not the primary driver.
+   *
+   * A blanket stand-aside was rejected: TIER_0 depends on a refresh WRITE that
+   * needs the 503-prone backend, so a blanket rule would zero out all volume for
+   * an infrastructure reason rather than a market one. A flat penalty alone was
+   * also rejected: an 88-95% confidence signal penalised to ~75-81% still clears
+   * every emission gate, so it would NOT have blocked any of the four 31 July
+   * losses - which is the whole point of this control.
+   */
+  private evaluateTier0Degradation(
+    topFeatureName: string | null,
+    zones: SRZone[],
+  ): { suppress: boolean; confidenceMultiplier: number; reason: string | null } {
+    if (!this.tier0DegradedThisPass) {
+      return { suppress: false, confidenceMultiplier: 1, reason: null };
+    }
+
+    const zonesAreTier1Only = zones.length > 0 && zones.every((z) => z.tier !== 'TIER_0_SERVER');
+    const topIsZoneFeature = topFeatureName !== null && /ZONE/i.test(topFeatureName);
+
+    if (zonesAreTier1Only && topIsZoneFeature) {
+      this.tier1DominantSuppressions += 1;
+      const reason = `TIER1_DOMINANT_ZONE_SUPPRESSION topFeature=${topFeatureName} zones=${zones.length} allTier1=true`;
+      console.warn(`[SRZoneTier0] SIGNAL_SUPPRESSED ${reason}`);
+      return { suppress: true, confidenceMultiplier: 1, reason };
+    }
+
+    this.tier0DegradedPenaltyApplications += 1;
+    const reason = `TIER0_DEGRADED_CONFIDENCE_PENALTY multiplier=${SignalGenerationEngine.TIER0_DEGRADED_CONFIDENCE_MULTIPLIER} topFeature=${topFeatureName ?? 'n/a'}`;
+    console.warn(`[SRZoneTier0] ${reason}`);
+    return {
+      suppress: false,
+      confidenceMultiplier: SignalGenerationEngine.TIER0_DEGRADED_CONFIDENCE_MULTIPLIER,
+      reason,
+    };
+  }
   /** How long a successful TIER 0 fetch stays valid before requiring a refetch. */
   private static readonly TIER0_SRZONES_TTL_MS = 15 * 60 * 1000;
   /** Throttle for both the TIER 0 read and the fire-and-forget server recompute trigger. */
@@ -2658,12 +2731,24 @@ class SignalGenerationEngine {
   }
 
   /**
-   * Option A (S/R zone persistence): async TIER 0 fetch from the durable
-   * server-side sr_zones_v1 cache. Throttled to TIER0_SRZONES_FETCH_INTERVAL_MS
-   * and fully fire-and-forget -- never awaited by detectSRZones() itself, so
-   * generation stays synchronous exactly as before. Also fires the (equally
-   * throttled, equally non-blocking) server-side recompute so the cache keeps
-   * accumulating evidence from fresh gold_m1_bars over time.
+   * TIER 0 S/R zone refresh.
+   *
+   * B2(a) REPOINT: the READ now goes DIRECTLY to Supabase `sr_zones_v1` via the
+   * anon key (srZoneTier0Service), NOT through the Rork backend tRPC route. On
+   * 31 July the backend 503'd on both configured base URLs and the engine fell
+   * back to TIER_1_LOCAL micro-zones silently; `sr_zones_v1` has anon SELECT
+   * enabled, so the backend never needed to be in this read path.
+   *
+   * The backend is retained ONLY for the refresh/compute WRITE below, which
+   * genuinely requires the service-role key.
+   *
+   * DATA-SOURCE RULE: this read has NO fallback to GC=F / TwelveData / any
+   * other venue. If Supabase is unavailable, tier0SRZones stays null and the
+   * caller applies the B2(c) stand-aside/penalty policy - it never substitutes
+   * a different instrument's zones.
+   *
+   * Throttled to TIER0_SRZONES_FETCH_INTERVAL_MS and fully fire-and-forget --
+   * never awaited by detectSRZones(), so generation stays synchronous.
    */
   private maybeRefreshTier0SRZones(): void {
     const now = Date.now();
@@ -2672,18 +2757,10 @@ class SignalGenerationEngine {
     }
     this.lastTier0SRZonesFetchAttemptAt = now;
 
-    // Defensive: some sandboxed test harnesses stub trpcClient as `{}` (no
-    // real router). Guard both calls below so this never throws synchronously
-    // and test scripts that don't wire a full tRPC client keep working exactly
-    // as before (falling straight through to TIER 1 local detection).
-    const srZonesClient = (trpcClient as { srZones?: { getZones?: { query?: unknown }; refreshZones?: { mutate?: unknown } } })?.srZones;
-    if (typeof srZonesClient?.getZones?.query !== 'function') {
-      return;
-    }
-
-    trpcClient.srZones.getZones.query()
+    // B2(a): direct Supabase anon read. No backend, no tRPC, no other venue.
+    void fetchTier0SRZones()
       .then((result) => {
-        if (result?.available && Array.isArray(result.zones) && result.zones.length > 0) {
+        if (result.ok && result.zones.length > 0) {
           this.tier0SRZones = result.zones.map((z): SRZone => ({
             price: z.price,
             type: z.type,
@@ -2697,15 +2774,25 @@ class SignalGenerationEngine {
             tier: 'TIER_0_SERVER',
           }));
           this.tier0SRZonesFetchedAt = Date.now();
-          console.log(`✅ SR-ZONES: TIER 0 server cache loaded (${this.tier0SRZones.length} durable zone(s))`);
+          console.log(`✅ SR-ZONES: TIER 0 loaded DIRECT from Supabase (${this.tier0SRZones.length} usable zone(s), ${result.weakZoneCount} below the ${0.3} consumer threshold)`);
         } else {
-          console.log('ℹ️ SR-ZONES: TIER 0 server cache empty/unavailable -- will use TIER 1 local detection');
+          // Do NOT keep serving a previously-cached zone set once the live read
+          // says the cache is unusable - that is precisely the silent-staleness
+          // failure mode B2(c) exists to eliminate.
+          this.tier0SRZones = null;
+          console.warn(`[SRZoneTier0] TIER0_FALLBACK_TO_TIER1 reason=${result.reason ?? 'UNKNOWN'} detail=${result.detail ?? 'n/a'}`);
         }
       })
-      .catch((err) => {
-        console.warn('⚠️ SR-ZONES: TIER 0 fetch failed (non-blocking, falling back to TIER 1 local):', err instanceof Error ? err.message : 'Unknown');
+      .catch((err: unknown) => {
+        this.tier0SRZones = null;
+        console.warn(`[SRZoneTier0] TIER0_FALLBACK_TO_TIER1 reason=UNEXPECTED detail=${err instanceof Error ? err.message : String(err)}`);
       });
 
+    // The compute/refresh WRITE legitimately needs the service-role key, so it
+    // stays on the backend. It is fire-and-forget and NOT on the read path -
+    // if the backend is 503, TIER 0 reads above still work off the last
+    // successfully written cache.
+    const srZonesClient = (trpcClient as { srZones?: { refreshZones?: { mutate?: unknown } } })?.srZones;
     if (now - this.lastServerSRZonesRefreshTriggerAt >= SignalGenerationEngine.TIER0_SRZONES_FETCH_INTERVAL_MS && typeof srZonesClient?.refreshZones?.mutate === 'function') {
       this.lastServerSRZonesRefreshTriggerAt = now;
       trpcClient.srZones.refreshZones.mutate()
@@ -2740,9 +2827,19 @@ class SignalGenerationEngine {
       && this.tier0SRZones.length > 0
       && (now - this.tier0SRZonesFetchedAt) < SignalGenerationEngine.TIER0_SRZONES_TTL_MS;
     if (tier0Fresh) {
+      this.tier0DegradedThisPass = false;
       this.srZones = this.tier0SRZones!.slice(0, 16);
       return this.srZones;
     }
+
+    // B2(c): TIER_0 is unusable, so this pass will score off TIER_1_LOCAL
+    // micro-zones derived from ~100 minutes of in-memory M1 samples. That is
+    // exactly the input that produced the dominant scoring feature in all four
+    // losing BUYs on 31 July. Record the fallback so it is COUNTED and VISIBLE
+    // in the diagnostics export, and flag the pass as degraded so the confidence
+    // penalty in applyTier0DegradationPenalty() applies downstream.
+    this.tier0DegradedThisPass = true;
+    recordTier0FallbackUse();
 
     const zones: SRZone[] = [];
     const atr = this.calculateRealATR(14);
@@ -6684,7 +6781,23 @@ class SignalGenerationEngine {
     console.log(`${'='.repeat(80)}\n`);
     
     this.logSignalGenerationMetrics();
-    
+
+    // B2(c): TIER_0 degradation policy. If this pass fell back to TIER_1_LOCAL
+    // micro-zones AND the dominant feature is a zone feature, the signal's main
+    // reason to exist is ~100 minutes of un-evidenced micro-structure - suppress
+    // it. Otherwise apply a confidence penalty. Both outcomes are counted and
+    // logged with the greppable [SRZoneTier0] tag.
+    const tier0Degradation = this.evaluateTier0Degradation(
+      topFeatures.length > 0 ? topFeatures[0].feature : null,
+      features.srZones,
+    );
+    if (tier0Degradation.suppress) {
+      return null;
+    }
+    const tier0AdjustedConfidence = parseFloat(
+      (analysis.confidence * tier0Degradation.confidenceMultiplier).toFixed(4),
+    );
+
     return {
       id: `signal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       timestamp: new Date(),
@@ -6696,7 +6809,7 @@ class SignalGenerationEngine {
       tp3: parseFloat(tp3.toFixed(1)),
       sl: parseFloat(sl.toFixed(1)),
       slMultiplier: parseFloat(atrMultiplier.toFixed(2)),
-      confidence: analysis.confidence,
+      confidence: tier0AdjustedConfidence,
       status: "ACTIVE",
       targetsHit: 0,
       entryTime: timeString,
