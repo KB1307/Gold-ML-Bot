@@ -144,6 +144,28 @@ const toRow = (r: ShadowSellRecord): Record<string, unknown> => ({
  * DESIGN B: no backend tRPC dependency. The write goes straight to Supabase
  * via the public anon key, which is RLS-permitted for INSERT on this table.
  */
+/**
+ * Serialize a Supabase/Postgres error (or any thrown value) into a readable
+ * single-line string for the greppable warning log. Supabase's PostgrestError
+ * is a plain object (NOT an Error instance), so String(error) yields
+ * '[object Object]' — this extracts .message/.code/.details/.hint explicitly.
+ */
+const serializeShadowError = (err: unknown): string => {
+  if (err === null || err === undefined) return 'null';
+  if (err instanceof Error) return err.message;
+  // Supabase PostgrestError shape: { message, code, details, hint, name }
+  if (typeof err === 'object' && typeof (err as Record<string, unknown>).message === 'string') {
+    const e = err as Record<string, unknown>;
+    const parts: string[] = [`message="${e.message}"`];
+    if (typeof e.code === 'string' && e.code) parts.push(`code=${e.code}`);
+    if (typeof e.details === 'string' && e.details) parts.push(`details=${e.details}`);
+    if (typeof e.hint === 'string' && e.hint) parts.push(`hint=${e.hint}`);
+    return parts.join(' ');
+  }
+  // Last resort: stringify so we never print [object Object]
+  try { return JSON.stringify(err); } catch { return String(err); }
+};
+
 export function pushShadowSellRecord(record: ShadowSellRecord): void {
   const client = getShadowClient();
   if (!client) {
@@ -162,8 +184,7 @@ export function pushShadowSellRecord(record: ShadowSellRecord): void {
       if (error) {
         shadowWriteFailures += 1;
         console.warn(
-          '[ShadowSell] SHADOW_WRITE_FAILED (fire-and-forget):',
-          error instanceof Error ? error.message : String(error),
+          `[ShadowSell] SHADOW_WRITE_FAILED (fire-and-forget): ${serializeShadowError(error)}`,
         );
       } else {
         shadowWriteSuccesses += 1;
@@ -171,8 +192,7 @@ export function pushShadowSellRecord(record: ShadowSellRecord): void {
     } catch (err: unknown) {
       shadowWriteFailures += 1;
       console.warn(
-        '[ShadowSell] SHADOW_WRITE_ERROR (fire-and-forget):',
-        err instanceof Error ? err.message : 'unknown',
+        `[ShadowSell] SHADOW_WRITE_ERROR (fire-and-forget): ${serializeShadowError(err)}`,
       );
     }
   })();
