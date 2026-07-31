@@ -369,9 +369,9 @@ async function main() {
   if (pair3Deltas.length > 0) {
     const absDeltas3 = pair3Deltas.map(Math.abs);
     console.log(`  Matched bars: n=${pair3Deltas.length}`);
-    console.log(`  Median delta: $${median(pair3Deltas3).toFixed(2)} (${(median(pair3Deltas3) / PIP).toFixed(0)} pips)`);
+    console.log(`  Median delta: $${median(pair3Deltas).toFixed(2)} (${(median(pair3Deltas) / PIP).toFixed(0)} pips)`);
     console.log(`  Median |delta|: $${median(absDeltas3).toFixed(2)} (${(median(absDeltas3) / PIP).toFixed(0)} pips)`);
-    console.log(`  Mean delta: $${mean(pair3Deltas3).toFixed(2)}`);
+    console.log(`  Mean delta: $${mean(pair3Deltas).toFixed(2)}`);
     console.log(`  Max |delta|: $${Math.max(...absDeltas3).toFixed(2)}`);
   } else {
     console.log('  No overlapping bars between TwelveData and Yahoo GC=F');

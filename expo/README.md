@@ -1,3 +1,5 @@
+> **System State Snapshot (2026-07-31):** see [`SYSTEM_STATE_SNAPSHOT.md`](../SYSTEM_STATE_SNAPSHOT.md) for the verified post-build state — unified data venue, SELL suppression, and the open drift-veto-on-BUY finding.
+
 # Welcome to your Rork app
 
 ## Project info

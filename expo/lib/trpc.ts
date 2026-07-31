@@ -1,6 +1,7 @@
 import { httpLink } from "@trpc/client";
 import { createTRPCReact } from "@trpc/react-query";
 import superjson from "superjson";
+import { createClient } from "@supabase/supabase-js";
 
 import type { AppRouter } from "@/backend/trpc/app-router";
 
@@ -427,10 +428,114 @@ const fetchDirectHistoricalFallback = async (
   return [];
 };
 
+/**
+ * PRIMARY OHLC source: queries gold_m1_bars (Vantage MT5 / Exness XAUUSDm)
+ * directly from Supabase — the SAME venue used for audit/resolution/S-R zones.
+ * This eliminates the ~$59 median basis between the GC=F/TwelveData chain and
+ * Vantage bars that was mis-sizing SL/TP risk on ~44% of trading hours.
+ *
+ * gold_m1_bars.timestamp is an ISO string (open-timestamped, per the Phase 0
+ * verification). We convert to epoch-ms to match HistoricalPriceBar's shape.
+ * Bars are returned ascending by timestamp, same as the backend route.
+ *
+ * A stale-bar guard (STALE_BAR_THRESHOLD_MS): if the newest bar's timestamp is
+ * older than this threshold relative to `toTime`, the bars are considered stale
+ * (the sync script may be down) and we return an EMPTY array so the caller falls
+ * through to the existing GC=F/TwelveData fallback chain — we never silently
+ * serve stale bars as if current.
+ */
+const STALE_BAR_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes — bars older than this vs toTime are stale
+
+const supabaseOhlcClient = (() => {
+  const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anonKey) return null;
+  return createClient(url, anonKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+})();
+
+const fetchOHLCHistoryFromSupabase = async (
+  fromTime: number,
+  toTime: number,
+): Promise<HistoricalPriceBar[]> => {
+  if (!supabaseOhlcClient) {
+    console.log("📊 [History-Supabase] No Supabase client — skipping primary OHLC source");
+    return [];
+  }
+
+  const fromIso = new Date(fromTime).toISOString();
+  const toIso = new Date(toTime).toISOString();
+
+  try {
+    const { data, error } = await supabaseOhlcClient
+      .from("gold_m1_bars")
+      .select("timestamp, open, high, low, close")
+      .gte("timestamp", fromIso)
+      .lte("timestamp", toIso)
+      .order("timestamp", { ascending: true });
+
+    if (error) {
+      console.warn(`⚠️ [History-Supabase] Query failed: ${error.message}`);
+      return [];
+    }
+
+    if (!data || data.length === 0) {
+      console.log("📊 [History-Supabase] No bars in window — falling through to backend chain");
+      return [];
+    }
+
+    // Stale-bar guard: if the newest bar is far older than toTime, the sync
+    // script is likely down. Do NOT serve stale bars as current — return empty
+    // so the caller falls through to the fallback chain.
+    const newestTs = new Date(data[data.length - 1].timestamp).getTime();
+    const staleness = toTime - newestTs;
+    if (staleness > STALE_BAR_THRESHOLD_MS) {
+      console.warn(
+        `⚠️ [History-Supabase] Newest bar is ${(staleness / 60000).toFixed(1)}min stale (threshold ${STALE_BAR_THRESHOLD_MS / 60000}min) — NOT serving stale bars; falling through to backend chain`,
+      );
+      return [];
+    }
+
+    const bars: HistoricalPriceBar[] = data.map((row) => ({
+      timestamp: new Date(row.timestamp).getTime(),
+      open: row.open,
+      high: row.high,
+      low: row.low,
+      close: row.close,
+      source: "vantage-mt5-supabase",
+    }));
+
+    console.log(
+      `✅ [History-Supabase] Loaded ${bars.length} bars from gold_m1_bars (Vantage MT5) — SAME venue as audit/resolution`,
+    );
+    return bars;
+  } catch (err) {
+    console.warn(
+      `⚠️ [History-Supabase] Error: ${err instanceof Error ? err.message : "unknown"}`,
+    );
+    return [];
+  }
+};
+
 export const fetchHistoricalData = async (
   input: { fromTime: number; toTime: number; timeoutMs?: number },
 ): Promise<HistoricalPriceBar[]> => {
   const { fromTime, toTime, timeoutMs = 15000 } = input;
+
+  // PRIMARY: gold_m1_bars from Supabase (same venue as audit/resolution/S-R zones).
+  // This is the Step 2b fix — generation and audit now share one spot-accurate,
+  // quota-free venue. The existing GC=F/TwelveData backend chain below is the FALLBACK
+  // for when Supabase is unreachable or has a stale/missing bar gap.
+  const supabaseBars = await fetchOHLCHistoryFromSupabase(fromTime, toTime);
+  if (supabaseBars.length > 0) {
+    return supabaseBars;
+  }
+
+  console.log(
+    "🔄 [History] Supabase primary returned no bars — falling back to backend GC=F/TwelveData chain",
+  );
+
   const MAX_RETRIES = 2;
   const RETRY_DELAY_MS = 1500;
 
