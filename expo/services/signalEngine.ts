@@ -4924,14 +4924,105 @@ class SignalGenerationEngine {
     };
   }
   
+  /**
+   * Phase B1 fix: detectHTFTrend now uses GENUINELY higher-timeframe data
+   * (daily OHLC bars from dailyOHLCHistory) instead of tick-level
+   * priceHistory. The previous version was 67% tick-level (20-tick trend
+   * strength + 9/21-tick EMAs), which meant a short counter-trend bounce
+   * on a downtrend day could return BULLISH — the root cause of the 31 July
+   * losses where 3 of 4 losing BUYs scored "STRONG UPTREND" on a -401 pip day.
+   *
+   * Scoring (all components now daily-bar-based):
+   * 1. priceVsPivot: current price vs daily pivot (unchanged — was already HTF)
+   * 2. developingDayDirection: current trading day's close vs its open.
+   *    A >20 pip move from open contributes ±1.0; a >50 pip move contributes
+   *    ±1.5 (a strong intraday directional move is a genuine HTF signal —
+   *    the developing day's OHLC is tracked from the session open, not from
+   *    tick-level noise). This is the component that catches a clear bearish
+   *    day even when completed daily bars are V-shaped (as on 31 July, where
+   *    28→29→30 were lower-lower-higher but the developing day dropped -480
+   *    pips from open).
+   * 3. dailyTrendDirection: last 3 completed daily bars' closes
+   *    (higher-highs+higher-closes = BULLISH, lower-lows+lower-closes = BEARISH)
+   * 4. dailyEMA: EMA5 vs EMA10 on daily bar closes
+   *    (genuine daily-timescale momentum, not tick-level)
+   *
+   * BULLISH/BEARISH requires score >= 1.5. A strong developing-day move
+   * (>50 pips) can trigger the signal by itself; a moderate move (>20 pips)
+   * needs corroboration from at least one other component.
+   */
   private detectHTFTrend(features: MarketFeatures): 'BULLISH' | 'BEARISH' | 'NEUTRAL' {
     const priceVsPivot = this.currentPrice - features.dailyPivot;
-    const trendStrength = this.calculateTrendStrength();
-    const emaSignal = this.priceHistory.length >= 21 ? this.calculateEMA(this.priceHistory, 9) - this.calculateEMA(this.priceHistory, 21) : 0;
-    
-    const bullishScore = (priceVsPivot > 10 ? 1 : 0) + (trendStrength > 0.4 && this.detectPriceDirection() > 0 ? 1 : 0) + (emaSignal > 0 ? 0.5 : 0);
-    const bearishScore = (priceVsPivot < -10 ? 1 : 0) + (trendStrength > 0.4 && this.detectPriceDirection() < 0 ? 1 : 0) + (emaSignal < 0 ? 0.5 : 0);
-    
+
+    // Component 1: price vs daily pivot (genuinely HTF — unchanged)
+    const pivotBullish = priceVsPivot > 10 ? 1 : 0;
+    const pivotBearish = priceVsPivot < -10 ? 1 : 0;
+
+    // Component 2: developing trading day direction (genuinely HTF — the
+    // current day's OHLC tracked from session open, not tick-level).
+    // Uses this.currentDayOHLC which is updated on every price tick via
+    // updateDailyOHLC(). devMove is in DOLLARS (e.g., -47.6 = -$47.6).
+    // For gold, 1 pip = $0.1, so 50 pips = $5.00, 20 pips = $2.00.
+    // A >$2.00 (20 pip) move from open = ±1.0, >$5.00 (50 pip) = ±1.5.
+    let developingDayBullish = 0;
+    let developingDayBearish = 0;
+    if (this.currentDayOHLC) {
+      const devMove = this.currentDayOHLC.close - this.currentDayOHLC.open;
+      const DEV_DAY_MODERATE_DOLLARS = 2.0; // 20 pips
+      const DEV_DAY_STRONG_DOLLARS = 5.0;   // 50 pips
+      if (devMove > DEV_DAY_STRONG_DOLLARS) {
+        developingDayBullish = 1.5;
+      } else if (devMove > DEV_DAY_MODERATE_DOLLARS) {
+        developingDayBullish = 1.0;
+      } else if (devMove < -DEV_DAY_STRONG_DOLLARS) {
+        developingDayBearish = 1.5;
+      } else if (devMove < -DEV_DAY_MODERATE_DOLLARS) {
+        developingDayBearish = 1.0;
+      }
+    }
+
+    // Component 3: multi-day trend direction from completed daily bars.
+    // Requires at least 3 completed daily bars to determine trend.
+    const sortedDailyBars = [...this.dailyOHLCHistory]
+      .sort((left, right) => left.timestamp - right.timestamp)
+      .filter((bar) => bar.timestamp < Date.now()); // completed bars only
+
+    let dailyTrendBullish = 0;
+    let dailyTrendBearish = 0;
+    if (sortedDailyBars.length >= 3) {
+      const recent3 = sortedDailyBars.slice(-3);
+      const [bar1, bar2, bar3] = recent3;
+      const higherHighs = bar3.high > bar2.high && bar2.high > bar1.high;
+      const higherCloses = bar3.close > bar2.close && bar2.close > bar1.close;
+      const lowerLows = bar3.low < bar2.low && bar2.low < bar1.low;
+      const lowerCloses = bar3.close < bar2.close && bar2.close < bar1.close;
+
+      if (higherHighs && higherCloses) {
+        dailyTrendBullish = 1;
+      } else if (lowerLows && lowerCloses) {
+        dailyTrendBearish = 1;
+      }
+    }
+
+    // Component 4: daily-timescale EMA crossover (EMA5 vs EMA10 on daily closes).
+    // This replaces the old tick-level EMA9 vs EMA21 — same structural idea but
+    // on the correct timescale. Requires at least 10 daily bars.
+    let dailyEmaBullish = 0;
+    let dailyEmaBearish = 0;
+    if (sortedDailyBars.length >= 10) {
+      const dailyCloses = sortedDailyBars.map((bar) => bar.close);
+      const ema5 = this.calculateEMA(dailyCloses, 5);
+      const ema10 = this.calculateEMA(dailyCloses, 10);
+      if (ema5 > ema10) {
+        dailyEmaBullish = 0.5;
+      } else if (ema5 < ema10) {
+        dailyEmaBearish = 0.5;
+      }
+    }
+
+    const bullishScore = pivotBullish + developingDayBullish + dailyTrendBullish + dailyEmaBullish;
+    const bearishScore = pivotBearish + developingDayBearish + dailyTrendBearish + dailyEmaBearish;
+
     if (bullishScore >= 1.5) {
       return 'BULLISH';
     } else if (bearishScore >= 1.5) {
@@ -6033,6 +6124,39 @@ class SignalGenerationEngine {
 
     const htfTrend = this.detectHTFTrend(features);
     const ltfTrendForGate = this.detectLTFTrend();
+
+    // ── PHASE B2: STAND-ASIDE SAFETY GATE ───────────────────────────────
+    // When allowShortSignals is FALSE and HTF trend is BEARISH, the system
+    // cannot trade the correct direction (SELL is suppressed) and must NOT
+    // trade the wrong one (BUY against a bearish daily trend). A system that
+    // cannot trade the correct direction stands aside rather than forcing a
+    // counter-trend entry. This single gate would have prevented all four
+    // 31 July losses (-$31.9 on a -401 pip downtrend day where 3 of 4 losing
+    // BUYs scored "STRONG UPTREND" due to the tick-level HTF defect fixed in B1).
+    //
+    // This is placed BEFORE any internal state mutations (cooldown, lock,
+    // lastSignalType) — a stand-aside does not consume cooldown or block the
+    // next signal. It is logged with a distinct reason so it is visible in
+    // diagnostics and near-miss tracking.
+    const allowShortSignals = settings.allowShortSignals !== false;
+    if (!allowShortSignals && analysis.signalType === 'BUY' && htfTrend === 'BEARISH') {
+      console.log(`\n${'='.repeat(80)}`);
+      console.log(`🛑 STAND-ASIDE: BUY signal blocked — HTF trend is BEARISH and SELL is suppressed`);
+      console.log(`   The system cannot trade the correct direction (SELL suppressed) and will not trade the wrong one (BUY against bearish HTF).`);
+      console.log(`   Confidence: ${(analysis.confidence * 100).toFixed(1)}% | HTF: ${htfTrend} | LTF: ${ltfTrendForGate} | Regime: ${features.marketRegime.type}`);
+      console.log(`   Price: ${this.currentPrice.toFixed(1)} | Daily Pivot: ${features.dailyPivot.toFixed(1)}`);
+      console.log(`${'='.repeat(80)}\n`);
+      this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'stand-aside: bearish HTF with SELL suppressed', {
+        entryPrice: this.currentPrice,
+        atr: features.atr,
+        tp1Pips: settings.tp1Pips,
+        tp2Pips: settings.tp2Pips,
+        tp3Pips: settings.tp3Pips,
+        slPips: settings.slPips,
+      });
+      return null;
+    }
+
     // PHASE 2 (B1) COUNTER-TREND GATE REPAIR.
     // Pre-fix, a signal only counted as counter-trend when the DAILY trend
     // directly opposed it. The dominant real failure mode in the audit was a
@@ -6447,7 +6571,7 @@ class SignalGenerationEngine {
     // the emission is suppressed. A shadow record is pushed (fire-and-forget)
     // to the durable shadow_signals_v1 Supabase table so the decision stays
     // monitorable against real forward data.
-    const allowShortSignals = settings.allowShortSignals !== false;
+    // allowShortSignals was declared earlier (Phase B2 stand-aside gate)
     if (!allowShortSignals && analysis.signalType === 'SELL') {
       const shadowId = `signal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const htfTrendForShadow = this.detectHTFTrend(features);

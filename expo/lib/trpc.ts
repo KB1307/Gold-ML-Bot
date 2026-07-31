@@ -468,19 +468,45 @@ const fetchOHLCHistoryFromSupabase = async (
   const toIso = new Date(toTime).toISOString();
 
   try {
-    const { data, error } = await supabaseOhlcClient
-      .from("gold_m1_bars")
-      .select("timestamp, open, high, low, close")
-      .gte("timestamp", fromIso)
-      .lte("timestamp", toIso)
-      .order("timestamp", { ascending: true });
+    // Phase B1 fix: PostgREST caps responses at 1000 rows server-side, so
+    // .limit() alone cannot override it. The 72h daily-OHLC refresh lookback
+    // needs ~4320 bars (72*60), so a single capped query silently truncated
+    // the result to ~16h, which then failed the stale-bar guard (newest bar
+    // ~55h old vs toTime) and returned empty — breaking the daily OHLC feed.
+    // Paginate with .range() in 1000-row pages until the window is exhausted.
+    const PAGE_SIZE = 1000;
+    const MAX_PAGES = 10; // 10k bars = ~7 days of 1-min bars, well above any lookback
+    let allData: { timestamp: string; open: number; high: number; low: number; close: number }[] = [];
 
-    if (error) {
-      console.warn(`⚠️ [History-Supabase] Query failed: ${error.message}`);
-      return [];
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const startIdx = page * PAGE_SIZE;
+      const endIdx = startIdx + PAGE_SIZE - 1;
+
+      const { data: pageData, error: pageError } = await supabaseOhlcClient
+        .from("gold_m1_bars")
+        .select("timestamp, open, high, low, close")
+        .gte("timestamp", fromIso)
+        .lte("timestamp", toIso)
+        .order("timestamp", { ascending: true })
+        .range(startIdx, endIdx);
+
+      if (pageError) {
+        console.warn(`⚠️ [History-Supabase] Query failed (page ${page}): ${pageError.message}`);
+        return [];
+      }
+
+      if (!pageData || pageData.length === 0) {
+        break; // no more rows
+      }
+
+      allData = allData.concat(pageData as typeof allData);
+
+      if (pageData.length < PAGE_SIZE) {
+        break; // last page — window exhausted
+      }
     }
 
-    if (!data || data.length === 0) {
+    if (allData.length === 0) {
       console.log("📊 [History-Supabase] No bars in window — falling through to backend chain");
       return [];
     }
@@ -488,7 +514,7 @@ const fetchOHLCHistoryFromSupabase = async (
     // Stale-bar guard: if the newest bar is far older than toTime, the sync
     // script is likely down. Do NOT serve stale bars as current — return empty
     // so the caller falls through to the fallback chain.
-    const newestTs = new Date(data[data.length - 1].timestamp).getTime();
+    const newestTs = new Date(allData[allData.length - 1].timestamp).getTime();
     const staleness = toTime - newestTs;
     if (staleness > STALE_BAR_THRESHOLD_MS) {
       console.warn(
@@ -497,7 +523,7 @@ const fetchOHLCHistoryFromSupabase = async (
       return [];
     }
 
-    const bars: HistoricalPriceBar[] = data.map((row) => ({
+    const bars: HistoricalPriceBar[] = allData.map((row) => ({
       timestamp: new Date(row.timestamp).getTime(),
       open: row.open,
       high: row.high,
