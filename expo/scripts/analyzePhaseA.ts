@@ -114,23 +114,36 @@ interface MinuteBar {
   close: number;
 }
 
-/** Query gold_m1_bars for a given time window. */
+/** Query gold_m1_bars for a given time window, paginating past the PostgREST 1000-row cap. */
 async function fetchBars(fromTime: number, toTime: number): Promise<{ timestamp: number; open: number; high: number; low: number; close: number }[]> {
   const fromIso = new Date(fromTime).toISOString();
   const toIso = new Date(toTime).toISOString();
-  const { data, error } = await supabase
-    .from("gold_m1_bars")
-    .select("timestamp, open, high, low, close")
-    .gte("timestamp", fromIso)
-    .lte("timestamp", toIso)
-    .order("timestamp", { ascending: true });
+  const PAGE_SIZE = 1000;
+  const MAX_PAGES = 10;
+  let allRows: MinuteBar[] = [];
 
-  if (error) {
-    console.error("❌ Bar query failed:", error.message);
-    return [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const startIdx = page * PAGE_SIZE;
+    const endIdx = startIdx + PAGE_SIZE - 1;
+    const { data, error } = await supabase
+      .from("gold_m1_bars")
+      .select("timestamp, open, high, low, close")
+      .gte("timestamp", fromIso)
+      .lte("timestamp", toIso)
+      .order("timestamp", { ascending: true })
+      .range(startIdx, endIdx);
+
+    if (error) {
+      console.error(`❌ Bar query failed (page ${page}): ${error.message}`);
+      return [];
+    }
+    if (!data || data.length === 0) break;
+    allRows = allRows.concat(data as MinuteBar[]);
+    if (data.length < PAGE_SIZE) break;
   }
-  if (!data || data.length === 0) return [];
-  return (data as MinuteBar[]).map((row) => ({
+
+  if (allRows.length === 0) return [];
+  return allRows.map((row) => ({
     timestamp: new Date(row.timestamp).getTime(),
     open: row.open,
     high: row.high,
@@ -324,21 +337,30 @@ async function analyzeA3(): Promise<void> {
   console.log("═".repeat(80));
 
   // Code-level findings (with line numbers):
-  console.log("\nCODE FINDINGS (from signalEngine.ts):");
+  // NOTE: detectHTFTrend was ALREADY UPDATED with a 'Phase B1 fix' to use daily-bar-based
+  // components instead of tick-level. The question is whether the fix WORKS given the data
+  // available on 31 July, not whether the old code is still live.
+  console.log("\nCODE FINDINGS (from signalEngine.ts — CURRENT state, not old):");
   console.log("");
-  console.log("1. detectHTFTrend() [line 4927]:");
-  console.log("   - priceVsPivot = currentPrice - features.dailyPivot  (DAILY — the only HTF input)");
-  console.log("   - trendStrength = calculateTrendStrength() → priceHistory.slice(-20)  (20 TICKS, not HTF)");
-  console.log("   - emaSignal = EMA9 - EMA21 on priceHistory  (TICK-LEVEL, not HTF)");
-  console.log("   - detectPriceDirection() = priceHistory.slice(-5)  (5 TICKS, not HTF)");
-  console.log("   - BULLISH if bullishScore >= 1.5 (pivot>10: +1, trendStrength>0.4+priceDir>0: +1, ema>0: +0.5)");
-  console.log("   → 2 of 3 components are TICK-LEVEL. A 20-tick bounce on a downtrend day can return BULLISH.");
+  console.log("1. detectHTFTrend() [line 4954] — ALREADY UPDATED with Phase B1 fix:");
+  console.log("   Component 1: priceVsPivot = currentPrice - features.dailyPivot (DAILY — genuinely HTF)");
+  console.log("   Component 2: developingDayDirection = currentDayOHLC.close - currentDayOHLC.open (DAILY)");
+  console.log("     >$2.00 (20pip) move from open = ±1.0, >$5.00 (50pip) = ±1.5");
+  console.log("   Component 3: dailyTrendDirection = last 3 completed daily bars (higherHighs+higherCloses or lowerLows+lowerCloses)");
+  console.log("     REQUIRES >= 3 completed daily bars in dailyOHLCHistory");
+  console.log("   Component 4: dailyEMA = EMA5 vs EMA10 on daily closes");
+  console.log("     REQUIRES >= 10 completed daily bars — CANNOT fire with 72h lookback (3 days max)");
+  console.log("   BULLISH/BEARISH requires score >= 1.5");
+  console.log("   → The fix is in place. The question is: did the daily OHLC feed actually work on 31 July?");
+  console.log("   → Key concern: 72h lookback = only 3 trading days. Component 4 (EMA) needs 10 bars → NEVER fires.");
+  console.log("   → dailyOHLCHistory IS persisted to AsyncStorage and loaded on startup (line 5916), so over multiple");
+  console.log("     sessions it accumulates more bars. But a fresh start = only 3 bars from the 72h window.");
   console.log("");
   console.log("2. 'strong_uptrend' attention score [line 4442]:");
   console.log("   Fires when: marketRegime.type === 'TRENDING' && strength > 0.75");
   console.log("   AND htfTrend === 'BULLISH' && ltfTrend === 'BULLISH'");
   console.log("   → Adds 0.15 to trendBuyContribution (BUY side)");
-  console.log("   → marketRegime also uses calculateTrendStrength() (20 ticks) — NOT HTF");
+  console.log("   → marketRegime uses calculateTrendStrength() (20 ticks) and calculateRealVolumeRatio() (20 ticks) — TICK-LEVEL");
   console.log("");
   console.log("3. 'strong_uptrend_pattern' attention score [line 4460]:");
   console.log("   Fires when: priceActionPattern === 'STRONG_UPTREND'");
