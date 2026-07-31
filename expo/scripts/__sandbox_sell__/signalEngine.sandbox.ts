@@ -84,7 +84,6 @@ function pushShadowSellRecord(_record: unknown): void {
   shadowSellRecordPushed = true;
 }
 
-import { resolveSignalWithBars } from "@/services/signalResolver";
 import type { OhlcBar } from "@/services/barStore";
 
 /**

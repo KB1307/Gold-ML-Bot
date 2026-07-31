@@ -41,28 +41,103 @@ export interface ShadowSellRecord {
 }
 
 /**
- * Push a shadow SELL record to the backend. Fire-and-forget.
- * Errors are logged and swallowed — never propagate.
+ * Resolve the live tRPC base origin — same logic as lib/trpc.ts getBaseUrlCandidates.
+ * Uses EXPO_PUBLIC_RORK_API_BASE_URL (the alive tRPC host), NOT
+ * EXPO_PUBLIC_RORK_FUNCTIONS_URL (which has no bundle deployed and 503s on
+ * every route — confirmed live 2026-07-31). The tRPC server at API_BASE_URL
+ * hosts the shadow.push mutation, which writes via a server-side service-role
+ * client (process.env.SUPABASE_SERVICE_ROLE_KEY) — the service key is NEVER
+ * shipped to the browser/client.
  */
+const resolveTrpcBaseOrigin = (): string | null => {
+  const configured = process.env.EXPO_PUBLIC_RORK_API_BASE_URL;
+  if (configured) return configured.trim().replace(/\/+$/, '').replace(/\/api\/trpc$/, '').replace(/\/api$/, '');
+  if (typeof window !== 'undefined' && typeof window.location?.origin === 'string') {
+    return window.location.origin.trim().replace(/\/+$/, '');
+  }
+  return null;
+};
+
+/**
+ * Push a shadow SELL record to the backend tRPC shadow.push mutation.
+ * Fire-and-forget — errors are logged and swallowed, never propagate.
+ *
+ * Wire format: the tRPC httpLink with superjson sends mutations as POST to
+ * /api/trpc/{procedure} with body {json: {json: {input}}} — the outer json is
+ * the superjson transformer wrapper, the inner json is the procedure's own
+ * input field name (shadow.push's schema is z.object({ json: shadowRecordSchema })).
+ * Confirmed working via live curl 2026-07-31: POST /api/trpc/shadow.push with
+ * double-nested json body returns {result:{data:{json:{ok:true}}}}.
+ */
+/**
+ * Push a shadow SELL record with retry-on-cold-start.
+ *
+ * The tRPC server (Cloudflare/Deno Deploy) cold-starts and returns 503/429
+ * on the first request after idle. A single fire-and-forget fetch will
+ * silently fail when the server is cold — which would lose shadow records.
+ * This retries on 503/429 with exponential backoff (1s, 2s, 4s) up to 3
+ * attempts, still fully fire-and-forget (never blocks the caller).
+ */
+/**
+ * The tRPC hosting (Deno Deploy) aggressively cold-starts — the server spins
+ * down within seconds of inactivity and returns 503/429 while spinning back up.
+ * A warmup GET before each POST attempt significantly improves delivery rate,
+ * because the GET triggers the spin-up and the POST immediately follows on
+ * the now-warm instance.
+ */
+const MAX_PUSH_RETRIES = 5;
+const pushWithRetry = async (
+  pushUrl: string,
+  body: string,
+  attempt: number = 0,
+): Promise<void> => {
+  // Warmup GET before each POST attempt — triggers cold-start spin-up
+  if (attempt > 0) {
+    const warmupUrl = pushUrl.replace('/shadow.push', '/shadow.recent') + '?input=%7B%22json%22%3A%7B%22limit%22%3A1%7D%7D';
+    try {
+      await fetch(warmupUrl, { method: 'GET', headers: { accept: 'application/json' }, signal: AbortSignal.timeout(8000) });
+    } catch {
+      // warmup failure is non-fatal — the POST may still succeed
+    }
+  }
+
+  try {
+    const res = await fetch(pushUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-trpc-source': '1' },
+      body,
+    });
+    if (res.ok) {
+      return; // success
+    }
+    if ((res.status === 503 || res.status === 429) && attempt < MAX_PUSH_RETRIES - 1) {
+      const delayMs = 2000 * (attempt + 1); // 2s, 4s, 6s, 8s
+      console.log(`[ShadowSell] HTTP ${res.status} on attempt ${attempt + 1}/${MAX_PUSH_RETRIES} — retrying in ${delayMs}ms`);
+      await new Promise((r) => setTimeout(r, delayMs));
+      return pushWithRetry(pushUrl, body, attempt + 1);
+    }
+    console.warn(`[ShadowSell] push failed after ${attempt + 1} attempts: HTTP ${res.status}`);
+  } catch (err) {
+    if (attempt < MAX_PUSH_RETRIES - 1) {
+      const delayMs = 2000 * (attempt + 1);
+      console.log(`[ShadowSell] fetch error on attempt ${attempt + 1}/${MAX_PUSH_RETRIES} — retrying in ${delayMs}ms:`, err instanceof Error ? err.message : 'unknown');
+      await new Promise((r) => setTimeout(r, delayMs));
+      return pushWithRetry(pushUrl, body, attempt + 1);
+    }
+    console.warn('[ShadowSell] push error after retries (fire-and-forget):', err instanceof Error ? err.message : 'unknown');
+  }
+};
+
 export function pushShadowSellRecord(record: ShadowSellRecord): void {
-  const baseUrl = process.env.EXPO_PUBLIC_RORK_FUNCTIONS_URL;
-  if (!baseUrl) {
+  const baseOrigin = resolveTrpcBaseOrigin();
+  if (!baseOrigin) {
     console.log('[ShadowSell] No backend URL — skipping durable push');
     return;
   }
 
-  const url = `${baseUrl}/shadow.push`;
-  fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ json: record }),
-  })
-    .then((res) => {
-      if (!res.ok) {
-        console.warn(`[ShadowSell] push failed: HTTP ${res.status}`);
-      }
-    })
-    .catch((err) => {
-      console.warn('[ShadowSell] push error (fire-and-forget):', err instanceof Error ? err.message : 'unknown');
-    });
+  const url = `${baseOrigin}/api/trpc/shadow.push`;
+  const body = JSON.stringify({ json: { json: record } });
+  // Fire-and-forget — the async retry loop runs in the background and never
+  // blocks or throws to the caller. The record lands once the server warms up.
+  void pushWithRetry(url, body);
 }

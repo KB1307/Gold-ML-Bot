@@ -76,9 +76,13 @@ function assert(condition: boolean, message: string): void {
 // ─── Sandbox builder (mirrors runSignalSimulation.ts buildSandboxModule) ────
 
 async function buildSandboxModule(): Promise<SandboxSignalEngineModule> {
-  const sandboxDir = path.join(process.cwd(), "scripts", "__sandbox_sell__");
+  // Resolve paths relative to THIS script file, not process.cwd(), so the
+  // test works regardless of which directory it's invoked from.
+  const scriptDir = path.dirname(new URL(import.meta.url).pathname);
+  const expoRoot = path.resolve(scriptDir, "..");
+  const sandboxDir = path.join(expoRoot, "scripts", "__sandbox_sell__");
   const sandboxPath = path.join(sandboxDir, "signalEngine.sandbox.ts");
-  const sourcePath = path.join(process.cwd(), "services", "signalEngine.ts");
+  const sourcePath = path.join(expoRoot, "services", "signalEngine.ts");
   const source = await readFile(sourcePath, "utf8");
 
   const sandboxPrelude = `import type { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC, SignalLearningContext, DetectedSRZone } from "../../types/trading.ts";
@@ -182,6 +186,8 @@ function pushShadowSellRecord(_record: unknown): void {
     "@/services/learningStore",
     "@/services/diagnosticEventStore",
     "@/services/shadowSignalService",
+    "@/services/signalResolver",
+    "@/services/barStore",
     "react-native",
   ].reduce(stripImportFrom, source);
 
