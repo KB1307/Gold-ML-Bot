@@ -258,25 +258,51 @@ async function computeZonesFromBars(): Promise<ServerSRZone[] | null> {
   }
 
   zones.sort((a, b) => b.reactionStrength - a.reactionStrength);
-  return zones.slice(0, 32);
+
+  // DEFECT FIX (found live, 2026-08-01): cluster prices are rounded to one
+  // decimal at write time, so two distinct clusters closer than 0.05 apart
+  // collapse onto the SAME (price, type) pair. sr_zones_v1 carries a UNIQUE
+  // constraint on (price, type), so the wholesale insert failed with 23505
+  // AFTER the delete had already run - leaving the cache EMPTY. Observed live:
+  // 25 computed zones contained a duplicate (4050.5, RESISTANCE).
+  // Keep the strongest zone per (price, type).
+  const deduped = new Map<string, ServerSRZone>();
+  for (const z of zones) {
+    const key = `${z.price}|${z.type}`;
+    const prev = deduped.get(key);
+    if (!prev || z.reactionStrength > prev.reactionStrength) {
+      deduped.set(key, z);
+    }
+  }
+  const uniqueZones = [...deduped.values()].sort((a, b) => b.reactionStrength - a.reactionStrength);
+  if (uniqueZones.length !== zones.length) {
+    console.warn(
+      `[SR-ZONES] ZONE_DEDUPE_APPLIED dropped ${zones.length - uniqueZones.length} duplicate (price,type) zone(s)`,
+    );
+  }
+  return uniqueZones.slice(0, 32);
 }
 
 async function upsertZones(zones: ServerSRZone[]): Promise<{ inserted: number } | null> {
   const client = getServiceRoleClient();
   if (!client) return null;
 
-  // Wholesale replace: this table is a single-purpose derived cache computed
-  // fresh from the durable gold_m1_bars window each refresh (see design note
-  // above) - delete-then-insert avoids fragile price-drift matching across
-  // refreshes while keeping the cache correct and current.
-  const { error: deleteError } = await client.from("sr_zones_v1").delete().gt("id", 0);
-  if (deleteError) {
-    console.error("[SR-ZONES] Failed to clear stale cache:", deleteError.message);
-    return null;
+  // DEFECT FIX (found live, 2026-08-01): the previous implementation did
+  // delete-then-insert. When the insert failed for ANY reason (it failed live
+  // on the (price,type) unique constraint), the delete had already committed,
+  // so the cache was left EMPTY and every subsequent TIER_0 read fell back to
+  // TIER_1_LOCAL micro-zones - the exact silent failure this whole workstream
+  // exists to eliminate. An empty cache is strictly worse than a stale one.
+  //
+  // New order: UPSERT the fresh set first, and only once that has succeeded
+  // delete the rows this run did not refresh. A failed write now leaves the
+  // previous cache intact rather than destroying it.
+  if (zones.length === 0) {
+    console.warn("[SR-ZONES] TIER0_REFRESH_EMPTY compute produced 0 zones - leaving existing cache intact");
+    return { inserted: 0 };
   }
 
-  if (zones.length === 0) return { inserted: 0 };
-
+  const runTs = new Date().toISOString();
   const rows = zones.map((z) => ({
     price: z.price,
     type: z.type,
@@ -286,14 +312,27 @@ async function upsertZones(zones: ServerSRZone[]): Promise<{ inserted: number } 
     source: z.source,
     confluence_score: z.confluenceScore,
     last_touch_ts: z.lastTouchTs,
-    updated_at: new Date().toISOString(),
+    updated_at: runTs,
   }));
 
-  const { error: insertError } = await client.from("sr_zones_v1").insert(rows);
-  if (insertError) {
-    console.error("[SR-ZONES] Failed to insert refreshed zones:", insertError.message);
+  const { error: upsertError } = await client
+    .from("sr_zones_v1")
+    .upsert(rows, { onConflict: "price,type" });
+  if (upsertError) {
+    console.error(
+      `[SR-ZONES] TIER0_REFRESH_WRITE_FAILED upsert failed: ${upsertError.message} (code=${upsertError.code ?? "-"}) - previous cache left INTACT`,
+    );
     return null;
   }
+
+  // Only now remove zones that this recompute did not produce.
+  const { error: pruneError } = await client.from("sr_zones_v1").delete().lt("updated_at", runTs);
+  if (pruneError) {
+    // Non-fatal: the fresh zones are already in place; stale extras simply
+    // linger until the next refresh and are filtered by the expiry rule.
+    console.warn(`[SR-ZONES] TIER0_REFRESH_PRUNE_FAILED ${pruneError.message} - fresh zones still written`);
+  }
+
   return { inserted: rows.length };
 }
 
