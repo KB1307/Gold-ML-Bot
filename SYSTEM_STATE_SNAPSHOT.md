@@ -79,6 +79,48 @@ The shadow record captures the full would-be geometry PLUS the +40pip entry-shif
 
 ---
 
+## 2b. TIER_0 S/R ZONES — FRESHNESS DEPENDS ON A HAND-RUN SCRIPT (NOT A LIVE FIX)
+
+**Read this before trusting anything about TIER_0.** As of 2026-08-01 there is no
+automated path that keeps `sr_zones_v1` fresh. Do not mistake the code changes
+listed below for a working system.
+
+**What is actually live:**
+- `expo/services/srZoneTier0Service.ts` — client reads `sr_zones_v1` DIRECTLY from
+  Supabase via the anon key (B2(a)). This IS live and backend-independent.
+- TIER_0 failure visibility counters + greppable warnings + diagnostics export
+  section (B2(c)). This IS live.
+
+**What is NOT live:**
+- The PostgREST 1000-row pagination fix (B2(b)) was applied to
+  `expo/backend/trpc/routes/srZones.ts`. **That backend is 503 on every configured
+  base URL and there is no deploy mechanism in this environment.** The fix has
+  therefore NEVER executed against production. It is dead code until the backend
+  is deployed or the compute is relocated.
+- There is NO scheduled refresh of any kind. `pg_cron` / `pg_net` were not
+  installed at the time of writing.
+
+**The only thing that has ever successfully written zones is a HAND-RUN script:**
+```
+bunx tsx expo/scripts/computeAndWriteZones.ts --write
+```
+run manually from a developer machine with `SUPABASE_SERVICE_ROLE_KEY` in `.env`.
+TIER_0 freshness currently depends entirely on a human remembering to run it.
+
+**CONCRETE EXPIRY DEADLINE:** the currently-restored zones have
+`max(last_touch_ts) = 2026-07-31T20:56Z` (Friday's true Vantage close) against
+`EXPIRY_HOURS = 96`. Therefore:
+- Market reopens Sunday ~22:00Z with zones frozen at Friday's close — they will
+  miss ALL of Monday's structure.
+- Zones EXPIRE at **~2026-08-04T20:56Z (Tuesday)**. After that instant
+  `readTier0Zones()` returns `ALL_EXPIRED`, TIER_0 is dead, and every signal falls
+  back to TIER_1_LOCAL ~100-minute micro-structure — **which is precisely the
+  31 July failure condition that produced four stopped-out BUYs.**
+- A scheduled refresh MUST be live before Tuesday 20:56Z, or the hand-run script
+  must be executed before then as a stopgap.
+
+---
+
 ## 3. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
 
 **Finding (from prior session, `expo/scripts/analyzeDriftVetoOnBuy.ts`):** the Phase 2 counter-trend drift veto IS over-firing on BUYs. It dropped **4/50** counter-trend BUYs that had **positive EV (+0.2295R, 75% win rate)**. Three of the four were winners (+1.149R, +0.385R, +0.385R). The veto is costing the long book **$3.8 in net $** and **+0.0036R in EV per signal**. The veto threshold (2.0×ATR) may be too low for BUYs, or the counter-trend classification may be too broad.
