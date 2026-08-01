@@ -2,6 +2,7 @@ import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData
 import { pushShadowSellRecord, type ShadowSellRecord } from "@/services/shadowSignalService";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { fetchHistoricalData, trpcClient } from "@/lib/trpc";
+import { createClient as createSupabaseClient, type SupabaseClient } from "@supabase/supabase-js";
 import { Platform } from "react-native";
 import { appendOutcome as appendOutcomeToStore, getAllOutcomes as getAllOutcomesFromStore, getOutcomeCount as getOutcomeCountFromStore, migrateLegacyOutcomesIfEmpty, pruneToCap as pruneOutcomeStoreToCap, pushOutcomesToRemote, hydrateFromRemote as hydrateLearningStoreFromRemote, type StoredTradeOutcome } from "@/services/learningStore";
 import { resolveSignalWithBars } from "@/services/signalResolver";
@@ -213,6 +214,15 @@ interface MarketFeatures {
   bollingerSqueeze: boolean;
   bollingerExpansion: boolean;
   bollingerBandwidth: number | null;
+  // ITEM 3: bar-based directional features (from Supabase gold_m1_bars via M5
+  // aggregation). These are the ONLY inputs that may contribute to directional
+  // buySignalStrength. Tick-based priceHistory may NOT feed directional score.
+  barBasedPriceActionPattern: string;
+  barBasedVwap: number | null;
+  barBasedTrendStrength: number;
+  barBasedRegimeType: string;
+  barBasedRegimeStrength: number;
+  barBasedAdx: number | null;
 }
 
 const CACHE_DURATION = 7000;
@@ -322,7 +332,13 @@ const EXTERNAL_PRICE_MAX_AGE_MS = 15000;
 const MIN_PRICE_HISTORY_SAMPLE_INTERVAL_MS = 5000;
 const MIN_PRICE_HISTORY_CHANGE = 0.03;
 const DAILY_OHLC_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
-const DAILY_OHLC_REFRESH_LOOKBACK_MS = 72 * 60 * 60 * 1000;
+// ITEM 2c: widened from 72h to 35d so the dailyEMA component (needs 10
+// completed daily bars) can genuinely fire. With 44+ days of M1 bars in
+// Supabase, a 72h lookback yielded only 3 daily bars — dailyEMA was dead code.
+// 35d yields ~25 completed daily bars (excluding weekends), well above the 10
+// minimum. The buildDailyOHLCBarsFromHistoricalBars method groups M1 bars by
+// NY trading day, so the extra bars are genuine completed daily candles.
+const DAILY_OHLC_REFRESH_LOOKBACK_MS = 35 * 24 * 60 * 60 * 1000;
 const MIN_VALID_DAILY_RANGE = 6;
 
 const HYPOTHETICAL_TRADE_HISTORY_LIMIT = 100;
@@ -1139,6 +1155,14 @@ class SignalGenerationEngine {
   private orderBlocks: OrderBlock[] = [];
   private fiveMinCandles: { timestamp: number; open: number; high: number; low: number; close: number }[] = [];
   private lastFiveMinCandleClose: number = 0;
+
+  // ITEM 3: M5 bar cache from Supabase gold_m1_bars for bar-based directional
+  // features. M1/tick data may ONLY refine entry timing — it must be
+  // structurally incapable of contributing to directional score.
+  private m5SupabaseBars: { timestamp: number; open: number; high: number; low: number; close: number }[] = [];
+  private lastM5BarRefreshAt: number = 0;
+  private static readonly M5_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+  private static readonly M5_LOOKBACK_BARS = 200; // ~16h of M5 bars, enough for all bar-based features
   private quasimodolLevels: QuasimodolLevel[] = [];
   private sessionSweeps: SessionSweep[] = [];
   /**
@@ -1676,6 +1700,75 @@ class SignalGenerationEngine {
     return timestampLooksWrong || rangeLooksBroken || dataIsStale;
   }
 
+  // ITEM 2c: dedicated Supabase client for the daily OHLC refresh.
+  // Reads gold_m1_bars DIRECTLY — no fetchHistoricalData, no stale-bar guard,
+  // no GC=F/TwelveData fallback. For building historical daily candles,
+  // staleness is irrelevant (we want ALL available bars, not just "current").
+  // The stale-bar guard in fetchHistoricalData returns empty on weekends
+  // (market closed), which would fall through to GC=F/TwelveData — a
+  // DATA-SOURCE RULE violation for the daily series.
+  private dailyOhlcSupabaseClient: SupabaseClient | null | undefined;
+
+  private getDailyOhlcSupabaseClient(): SupabaseClient | null {
+    if (this.dailyOhlcSupabaseClient !== undefined) return this.dailyOhlcSupabaseClient;
+    const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
+    const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !anonKey) {
+      this.dailyOhlcSupabaseClient = null;
+      return null;
+    }
+    this.dailyOhlcSupabaseClient = createSupabaseClient(url, anonKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+    return this.dailyOhlcSupabaseClient;
+  }
+
+  // ITEM 2c: fetch M1 bars directly from Supabase for daily OHLC aggregation.
+  // No stale-bar guard (historical daily candles don't need "current" bars).
+  // No GC=F/TwelveData fallback (DATA-SOURCE RULE: different venue).
+  // Paginated (PostgREST caps at 1000 rows per response).
+  private async fetchM1BarsForDailyOhlc(fromTime: number, toTime: number): Promise<
+    { timestamp: number; open: number; high: number; low: number; close: number }[]
+  > {
+    const client = this.getDailyOhlcSupabaseClient();
+    if (!client) return [];
+
+    const fromIso = new Date(fromTime).toISOString();
+    const toIso = new Date(toTime).toISOString();
+    const PAGE_SIZE = 1000;
+    const MAX_PAGES = 50; // 50k bars = ~35 days, matching the widened lookback
+    const out: { timestamp: number; open: number; high: number; low: number; close: number }[] = [];
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const startIdx = page * PAGE_SIZE;
+      const endIdx = startIdx + PAGE_SIZE - 1;
+      const { data, error } = await client
+        .from('gold_m1_bars')
+        .select('timestamp, open, high, low, close')
+        .gte('timestamp', fromIso)
+        .lte('timestamp', toIso)
+        .order('timestamp', { ascending: true })
+        .range(startIdx, endIdx);
+      if (error) {
+        console.warn(`⚠️ [DailyOHLC-Supabase] Query failed (page ${page}): ${error.message}`);
+        return [];
+      }
+      if (!data || data.length === 0) break;
+      for (const row of data) {
+        out.push({
+          timestamp: new Date(row.timestamp).getTime(),
+          open: row.open,
+          high: row.high,
+          low: row.low,
+          close: row.close,
+        });
+      }
+      if (data.length < PAGE_SIZE) break;
+    }
+    console.log(`✅ [DailyOHLC-Supabase] Loaded ${out.length} bars directly from gold_m1_bars (no GC=F fallback)`);
+    return out;
+  }
+
   private async refreshRecentDailyOHLCFromHistory(force: boolean = false): Promise<void> {
     const now = Date.now();
 
@@ -1688,17 +1781,22 @@ class SignalGenerationEngine {
     }
 
     this.lastDailyOHLCRefreshAt = now;
-    console.log('📊 Refreshing daily OHLC cache from recent historical minute bars...');
+    console.log('📊 Refreshing daily OHLC cache from Supabase gold_m1_bars (direct, no GC=F fallback)...');
 
     try {
-      const minuteBars = await fetchHistoricalData({
-        fromTime: now - DAILY_OHLC_REFRESH_LOOKBACK_MS,
-        toTime: now,
-        timeoutMs: 20000,
-      });
+      // ITEM 2c: read DIRECTLY from Supabase gold_m1_bars, NOT via
+      // fetchHistoricalData. fetchHistoricalData has a stale-bar guard that
+      // returns empty on weekends (market closed) and falls through to
+      // GC=F/TwelveData — a different venue, which violates the DATA-SOURCE
+      // RULE for the daily series. For historical daily candle aggregation,
+      // staleness is irrelevant; we want all available bars.
+      const minuteBars = await this.fetchM1BarsForDailyOhlc(
+        now - DAILY_OHLC_REFRESH_LOOKBACK_MS,
+        now,
+      );
 
       if (minuteBars.length === 0) {
-        console.warn('⚠️ Daily OHLC refresh returned no historical minute bars');
+        console.warn('⚠️ Daily OHLC refresh: Supabase returned no bars — standing aside (no GC=F fallback)');
         return;
       }
 
@@ -1720,7 +1818,221 @@ class SignalGenerationEngine {
       console.warn('⚠️ Daily OHLC refresh failed:', error instanceof Error ? error.message : 'Unknown');
     }
   }
-  
+
+  // ── ITEM 3: M5 bar-based directional features ─────────────────────────────
+  //
+  // STRUCTURAL ENFORCEMENT: these methods read ONLY from Supabase gold_m1_bars
+  // (via M5 aggregation). They do NOT read priceHistory, highHistory, lowHistory,
+  // or any tick-level array. Tick-based methods (detectPriceActionPattern,
+  // calculateVWAP, calculateTrendStrength, calculateADX) remain for ENTRY TIMING
+  // and non-directional purposes only — they are NOT called from the directional
+  // scoring path below.
+  //
+  // DATA-SOURCE RULE: reads gold_m1_bars DIRECTLY from Supabase via anon key.
+  // No Rork backend, no GC=F/TwelveData, no priceHistory ticks.
+
+  private m5SupabaseClient: SupabaseClient | null | undefined;
+
+  private getM5SupabaseClient(): SupabaseClient | null {
+    if (this.m5SupabaseClient !== undefined) return this.m5SupabaseClient;
+    const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
+    const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !anonKey) {
+      this.m5SupabaseClient = null;
+      return null;
+    }
+    this.m5SupabaseClient = createSupabaseClient(url, anonKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+    return this.m5SupabaseClient;
+  }
+
+  /** Fetch recent M1 bars from Supabase and aggregate into M5 bars. */
+  private async refreshM5SupabaseBars(): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastM5BarRefreshAt < SignalGenerationEngine.M5_REFRESH_INTERVAL_MS) return;
+    this.lastM5BarRefreshAt = now;
+
+    const client = this.getM5SupabaseClient();
+    if (!client) return;
+
+    // Fetch enough M1 bars for M5_LOOKBACK_BARS M5 candles + buffer
+    const lookbackMs = (SignalGenerationEngine.M5_LOOKBACK_BARS * 5 + 100) * 60 * 1000;
+    const fromIso = new Date(now - lookbackMs).toISOString();
+    const toIso = new Date(now).toISOString();
+
+    try {
+      const allM1: { timestamp: string; open: number; high: number; low: number; close: number }[] = [];
+      const PAGE_SIZE = 1000;
+      const MAX_PAGES = 12; // ~12k M1 bars = ~8h, enough for 200 M5 bars
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const { data, error } = await client
+          .from('gold_m1_bars')
+          .select('timestamp, open, high, low, close')
+          .gte('timestamp', fromIso)
+          .lte('timestamp', toIso)
+          .order('timestamp', { ascending: true })
+          .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
+        if (error) {
+          console.warn(`⚠️ [M5-Supabase] Query failed (page ${page}): ${error.message}`);
+          return;
+        }
+        if (!data || data.length === 0) break;
+        allM1.push(...data as typeof allM1);
+        if (data.length < PAGE_SIZE) break;
+      }
+
+      if (allM1.length === 0) {
+        console.warn('⚠️ [M5-Supabase] No bars returned — standing aside (no GC=F fallback)');
+        return;
+      }
+
+      // Aggregate M1 → M5
+      const fiveMinMs = 5 * 60 * 1000;
+      const grouped = new Map<number, { timestamp: number; open: number; high: number; low: number; close: number }>();
+      for (const bar of allM1) {
+        const ts = new Date(bar.timestamp).getTime();
+        const bucket = Math.floor(ts / fiveMinMs) * fiveMinMs;
+        const existing = grouped.get(bucket);
+        if (!existing) {
+          grouped.set(bucket, { timestamp: bucket, open: bar.open, high: bar.high, low: bar.low, close: bar.close });
+        } else {
+          existing.high = Math.max(existing.high, bar.high);
+          existing.low = Math.min(existing.low, bar.low);
+          existing.close = bar.close;
+        }
+      }
+      this.m5SupabaseBars = [...grouped.values()]
+        .sort((a, b) => a.timestamp - b.timestamp)
+        .slice(-SignalGenerationEngine.M5_LOOKBACK_BARS);
+
+      console.log(`✅ [M5-Supabase] ${this.m5SupabaseBars.length} M5 bars from gold_m1_bars (no GC=F fallback)`);
+    } catch (err) {
+      console.warn(`⚠️ [M5-Supabase] Error: ${err instanceof Error ? err.message : 'unknown'}`);
+    }
+  }
+
+  /** Get M5 bars up to a given time (completed bars only). */
+  private getM5BarsUpTo(sigTime: number): { timestamp: number; open: number; high: number; low: number; close: number }[] {
+    return this.m5SupabaseBars.filter(b => b.timestamp < sigTime);
+  }
+
+  /** Bar-based detectPriceActionPattern: uses last 5 M5 bars instead of 5 ticks. */
+  private detectPriceActionPatternBarBased(m5Bars: { open: number; high: number; low: number; close: number }[]): string {
+    if (m5Bars.length < 5) return 'INSUFFICIENT_DATA';
+    const recent = m5Bars.slice(-5);
+    const trend = recent[4].close - recent[0].open;
+    const volatility = Math.max(...recent.map(b => b.high)) - Math.min(...recent.map(b => b.low));
+    if (trend > 10 && volatility < 20) return 'STRONG_UPTREND';
+    if (trend < -10 && volatility < 20) return 'STRONG_DOWNTREND';
+    if (Math.abs(trend) < 5 && volatility < 10) return 'CONSOLIDATION';
+    if (volatility > 25) return 'HIGH_VOLATILITY_BREAKOUT';
+    if (recent[4].close > recent[3].close && recent[3].close < recent[2].close) return 'BULLISH_REVERSAL';
+    if (recent[4].close < recent[3].close && recent[3].close > recent[2].close) return 'BEARISH_REVERSAL';
+    return 'NEUTRAL';
+  }
+
+  /** Bar-based calculateVWAP: uses last 30 M5 bars instead of 30 ticks. */
+  private calculateVWAPBarBased(m5Bars: { high: number; low: number; close: number }[]): number | null {
+    if (m5Bars.length < 10) return null;
+    const n = Math.min(30, m5Bars.length);
+    const bars = m5Bars.slice(-n);
+    let numerator = 0;
+    let denominator = 0;
+    for (const bar of bars) {
+      const typical = (bar.high + bar.low + bar.close) / 3;
+      const pseudoVolume = Math.max(0.1, Math.abs(bar.high - bar.low));
+      numerator += typical * pseudoVolume;
+      denominator += pseudoVolume;
+    }
+    if (denominator === 0) return null;
+    return parseFloat((numerator / denominator).toFixed(2));
+  }
+
+  /** Bar-based calculateTrendStrength: uses last 20 M5 bar closes instead of 20 ticks. */
+  private calculateTrendStrengthBarBased(m5Bars: { close: number }[]): number {
+    if (m5Bars.length < 20) return 0.5;
+    const closes = m5Bars.slice(-20).map(b => b.close);
+    const first = closes[0];
+    const last = closes[closes.length - 1];
+    const netMove = Math.abs(last - first);
+    let totalMove = 0;
+    for (let i = 1; i < closes.length; i++) {
+      totalMove += Math.abs(closes[i] - closes[i - 1]);
+    }
+    if (totalMove === 0) return 0;
+    return Math.min(1.0, netMove / totalMove);
+  }
+
+  /** Bar-based detectMarketRegime: uses M5 bars for ATR + trend strength. */
+  private detectMarketRegimeBarBased(m5Bars: { high: number; low: number; close: number }[]): { type: string; strength: number } {
+    if (m5Bars.length < 20) return { type: 'RANGING', strength: 0.5 };
+    const recent14 = m5Bars.slice(-14);
+    let atrSum = 0;
+    for (let i = 1; i < recent14.length; i++) {
+      const tr = Math.max(
+        recent14[i].high - recent14[i].low,
+        Math.abs(recent14[i].high - recent14[i - 1].close),
+        Math.abs(recent14[i].low - recent14[i - 1].close),
+      );
+      atrSum += tr;
+    }
+    const atr = atrSum / Math.max(1, recent14.length - 1);
+
+    const recent10 = m5Bars.slice(-10);
+    const older10 = m5Bars.slice(-20, -10);
+    let recentActivity = 0;
+    for (let i = 1; i < recent10.length; i++) recentActivity += Math.abs(recent10[i].close - recent10[i - 1].close);
+    let olderActivity = 0;
+    for (let i = 1; i < older10.length; i++) olderActivity += Math.abs(older10[i].close - older10[i - 1].close);
+    const volumeRatio = olderActivity === 0 ? 1.0 : recentActivity / olderActivity;
+
+    const trendStrength = this.calculateTrendStrengthBarBased(m5Bars);
+
+    let type: string;
+    let strength: number;
+    if (atr > 11 && volumeRatio > 1.1) {
+      type = 'VOLATILE';
+      strength = 0.8 + Math.min(atr - 11, 3) * 0.05;
+    } else if (atr < 8.5 && volumeRatio < 0.9) {
+      type = 'QUIET';
+      strength = 0.6 + (8.5 - atr) * 0.05;
+    } else if (trendStrength > 0.6) {
+      type = 'TRENDING';
+      strength = 0.7 + trendStrength * 0.2;
+    } else {
+      type = 'RANGING';
+      strength = 0.5 + (1 - trendStrength) * 0.3;
+    }
+    return { type, strength: Math.min(1.0, Math.max(0.3, strength)) };
+  }
+
+  /** Bar-based calculateADX: uses M5 bar OHLC instead of tick arrays. */
+  private calculateADXBarBased(m5Bars: { high: number; low: number; close: number }[], period: number = 14): number | null {
+    if (m5Bars.length < period + 1) return null;
+    const highs = m5Bars.slice(-(period + 1)).map(b => b.high);
+    const lows = m5Bars.slice(-(period + 1)).map(b => b.low);
+    const closes = m5Bars.slice(-(period + 1)).map(b => b.close);
+    const plusDM: number[] = [];
+    const minusDM: number[] = [];
+    const trs: number[] = [];
+    for (let i = 1; i < highs.length; i++) {
+      const upMove = highs[i] - highs[i - 1];
+      const downMove = lows[i - 1] - lows[i];
+      plusDM.push(upMove > downMove && upMove > 0 ? upMove : 0);
+      minusDM.push(downMove > upMove && downMove > 0 ? downMove : 0);
+      const tr = Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1]));
+      trs.push(tr);
+    }
+    const sumTR = trs.reduce((a, b) => a + b, 0);
+    if (sumTR === 0) return null;
+    const plusDI = 100 * (plusDM.reduce((a, b) => a + b, 0) / sumTR);
+    const minusDI = 100 * (minusDM.reduce((a, b) => a + b, 0) / sumTR);
+    const diSum = plusDI + minusDI;
+    if (diSum === 0) return 0;
+    return parseFloat((100 * Math.abs(plusDI - minusDI) / diSum).toFixed(1));
+  }
+
   getCurrentPrice(): number {
     return this.currentPrice;
   }
@@ -3551,7 +3863,20 @@ class SignalGenerationEngine {
     const vwap = this.calculateVWAP();
     const adx = this.calculateADX(14);
     const bollinger = this.calculateBollingerBands(20, 2);
-    
+
+    // ITEM 3: refresh M5 bars from Supabase and compute bar-based directional features.
+    // These are the ONLY inputs that may contribute to directional buySignalStrength.
+    // Tick-based priceHistory may NOT feed directional score.
+    await this.refreshM5SupabaseBars();
+    const nowMs = Date.now();
+    const m5BarsForFeatures = this.getM5BarsUpTo(nowMs);
+    const barBasedPriceActionPattern = this.detectPriceActionPatternBarBased(m5BarsForFeatures);
+    const barBasedVwap = this.calculateVWAPBarBased(m5BarsForFeatures);
+    const barBasedTrendStrength = this.calculateTrendStrengthBarBased(m5BarsForFeatures);
+    const barBasedRegime = this.detectMarketRegimeBarBased(m5BarsForFeatures);
+    const barBasedAdx = this.calculateADXBarBased(m5BarsForFeatures, 14);
+    console.log(`📊 [ITEM3] Bar-based features: pattern=${barBasedPriceActionPattern} vwap=${barBasedVwap?.toFixed(1) ?? 'null'} trendStr=${(barBasedTrendStrength * 100).toFixed(0)}% regime=${barBasedRegime.type}(${(barBasedRegime.strength * 100).toFixed(0)}%) adx=${barBasedAdx?.toFixed(1) ?? 'null'} [M5 bars: ${m5BarsForFeatures.length}]`);
+
     console.log(`📊 Camarilla Pivot Points Calculated:`);    console.log(`   Daily Pivot: ${dailyPivot.toFixed(1)} (H: ${yesterdayHigh.toFixed(1)}, L: ${yesterdayLow.toFixed(1)}, C: ${yesterdayClose.toFixed(1)})`);
     console.log(`   R1: ${r1.toFixed(1)} | R2: ${r2.toFixed(1)} | R3: ${r3.toFixed(1)}`);
     console.log(`   S1: ${s1.toFixed(1)} | S2: ${s2.toFixed(1)} | S3: ${s3.toFixed(1)}`);
@@ -3600,6 +3925,12 @@ class SignalGenerationEngine {
       bollingerSqueeze: bollinger.squeeze,
       bollingerExpansion: bollinger.expansion,
       bollingerBandwidth: bollinger.bandwidth,
+      barBasedPriceActionPattern,
+      barBasedVwap,
+      barBasedTrendStrength,
+      barBasedRegimeType: barBasedRegime.type,
+      barBasedRegimeStrength: barBasedRegime.strength,
+      barBasedAdx,
     };
   }
 
@@ -4531,34 +4862,36 @@ class SignalGenerationEngine {
     }
     
     // C12: Trend feature stack capped at 0.50 combined contribution
+    // ITEM 3: directional trend contributions now use BAR-BASED features
+    // (from Supabase gold_m1_bars via M5 aggregation), NOT tick-based
+    // priceHistory. The old tick-based path (5/20/30 ticks) scored 25% WR
+    // on BUY (inverted against the 57.3% baseline). The bar-based versions
+    // score 50-57.7% — at or above baseline. SELL-side trend features
+    // (STRONG_DOWNTREND, TRENDING_STRONG→SELL) scored below baseline on bars
+    // and are DROPPED entirely per the pre-registered gate.
     let trendBuyContribution = 0;
     let trendSellContribution = 0;
-    if (features.marketRegime.type === 'TRENDING' && features.marketRegime.strength > 0.75) {
+    if (features.barBasedRegimeType === 'TRENDING' && features.barBasedRegimeStrength > 0.75) {
       if (htfTrend === 'BULLISH' && ltfTrend === 'BULLISH') {
         trendBuyContribution += 0.15;
         attentionScores.set('strong_uptrend', 0.15);
-        console.log('✅ BUY: Strong Uptrend Confirmed');
-      } else if (htfTrend === 'BEARISH' && ltfTrend === 'BEARISH') {
-        trendSellContribution += 0.15;
-        attentionScores.set('strong_downtrend', 0.15);
-        console.log('🔴 SELL: Strong Downtrend Confirmed');
+        console.log('✅ BUY: Strong Uptrend Confirmed (bar-based regime)');
       }
-    } else if (features.marketRegime.type === 'VOLATILE') {
+      // SELL-side strong_downtrend DROPPED: bar-based WR 0% < 21.7% baseline
+    } else if (features.barBasedRegimeType === 'VOLATILE') {
       attentionScores.set('volatile_regime_context', 0.03);
     }
-    if (features.priceActionPattern === 'BULLISH_REVERSAL') {
+    // Price action pattern: BUY-side uses bar-based, SELL-side DROPPED
+    if (features.barBasedPriceActionPattern === 'BULLISH_REVERSAL') {
       trendBuyContribution += 0.12;
       attentionScores.set('bullish_reversal', 0.12);
-    } else if (features.priceActionPattern === 'BEARISH_REVERSAL') {
-      trendSellContribution += 0.12;
-      attentionScores.set('bearish_reversal', 0.12);
-    } else if (features.priceActionPattern === 'STRONG_UPTREND') {
+    } else if (features.barBasedPriceActionPattern === 'STRONG_UPTREND') {
       trendBuyContribution += 0.10;
       attentionScores.set('strong_uptrend_pattern', 0.10);
-    } else if (features.priceActionPattern === 'STRONG_DOWNTREND') {
-      trendSellContribution += 0.10;
-      attentionScores.set('strong_downtrend_pattern', 0.10);
     }
+    // SELL-side priceActionPattern (BEARISH_REVERSAL, STRONG_DOWNTREND) DROPPED:
+    // bar-based WR 20% < 21.7% baseline. Tick-based versions are
+    // architecturally banned from directional score (M1 must not set direction).
     if (features.candlestickPattern === 'BULLISH_ENGULFING') {
       trendBuyContribution += 0.12;
       attentionScores.set('bullish_engulfing', 0.12);
@@ -4671,33 +5004,38 @@ class SignalGenerationEngine {
       console.log('🔴 SELL: Bearish MACD Momentum');
     }
 
-    if (features.vwap !== null) {
-      const vwapDelta = this.currentPrice - features.vwap;
+    // ITEM 3: VWAP directional contribution uses BAR-BASED VWAP (from M5 bars),
+    // not tick-based 30-tick VWAP. BUY-side: bar-based above_vwap scored 57%
+    // (at baseline) vs tick-based 22.7% (inverted). SELL-side below_vwap
+    // scored 14.9% on bars (below 21.7% baseline) → DROPPED.
+    if (features.barBasedVwap !== null) {
+      const vwapDelta = this.currentPrice - features.barBasedVwap;
       if (vwapDelta > 1.5) {
         buySignalStrength += 0.05;
         attentionScores.set('above_vwap', 0.05);
-        console.log(`✅ BUY: Price ${vwapDelta.toFixed(1)} above VWAP (${features.vwap.toFixed(1)})`);
-      } else if (vwapDelta < -1.5) {
-        sellSignalStrength += 0.05;
-        attentionScores.set('below_vwap', 0.05);
-        console.log(`🔴 SELL: Price ${Math.abs(vwapDelta).toFixed(1)} below VWAP (${features.vwap.toFixed(1)})`);
+        console.log(`✅ BUY: Price ${vwapDelta.toFixed(1)} above bar-based VWAP (${features.barBasedVwap.toFixed(1)})`);
       }
+      // SELL-side below_vwap DROPPED: bar-based WR 14.9% < 21.7% baseline
     }
 
-    if (features.adx !== null) {
-      if (features.adx > 25) {
-        const adxBoost = Math.min(0.08, (features.adx - 25) * 0.003);
+    // ITEM 3: ADX directional contribution uses BAR-BASED ADX (from M5 bars),
+    // not tick-based ADX. BUY-side: bar-based scored 57.7% (above 57.3% baseline)
+    // vs tick-based 25% (inverted). SELL-side: bar-based scored 23.3% (above
+    // 21.7% baseline) — both clear, adopt bar-based for both directions.
+    if (features.barBasedAdx !== null) {
+      if (features.barBasedAdx > 25) {
+        const adxBoost = Math.min(0.08, (features.barBasedAdx - 25) * 0.003);
         if (htfTrend === 'BULLISH' && ltfTrend === 'BULLISH') {
           buySignalStrength += adxBoost;
           attentionScores.set('adx_trend_strength', adxBoost);
-          console.log(`✅ ADX ${features.adx.toFixed(1)} confirms uptrend (+${(adxBoost * 100).toFixed(1)}%)`);
+          console.log(`✅ Bar-based ADX ${features.barBasedAdx.toFixed(1)} confirms uptrend (+${(adxBoost * 100).toFixed(1)}%)`);
         } else if (htfTrend === 'BEARISH' && ltfTrend === 'BEARISH') {
           sellSignalStrength += adxBoost;
           attentionScores.set('adx_trend_strength', adxBoost);
-          console.log(`🔴 ADX ${features.adx.toFixed(1)} confirms downtrend (+${(adxBoost * 100).toFixed(1)}%)`);
+          console.log(`🔴 Bar-based ADX ${features.barBasedAdx.toFixed(1)} confirms downtrend (+${(adxBoost * 100).toFixed(1)}%)`);
         }
-      } else if (features.adx < 18) {
-        console.log(`ℹ️ Low ADX ${features.adx.toFixed(1)} - weak trend regime`);
+      } else if (features.barBasedAdx < 18) {
+        console.log(`ℹ️ Low bar-based ADX ${features.barBasedAdx.toFixed(1)} - weak trend regime`);
       }
     }
 
@@ -5120,9 +5458,20 @@ class SignalGenerationEngine {
     const bullishScore = pivotBullish + developingDayBullish + dailyTrendBullish + dailyEmaBullish;
     const bearishScore = pivotBearish + developingDayBearish + dailyTrendBearish + dailyEmaBearish;
 
-    if (bullishScore >= 1.5) {
+    // ITEM 2a fix: arbitration order bug — the previous code tested
+    // bullishScore >= 1.5 FIRST and returned BULLISH early, so when both sides
+    // cleared 1.5 (e.g. bear=2.5 vs bull=1.5), BULLISH always won regardless of
+    // which score was actually higher. This was the measured defect: on 31 July,
+    // detectHTFTrend returned BULLISH on a -401 pip downtrend day because
+    // developingDayBullish (a V-shaped intraday bounce) contributed 1.0 while
+    // pivotBearish + dailyTrendBearish contributed 1.5, but the early bull
+    // return fired on pivotBullish + developingDayBullish = 1.5.
+    //
+    // Fix: the HIGHER score wins. Ties (equal scores, both >= 1.5) resolve to
+    // NEUTRAL — a genuinely ambiguous signal should not commit to a direction.
+    if (bullishScore >= 1.5 && bullishScore > bearishScore) {
       return 'BULLISH';
-    } else if (bearishScore >= 1.5) {
+    } else if (bearishScore >= 1.5 && bearishScore > bullishScore) {
       return 'BEARISH';
     } else {
       return 'NEUTRAL';

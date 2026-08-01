@@ -305,8 +305,11 @@ function htfFromDailyBars(
 
   const bullishScore = pivotBullish + devBull + trendBull + emaBull;
   const bearishScore = pivotBearish + devBear + trendBear + emaBear;
+  // ITEM 2 fix: higher score wins, ties → NEUTRAL (was: bull tested first)
   const verdict: Dir =
-    bullishScore >= 1.5 ? "BULLISH" : bearishScore >= 1.5 ? "BEARISH" : "NEUTRAL";
+    bullishScore >= 1.5 && bullishScore > bearishScore ? "BULLISH"
+    : bearishScore >= 1.5 && bearishScore > bullishScore ? "BEARISH"
+    : "NEUTRAL";
   return {
     verdict,
     bullishScore,
@@ -401,7 +404,7 @@ const MIN_M15_BARS = 5;
 const MIN_COMPLETED_DAYS = 3;
 
 async function main(): Promise<void> {
-  const exportPath = process.argv[2] ?? "/tmp/export31.txt";
+  const exportPath = process.argv[2] ?? "/tmp/diagnostics_export.txt";
   console.log("═".repeat(108));
   console.log("  B1 COUNTERFACTUAL — HTF + M15 + M5 DIRECTIONAL CASCADE (read-only, no engine change)");
   console.log("═".repeat(108));
@@ -413,7 +416,8 @@ async function main(): Promise<void> {
   // ── bar read ───────────────────────────────────────────────────────────────
   console.log("\n── DATA SOURCE ─────────────────────────────────────────────────────────");
   const t0 = Date.now();
-  const m1 = await fetchAllM1Bars("2026-07-01T00:00:00Z", "2026-08-02T00:00:00Z");
+  // ITEM 4: full coverage — bars now span 2026-06-18 to 2026-07-31
+  const m1 = await fetchAllM1Bars("2026-06-18T00:00:00Z", "2026-08-02T00:00:00Z");
   console.log(`  table      : gold_m1_bars (Supabase, DIRECT, anon key, paginated)`);
   console.log(`  key        : EXPO_PUBLIC_SUPABASE_ANON_KEY  (no service role, no Rork backend)`);
   console.log(`  rows       : ${m1.length}  (fetched in ${((Date.now() - t0) / 1000).toFixed(1)}s)`);

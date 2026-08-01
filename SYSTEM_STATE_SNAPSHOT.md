@@ -79,49 +79,104 @@ The shadow record captures the full would-be geometry PLUS the +40pip entry-shif
 
 ---
 
-## 2b. TIER_0 S/R ZONES — FRESHNESS DEPENDS ON A HAND-RUN SCRIPT (NOT A LIVE FIX)
+## 2b. TIER_0 S/R ZONES — SCHEDULED REFRESH IS LIVE (2026-08-01)
 
-**Read this before trusting anything about TIER_0.** As of 2026-08-01 there is no
-automated path that keeps `sr_zones_v1` fresh. Do not mistake the code changes
-listed below for a working system.
+**Status: LIVE.** A Supabase Edge Function (`refresh-sr-zones`) computes zones
+from `gold_m1_bars` and writes to `sr_zones_v1` on a pg_cron schedule. NO Rork
+backend anywhere in the path — pg_cron fires `net.http_post` to the Edge Function,
+which reads bars and writes zones via the service role key auto-injected by
+Supabase. No client needs to be open. No manual script needs to be run.
 
-**What is actually live:**
+**Architecture (Option 4 — Edge Function + pg_cron + pg_net):**
+- Edge Function: `backend/functions/refresh-sr-zones/index.ts` (Deno TypeScript)
+  - Ported `computeZonesFromBars` verbatim from `srZones.ts`
+  - B2(b) pagination fix: paginates bar fetch (6,524 bars retrieved, >>1000)
+  - B2(c) dedupe fix: dedupes by (price, type) before write
+  - B2(c) upsert-then-prune: upserts first, then prunes stale rows — a failed
+    write leaves the previous cache intact (not empty)
+  - Deployed at: `https://tcbnqmnzsnjhqkyuhrch.supabase.co/functions/v1/refresh-sr-zones`
+- Schedule: pg_cron job `refresh-sr-zones` at `5 */4 * * *` (every 4 hours at :05)
+  - Calls `net.http_post` to the Edge Function URL
+  - `timeout_milliseconds := 30000`
+
+**Verified by direct DB evidence (2026-08-01):**
+- pg_cron 1.6.4 and pg_net 0.20.3 confirmed installed via `pg_extension` query
+- `cron.database_name = 'postgres'` confirmed
+- Two scheduled runs confirmed in `cron.job_run_details`:
+  - jobid=4, runid=4, 08:16:00 UTC, status=succeeded
+  - jobid=4, runid=5, 08:18:00 UTC, status=succeeded
+- `sr_zones_v1` after each run: 24 rows, 17 with reactionStrength >= 0.3,
+  all `updated_at` = run timestamp, max(last_touch_ts) = 2026-07-31T20:56Z
+- Edge Function manual test: `barsFetched=6526, rawZones=25, dedupedZones=24,
+  upserted=24, overThreshold=17`
+- Schedule switched from 2-minute test to production `5 */4 * * *` — confirmed
+  no 2-minute run fired after the switch
+
+**What is also live (unchanged from prior):**
 - `expo/services/srZoneTier0Service.ts` — client reads `sr_zones_v1` DIRECTLY from
-  Supabase via the anon key (B2(a)). This IS live and backend-independent.
+  Supabase via the anon key (B2(a)). Backend-independent.
 - TIER_0 failure visibility counters + greppable warnings + diagnostics export
-  section (B2(c)). This IS live.
+  section (B2(c)).
 
-**What is NOT live:**
-- The PostgREST 1000-row pagination fix (B2(b)) was applied to
-  `expo/backend/trpc/routes/srZones.ts`. **That backend is 503 on every configured
-  base URL and there is no deploy mechanism in this environment.** The fix has
-  therefore NEVER executed against production. It is dead code until the backend
-  is deployed or the compute is relocated.
-- There is NO scheduled refresh of any kind. `pg_cron` / `pg_net` were not
-  installed at the time of writing.
+**What is NOT live (dead code on the 503 backend):**
+- `expo/backend/trpc/routes/srZones.ts` — the pagination + dedupe + upsert-then-prune
+  fixes are duplicated in the Edge Function, which IS live. The backend code is
+  retained as a reference but is NOT in the critical path.
 
-**The only thing that has ever successfully written zones is a HAND-RUN script:**
+**Expiry note:** zones currently have `max(last_touch_ts) = 2026-07-31T20:56Z`
+(Friday close). The 4-hour schedule will refresh with Monday's bars when the
+market reopens Sunday ~22:00Z, so `last_touch_ts` will advance. PRICE_ACTION
+zones older than EXPIRY_HOURS=96 are filtered at read time; ALWAYS_FRESH sources
+(PREV_DAY, PIVOT, WEEKLY) are recomputed fresh each run and never expire.
+
+**LIVENESS CHECK — repeatable:**
+Query `cron.job_run_details` for recent `refresh-sr-zones` runs:
+```sql
+SELECT runid, jobid, status, start_time, end_time, return_message
+FROM cron.job_run_details
+WHERE jobid = (SELECT jobid FROM cron.jobs WHERE jobname = 'refresh-sr-zones')
+ORDER BY start_time DESC LIMIT 5;
 ```
-bunx tsx expo/scripts/computeAndWriteZones.ts --write
-```
-run manually from a developer machine with `SUPABASE_SERVICE_ROLE_KEY` in `.env`.
-TIER_0 freshness currently depends entirely on a human remembering to run it.
-
-**CONCRETE EXPIRY DEADLINE:** the currently-restored zones have
-`max(last_touch_ts) = 2026-07-31T20:56Z` (Friday's true Vantage close) against
-`EXPIRY_HOURS = 96`. Therefore:
-- Market reopens Sunday ~22:00Z with zones frozen at Friday's close — they will
-  miss ALL of Monday's structure.
-- Zones EXPIRE at **~2026-08-04T20:56Z (Tuesday)**. After that instant
-  `readTier0Zones()` returns `ALL_EXPIRED`, TIER_0 is dead, and every signal falls
-  back to TIER_1_LOCAL ~100-minute micro-structure — **which is precisely the
-  31 July failure condition that produced four stopped-out BUYs.**
-- A scheduled refresh MUST be live before Tuesday 20:56Z, or the hand-run script
-  must be executed before then as a stopgap.
+Or check `sr_zones_v1.updated_at` — if it's within 4 hours of now, the schedule
+is running.
 
 ---
 
-## 3. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
+## 3. ITEM 5 — SELL SUPPRESSION RE-TEST ON BAR-VERIFIED OUTCOMES (2026-08-01)
+
+**MEASUREMENT ONLY. allowShortSignals is UNCHANGED (still false).**
+
+Re-resolved all 369 export signals against real gold_m1_bars via fromScratch.
+206 of 369 (55.8%) changed status vs old-stored outcomes — the old outcomes
+were resolved under corrupted paths (false SL_HIT, GC=F basis, ATR
+misalignment, phantom resolvedAtBarTs).
+
+**Bar-verified results:**
+```
+ALL:  n=369  WR=63.1%  PF=1.82  EV=+0.3019R  net=+$581.6
+BUY:  n=157  WR=63.1%  PF=1.70  EV=+0.2579R  net=+$236.1
+SELL: n=212  WR=63.2%  PF=1.91  EV=+0.3344R  net=+$345.5
+```
+
+**Old-stored (for comparison):**
+```
+BUY:  n=157  WR=57.3%
+SELL: n=212  WR=21.7%
+```
+
+**VERDICT: The evidence NO LONGER SUPPORTS suppressing SELL.**
+Both BUY and SELL are profitable on bar-verified data. SELL is actually
+slightly MORE profitable than BUY (+0.3344R vs +0.2579R). The original
+suppression decision was based on old-stored outcomes where SELL WR was
+21.7% — but 55.8% of those were resolved under corrupted paths. On clean
+bar-verified data, SELL WR is 63.2%, essentially identical to BUY.
+
+**No change made.** This is a measurement. allowShortSignals stays false
+until the user decides whether to flip it.
+
+---
+
+## 4. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
 
 **Finding (from prior session, `expo/scripts/analyzeDriftVetoOnBuy.ts`):** the Phase 2 counter-trend drift veto IS over-firing on BUYs. It dropped **4/50** counter-trend BUYs that had **positive EV (+0.2295R, 75% win rate)**. Three of the four were winners (+1.149R, +0.385R, +0.385R). The veto is costing the long book **$3.8 in net $** and **+0.0036R in EV per signal**. The veto threshold (2.0×ATR) may be too low for BUYs, or the counter-trend classification may be too broad.
 
@@ -131,7 +186,7 @@ TIER_0 freshness currently depends entirely on a human remembering to run it.
 
 ---
 
-## 4. Recommended Next Action
+## 5. Recommended Next Action
 
 **LET THE SYSTEM RUN and gather real forward data from the corrected engine before any further optimization.** The current samples (six counterfactuals, Phase 1 audit, drift-veto analysis) all predate the Step 2 data-venue unification. Every conclusion in this build is sound on its own measured data, but the forward data from the corrected engine is the only data that reflects the system as it now genuinely stands. Acting on further optimization now — drift-veto fix, new geometry variants, new filters — would be optimizing against a baseline that no longer exists.
 
