@@ -23,20 +23,52 @@ export const POST_TP1_PROFIT_LOCK_MIN_PIPS = 5;
 const POST_TP1_LOCK_MAX_FRACTION_OF_TP1 = 0.9;
 
 /**
+ * OFFLINE LADDER-SWEEP HOOK (ITEM D) — NOT a ladder change.
+ *
+ * Exists ONLY so an offline counterfactual can re-run the REAL resolver at
+ * candidate ladder settings instead of re-implementing it in a mirror. Every
+ * field is optional and every default reproduces live behaviour exactly: omit
+ * the object and this module behaves as it did before. Nothing in the live app
+ * passes it (grep-verifiable: `ladder:` appears only under scripts/).
+ */
+export interface LadderOverride {
+  /** Lock delta as a fraction of the TP1 distance. Takes precedence over lockFractionOfR. */
+  lockFractionOfTP1?: number;
+  /** Lock delta as a fraction of the realised stop distance. Live default = POST_TP1_PROFIT_LOCK_R. */
+  lockFractionOfR?: number;
+  /** Apply the 0.9 x TP1 ceiling. Live default = true. */
+  applyLockCap?: boolean;
+  /** Apply the 5-pip floor. Live default = true. */
+  applyLockFloor?: boolean;
+}
+
+/**
  * Post-TP1 protected exit level: entry +/- 0.35 x realised stop distance,
  * floored at 5 pips and capped at 90% of the TP1 distance.
  */
-export function getPostTP1LockPrice(signal: TradingSignal): number {
+export function getPostTP1LockPrice(signal: TradingSignal, override?: LadderOverride): number {
   const stopDistance = Math.abs(signal.entryPrice - signal.sl);
   const minDelta = POST_TP1_PROFIT_LOCK_MIN_PIPS * PIP;
-  const rBased = Number.isFinite(stopDistance) && stopDistance > 0
-    ? stopDistance * POST_TP1_PROFIT_LOCK_R
-    : minDelta;
   const tp1Distance = Math.abs(signal.tp1 - signal.entryPrice);
-  const ceiling = Number.isFinite(tp1Distance) && tp1Distance > 0
+  const useFloor = override?.applyLockFloor ?? true;
+  const useCap = override?.applyLockCap ?? true;
+
+  let base: number;
+  if (override?.lockFractionOfTP1 !== undefined) {
+    base = Number.isFinite(tp1Distance) && tp1Distance > 0
+      ? tp1Distance * override.lockFractionOfTP1
+      : minDelta;
+  } else {
+    const lockR = override?.lockFractionOfR ?? POST_TP1_PROFIT_LOCK_R;
+    base = Number.isFinite(stopDistance) && stopDistance > 0
+      ? stopDistance * lockR
+      : minDelta;
+  }
+
+  const ceiling = useCap && Number.isFinite(tp1Distance) && tp1Distance > 0
     ? tp1Distance * POST_TP1_LOCK_MAX_FRACTION_OF_TP1
     : Number.POSITIVE_INFINITY;
-  const delta = Math.min(Math.max(rBased, minDelta), ceiling);
+  const delta = Math.min(useFloor ? Math.max(base, minDelta) : base, ceiling);
   const raw = signal.type === 'BUY' ? signal.entryPrice + delta : signal.entryPrice - delta;
   return Number(raw.toFixed(1));
 }
@@ -52,14 +84,14 @@ export interface ResolverOutcome {
   resolvedAtBarTs?: number;
 }
 
-function getProtectedExitPrice(signal: TradingSignal, targetsHit: number): number {
+function getProtectedExitPrice(signal: TradingSignal, targetsHit: number, override?: LadderOverride): number {
   const normalizedTargetsHit = Math.max(0, Math.min(2, targetsHit));
   if (normalizedTargetsHit >= 2) {
     return Number(((signal.tp1 + signal.tp2 + signal.entryPrice) / 3).toFixed(1));
   }
   if (normalizedTargetsHit === 1) {
     // Post-TP1 protected exit = 0.35R profit lock price.
-    return getPostTP1LockPrice(signal);
+    return getPostTP1LockPrice(signal, override);
   }
   return signal.entryPrice;
 }
@@ -67,7 +99,14 @@ function getProtectedExitPrice(signal: TradingSignal, targetsHit: number): numbe
 export function resolveSignalWithBars(
   signal: TradingSignal,
   bars: OhlcBar[],
-  opts: { slWickPenetrationPips?: number; logPrefix?: string; fromScratch?: boolean; evalNowMs?: number } = {},
+  opts: {
+    slWickPenetrationPips?: number;
+    logPrefix?: string;
+    fromScratch?: boolean;
+    evalNowMs?: number;
+    /** Offline ladder-sweep hook only (ITEM D). Omit for live behaviour. */
+    ladder?: LadderOverride;
+  } = {},
 ): ResolverOutcome {
   const wickPen = opts.slWickPenetrationPips ?? SL_WICK_PENETRATION_PIPS;
   const slSlack = wickPen * PIP;
@@ -107,7 +146,7 @@ export function resolveSignalWithBars(
   const isBuy = signal.type === 'BUY';
   const slTriggerPrice = isBuy ? signal.sl - slSlack : signal.sl + slSlack;
 
-  const postTP1Lock = getPostTP1LockPrice(signal);
+  const postTP1Lock = getPostTP1LockPrice(signal, opts.ladder);
 
   for (const bar of evalBars) {
     if (!entryConfirmed) {
