@@ -28,6 +28,7 @@ interface SandboxSignalEngine {
   getMarketOutlook(): Promise<{ isMarketOpen: boolean; currentSession: string }>;
   generateSignal(settings: SimulationSettings, accountBalance: number, activeSignals: TradingSignal[]): Promise<TradingSignal | null>;
   getSignalGenerationStats(): { attempts: number; successful: number; rate: number };
+  __injectBarSeriesForTestOnly(m1: SimulationBar[]): void;
   getPerformanceMetrics(): { recentWinRate: number; profitFactor: number; avgConfidence: number; recentWinningConfidences: number[] };
   recordTradeOutcome(
     signalId: string,
@@ -716,6 +717,16 @@ async function run(): Promise<void> {
           continue;
         }
       }
+
+      // ITEM F: the directional layer reads a SEALED M5 bar series derived from
+      // Supabase gold_m1_bars, and generateSignal() stands aside outright when
+      // that series is absent or stale. The simulation runs on a VIRTUAL clock
+      // over synthetic prices, so a live Supabase read would return bars from a
+      // completely different instant and be rejected as stale on every tick.
+      // Feed the engine the same synthetic M1 series the simulation is already
+      // maintaining, via the clearly-marked test seam.
+      (signalEngine as unknown as { __injectBarSeriesForTestOnly(m1: SimulationBar[]): void })
+        .__injectBarSeriesForTestOnly(globalThis.__SIGNAL_SIMULATION_CONTEXT__.bars);
 
       const signal = await signalEngine.generateSignal(DEFAULT_SETTINGS, ACCOUNT_BALANCE, signalHistory);
       if (!signal) {

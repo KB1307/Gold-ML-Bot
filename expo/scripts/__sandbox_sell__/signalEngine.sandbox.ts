@@ -88,6 +88,25 @@ import { createClient as createSupabaseClient, type SupabaseClient } from "@supa
 import type { OhlcBar } from "@/services/barStore";
 import { fetchTier0SRZones, recordTier0FallbackUse } from "@/services/srZoneTier0Service";
 import { DirectionalScoreAccumulator } from "@/services/directionalScoring";
+import {
+  aggregateBars,
+  barADX,
+  barBollinger,
+  barBollingerBreakout,
+  barDivergence,
+  barEMACrossover,
+  barLTFTrend,
+  barMACDHistogram,
+  barPriceActionPattern,
+  barRSI,
+  barRegime,
+  barTrendStrength,
+  barVWAP,
+  isBarSeriesFresh,
+  sealBarSeries,
+  type Bar,
+  type BarSeries,
+} from "@/services/barIndicators";
 
 /**
  * STEP 2 (GC=F/spot investigation): GENERATION_OHLC_SOURCE events aren't tied to
@@ -1242,6 +1261,41 @@ class SignalGenerationEngine {
   private lastM5BarRefreshAt: number = 0;
   private static readonly M5_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
   private static readonly M5_LOOKBACK_BARS = 200; // ~16h of M5 bars, enough for all bar-based features
+
+  // ── ITEM F: sealed bar series for the RE-SOURCED DIRECTIONAL LAYER ────────
+  //
+  // F0 MEASUREMENT POSITION (also recorded in services/barIndicators.ts):
+  // the tick stream is NOT STORED, so a historical tick-vs-bar A/B at signal
+  // level is IMPOSSIBLE — not underpowered, impossible. Everything below is a
+  // DESIGN decision on first-principles grounds (an indicator whose "period" is
+  // denominated in tick observations has no fixed time base and is therefore
+  // not the indicator it claims to be), validated on FORWARD data only. It may
+  // never be cited as a measured performance improvement.
+  //
+  // F1 LOOKBACKS (each sized for the longest indicator it must serve):
+  //   M1  — 240 bars (4h).   Entry-timing refinement only. NEVER directional.
+  //   M5  — 300 bars (25h).  Serves EMA-50 (250min), MACD-26+9 (175min),
+  //                          RSI-14 (70min), ADX-14 double-smoothed (needs
+  //                          2*14+1 bars), Bollinger-20, regime (60 bars).
+  //   M15 — 200 bars (50h).  Mid-timeframe confluence / HTF corroboration.
+  //
+  // F1 STALENESS: if the newest bar is older than the timeframe's max age the
+  // series is treated as ABSENT, not served stale. Directional features then
+  // return null and the engine stands aside rather than scoring on stale
+  // structure. There is no GC=F / TwelveData substitution path — the only
+  // producer of a BarSeries is sealBarSeries(), called once, below, on data
+  // read DIRECTLY from Supabase gold_m1_bars via the anon key.
+  private barSeriesM1: BarSeries | null = null;
+  private barSeriesM5: BarSeries | null = null;
+  private barSeriesM15: BarSeries | null = null;
+  private barSeriesBuiltAt: number = 0;
+  private static readonly BAR_M1_LOOKBACK = 240;
+  private static readonly BAR_M5_LOOKBACK = 300;
+  private static readonly BAR_M15_LOOKBACK = 200;
+  /** A timeframe's newest bar may be at most 3 of its own periods old. */
+  private static readonly BAR_MAX_AGE_M1_MS = 3 * 60 * 1000;
+  private static readonly BAR_MAX_AGE_M5_MS = 15 * 60 * 1000;
+  private static readonly BAR_MAX_AGE_M15_MS = 45 * 60 * 1000;
   private quasimodolLevels: QuasimodolLevel[] = [];
   private sessionSweeps: SessionSweep[] = [];
   /**
@@ -1994,6 +2048,171 @@ class SignalGenerationEngine {
   /** Get M5 bars up to a given time (completed bars only). */
   private getM5BarsUpTo(sigTime: number): { timestamp: number; open: number; high: number; low: number; close: number }[] {
     return this.m5SupabaseBars.filter(b => b.timestamp < sigTime);
+  }
+
+  // ═══ ITEM F1 — THE BAR SERIES ════════════════════════════════════════
+  //
+  // Reads gold_m1_bars DIRECTLY from Supabase via the anon key + RLS and
+  // aggregates M1 → M5 → M15 locally. There is NO Rork backend call, NO
+  // fetchHistoricalData(), NO GC=F, NO TwelveData, and NO priceHistory tick on
+  // this path. Confirm structurally with:
+  //     grep -n "sealBarSeries(" services/
+  // — it must appear ONLY in this method. sealBarSeries is the sole producer of
+  // the branded BarSeries type that every indicator in barIndicators.ts demands,
+  // so no other series can physically reach the directional layer.
+
+  /**
+   * Rebuild the M1/M5/M15 sealed series from Supabase gold_m1_bars.
+   * Throttled to the M5 refresh interval; shares the paginated fetch with the
+   * legacy M5 cache so this adds no extra round trips.
+   */
+  private async refreshBarSeries(force: boolean = false): Promise<void> {
+    const now = Date.now();
+    if (!force && now - this.barSeriesBuiltAt < SignalGenerationEngine.M5_REFRESH_INTERVAL_MS) return;
+
+    const client = this.getM5SupabaseClient();
+    if (!client) {
+      console.warn('⚠️ [BarSeries] No Supabase client — directional layer will stand aside');
+      this.barSeriesM1 = null;
+      this.barSeriesM5 = null;
+      this.barSeriesM15 = null;
+      return;
+    }
+    this.barSeriesBuiltAt = now;
+
+    // Longest requirement drives the fetch: M15 x 200 bars = 50h of M1 bars.
+    const lookbackMs = (SignalGenerationEngine.BAR_M15_LOOKBACK * 15 + 120) * 60 * 1000;
+    const fromIso = new Date(now - lookbackMs).toISOString();
+    const toIso = new Date(now).toISOString();
+
+    try {
+      const rows: { timestamp: string; open: number; high: number; low: number; close: number }[] = [];
+      const PAGE_SIZE = 1000;
+      const MAX_PAGES = 5; // 50h of M1 bars = ~3000 rows; 5 pages is ample headroom
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const { data, error } = await client
+          .from('gold_m1_bars')
+          .select('timestamp, open, high, low, close')
+          .gte('timestamp', fromIso)
+          .lte('timestamp', toIso)
+          .order('timestamp', { ascending: true })
+          .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
+        if (error) {
+          console.warn(`⚠️ [BarSeries] Query failed (page ${page}): ${error.message} — standing aside`);
+          return;
+        }
+        if (!data || data.length === 0) break;
+        rows.push(...(data as typeof rows));
+        if (data.length < PAGE_SIZE) break;
+      }
+
+      if (rows.length === 0) {
+        console.warn('⚠️ [BarSeries] gold_m1_bars returned 0 rows — directional layer stands aside (NO GC=F fallback)');
+        this.barSeriesM1 = null;
+        this.barSeriesM5 = null;
+        this.barSeriesM15 = null;
+        return;
+      }
+
+      const m1: Bar[] = rows.map(r => ({
+        timestamp: new Date(r.timestamp).getTime(),
+        open: r.open,
+        high: r.high,
+        low: r.low,
+        close: r.close,
+      }));
+
+      this.applyM1RowsToBarSeries(m1);
+
+      const newest = m1[m1.length - 1].timestamp;
+      const ageMin = (now - newest) / 60000;
+      const counts = `M1 ${this.barSeriesM1?.length ?? 0} / M5 ${this.barSeriesM5?.length ?? 0} / M15 ${this.barSeriesM15?.length ?? 0}`;
+      console.log(
+        `✅ [BarSeries] ${rows.length} M1 rows → ${counts}` +
+        ` — newest bar ${new Date(newest).toISOString()} (${ageMin.toFixed(1)}min old)`,
+      );
+    } catch (err) {
+      console.warn(`⚠️ [BarSeries] Error: ${err instanceof Error ? err.message : 'unknown'} — standing aside`);
+    }
+  }
+
+  /**
+   * The SOLE place a BarSeries is constructed. Keeping all three seals inside
+   * one private method is what makes the `grep -n "sealBarSeries("` audit
+   * meaningful: the provenance of every bar the directional layer can ever see
+   * is decided here and nowhere else.
+   */
+  private applyM1RowsToBarSeries(m1: readonly Bar[]): void {
+    this.barSeriesM1 = sealBarSeries(m1.slice(-SignalGenerationEngine.BAR_M1_LOOKBACK));
+    this.barSeriesM5 = sealBarSeries(aggregateBars(m1, 5).slice(-SignalGenerationEngine.BAR_M5_LOOKBACK));
+    this.barSeriesM15 = sealBarSeries(aggregateBars(m1, 15).slice(-SignalGenerationEngine.BAR_M15_LOOKBACK));
+  }
+
+  /**
+   * TEST/SIMULATION SEAM — NOT A PRODUCTION PATH.
+   *
+   * The deterministic sandboxes (`test_sell_suppression.ts`,
+   * `runSignalSimulation.ts`) synthesise their own M1 bars and run on a
+   * simulated or real-but-closed-market clock, so the live Supabase read would
+   * legitimately return stale bars and the F1 stand-aside gate would (correctly)
+   * reject every attempt. This seam lets a harness supply the M1 series it is
+   * already simulating.
+   *
+   * It is deliberately verbose and greppable. It is never called from any
+   * production code path — verify with:
+   *     grep -rn "__injectBarSeriesForTestOnly" services/ contexts/ app/
+   * (must return only this definition).
+   */
+  __injectBarSeriesForTestOnly(m1: readonly Bar[]): void {
+    this.applyM1RowsToBarSeries(m1);
+    this.barSeriesBuiltAt = Date.now();
+  }
+
+  /**
+   * The M5 series, or null when it is missing / too short / STALE.
+   * F1: stale structure is never served — the caller stands aside instead.
+   */
+  private getDirectionalM5(): BarSeries | null {
+    const s = this.barSeriesM5;
+    if (!s || s.length < 60) return null;
+    if (!isBarSeriesFresh(s, Date.now(), SignalGenerationEngine.BAR_MAX_AGE_M5_MS)) {
+      console.warn('⚠️ [BarSeries] M5 series is STALE — directional features stand aside (not served stale)');
+      return null;
+    }
+    return s;
+  }
+
+  /** The M15 series, or null when missing / too short / stale. */
+  private getDirectionalM15(): BarSeries | null {
+    const s = this.barSeriesM15;
+    if (!s || s.length < 40) return null;
+    if (!isBarSeriesFresh(s, Date.now(), SignalGenerationEngine.BAR_MAX_AGE_M15_MS)) return null;
+    return s;
+  }
+
+  /**
+   * Is the directional layer able to produce a verdict RIGHT NOW?
+   *
+   * Derived from the series itself rather than cached in a flag set during
+   * feature build. A cached flag would go stale the moment anything re-ordered
+   * the call sequence, and would report "ready" for a series that had since
+   * aged out. This asks the source every time.
+   */
+  private isDirectionalLayerReady(): boolean {
+    const m5 = this.getDirectionalM5();
+    return m5 !== null && barRSI(m5, 14) !== null;
+  }
+
+  /**
+   * F4: the M1 series exists ONLY for entry-timing refinement. It is deliberately
+   * NOT exposed to any directional call site — see the audit in the F4 section of
+   * the report. Kept as a method so the intent is greppable.
+   */
+  private getEntryTimingM1(): BarSeries | null {
+    const s = this.barSeriesM1;
+    if (!s || s.length < 30) return null;
+    if (!isBarSeriesFresh(s, Date.now(), SignalGenerationEngine.BAR_MAX_AGE_M1_MS)) return null;
+    return s;
   }
 
   /** Bar-based detectPriceActionPattern: uses last 5 M5 bars instead of 5 ticks. */
@@ -3956,6 +4175,77 @@ class SignalGenerationEngine {
     const barBasedAdx = this.calculateADXBarBased(m5BarsForFeatures, 14);
     console.log(`📊 [ITEM3] Bar-based features: pattern=${barBasedPriceActionPattern} vwap=${barBasedVwap?.toFixed(1) ?? 'null'} trendStr=${(barBasedTrendStrength * 100).toFixed(0)}% regime=${barBasedRegime.type}(${(barBasedRegime.strength * 100).toFixed(0)}%) adx=${barBasedAdx?.toFixed(1) ?? 'null'} [M5 bars: ${m5BarsForFeatures.length}]`);
 
+    // ═══ ITEM F — RE-SOURCED DIRECTIONAL LAYER ══════════════════════════════
+    // Every momentum / trend / volatility input below now reads a SEALED M5 bar
+    // series built directly from Supabase gold_m1_bars. The tick versions of the
+    // same indicators are retained only where they serve entry timing (F4).
+    //
+    // TIMEFRAME CHOICE FOR RSI(14) — justified, not defaulted:
+    // M5. RSI(14) on M5 spans a FIXED 70 minutes. The alternatives were M1
+    // (14 minutes — too short to be anything but noise once the tick smoothing
+    // is gone, and it would reproduce the defect being fixed at a slightly
+    // longer scale) and M15 (3.5 hours — closer to the trade holding horizon but
+    // out of step with the rest of the entry layer). M5 is chosen because it is
+    // the engine's NATIVE ENTRY TIMEFRAME: the counter-trend confirmation gate
+    // requires a completed 5-minute candle (requiresHigherTimeframeConfirmation),
+    // the candlestick patterns are read off 5-minute candles, and the S/R zone
+    // reactions are evaluated on M5. Putting RSI on M15 while EMA/MACD and the
+    // confirmation gate sit on M5 would reintroduce exactly the cross-base
+    // incoherence this item exists to remove. One time base for the whole
+    // directional layer; M15 is reserved for HTF corroboration only.
+    //
+    // BEHAVIOURAL NOTE, stated plainly: priceHistory was sampled roughly every
+    // 5 seconds, so the old RSI(14) window covered ~75 SECONDS. The bar version
+    // covers 70 MINUTES — a ~56x lengthening. Overbought/oversold will fire far
+    // less often and mean far more when it does. That is the intended change,
+    // and it is the main driver of the emission-volume delta in F5.
+    await this.refreshBarSeries();
+    const dirM5 = this.getDirectionalM5();
+    const dirM15 = this.getDirectionalM15();
+
+    const barRsi = dirM5 ? barRSI(dirM5, 14) : null;
+    const barMacdHist = dirM5 ? barMACDHistogram(dirM5) : null;
+    const barEmaCross = dirM5 ? barEMACrossover(dirM5) : null;
+    const barVwapValue = dirM5 ? barVWAP(dirM5, 30) : null;
+    const barAdxResult = dirM5 ? barADX(dirM5, 14) : null;
+    const barBands = dirM5 ? barBollinger(dirM5, 20, 2) : null;
+    const barPattern = dirM5 ? barPriceActionPattern(dirM5, 5) : null;
+    const barRegimeResult = dirM5 ? barRegime(dirM5) : null;
+    const barTrendStr = dirM5 ? barTrendStrength(dirM5, 20) : null;
+    const barM15Rsi = dirM15 ? barRSI(dirM15, 14) : null;
+
+    if (!dirM5) {
+      console.warn('⚠️ [ITEM F] M5 bar series unavailable or stale — directional features are NULL; the engine will stand aside rather than score on ticks.');
+    } else {
+      console.log(
+        `📊 [ITEM F] Bar-sourced directional layer (M5 x${dirM5.length}): ` +
+        `RSI(14)=${barRsi?.toFixed(1) ?? 'null'} MACD-hist=${barMacdHist?.toFixed(3) ?? 'null'} ` +
+        `EMA9/21/50=${barEmaCross?.toFixed(3) ?? 'null'} VWAP=${barVwapValue?.toFixed(2) ?? 'null'} ` +
+        `ADX=${barAdxResult?.adx.toFixed(1) ?? 'null'} (+DI ${barAdxResult?.plusDI.toFixed(1) ?? '-'} / -DI ${barAdxResult?.minusDI.toFixed(1) ?? '-'}) ` +
+        `BBw=${barBands?.bandwidth.toFixed(3) ?? 'null'} pattern=${barPattern ?? 'null'} ` +
+        `regime=${barRegimeResult?.type ?? 'null'}(${barRegimeResult ? (barRegimeResult.strength * 100).toFixed(0) + '%' : '-'}) ` +
+        `eff=${barTrendStr?.toFixed(3) ?? 'null'} | M15 RSI=${barM15Rsi?.toFixed(1) ?? 'null'}`,
+      );
+    }
+
+    // Tick-sourced values are still computed above for telemetry and entry
+    // timing; the FEATURE VECTOR now carries the bar-sourced value wherever one
+    // is available. When the bar series is unavailable the feature is null/50
+    // and the downstream gate stands the engine aside — it never silently falls
+    // back to the tick value.
+    const rsiFinal = barRsi ?? 50;
+    const macdHistogramFinal = barMacdHist ?? 0;
+    const emaCrossoverFinal = barEmaCross ?? 0;
+    const vwapFinal = barVwapValue;
+    const adxFinal = barAdxResult === null ? null : parseFloat(barAdxResult.adx.toFixed(1));
+    const bollingerFinal = barBands === null
+      ? { squeeze: false, expansion: false, bandwidth: null as number | null }
+      : { squeeze: barBands.squeeze, expansion: barBands.expansion, bandwidth: barBands.bandwidth };
+    const priceActionPatternFinal = barPattern ?? 'INSUFFICIENT_DATA';
+    const marketRegimeFinal: MarketRegime = barRegimeResult === null
+      ? marketRegime
+      : { ...marketRegime, type: barRegimeResult.type as MarketRegime['type'], strength: barRegimeResult.strength };
+
     console.log(`📊 Camarilla Pivot Points Calculated:`);    console.log(`   Daily Pivot: ${dailyPivot.toFixed(1)} (H: ${yesterdayHigh.toFixed(1)}, L: ${yesterdayLow.toFixed(1)}, C: ${yesterdayClose.toFixed(1)})`);
     console.log(`   R1: ${r1.toFixed(1)} | R2: ${r2.toFixed(1)} | R3: ${r3.toFixed(1)}`);
     console.log(`   S1: ${s1.toFixed(1)} | S2: ${s2.toFixed(1)} | S3: ${s3.toFixed(1)}`);
@@ -3971,23 +4261,23 @@ class SignalGenerationEngine {
       s1: parseFloat(s1.toFixed(1)),
       s2: parseFloat(s2.toFixed(1)),
       s3: parseFloat(s3.toFixed(1)),
-      rsi,
+      rsi: rsiFinal,
       atr,
       dxyChange: intermarketData.dxyChange,
       volumeRatio,
       weeklyPivot: parseFloat(weeklyPivot.toFixed(1)),
       fractalResistance,
       fractalSupport,
-      macdHistogram,
-      emaCrossover,
+      macdHistogram: macdHistogramFinal,
+      emaCrossover: emaCrossoverFinal,
       sessionVolatilityIndex,
       timeToSessionEnd,
       fibonacci,
       sentiment,
       orderFlow,
       volumeProfile,
-      marketRegime,
-      priceActionPattern,
+      marketRegime: marketRegimeFinal,
+      priceActionPattern: priceActionPatternFinal,
       candlestickPattern,
       supportStrength: srStrength.supportStrength,
       resistanceStrength: srStrength.resistanceStrength,
@@ -3999,11 +4289,11 @@ class SignalGenerationEngine {
       orderBlocks,
       quasimodolLevels,
       sessionSweeps,
-      vwap,
-      adx,
-      bollingerSqueeze: bollinger.squeeze,
-      bollingerExpansion: bollinger.expansion,
-      bollingerBandwidth: bollinger.bandwidth,
+      vwap: vwapFinal,
+      adx: adxFinal,
+      bollingerSqueeze: bollingerFinal.squeeze,
+      bollingerExpansion: bollingerFinal.expansion,
+      bollingerBandwidth: bollingerFinal.bandwidth,
       barBasedPriceActionPattern,
       barBasedVwap,
       barBasedTrendStrength,
@@ -4961,27 +5251,39 @@ class SignalGenerationEngine {
     // stay measurable as the sample grows. The bar-based replacements were NOT
     // wired in: at n=369 they are equally unvalidated, and adding new unvalidated
     // weight is the Item 3 mistake repeated.
+    // ITEM F: `features.marketRegime` and `features.priceActionPattern` are now
+    // produced by barRegime()/barPriceActionPattern() over the sealed M5 series
+    // (see analyzeMarketFeatures). The contributions removed on the tick basis
+    // are restored here on the BAR basis, under `bar_`-prefixed allowlist keys.
     let trendBuyContribution = 0;
     let trendSellContribution = 0;
     if (features.marketRegime.type === 'TRENDING' && features.marketRegime.strength > 0.75) {
       if (htfTrend === 'BULLISH' && ltfTrend === 'BULLISH') {
-        dir.noteTelemetry('strong_uptrend', 0.15);
-        console.log('ℹ️ [tick-telemetry] Strong Uptrend (20-tick regime) — recorded, NO directional weight');
+        dir.addBuy('bar_strong_uptrend', 0.15);
+        console.log('✅ BUY: Strong Uptrend (M5-bar regime + HTF/LTF alignment)');
       } else if (htfTrend === 'BEARISH' && ltfTrend === 'BEARISH') {
-        dir.noteTelemetry('strong_downtrend', 0.15);
-        console.log('ℹ️ [tick-telemetry] Strong Downtrend (20-tick regime) — recorded, NO directional weight');
+        dir.addSell('bar_strong_downtrend', 0.15);
+        console.log('🔴 SELL: Strong Downtrend (M5-bar regime + HTF/LTF alignment)');
       }
     } else if (features.marketRegime.type === 'VOLATILE') {
       attentionScores.set('volatile_regime_context', 0.03);
     }
     if (features.priceActionPattern === 'BULLISH_REVERSAL') {
-      dir.noteTelemetry('bullish_reversal', 0.12);
+      trendBuyContribution += 0.12;
+      attentionScores.set('bar_bullish_reversal', 0.12);
+      console.log('✅ BUY: Bullish Reversal (M5 bars)');
     } else if (features.priceActionPattern === 'BEARISH_REVERSAL') {
-      dir.noteTelemetry('bearish_reversal', 0.12);
+      trendSellContribution += 0.12;
+      attentionScores.set('bar_bearish_reversal', 0.12);
+      console.log('🔴 SELL: Bearish Reversal (M5 bars)');
     } else if (features.priceActionPattern === 'STRONG_UPTREND') {
-      dir.noteTelemetry('strong_uptrend_pattern', 0.10);
+      trendBuyContribution += 0.10;
+      attentionScores.set('bar_strong_uptrend_pattern', 0.10);
+      console.log('✅ BUY: Strong Uptrend price action (M5 bars)');
     } else if (features.priceActionPattern === 'STRONG_DOWNTREND') {
-      dir.noteTelemetry('strong_downtrend_pattern', 0.10);
+      trendSellContribution += 0.10;
+      attentionScores.set('bar_strong_downtrend_pattern', 0.10);
+      console.log('🔴 SELL: Strong Downtrend price action (M5 bars)');
     }
     if (features.candlestickPattern === 'BULLISH_ENGULFING') {
       trendBuyContribution += 0.12;
@@ -5005,7 +5307,11 @@ class SignalGenerationEngine {
     const TREND_STACK_CAP = 0.50;
     trendBuyContribution = Math.min(trendBuyContribution, TREND_STACK_CAP);
     trendSellContribution = Math.min(trendSellContribution, TREND_STACK_CAP);
-    const CANDLE_STACK_KEYS = ['bullish_engulfing', 'bearish_engulfing', 'bullish_pin_bar', 'bearish_pin_bar'] as const;
+    const CANDLE_STACK_KEYS = [
+      'bullish_engulfing', 'bearish_engulfing', 'bullish_pin_bar', 'bearish_pin_bar',
+      'bar_bullish_reversal', 'bar_bearish_reversal',
+      'bar_strong_uptrend_pattern', 'bar_strong_downtrend_pattern',
+    ] as const;
     dir.addCappedBuy(CANDLE_STACK_KEYS, trendBuyContribution);
     dir.addCappedSell(CANDLE_STACK_KEYS, trendSellContribution);
     if (trendBuyContribution > 0 || trendSellContribution > 0) {
@@ -5086,47 +5392,54 @@ class SignalGenerationEngine {
       console.log('🔴 SELL: Bearish MACD Momentum');
     }
 
-    // TICK-INPUT REMOVAL (2026-08-02) — VWAP.
-    // calculateVWAP() reads priceHistory.slice(-30) for closes (Capital.com /
-    // Swissquote TICKS) paired with highHistory/lowHistory (TwelveData/Yahoo
-    // BARS) — so it is both tick-derived AND cross-venue. Removed from scoring;
-    // still computed, attached and logged as telemetry.
+    // ITEM F — VWAP, RE-SOURCED. `features.vwap` is now barVWAP() over the
+    // sealed M5 series (range-weighted, 30 bars = 2.5h). The old value paired
+    // priceHistory closes (Capital.com/Swissquote TICKS) with highHistory/
+    // lowHistory (TwelveData/Yahoo BARS) by shared array index — tick-derived
+    // AND cross-venue. Restored to scoring on the bar basis.
     if (features.vwap !== null) {
       const vwapDelta = this.currentPrice - features.vwap;
       if (vwapDelta > 1.5) {
-        dir.noteTelemetry('above_vwap', parseFloat(vwapDelta.toFixed(2)));
-        console.log(`ℹ️ [tick-telemetry] Price ${vwapDelta.toFixed(1)} above 30-tick VWAP (${features.vwap.toFixed(1)}) — NO directional weight`);
+        dir.addBuy('bar_above_vwap', 0.05);
+        console.log(`✅ BUY: Price ${vwapDelta.toFixed(1)} above M5 VWAP (${features.vwap.toFixed(1)})`);
       } else if (vwapDelta < -1.5) {
-        dir.noteTelemetry('below_vwap', parseFloat(vwapDelta.toFixed(2)));
-        console.log(`ℹ️ [tick-telemetry] Price ${Math.abs(vwapDelta).toFixed(1)} below 30-tick VWAP (${features.vwap.toFixed(1)}) — NO directional weight`);
+        dir.addSell('bar_below_vwap', 0.05);
+        console.log(`🔴 SELL: Price ${Math.abs(vwapDelta).toFixed(1)} below M5 VWAP (${features.vwap.toFixed(1)})`);
       }
     }
 
-    // TICK-INPUT REMOVAL (2026-08-02) — ADX.
-    // calculateADX(14) pairs highHistory/lowHistory (bars) with
-    // priceHistory closes (TICKS). Removed from scoring; telemetry retained.
+    // ITEM F — ADX, RE-SOURCED. `features.adx` is now a properly Wilder-smoothed
+    // ADX over the sealed M5 series. The old value was a single-window DX that
+    // paired bar highs/lows with TICK closes by shared array index across two
+    // independently-populated arrays.
     if (features.adx !== null) {
       if (features.adx > 25) {
         const adxBoost = Math.min(0.08, (features.adx - 25) * 0.003);
-        if ((htfTrend === 'BULLISH' && ltfTrend === 'BULLISH') || (htfTrend === 'BEARISH' && ltfTrend === 'BEARISH')) {
-          dir.noteTelemetry('adx_trend_strength', parseFloat(adxBoost.toFixed(4)));
-          console.log(`ℹ️ [tick-telemetry] ADX ${features.adx.toFixed(1)} aligns with ${htfTrend} — NO directional weight`);
+        if ((htfTrend === 'BULLISH' && ltfTrend === 'BULLISH')) {
+          dir.addBuy('bar_adx_trend_strength', parseFloat(adxBoost.toFixed(4)));
+          console.log(`✅ BUY: M5 ADX ${features.adx.toFixed(1)} confirms BULLISH alignment (+${(adxBoost * 100).toFixed(1)}%)`);
+        } else if ((htfTrend === 'BEARISH' && ltfTrend === 'BEARISH')) {
+          dir.addSell('bar_adx_trend_strength', parseFloat(adxBoost.toFixed(4)));
+          console.log(`🔴 SELL: M5 ADX ${features.adx.toFixed(1)} confirms BEARISH alignment (+${(adxBoost * 100).toFixed(1)}%)`);
         }
       } else if (features.adx < 18) {
-        console.log(`ℹ️ Low ADX ${features.adx.toFixed(1)} - weak trend regime`);
+        console.log(`ℹ️ Low M5 ADX ${features.adx.toFixed(1)} - weak trend regime`);
       }
     }
 
-    // TICK-INPUT REMOVAL (2026-08-02) — Bollinger squeeze breakout.
-    // The squeeze itself is computed on priceHistory (ticks) and the DIRECTION
-    // came from detectPriceDirection() = priceHistory.slice(-5), FIVE TICKS.
-    // Removed from scoring; telemetry retained.
+    // ITEM F — Bollinger squeeze breakout, RE-SOURCED. Both the squeeze AND the
+    // breakout direction now come from the sealed M5 series. The direction
+    // previously came from detectPriceDirection() = priceHistory.slice(-5) —
+    // FIVE TICKS deciding which way a breakout was going.
     if (features.bollingerSqueeze && features.marketRegime.type === 'QUIET') {
-      const breakoutBias = this.detectPriceDirection();
+      const m5ForBreakout = this.getDirectionalM5();
+      const breakoutBias = m5ForBreakout === null ? 0 : barBollingerBreakout(m5ForBreakout, 20);
       if (breakoutBias > 0) {
-        dir.noteTelemetry('bollinger_squeeze_bull_breakout', 0.08);
+        dir.addBuy('bar_bollinger_squeeze_bull_breakout', 0.08);
+        console.log('✅ BUY: M5 Bollinger squeeze breakout (close above upper band)');
       } else if (breakoutBias < 0) {
-        dir.noteTelemetry('bollinger_squeeze_bear_breakout', 0.08);
+        dir.addSell('bar_bollinger_squeeze_bear_breakout', 0.08);
+        console.log('🔴 SELL: M5 Bollinger squeeze breakout (close below lower band)');
       }
     }
     if (features.bollingerExpansion) {
@@ -5557,7 +5870,35 @@ class SignalGenerationEngine {
     }
   }
   
+  /**
+   * ITEM F — LTF trend, RE-SOURCED ONTO BARS.
+   *
+   * Was: `priceHistory.slice(-5)` — the current price against a FIVE-TICK
+   * average, i.e. roughly a 25-second window whose duration varied with tick
+   * arrival rate, compared against a threshold derived from a tick-window
+   * volatility estimate. Two unstable quantities divided by each other.
+   *
+   * Now: EMA-9 vs EMA-21 on the sealed M5 series (45 vs 105 minutes) with an
+   * ATR-scaled hysteresis band, so the verdict has a fixed time base and the
+   * NEUTRAL zone adapts to the volatility regime instead of a hand-tuned
+   * constant. Correctness covered by test 9 in `test_bar_indicators.ts`.
+   *
+   * When the bar series is missing or stale this returns NEUTRAL — stand aside,
+   * never fall back to the tick classifier.
+   */
   private detectLTFTrend(): 'BULLISH' | 'BEARISH' | 'NEUTRAL' {
+    const m5 = this.getDirectionalM5();
+    if (!m5) {
+      console.log('📈 LTF Trend: M5 bar series unavailable/stale → NEUTRAL (standing aside, no tick fallback)');
+      return 'NEUTRAL';
+    }
+    const verdict = barLTFTrend(m5, 0.25);
+    console.log(`📈 LTF Trend (M5 EMA9/21, ATR hysteresis): ${verdict}`);
+    return verdict;
+  }
+
+  /** Legacy 5-tick LTF classifier. RETAINED FOR TELEMETRY/COMPARISON ONLY — not called on any scoring path. */
+  private detectLTFTrendFromTicksLegacy(): 'BULLISH' | 'BEARISH' | 'NEUTRAL' {
     if (this.priceHistory.length < 5) return 'NEUTRAL';
     
     const recent5 = this.priceHistory.slice(-5);
@@ -5578,8 +5919,6 @@ class SignalGenerationEngine {
     // convention already used elsewhere in this file) so floor/cap scale with
     // the actual price level instead of a stale flat dollar value.
     const momentumThreshold = Math.max(currentPrice * 0.00005, Math.min(currentPrice * 0.0005, volatility * 0.3));
-    
-    console.log(`📈 LTF Momentum: ${momentum.toFixed(2)} vs threshold ${momentumThreshold.toFixed(2)} (volatility: ${volatility.toFixed(2)})`);
     
     if (momentum > momentumThreshold) {
       return 'BULLISH';
@@ -5661,26 +6000,25 @@ class SignalGenerationEngine {
     return parseFloat(atr.toFixed(1));
   }
 
+  /**
+   * ITEM F — bearish RSI divergence, RE-SOURCED ONTO BARS.
+   *
+   * Was: `highHistory[4]` vs `highHistory[9]` (arbitrary fixed offsets into a
+   * 10-element bar-cadence array) compared against an RSI computed on a
+   * DIFFERENT series entirely (`priceHistory`, ticks). Price and momentum were
+   * literally not measured on the same data, which is fatal for a divergence
+   * test — the whole construct is "price and its own momentum disagree".
+   *
+   * Now: swing extremes and RSI both read from the same sealed M5 series.
+   * Correctness covered by test 11 in `test_bar_indicators.ts`.
+   */
   private detectBearishDivergence(features: MarketFeatures): boolean {
-    if (this.priceHistory.length < 10 || this.highHistory.length < 10) return false;
-    
-    const recent10Highs = this.highHistory.slice(-10);
-    
-    const priceHigh1 = recent10Highs[4];
-    const priceHigh2 = recent10Highs[9];
-    
-    const rsi1 = this.calculateRSIAtIndex(4);
-    const rsi2 = features.rsi;
-    
-    const priceHigherHigh = priceHigh2 > priceHigh1;
-    const rsiLowerHigh = rsi2 < rsi1;
-    
-    if (priceHigherHigh && rsiLowerHigh && features.rsi > 60) {
-      console.log(`🔍 Bearish Divergence: Price HH (${priceHigh2.toFixed(1)} > ${priceHigh1.toFixed(1)}), RSI LH (${rsi2.toFixed(1)} < ${rsi1.toFixed(1)})`);
-      return true;
-    }
-    
-    return false;
+    void features;
+    const m5 = this.getDirectionalM5();
+    if (!m5) return false;
+    const d = barDivergence(m5, 5, 14);
+    if (d.bearish) console.log(`🔍 Bearish Divergence (M5 bars): ${d.detail}`);
+    return d.bearish;
   }
 
   private calculateRSIAtIndex(indexFromEnd: number): number {
@@ -5864,26 +6202,14 @@ class SignalGenerationEngine {
     };
   }
   
+  /** ITEM F — bullish RSI divergence, RE-SOURCED ONTO BARS. See detectBearishDivergence. */
   private detectBullishDivergence(features: MarketFeatures): boolean {
-    if (this.priceHistory.length < 10 || this.lowHistory.length < 10) return false;
-    
-    const recent10Lows = this.lowHistory.slice(-10);
-    
-    const priceLow1 = recent10Lows[4];
-    const priceLow2 = recent10Lows[9];
-    
-    const rsi1 = this.calculateRSIAtIndex(4);
-    const rsi2 = features.rsi;
-    
-    const priceLowerLow = priceLow2 < priceLow1;
-    const rsiHigherLow = rsi2 > rsi1;
-    
-    if (priceLowerLow && rsiHigherLow && features.rsi < 40) {
-      console.log(`🔍 Bullish Divergence: Price LL (${priceLow2.toFixed(1)} < ${priceLow1.toFixed(1)}), RSI HL (${rsi2.toFixed(1)} > ${rsi1.toFixed(1)})`);
-      return true;
-    }
-    
-    return false;
+    void features;
+    const m5 = this.getDirectionalM5();
+    if (!m5) return false;
+    const d = barDivergence(m5, 5, 14);
+    if (d.bullish) console.log(`🔍 Bullish Divergence (M5 bars): ${d.detail}`);
+    return d.bullish;
   }
   
   /**
@@ -6616,7 +6942,20 @@ class SignalGenerationEngine {
     }
     
     const features = await this.calculateMarketFeatures();
-    
+
+    // ITEM F1 — STAND ASIDE RATHER THAN SERVE STALE/ABSENT STRUCTURE.
+    // The whole directional layer is now sourced from the sealed M5 bar series.
+    // If that series was missing, too short or stale at feature-build time then
+    // RSI/MACD/EMA/ADX/VWAP/regime/pattern are all null-or-neutral. Scoring on
+    // that vector would emit a signal with NO directional evidence behind it,
+    // which is strictly worse than the tick inputs we just removed. There is no
+    // GC=F / TwelveData / priceHistory fallback on this path by design.
+    if (!this.isDirectionalLayerReady()) {
+      console.log('❌ REJECTED: directional bar layer unavailable or stale (M5 gold_m1_bars) - standing aside rather than scoring on a null feature vector');
+      console.log(`${'='.repeat(80)}\n`);
+      return null;
+    }
+
     await this.detectConceptDrift(features);
     
     const endTime = performance.now();

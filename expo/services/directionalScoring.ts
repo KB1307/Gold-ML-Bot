@@ -26,7 +26,30 @@
  *    check). They remain measurable as the sample grows; they just cannot
  *    score.
  *
- * WHY THIS EXISTS (record it plainly so it is never mis-cited):
+ * ITEM F UPDATE (2026-08-02) — RE-SOURCING, NOT RE-ADMITTING
+ * ----------------------------------------------------------
+ * The allowlist below now includes BAR-derived versions of the features that
+ * were removed. This is NOT a reversal. The forbidden list is unchanged and
+ * still enforced: a TICK-derived key can never score. What changed is that the
+ * same market concepts are now computed from a sealed `BarSeries` (Supabase
+ * `gold_m1_bars`, M5) in `services/barIndicators.ts`, whose branded input type
+ * makes it impossible to feed them a tick array.
+ *
+ * The two barriers are complementary and both are compile-time:
+ *   1. THIS module gates which KEYS may move the accumulators.
+ *   2. `barIndicators.ts` gates which DATA may reach the indicators, via the
+ *      unforgeable `BarSeries` brand produced only by `sealBarSeries()`.
+ * A regression needs to defeat both, and each is a build break.
+ *
+ * F0 POSITION, restated so it can never be mis-cited: the tick stream is NOT
+ * STORED, so a historical tick-vs-bar A/B at signal level is IMPOSSIBLE — not
+ * underpowered. The bar re-sourcing is a DESIGN decision on first-principles
+ * grounds (an indicator whose period is denominated in tick observations has no
+ * fixed time base and is therefore not that indicator), verified for
+ * CORRECTNESS against reference series and to be validated for PERFORMANCE on
+ * forward data only.
+ *
+ * WHY THE TICK REMOVAL EXISTS (record it plainly so it is never mis-cited):
  * This removal is a DESIGN decision taken on FIRST-PRINCIPLES grounds, not an
  * evidence-backed measurement result. Item C established that at n=369 the
  * comparison is UNDERPOWERED — several of these features fire ~16 times in the
@@ -83,14 +106,30 @@ export type DirectionalFeatureKey =
   | 'bearish_ema_crossover'
   | 'bullish_macd_momentum'
   | 'bearish_macd_momentum'
-  // Divergence (bar highs vs RSI)
+  // Divergence (M5 bar swing extremes vs M5-bar RSI — same series for both)
   | 'bullish_divergence'
   | 'bearish_divergence'
   // Session structure
   | 'session_low_sweep'
   | 'session_high_sweep'
   // Intermarket penalty
-  | 'dxy_headwind';
+  | 'dxy_headwind'
+  // ── ITEM F: bar-sourced replacements for the six removed tick features ──
+  // Each is computed by barIndicators.ts from a sealed M5 BarSeries. The `bar_`
+  // prefix is load-bearing: it makes the data provenance of a scoring key
+  // readable at the call site and keeps these keys textually distinct from the
+  // forbidden tick keys in every log, export and attention map.
+  | 'bar_strong_uptrend'
+  | 'bar_strong_downtrend'
+  | 'bar_strong_uptrend_pattern'
+  | 'bar_strong_downtrend_pattern'
+  | 'bar_bullish_reversal'
+  | 'bar_bearish_reversal'
+  | 'bar_above_vwap'
+  | 'bar_below_vwap'
+  | 'bar_adx_trend_strength'
+  | 'bar_bollinger_squeeze_bull_breakout'
+  | 'bar_bollinger_squeeze_bear_breakout';
 
 /**
  * Type-level guard. If a forbidden key is ever added back to the allowlist,

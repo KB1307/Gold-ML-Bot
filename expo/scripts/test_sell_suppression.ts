@@ -272,6 +272,24 @@ async function main() {
       getIntermarketSnapshot: () => ({ dxy: 103.5, us10y: 4.2, vix: 18 }),
     };
 
+    // ITEM F: the directional layer is now sourced from a SEALED M5 bar series
+    // built from Supabase gold_m1_bars, and generateSignal() stands aside
+    // outright when that series is missing or stale. This test runs on the real
+    // wall clock against a closed market, so the live read would legitimately
+    // return stale Friday bars and every attempt would be (correctly) rejected
+    // before reaching the suppression check this test exists to exercise.
+    // Inject a synthetic, fresh M1 series via the clearly-marked test seam.
+    // 1600 M1 bars = ~26h -> 320 M5 bars, comfortably above the 60-bar minimum
+    // and the 50-bar EMA-50 requirement.
+    const directionalM1: SandboxBar[] = [];
+    for (let i = 1599; i >= 0; i--) {
+      const ts = now - (i + 1) * 60_000;
+      const price = basePrice - 0.01 * (1600 - i) + Math.sin(i * 0.11) * 0.4;
+      directionalM1.push({ timestamp: ts, open: price, high: price + 0.35, low: price - 0.35, close: price });
+    }
+    (engine as unknown as { __injectBarSeriesForTestOnly(m1: SandboxBar[]): void })
+      .__injectBarSeriesForTestOnly(directionalM1);
+
     sandboxModule.setExternalPrice(basePrice, "test");
     await engine.updateCurrentPrice();
     await engine.updateDailyOHLC(basePrice);
