@@ -499,6 +499,15 @@ async function appendDiagnosticEvent(_event: unknown): Promise<void> {}
     return code.replace(pattern, "");
   };
 
+  // TICK-INPUT REMOVAL (2026-08-02): directionalScoring is a pure, dependency-free
+  // module, so the sandbox must load the REAL one (rewritten to a relative path)
+  // rather than stripping the import. Stripping would silently drop the very
+  // boundary under test.
+  const withDirectionalScoring = source.replace(
+    /^import\s+\{([^}]*)\}\s+from\s+["']@\/services\/directionalScoring["'];?$/m,
+    'import {$1} from "../../services/directionalScoring.ts";',
+  );
+
   const rewritten = [
     "@/types/trading",
     "@react-native-async-storage/async-storage",
@@ -506,7 +515,7 @@ async function appendDiagnosticEvent(_event: unknown): Promise<void> {}
     "@/services/learningStore",
     "@/services/diagnosticEventStore",
     "react-native",
-  ].reduce(stripImportFrom, source);
+  ].reduce(stripImportFrom, withDirectionalScoring);
 
   await mkdir(sandboxDir, { recursive: true });
   await writeFile(sandboxPath, `${sandboxPrelude}\n${rewritten}`);

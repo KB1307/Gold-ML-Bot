@@ -9,6 +9,7 @@ import { resolveSignalWithBars } from "@/services/signalResolver";
 import type { OhlcBar } from "@/services/barStore";
 import { appendDiagnosticEvent } from "@/services/diagnosticEventStore";
 import { fetchTier0SRZones, recordTier0FallbackUse } from "@/services/srZoneTier0Service";
+import { DirectionalScoreAccumulator } from "@/services/directionalScoring";
 
 /**
  * STEP 2 (GC=F/spot investigation): GENERATION_OHLC_SOURCE events aren't tied to
@@ -4753,8 +4754,14 @@ class SignalGenerationEngine {
     const isNYSession = hour >= 13 && hour < 21;
     
     const attentionScores = new Map<string, number>();
-    let buySignalStrength = 0;
-    let sellSignalStrength = 0;
+    // TICK-INPUT REMOVAL (2026-08-02): the directional accumulators are no longer
+    // plain locals. Every contribution must go through DirectionalScoreAccumulator,
+    // whose signature accepts only keys from the bar-derived allowlist in
+    // services/directionalScoring.ts. Re-adding a tick-window contribution is a
+    // COMPILE error, not a review miss. See that module's header for the full
+    // rationale (design decision on first-principles grounds; the measurement at
+    // n=369 was underpowered and could not adjudicate).
+    const dir = new DirectionalScoreAccumulator(attentionScores);
     
     console.log('\n🔍 MULTI-TIMEFRAME ANALYSIS:');
     console.log('='.repeat(60));
@@ -4845,8 +4852,8 @@ class SignalGenerationEngine {
     // +0.029R vs absent +0.128R, and -0.009R once the multiplier passed 1.50).
     const rawRsiModulation = this.getFeatureModulation('rsi_weight');
     const rsiModulation = Math.min(rawRsiModulation, RSI_MODULATION_APPLIED_MAX);
-    buySignalStrength += rsiBuyContribution * rsiModulation;
-    sellSignalStrength += rsiSellContribution * rsiModulation;
+    dir.addBuy('rsi_learned_modulation', rsiBuyContribution * rsiModulation, false);
+    dir.addSell('rsi_learned_modulation', rsiSellContribution * rsiModulation, false);
     if (rsiBuyContribution > 0 || rsiSellContribution > 0) {
       const rsiContribution = Math.max(rsiBuyContribution, rsiSellContribution) * rsiModulation;
       attentionScores.set('rsi_learned_modulation', parseFloat(rsiContribution.toFixed(4)));
@@ -4863,42 +4870,40 @@ class SignalGenerationEngine {
     
     // C12: Trend feature stack capped at 0.50 combined contribution
     //
-    // ITEM A REVERT (2026-08-02): the ITEM 3 rewiring of this block to
-    // bar-based features was gated on OLD-STORED outcome labels
-    // ("BUY 57.3% / SELL 21.7%"). Item 5 subsequently proved 206/369 (55.8%)
-    // of those stored labels were WRONG, and that bar-verified figures are
-    // BUY 63.1% / SELL 63.2%. The SELL-side removals in particular were made
-    // on a false 21.7% premise. This block is therefore restored to its
-    // pre-Item-3 composition pending re-measurement against verified labels
-    // (Item C). The barBased* feature functions and the M5 Supabase cache are
-    // retained as infrastructure but are NOT wired into directional scoring.
+    // TICK-INPUT REMOVAL (2026-08-02) — DESIGN DECISION, NOT A MEASUREMENT RESULT.
+    // Two contributions were removed from this block:
+    //   1. marketRegime TRENDING+strength>0.75 -> strong_uptrend/strong_downtrend
+    //      (±0.15). `marketRegime` is produced by detectMarketRegime(), whose
+    //      trendStrength is calculateTrendStrength() = a 20-TICK window of
+    //      priceHistory, with volumeRatio from a 10-vs-10 TICK comparison.
+    //   2. priceActionPattern -> bullish/bearish_reversal (±0.12) and
+    //      strong_uptrend_pattern/strong_downtrend_pattern (±0.10).
+    //      detectPriceActionPattern() reads priceHistory.slice(-5) — FIVE TICKS.
+    // Both remain COMPUTED, ATTACHED and LOGGED (via dir.noteTelemetry) so they
+    // stay measurable as the sample grows. The bar-based replacements were NOT
+    // wired in: at n=369 they are equally unvalidated, and adding new unvalidated
+    // weight is the Item 3 mistake repeated.
     let trendBuyContribution = 0;
     let trendSellContribution = 0;
     if (features.marketRegime.type === 'TRENDING' && features.marketRegime.strength > 0.75) {
       if (htfTrend === 'BULLISH' && ltfTrend === 'BULLISH') {
-        trendBuyContribution += 0.15;
-        attentionScores.set('strong_uptrend', 0.15);
-        console.log('✅ BUY: Strong Uptrend Confirmed');
+        dir.noteTelemetry('strong_uptrend', 0.15);
+        console.log('ℹ️ [tick-telemetry] Strong Uptrend (20-tick regime) — recorded, NO directional weight');
       } else if (htfTrend === 'BEARISH' && ltfTrend === 'BEARISH') {
-        trendSellContribution += 0.15;
-        attentionScores.set('strong_downtrend', 0.15);
-        console.log('🔴 SELL: Strong Downtrend Confirmed');
+        dir.noteTelemetry('strong_downtrend', 0.15);
+        console.log('ℹ️ [tick-telemetry] Strong Downtrend (20-tick regime) — recorded, NO directional weight');
       }
     } else if (features.marketRegime.type === 'VOLATILE') {
       attentionScores.set('volatile_regime_context', 0.03);
     }
     if (features.priceActionPattern === 'BULLISH_REVERSAL') {
-      trendBuyContribution += 0.12;
-      attentionScores.set('bullish_reversal', 0.12);
+      dir.noteTelemetry('bullish_reversal', 0.12);
     } else if (features.priceActionPattern === 'BEARISH_REVERSAL') {
-      trendSellContribution += 0.12;
-      attentionScores.set('bearish_reversal', 0.12);
+      dir.noteTelemetry('bearish_reversal', 0.12);
     } else if (features.priceActionPattern === 'STRONG_UPTREND') {
-      trendBuyContribution += 0.10;
-      attentionScores.set('strong_uptrend_pattern', 0.10);
+      dir.noteTelemetry('strong_uptrend_pattern', 0.10);
     } else if (features.priceActionPattern === 'STRONG_DOWNTREND') {
-      trendSellContribution += 0.10;
-      attentionScores.set('strong_downtrend_pattern', 0.10);
+      dir.noteTelemetry('strong_downtrend_pattern', 0.10);
     }
     if (features.candlestickPattern === 'BULLISH_ENGULFING') {
       trendBuyContribution += 0.12;
@@ -4922,21 +4927,20 @@ class SignalGenerationEngine {
     const TREND_STACK_CAP = 0.50;
     trendBuyContribution = Math.min(trendBuyContribution, TREND_STACK_CAP);
     trendSellContribution = Math.min(trendSellContribution, TREND_STACK_CAP);
-    buySignalStrength += trendBuyContribution;
-    sellSignalStrength += trendSellContribution;
+    const CANDLE_STACK_KEYS = ['bullish_engulfing', 'bearish_engulfing', 'bullish_pin_bar', 'bearish_pin_bar'] as const;
+    dir.addCappedBuy(CANDLE_STACK_KEYS, trendBuyContribution);
+    dir.addCappedSell(CANDLE_STACK_KEYS, trendSellContribution);
     if (trendBuyContribution > 0 || trendSellContribution > 0) {
       console.log(`📊 Trend Stack (capped ${TREND_STACK_CAP}): BUY+${trendBuyContribution.toFixed(2)} SELL+${trendSellContribution.toFixed(2)}`);
     }
     
     if (features.supportStrength > 0.8) {
-      buySignalStrength += 0.10;
-      attentionScores.set('strong_support_proximity', 0.10);
+      dir.addBuy('strong_support_proximity', 0.10);
       console.log('✅ BUY: Strong Support Proximity');
     }
     
     if (features.resistanceStrength > 0.8) {
-      sellSignalStrength += 0.10;
-      attentionScores.set('strong_resistance_proximity', 0.10);
+      dir.addSell('strong_resistance_proximity', 0.10);
       console.log('🔴 SELL: Strong Resistance Proximity');
     }
 
@@ -4944,23 +4948,19 @@ class SignalGenerationEngine {
     if (srReaction && srReaction.confirmed) {
       features.activeSRReaction = srReaction;
       if (srReaction.zone.type === 'SUPPORT') {
-        buySignalStrength += srReaction.strength;
-        attentionScores.set(`sr_zone_${srReaction.reactionType.toLowerCase()}`, srReaction.strength);
+        dir.addBuy(`sr_zone_${srReaction.reactionType.toLowerCase()}`, srReaction.strength);
         console.log(`✅ BUY: S/R Zone ${srReaction.reactionType} @ ${srReaction.zone.price.toFixed(1)} (+${(srReaction.strength * 100).toFixed(1)}%)`);
       } else {
-        sellSignalStrength += srReaction.strength;
-        attentionScores.set(`sr_zone_${srReaction.reactionType.toLowerCase()}`, srReaction.strength);
+        dir.addSell(`sr_zone_${srReaction.reactionType.toLowerCase()}`, srReaction.strength);
         console.log(`🔴 SELL: S/R Zone ${srReaction.reactionType} @ ${srReaction.zone.price.toFixed(1)} (+${(srReaction.strength * 100).toFixed(1)}%)`);
       }
 
       if (srReaction.zone.touches >= 3 && srReaction.zone.rejectionWicks >= 2) {
         const multiTouchBonus = 0.08;
         if (srReaction.zone.type === 'SUPPORT') {
-          buySignalStrength += multiTouchBonus;
-          attentionScores.set('multi_touch_sr_confirmation', multiTouchBonus);
+          dir.addBuy('multi_touch_sr_confirmation', multiTouchBonus);
         } else {
-          sellSignalStrength += multiTouchBonus;
-          attentionScores.set('multi_touch_sr_confirmation', multiTouchBonus);
+          dir.addSell('multi_touch_sr_confirmation', multiTouchBonus);
         }
         console.log(`   🔥 Multi-touch S/R Confirmation: ${srReaction.zone.touches} touches, ${srReaction.zone.rejectionWicks} rejection wicks (+${(multiTouchBonus * 100).toFixed(0)}%)`);
       }
@@ -4983,81 +4983,72 @@ class SignalGenerationEngine {
     const fibonacciAlignment = nearFibLevel;
     if (fibonacciAlignment) {
       const fibDirectionalBoost = 0.08;
-      if (buySignalStrength > sellSignalStrength) {
-        buySignalStrength += fibDirectionalBoost;
-      } else if (sellSignalStrength > buySignalStrength) {
-        sellSignalStrength += fibDirectionalBoost;
+      if (dir.buy > dir.sell) {
+        dir.addBuy('fibonacci_alignment', fibDirectionalBoost, false);
+      } else if (dir.sell > dir.buy) {
+        dir.addSell('fibonacci_alignment', fibDirectionalBoost, false);
       }
       attentionScores.set('fibonacci_alignment', fibDirectionalBoost);
       console.log(`✅ Price near Fibonacci Level (+${(fibDirectionalBoost * 100).toFixed(0)}% to dominant direction only)`);
     }
     
     if (features.emaCrossover > 0.5) {
-      buySignalStrength += 0.08;
-      attentionScores.set('bullish_ema_crossover', 0.08);
+      dir.addBuy('bullish_ema_crossover', 0.08);
       console.log('✅ BUY: Bullish EMA Crossover');
     } else if (features.emaCrossover < -0.5) {
-      sellSignalStrength += 0.08;
-      attentionScores.set('bearish_ema_crossover', 0.08);
+      dir.addSell('bearish_ema_crossover', 0.08);
       console.log('🔴 SELL: Bearish EMA Crossover');
     }
     
     if (features.macdHistogram > 0.3) {
-      buySignalStrength += 0.07;
-      attentionScores.set('bullish_macd_momentum', 0.07);
+      dir.addBuy('bullish_macd_momentum', 0.07);
       console.log('✅ BUY: Bullish MACD Momentum');
     } else if (features.macdHistogram < -0.3) {
-      sellSignalStrength += 0.07;
-      attentionScores.set('bearish_macd_momentum', 0.07);
+      dir.addSell('bearish_macd_momentum', 0.07);
       console.log('🔴 SELL: Bearish MACD Momentum');
     }
 
-    // ITEM A REVERT: VWAP directional contribution restored to the pre-Item-3
-    // tick-based `features.vwap` on both sides. The Item 3 switch to
-    // barBasedVwap (BUY-only, SELL dropped) was gated on the false 21.7% SELL
-    // baseline. Re-measurement against verified labels happens in Item C.
+    // TICK-INPUT REMOVAL (2026-08-02) — VWAP.
+    // calculateVWAP() reads priceHistory.slice(-30) for closes (Capital.com /
+    // Swissquote TICKS) paired with highHistory/lowHistory (TwelveData/Yahoo
+    // BARS) — so it is both tick-derived AND cross-venue. Removed from scoring;
+    // still computed, attached and logged as telemetry.
     if (features.vwap !== null) {
       const vwapDelta = this.currentPrice - features.vwap;
       if (vwapDelta > 1.5) {
-        buySignalStrength += 0.05;
-        attentionScores.set('above_vwap', 0.05);
-        console.log(`✅ BUY: Price ${vwapDelta.toFixed(1)} above VWAP (${features.vwap.toFixed(1)})`);
+        dir.noteTelemetry('above_vwap', parseFloat(vwapDelta.toFixed(2)));
+        console.log(`ℹ️ [tick-telemetry] Price ${vwapDelta.toFixed(1)} above 30-tick VWAP (${features.vwap.toFixed(1)}) — NO directional weight`);
       } else if (vwapDelta < -1.5) {
-        sellSignalStrength += 0.05;
-        attentionScores.set('below_vwap', 0.05);
-        console.log(`🔴 SELL: Price ${Math.abs(vwapDelta).toFixed(1)} below VWAP (${features.vwap.toFixed(1)})`);
+        dir.noteTelemetry('below_vwap', parseFloat(vwapDelta.toFixed(2)));
+        console.log(`ℹ️ [tick-telemetry] Price ${Math.abs(vwapDelta).toFixed(1)} below 30-tick VWAP (${features.vwap.toFixed(1)}) — NO directional weight`);
       }
     }
 
-    // ITEM A REVERT: ADX directional contribution restored to the pre-Item-3
-    // tick-based `features.adx` on both sides, for the same label reason.
+    // TICK-INPUT REMOVAL (2026-08-02) — ADX.
+    // calculateADX(14) pairs highHistory/lowHistory (bars) with
+    // priceHistory closes (TICKS). Removed from scoring; telemetry retained.
     if (features.adx !== null) {
       if (features.adx > 25) {
         const adxBoost = Math.min(0.08, (features.adx - 25) * 0.003);
-        if (htfTrend === 'BULLISH' && ltfTrend === 'BULLISH') {
-          buySignalStrength += adxBoost;
-          attentionScores.set('adx_trend_strength', adxBoost);
-          console.log(`✅ ADX ${features.adx.toFixed(1)} confirms uptrend (+${(adxBoost * 100).toFixed(1)}%)`);
-        } else if (htfTrend === 'BEARISH' && ltfTrend === 'BEARISH') {
-          sellSignalStrength += adxBoost;
-          attentionScores.set('adx_trend_strength', adxBoost);
-          console.log(`🔴 ADX ${features.adx.toFixed(1)} confirms downtrend (+${(adxBoost * 100).toFixed(1)}%)`);
+        if ((htfTrend === 'BULLISH' && ltfTrend === 'BULLISH') || (htfTrend === 'BEARISH' && ltfTrend === 'BEARISH')) {
+          dir.noteTelemetry('adx_trend_strength', parseFloat(adxBoost.toFixed(4)));
+          console.log(`ℹ️ [tick-telemetry] ADX ${features.adx.toFixed(1)} aligns with ${htfTrend} — NO directional weight`);
         }
       } else if (features.adx < 18) {
         console.log(`ℹ️ Low ADX ${features.adx.toFixed(1)} - weak trend regime`);
       }
     }
 
+    // TICK-INPUT REMOVAL (2026-08-02) — Bollinger squeeze breakout.
+    // The squeeze itself is computed on priceHistory (ticks) and the DIRECTION
+    // came from detectPriceDirection() = priceHistory.slice(-5), FIVE TICKS.
+    // Removed from scoring; telemetry retained.
     if (features.bollingerSqueeze && features.marketRegime.type === 'QUIET') {
       const breakoutBias = this.detectPriceDirection();
       if (breakoutBias > 0) {
-        buySignalStrength += 0.08;
-        attentionScores.set('bollinger_squeeze_bull_breakout', 0.08);
-        console.log('✅ BUY: Bollinger Squeeze + Bullish Breakout');
+        dir.noteTelemetry('bollinger_squeeze_bull_breakout', 0.08);
       } else if (breakoutBias < 0) {
-        sellSignalStrength += 0.08;
-        attentionScores.set('bollinger_squeeze_bear_breakout', 0.08);
-        console.log('🔴 SELL: Bollinger Squeeze + Bearish Breakout');
+        dir.noteTelemetry('bollinger_squeeze_bear_breakout', 0.08);
       }
     }
     if (features.bollingerExpansion) {
@@ -5071,15 +5062,13 @@ class SignalGenerationEngine {
     const dxy = features.intermarketData;
     const dxyModulation = Math.max(0, this.getFeatureModulation('dxy_weight'));
     if (dxy && dxy.dxyChange !== 0 && dxy.goldDxyCorrelation < -0.3) {
-      if (dxy.dxyChange > 0.15 && buySignalStrength > sellSignalStrength) {
+      if (dxy.dxyChange > 0.15 && dir.buy > dir.sell) {
         const dxyPenalty = Math.min(0.12, dxy.dxyChange * 0.5) * dxyModulation;
-        buySignalStrength = Math.max(0, buySignalStrength - dxyPenalty);
-        attentionScores.set('dxy_headwind', -dxyPenalty);
+        dir.penalizeBuy('dxy_headwind', dxyPenalty);
         console.log(`⚠️ DXY +${dxy.dxyChange.toFixed(2)} rising vs LONG gold bias: -${(dxyPenalty * 100).toFixed(1)}% (learned x${dxyModulation.toFixed(2)})`);
-      } else if (dxy.dxyChange < -0.15 && sellSignalStrength > buySignalStrength) {
+      } else if (dxy.dxyChange < -0.15 && dir.sell > dir.buy) {
         const dxyPenalty = Math.min(0.12, Math.abs(dxy.dxyChange) * 0.5) * dxyModulation;
-        sellSignalStrength = Math.max(0, sellSignalStrength - dxyPenalty);
-        attentionScores.set('dxy_headwind', -dxyPenalty);
+        dir.penalizeSell('dxy_headwind', dxyPenalty);
         console.log(`⚠️ DXY ${dxy.dxyChange.toFixed(2)} falling vs SHORT gold bias: -${(dxyPenalty * 100).toFixed(1)}% (learned x${dxyModulation.toFixed(2)})`);
       }
     }
@@ -5089,14 +5078,12 @@ class SignalGenerationEngine {
     const bullishDivergence = this.detectBullishDivergence(features);
     
     if (bearishDivergence) {
-      sellSignalStrength += 0.20;
-      attentionScores.set('bearish_divergence', 0.20);
+      dir.addSell('bearish_divergence', 0.20);
       console.log('🔴 SELL: Bearish Divergence Detected');
     }
     
     if (bullishDivergence) {
-      buySignalStrength += 0.20;
-      attentionScores.set('bullish_divergence', 0.20);
+      dir.addBuy('bullish_divergence', 0.20);
       console.log('✅ BUY: Bullish Divergence Detected');
     }
     
@@ -5104,8 +5091,7 @@ class SignalGenerationEngine {
       qm => qm.type === 'BULLISH_QM' && Math.abs(this.currentPrice - qm.price) < 8
     );
     if (nearBullishQM) {
-      buySignalStrength += 0.18;
-      attentionScores.set('bullish_quasimodo', 0.18);
+      dir.addBuy('bullish_quasimodo', 0.18);
       console.log('✅ BUY: Near Bullish Quasimodo Level (Institutional Trap Zone)');
     }
     
@@ -5113,8 +5099,7 @@ class SignalGenerationEngine {
       qm => qm.type === 'BEARISH_QM' && Math.abs(this.currentPrice - qm.price) < 8
     );
     if (nearBearishQM) {
-      sellSignalStrength += 0.18;
-      attentionScores.set('bearish_quasimodo', 0.18);
+      dir.addSell('bearish_quasimodo', 0.18);
       console.log('🔴 SELL: Near Bearish Quasimodo Level (Institutional Trap Zone)');
     }
     
@@ -5122,7 +5107,7 @@ class SignalGenerationEngine {
       sweep => sweep.type === 'LOW_SWEEP' && sweep.reversalConfirmed
     );
     if (confirmedLowSweep) {
-      buySignalStrength += 0.35 * confirmedLowSweep.strength; // Increased for high accuracy
+      dir.addBuy('session_low_sweep', 0.35 * confirmedLowSweep.strength, false); // Increased for high accuracy
       attentionScores.set('session_low_sweep', 0.35);
       console.log(`✅ BUY: ${confirmedLowSweep.sessionType} Session Low Sweep Confirmed (High Accuracy Setup)`);
       console.log(`   Sweep @ ${confirmedLowSweep.sweepPrice.toFixed(1)} - Reversal confirmed`);
@@ -5132,7 +5117,7 @@ class SignalGenerationEngine {
       sweep => sweep.type === 'HIGH_SWEEP' && sweep.reversalConfirmed
     );
     if (confirmedHighSweep) {
-      sellSignalStrength += 0.35 * confirmedHighSweep.strength; // Increased for high accuracy
+      dir.addSell('session_high_sweep', 0.35 * confirmedHighSweep.strength, false); // Increased for high accuracy
       attentionScores.set('session_high_sweep', 0.35);
       console.log(`🔴 SELL: ${confirmedHighSweep.sessionType} Session High Sweep Confirmed (High Accuracy Setup)`);
       console.log(`   Sweep @ ${confirmedHighSweep.sweepPrice.toFixed(1)} - Reversal confirmed`);
@@ -5147,10 +5132,11 @@ class SignalGenerationEngine {
     // (a confirmed session-range sweep, checked here now that sweeps are resolved) is
     // also present. HTF/LTF trend alignment does NOT count as structural confirmation
     // here - it's the same momentum family, not an order-block/sweep-level event.
+    // TICK-INPUT REMOVAL: 'strong_uptrend'/'strong_downtrend' dropped from this
+    // list — they no longer exist as scoring keys (now tick_telemetry:*).
     const momentumAlreadyCounted = [
       'htf_ltf_bullish_alignment', 'htf_ltf_bearish_alignment',
       'ltf_momentum_buy', 'ltf_momentum_sell',
-      'strong_uptrend', 'strong_downtrend',
       'bullish_ema_crossover', 'bearish_ema_crossover',
       'bullish_macd_momentum', 'bearish_macd_momentum',
       'rsi_learned_modulation',
@@ -5173,6 +5159,9 @@ class SignalGenerationEngine {
       attentionScores.set('volume_node_support_resistance', volumeNodeWeight);
       console.log(`ℹ️ Price near High Volume Node (context only, no directional boost) | weight ${volumeNodeWeight.toFixed(3)}${microstructureDownWeighted ? ' (down-weighted: redundant with momentum already counted)' : ''}`);
     }
+
+    const buySignalStrength = dir.buy;
+    const sellSignalStrength = dir.sell;
 
     console.log('\n📊 SIGNAL STRENGTH COMPARISON:');
     console.log(`   BUY Strength: ${buySignalStrength.toFixed(3)}`);
@@ -5238,13 +5227,16 @@ class SignalGenerationEngine {
     }
     
     // Proposal #4: Scale confidence with alignment count
+    // TICK-INPUT REMOVAL (2026-08-02): the six tick-derived keys
+    // (strong_uptrend/downtrend, strong_up/downtrend_pattern, adx_trend_strength,
+    // above/below_vwap) are removed here too. Leaving them would have let a
+    // zero-weight telemetry entry keep inflating CONFIDENCE through the
+    // confluence bonus — and confidence gates emission via minConfidence, so
+    // that is a scoring contribution in all but name. They now live under the
+    // `tick_telemetry:` prefix, which cannot match any key lookup.
     const alignmentKeys = [
       'htf_ltf_bullish_alignment', 'htf_ltf_bearish_alignment',
-      'strong_uptrend', 'strong_downtrend',
-      'strong_uptrend_pattern', 'strong_downtrend_pattern',
       'bullish_ema_crossover', 'bearish_ema_crossover',
-      'adx_trend_strength',
-      'above_vwap', 'below_vwap',
     ];
     const alignmentCount = alignmentKeys.reduce((acc, k) => acc + (attentionScores.has(k) ? 1 : 0), 0);
     const dxyAligned = (
