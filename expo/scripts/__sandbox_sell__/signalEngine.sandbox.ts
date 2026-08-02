@@ -4940,36 +4940,44 @@ class SignalGenerationEngine {
     }
     
     // C12: Trend feature stack capped at 0.50 combined contribution
-    // ITEM 3: directional trend contributions now use BAR-BASED features
-    // (from Supabase gold_m1_bars via M5 aggregation), NOT tick-based
-    // priceHistory. The old tick-based path (5/20/30 ticks) scored 25% WR
-    // on BUY (inverted against the 57.3% baseline). The bar-based versions
-    // score 50-57.7% — at or above baseline. SELL-side trend features
-    // (STRONG_DOWNTREND, TRENDING_STRONG→SELL) scored below baseline on bars
-    // and are DROPPED entirely per the pre-registered gate.
+    //
+    // ITEM A REVERT (2026-08-02): the ITEM 3 rewiring of this block to
+    // bar-based features was gated on OLD-STORED outcome labels
+    // ("BUY 57.3% / SELL 21.7%"). Item 5 subsequently proved 206/369 (55.8%)
+    // of those stored labels were WRONG, and that bar-verified figures are
+    // BUY 63.1% / SELL 63.2%. The SELL-side removals in particular were made
+    // on a false 21.7% premise. This block is therefore restored to its
+    // pre-Item-3 composition pending re-measurement against verified labels
+    // (Item C). The barBased* feature functions and the M5 Supabase cache are
+    // retained as infrastructure but are NOT wired into directional scoring.
     let trendBuyContribution = 0;
     let trendSellContribution = 0;
-    if (features.barBasedRegimeType === 'TRENDING' && features.barBasedRegimeStrength > 0.75) {
+    if (features.marketRegime.type === 'TRENDING' && features.marketRegime.strength > 0.75) {
       if (htfTrend === 'BULLISH' && ltfTrend === 'BULLISH') {
         trendBuyContribution += 0.15;
         attentionScores.set('strong_uptrend', 0.15);
-        console.log('✅ BUY: Strong Uptrend Confirmed (bar-based regime)');
+        console.log('✅ BUY: Strong Uptrend Confirmed');
+      } else if (htfTrend === 'BEARISH' && ltfTrend === 'BEARISH') {
+        trendSellContribution += 0.15;
+        attentionScores.set('strong_downtrend', 0.15);
+        console.log('🔴 SELL: Strong Downtrend Confirmed');
       }
-      // SELL-side strong_downtrend DROPPED: bar-based WR 0% < 21.7% baseline
-    } else if (features.barBasedRegimeType === 'VOLATILE') {
+    } else if (features.marketRegime.type === 'VOLATILE') {
       attentionScores.set('volatile_regime_context', 0.03);
     }
-    // Price action pattern: BUY-side uses bar-based, SELL-side DROPPED
-    if (features.barBasedPriceActionPattern === 'BULLISH_REVERSAL') {
+    if (features.priceActionPattern === 'BULLISH_REVERSAL') {
       trendBuyContribution += 0.12;
       attentionScores.set('bullish_reversal', 0.12);
-    } else if (features.barBasedPriceActionPattern === 'STRONG_UPTREND') {
+    } else if (features.priceActionPattern === 'BEARISH_REVERSAL') {
+      trendSellContribution += 0.12;
+      attentionScores.set('bearish_reversal', 0.12);
+    } else if (features.priceActionPattern === 'STRONG_UPTREND') {
       trendBuyContribution += 0.10;
       attentionScores.set('strong_uptrend_pattern', 0.10);
+    } else if (features.priceActionPattern === 'STRONG_DOWNTREND') {
+      trendSellContribution += 0.10;
+      attentionScores.set('strong_downtrend_pattern', 0.10);
     }
-    // SELL-side priceActionPattern (BEARISH_REVERSAL, STRONG_DOWNTREND) DROPPED:
-    // bar-based WR 20% < 21.7% baseline. Tick-based versions are
-    // architecturally banned from directional score (M1 must not set direction).
     if (features.candlestickPattern === 'BULLISH_ENGULFING') {
       trendBuyContribution += 0.12;
       attentionScores.set('bullish_engulfing', 0.12);
@@ -5082,38 +5090,39 @@ class SignalGenerationEngine {
       console.log('🔴 SELL: Bearish MACD Momentum');
     }
 
-    // ITEM 3: VWAP directional contribution uses BAR-BASED VWAP (from M5 bars),
-    // not tick-based 30-tick VWAP. BUY-side: bar-based above_vwap scored 57%
-    // (at baseline) vs tick-based 22.7% (inverted). SELL-side below_vwap
-    // scored 14.9% on bars (below 21.7% baseline) → DROPPED.
-    if (features.barBasedVwap !== null) {
-      const vwapDelta = this.currentPrice - features.barBasedVwap;
+    // ITEM A REVERT: VWAP directional contribution restored to the pre-Item-3
+    // tick-based `features.vwap` on both sides. The Item 3 switch to
+    // barBasedVwap (BUY-only, SELL dropped) was gated on the false 21.7% SELL
+    // baseline. Re-measurement against verified labels happens in Item C.
+    if (features.vwap !== null) {
+      const vwapDelta = this.currentPrice - features.vwap;
       if (vwapDelta > 1.5) {
         buySignalStrength += 0.05;
         attentionScores.set('above_vwap', 0.05);
-        console.log(`✅ BUY: Price ${vwapDelta.toFixed(1)} above bar-based VWAP (${features.barBasedVwap.toFixed(1)})`);
+        console.log(`✅ BUY: Price ${vwapDelta.toFixed(1)} above VWAP (${features.vwap.toFixed(1)})`);
+      } else if (vwapDelta < -1.5) {
+        sellSignalStrength += 0.05;
+        attentionScores.set('below_vwap', 0.05);
+        console.log(`🔴 SELL: Price ${Math.abs(vwapDelta).toFixed(1)} below VWAP (${features.vwap.toFixed(1)})`);
       }
-      // SELL-side below_vwap DROPPED: bar-based WR 14.9% < 21.7% baseline
     }
 
-    // ITEM 3: ADX directional contribution uses BAR-BASED ADX (from M5 bars),
-    // not tick-based ADX. BUY-side: bar-based scored 57.7% (above 57.3% baseline)
-    // vs tick-based 25% (inverted). SELL-side: bar-based scored 23.3% (above
-    // 21.7% baseline) — both clear, adopt bar-based for both directions.
-    if (features.barBasedAdx !== null) {
-      if (features.barBasedAdx > 25) {
-        const adxBoost = Math.min(0.08, (features.barBasedAdx - 25) * 0.003);
+    // ITEM A REVERT: ADX directional contribution restored to the pre-Item-3
+    // tick-based `features.adx` on both sides, for the same label reason.
+    if (features.adx !== null) {
+      if (features.adx > 25) {
+        const adxBoost = Math.min(0.08, (features.adx - 25) * 0.003);
         if (htfTrend === 'BULLISH' && ltfTrend === 'BULLISH') {
           buySignalStrength += adxBoost;
           attentionScores.set('adx_trend_strength', adxBoost);
-          console.log(`✅ Bar-based ADX ${features.barBasedAdx.toFixed(1)} confirms uptrend (+${(adxBoost * 100).toFixed(1)}%)`);
+          console.log(`✅ ADX ${features.adx.toFixed(1)} confirms uptrend (+${(adxBoost * 100).toFixed(1)}%)`);
         } else if (htfTrend === 'BEARISH' && ltfTrend === 'BEARISH') {
           sellSignalStrength += adxBoost;
           attentionScores.set('adx_trend_strength', adxBoost);
-          console.log(`🔴 Bar-based ADX ${features.barBasedAdx.toFixed(1)} confirms downtrend (+${(adxBoost * 100).toFixed(1)}%)`);
+          console.log(`🔴 ADX ${features.adx.toFixed(1)} confirms downtrend (+${(adxBoost * 100).toFixed(1)}%)`);
         }
-      } else if (features.barBasedAdx < 18) {
-        console.log(`ℹ️ Low bar-based ADX ${features.barBasedAdx.toFixed(1)} - weak trend regime`);
+      } else if (features.adx < 18) {
+        console.log(`ℹ️ Low ADX ${features.adx.toFixed(1)} - weak trend regime`);
       }
     }
 

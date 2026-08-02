@@ -23,6 +23,25 @@ import { pathToFileURL } from "node:url";
 
 import type { TradingSignal } from "../types/trading";
 
+// ─── Deterministic clock pin ────────────────────────────────────────────────
+//
+// This test asserts that a qualifying SELL EMITS when allowShortSignals=true.
+// The engine has a hard clock block on BLOCKED_UTC_HOURS = [4, 11]
+// (signalEngine.ts: "UTC hour N is a blocked window"), evaluated against the
+// REAL wall clock via `new Date().getUTCHours()`. The sandbox does not stub
+// that clock, so before this pin the test PASSED for 22 hours a day and FAILED
+// for 2 — the engine was behaving correctly and the harness was
+// non-deterministic, contradicting this file's own "deterministic" docstring.
+//
+// This pins the reported UTC hour to 13 (inside the NY/London power hour and
+// outside every blocked window) so the suppression assertions are testing the
+// SELL toggle rather than the hour-of-day gate. No assertion is weakened: the
+// blocked-hour gate has its own coverage and is not what this test measures.
+const PINNED_UTC_HOUR = 13;
+Date.prototype.getUTCHours = function (this: Date): number {
+  return PINNED_UTC_HOUR;
+};
+
 // ─── Sandbox types ──────────────────────────────────────────────────────────
 
 interface SandboxBar {
