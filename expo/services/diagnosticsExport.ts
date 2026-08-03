@@ -56,6 +56,13 @@ export interface DiagnosticsExportInput {
    * TIER_1_LOCAL micro-zones impossible to miss.
    */
   tier0ZoneHealth?: Tier0ZoneHealth | null;
+  /**
+   * F6 criterion 4: bar-directional-layer stand-aside counters from the engine
+   * (`signalEngine.getDirectionalLayerStats()`). Optional so older callers still
+   * compile; the section then reports NOT INSTRUMENTED rather than 0/0, because
+   * "no data" and "zero stand-asides" are not the same claim.
+   */
+  directionalLayerStats?: { checks: number; standAsides: number; readyNow: boolean } | null;
 }
 
 /** TIER_0 S/R zone read-path health counters for SECTION 7. */
@@ -107,6 +114,23 @@ function formatSignal(signal: TradingSignal, index: number): string {
   }
   if (signal.breakevenReached) {
     lines.push(`    breakeven reached: yes (${signal.breakevenTime ?? "n/a"})`);
+  }
+  // F6 forward-test telemetry (criteria 2 and 3). These values are already
+  // attached to every signal via learningContext; they were simply never
+  // exported, which made the regime-distribution and RSI-distribution criteria
+  // unevaluable from an export. Emitting them is additive and touches no
+  // scoring path. Rendered as one greppable, machine-parsable line.
+  const lc = signal.learningContext;
+  if (lc) {
+    const parts: string[] = [
+      `rsi=${Number.isFinite(lc.rsi) ? lc.rsi.toFixed(2) : "n/a"}`,
+      `regime=${lc.regimeType ?? "n/a"}`,
+      `regimeStrength=${typeof lc.regimeStrength === "number" ? lc.regimeStrength.toFixed(3) : "n/a"}`,
+      `atr=${Number.isFinite(lc.atr) ? lc.atr.toFixed(3) : "n/a"}`,
+      `htf=${lc.htfTrend ?? "n/a"}`,
+      `adx=${typeof lc.adx === "number" ? lc.adx.toFixed(1) : "n/a"}`,
+    ];
+    lines.push(`    forward telemetry: ${parts.join("  ")}`);
   }
   if (signal.riskJustification) {
     lines.push(`    rationale: ${signal.riskJustification}`);
@@ -357,6 +381,31 @@ function formatTier0ZoneSection(h: Tier0ZoneHealth | null | undefined): string {
  * metrics, and performance metrics into clearly labeled sections. Used by
  * Settings > Export Diagnostics.
  */
+/**
+ * SECTION 8 — F6 criterion 4. The pre-registered refutation threshold is
+ * "stand-asides > 5% of market-open generation attempts", so both the numerator
+ * and the denominator have to be exported; a bare count cannot be evaluated.
+ */
+function formatDirectionalLayerSection(
+  stats: { checks: number; standAsides: number; readyNow: boolean } | null | undefined,
+): string {
+  const lines: string[] = [RULE, "SECTION 8 — DIRECTIONAL BAR LAYER (F6 criterion 4)", RULE];
+  if (!stats) {
+    lines.push("NOT INSTRUMENTED — the caller supplied no directionalLayerStats.");
+    lines.push("This is NOT the same as zero stand-asides. Criterion 4 cannot be evaluated.");
+    return lines.join("\n");
+  }
+  const pct = stats.checks > 0 ? (stats.standAsides / stats.checks) * 100 : 0;
+  lines.push(`Readiness checks this process: ${stats.checks}`);
+  lines.push(`Stand-asides (bar layer unavailable or stale): ${stats.standAsides}`);
+  lines.push(`Stand-aside rate: ${stats.checks > 0 ? pct.toFixed(2) + "%" : "n/a (no checks yet)"}`);
+  lines.push(`Directional layer ready right now: ${stats.readyNow ? "YES" : "NO"}`);
+  lines.push("");
+  lines.push("Counters are process-lifetime (reset on app reload), like the shadow-write counters.");
+  lines.push("F6 criterion 4 refutation threshold: stand-aside rate > 5% of market-open attempts.");
+  return lines.join("\n");
+}
+
 export function buildDiagnosticsExportText(input: DiagnosticsExportInput): string {
   const sections = [
     DRULE,
@@ -381,6 +430,8 @@ export function buildDiagnosticsExportText(input: DiagnosticsExportInput): strin
     ),
     "",
     formatTier0ZoneSection(input.tier0ZoneHealth),
+    "",
+    formatDirectionalLayerSection(input.directionalLayerStats),
     "",
     DRULE,
     "END OF EXPORT",

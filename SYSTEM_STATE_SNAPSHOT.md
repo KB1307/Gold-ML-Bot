@@ -252,16 +252,46 @@ TP2/TP3 held-absolute vs scaled-with-TP1.
   gain comes from WIN -> WIN signals paying more (+0.2925R) partly offset by the
   reversions (-0.1704R). It does not exercise TP1's lock-arming role at all.
 
-**The one genuinely non-structural finding:** at the LIVE ladder, changing only the lock
-from 0.35xR to **0.20xR** gives EV +0.0784R vs +0.0605R with WR unchanged at 63.1%.
-Small, single-axis, no target-width change. NOT adopted — it is one axis on the same
-sample that failed both guards, and the entry distribution is about to change post-F.
+**The lock 0.35xR -> 0.20xR finding: NOT a clean single-axis win. DO NOT PICK IT UP.**
+At the LIVE ladder, changing only the lock from 0.35xR to 0.20xR gives EV +0.0784R vs
++0.0605R with WR unchanged at 63.1%. It was originally reported as "the one genuinely
+non-structural finding." **That framing was wrong and is corrected here:** a lock closer to
+entry leaves more room after TP1, so trades run longer — which is the SAME mechanism as
+wider targets letting trades run longer. Both are flattered by the same trending sample. It
+is a smaller expression of the identical artifact that failed the plateau and stability
+guards, NOT an independent result. NOT adopted, and it must not be re-adopted on this
+sample by a future session treating it as a clean single-axis improvement.
 
 **The resolver now carries an optional `ladder` sweep hook** (`LadderOverride` in
 `expo/services/signalResolver.ts`). Every field is optional and every default reproduces
 live behaviour exactly — proven by the canonical set reproducing WR 63.1% / EV +0.0605R
 and the identical 137/136/76/20 decomposition after the hook was added. Nothing in the
 live app passes it; grep-verifiable that `ladder:` appears only under `scripts/`.
+
+---
+
+## 3d. FORWARD MONITORING IS LIVE (2026-08-03)
+
+Every remaining question is answerable only by forward data, so the F6 criteria are now
+evaluated by a script rather than by hand.
+
+- `expo/scripts/forwardMonitor.ts` — evaluates all six F6 criteria. Reads `gold_m1_bars`
+  DIRECTLY from Supabase (anon key), resolves with the REAL `resolveSignalWithBars`
+  `{ fromScratch: true }`, R>0 predicate, canonical definition printed once in the header.
+  Every criterion prints its PRE-REGISTERED refutation threshold, the current value, and a
+  power verdict; an underpowered criterion prints UNDERPOWERED, never a pass or a fail.
+  Also prints forward MFE/MAE p25/50/75 against the pre-F reference (MFE24
+  2.32/6.45/11.83, MAE24 2.41/5.94/12.30) — Item D's stated transfer test.
+  Usage: `bun run scripts/forwardMonitor.ts --forward /tmp/forward_export.txt`.
+- **Telemetry added to make criteria 2, 3 and 4 evaluable at all** (additive, no scoring
+  path touched): each signal now exports a `forward telemetry:` line (rsi, regime,
+  regimeStrength, atr, htf, adx — all already on `learningContext`, previously never
+  exported), and a new SECTION 8 exports the bar-layer readiness/stand-aside counters from
+  `signalEngine.getDirectionalLayerStats()`. An export lacking these parses as
+  NOT INSTRUMENTED, which is deliberately distinct from zero.
+- `expo/scripts/test_forward_monitor_parsers.ts` — 14/14, writer<->parser contract proven
+  against the REAL `buildDiagnosticsExportText`, including that an export without the
+  counters parses as null rather than 0/0.
 
 ---
 

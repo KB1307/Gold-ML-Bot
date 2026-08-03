@@ -310,6 +310,7 @@ export default function SettingsScreen() {
           ...getTier0Counters(),
           ...signalEngine.getTier0DegradationStats(),
         },
+        directionalLayerStats: signalEngine.getDirectionalLayerStats(),
       });
 
       const response = await fetch(`${getApiOrigin()}/api/trpc/diagnostics.saveExport`, {

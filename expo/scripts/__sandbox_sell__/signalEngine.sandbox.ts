@@ -1189,6 +1189,17 @@ class SignalGenerationEngine {
   private lastSellSignalTime: number = 0;
   private lastMarketRegime: MarketRegime | null = null;
   private signalGenerationAttempts: number = 0;
+  /**
+   * F6 criterion 4 telemetry (COUNTERS ONLY — no scoring effect).
+   * `directionalStandAsideChecks` counts every time the generation path asked
+   * whether the bar layer was usable; `directionalStandAsideCount` counts how
+   * often it answered no and the engine stood aside. The pre-registered
+   * refutation threshold is stand-aside > 5% of market-open attempts, which is
+   * not evaluable unless BOTH numbers are recorded. Process-lifetime, like the
+   * shadow-write counters — they monitor the CURRENT process, not history.
+   */
+  private directionalStandAsideChecks: number = 0;
+  private directionalStandAsideCount: number = 0;
   private signalsGeneratedCount: number = 0;
   private successfulSignalsGenerated: number = 0;
   private recentAttemptTimestamps: number[] = [];
@@ -2200,7 +2211,23 @@ class SignalGenerationEngine {
    */
   private isDirectionalLayerReady(): boolean {
     const m5 = this.getDirectionalM5();
-    return m5 !== null && barRSI(m5, 14) !== null;
+    const ready = m5 !== null && barRSI(m5, 14) !== null;
+    this.directionalStandAsideChecks += 1;
+    if (!ready) this.directionalStandAsideCount += 1;
+    return ready;
+  }
+
+  /**
+   * F6 criterion 4: how often the bar-based directional layer was unavailable
+   * or stale at generation time. Read-only accessor for the diagnostics export.
+   */
+  public getDirectionalLayerStats(): { checks: number; standAsides: number; readyNow: boolean } {
+    const m5 = this.getDirectionalM5();
+    return {
+      checks: this.directionalStandAsideChecks,
+      standAsides: this.directionalStandAsideCount,
+      readyNow: m5 !== null && barRSI(m5, 14) !== null,
+    };
   }
 
   /**
