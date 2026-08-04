@@ -416,6 +416,74 @@ read all 51**, so a direct repoint needs no new policy.
 training, so whether a given `model_weights_v1` came from a truncated corpus is
 UNKNOWABLE from current artifacts (rule 8). Retrain requires >= 20 outcomes.
 
+**SUPERSEDED BY ITEM 12 (below) — the read is now direct, paginated and counted.**
+
+## 3j. ITEM 12 — THE LEARNING-CORPUS READ IS OFF THE RORK BACKEND (2026-08-04)
+
+**LIVE.** `learningStore.hydrateFromRemote()` now reads `trade_outcomes_v1`
+DIRECTLY from Supabase via the anon key, PAGINATED at 500 rows/page
+(`fetchRemoteOutcomesDirect`). The retired `trpcClient.learning.getOutcomes`
+call is GONE from the shipped code (only the doc header names it, and the test
+asserts on comment-stripped source so a comment can never pass for a call).
+
+**Writes deliberately unchanged.** `pushOutcomesToRemote` still goes through the
+service-role backend route, so the training corpus stays un-poisonable by anyone
+holding the public anon key. Proven live: anon INSERT rejected with `new row
+violates row-level security policy`; anon UPDATE and DELETE against a real row
+affected 0 rows and left `pnl` byte-identical.
+
+**Truncation is PROVEN, not inferred.** When a pull fills the caller's limit the
+reader issues a 1-row probe past the window; inferring truncation from "the last
+page was full" reported a corpus that exactly drains the limit as truncated (a
+false alarm the unit test caught before it shipped).
+
+**Durable counters (ITEM 12(d)).** `learning_corpus_counters_v1` in AsyncStorage,
+same pattern as the telegram counters (ADD-on-hydrate, never assign, so a hydrate
+that completes before the counters load is not discarded):
+`hydrateAttempts / hydrateSuccesses / hydrateUnavailableCount / lastPulled /
+lastPages / lastTotal / lastTruncatedByLimit / lastUnavailableReason`.
+They reconcile mechanically: attempts = successes + unavailable. Rendered inside
+SECTION 2 of the export; a caller that supplies nothing renders NOT INSTRUMENTED,
+which is deliberately distinct from zero.
+
+**Weight provenance (the 11(b) forward fix).** `retrainModel` now persists
+`corpusSizeAtTraining` and `hydrateUnavailableAtTraining` alongside the weights,
+and SECTION 2 prints both. A vector that predates this telemetry prints UNKNOWN,
+never 0 — provenance-unknown and trained-on-zero are different claims.
+
+**Live evidence (`expo/scripts/probeItem12CorpusReadPath.ts`, 11/11 PASS):**
+12/12 anon reads OK (185-950ms); anon count 51 === service-key count 51; the REAL
+production reader returned all 51 rows oldest-first with 0 duplicates in 249ms;
+limit=25 produced `truncated=true`, limit=51 produced `truncated=false`; the
+retired backend route returned **503 on BOTH origins 8/8** at the same moment the
+new path was serving 200s — which is exactly why it is no longer on this path.
+
+**Unit evidence:** `expo/scripts/test_item12_learning_corpus_direct_read.ts`
+22/22 (1200-row corpus pulled across 3 pages, no page >500, oldest-first, no
+duplicates, unavailable read counted + local corpus untouched, counters survive a
+simulated reload, export renders provenance). `test_durable_learning_store.ts`
+still 26/26 after its sandbox was extended to stub the new imports.
+
+## 3k. ITEM 13 — PROVENANCE COLUMN: BACKFILL RULE VERIFIED (SPEC ONLY, NOT BUILT)
+
+Measured by `expo/scripts/investigateItem13ProvenanceBackfill.ts` (read-only):
+- `shadow_signals_v1`: 413 rows, ids 12..428. Rule A (`id > 16` => SIMULATION)
+  and Rule B (entry inside the synthetic $2900-3200 band => SIMULATION) agree on
+  **413/413 rows (100.0%), zero disagreements** — 5 LIVE, 408 SIMULATION. The
+  brief's precondition is satisfied, so `id > 16` is safe as the backfill rule.
+- Independent third check: `gold_m1_bars` holds **1257 rows on 2026-07-31** (the
+  LIVE rows' date) and **0 rows on 2026-03-18** (the SIMULATION rows' date).
+  NOTE for future sessions: `gold_m1_bars.timestamp` is an **ISO timestamptz, NOT
+  epoch ms**. Filtering it with epoch integers returns 0 rows for the WRONG
+  reason — the first run of this script did exactly that and would have reported
+  a fake corroboration.
+- `trade_outcomes_v1`: 51 rows, **0 inside the simulation band**, and there is NO
+  serial id column — so the `id > N` rule does NOT transfer. It does carry a
+  separate DB-default `created_at` (e.g. `2026-07-29T21:02:10.558Z`) alongside the
+  signal-derived `ts`, which is the split Item 13 proposes for `shadow_signals_v1`.
+
+**NOT BUILT. No migration run.**
+
 ## 4. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
 
 **Finding (from prior session, `expo/scripts/analyzeDriftVetoOnBuy.ts`):** the Phase 2 counter-trend drift veto IS over-firing on BUYs. It dropped **4/50** counter-trend BUYs that had **positive EV (+0.2295R, 75% win rate)**. Three of the four were winners (+1.149R, +0.385R, +0.385R). The veto is costing the long book **$3.8 in net $** and **+0.0036R in EV per signal**. The veto threshold (2.0×ATR) may be too low for BUYs, or the counter-trend classification may be too broad.

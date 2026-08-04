@@ -3,7 +3,18 @@ import type { signalEngine } from "@/services/signalEngine";
 import type { DiagnosticEvent } from "@/services/diagnosticEventStore";
 
 export type ModelHealthMetrics = ReturnType<typeof signalEngine.getModelHealthMetrics>;
-export type RawModelWeights = { weights: [string, number][]; lastTrainingTime: number } | null;
+export type RawModelWeights = {
+  weights: [string, number][];
+  lastTrainingTime: number;
+  /**
+   * ITEM 12 / 11(b): outcome count the persisted vector was trained on, plus the
+   * durable hydrateUnavailableCount at that moment. `null` (NOT 0) means the
+   * vector predates this telemetry - provenance unknown is not the same claim as
+   * trained on zero outcomes.
+   */
+  corpusSizeAtTraining?: number | null;
+  hydrateUnavailableAtTraining?: number | null;
+} | null;
 
 export interface ShadowSellSummary {
   count: number;
@@ -81,6 +92,31 @@ export interface DiagnosticsExportInput {
    * Optional — the section reports NOT INSTRUMENTED rather than zeros.
    */
   telegramOutbox?: TelegramOutboxSummaryInput | null;
+  /**
+   * ITEM 12(d): durable learning-corpus hydration counters from
+   * `learningStore.getLearningCorpusStats()`. The corpus READ is now a DIRECT
+   * paginated Supabase read (it used to ride the 503-prone Rork backend), and an
+   * unavailable read previously produced NO log, NO counter and NOTHING in the
+   * export - so a model trained on a truncated corpus was indistinguishable from
+   * one trained on the full corpus. Optional: the block reports NOT INSTRUMENTED
+   * rather than zeros, because no data and zero failures are different claims.
+   */
+  learningCorpusStats?: LearningCorpusStatsInput | null;
+}
+
+/** ITEM 12(d): shape of the durable corpus-hydration counters for SECTION 2. */
+export interface LearningCorpusStatsInput {
+  hydrateAttempts: number;
+  hydrateSuccesses: number;
+  hydrateUnavailableCount: number;
+  lastPulled: number | null;
+  lastTotal: number | null;
+  lastPages: number | null;
+  lastTruncatedByLimit: boolean;
+  lastUnavailableReason: string | null;
+  lastUnavailableAt: number | null;
+  lastSuccessAt: number | null;
+  hydrated: boolean;
 }
 
 /** ITEM 6(c): durable outbox state for SECTION 9. */
@@ -221,7 +257,39 @@ function formatSignalHistorySection(signalHistory: TradingSignal[]): string {
   return lines.join("\n");
 }
 
-function formatModelWeightsSection(modelWeights: RawModelWeights): string {
+/**
+ * ITEM 12(d) - learning-corpus provenance block, rendered INSIDE SECTION 2 so a
+ * weight vector and the corpus it was trained on are never read apart.
+ */
+function formatLearningCorpusBlock(stats: LearningCorpusStatsInput | null | undefined): string[] {
+  const lines: string[] = ["", "Learning corpus (trade_outcomes_v1 - DIRECT paginated Supabase read, anon key):"];
+  if (!stats) {
+    lines.push("  NOT INSTRUMENTED - caller did not supply learningCorpusStats.");
+    lines.push("  (Deliberately distinct from zero: no data was reported, not zero failures.)");
+    return lines;
+  }
+  lines.push(`  Counters rehydrated from durable storage: ${stats.hydrated ? "yes" : "NOT YET (process-only so far)"}`);
+  lines.push(`  Hydrate attempts: ${stats.hydrateAttempts}`);
+  lines.push(`  Hydrate successes: ${stats.hydrateSuccesses}`);
+  lines.push(`  Hydrate UNAVAILABLE: ${stats.hydrateUnavailableCount}`);
+  lines.push(`  Last pull: ${stats.lastPulled === null ? "n/a" : stats.lastPulled} row(s) across ${stats.lastPages === null ? "n/a" : stats.lastPages} page(s)`);
+  lines.push(`  Local corpus total after last hydrate: ${stats.lastTotal === null ? "n/a" : stats.lastTotal}`);
+  lines.push(`  Pull hit the limit (durable corpus is larger): ${stats.lastTruncatedByLimit ? "YES" : "no"}`);
+  lines.push(`  Last successful hydrate: ${safeDate(stats.lastSuccessAt)}`);
+  if (stats.hydrateUnavailableCount > 0) {
+    lines.push("");
+    lines.push(`  ** CORPUS WAS UNAVAILABLE ${stats.hydrateUnavailableCount} time(s). Any retrain that ran while it was`);
+    lines.push("     unavailable trained on the LOCAL tier only, which on web is wiped on every reload.");
+    lines.push(`     Last reason: ${stats.lastUnavailableReason ?? "unknown"}`);
+    lines.push(`     Last occurred: ${safeDate(stats.lastUnavailableAt)}`);
+  }
+  return lines;
+}
+
+function formatModelWeightsSection(
+  modelWeights: RawModelWeights,
+  learningCorpusStats?: LearningCorpusStatsInput | null,
+): string {
   const lines: string[] = [RULE, "SECTION 2 — MODEL WEIGHTS (model_weights_v1)", RULE];
   if (!modelWeights) {
     lines.push(
@@ -233,6 +301,22 @@ function formatModelWeightsSection(modelWeights: RawModelWeights): string {
   } else {
     lines.push(`Last training time: ${safeDate(modelWeights.lastTrainingTime || null)}`);
     lines.push(`Feature count: ${modelWeights.weights.length}`);
+    // ITEM 12 / 11(b): weight provenance. UNKNOWN means the vector predates this
+    // telemetry, which is NOT the same claim as trained on 0 outcomes.
+    lines.push(
+      `Corpus size at training: ${
+        modelWeights.corpusSizeAtTraining === null || modelWeights.corpusSizeAtTraining === undefined
+          ? "UNKNOWN (vector predates this telemetry - provenance unrecoverable)"
+          : `${modelWeights.corpusSizeAtTraining} outcome(s)`
+      }`,
+    );
+    lines.push(
+      `Corpus-unavailable count at training: ${
+        modelWeights.hydrateUnavailableAtTraining === null || modelWeights.hydrateUnavailableAtTraining === undefined
+          ? "UNKNOWN (vector predates this telemetry)"
+          : modelWeights.hydrateUnavailableAtTraining
+      }`,
+    );
     lines.push("");
     lines.push("Feature weights:");
     if (modelWeights.weights.length === 0) {
@@ -245,6 +329,9 @@ function formatModelWeightsSection(modelWeights: RawModelWeights): string {
         });
     }
   }
+  // ITEM 12(d): the corpus block renders in BOTH branches - a never-trained model
+  // with a repeatedly unavailable corpus is exactly the state worth seeing.
+  lines.push(...formatLearningCorpusBlock(learningCorpusStats));
   return lines.join("\n");
 }
 
@@ -544,7 +631,7 @@ export function buildDiagnosticsExportText(input: DiagnosticsExportInput): strin
     "",
     formatSignalHistorySection(input.signalHistory),
     "",
-    formatModelWeightsSection(input.modelWeights),
+    formatModelWeightsSection(input.modelWeights, input.learningCorpusStats),
     "",
     formatModelHealthSection(input.modelHealth),
     "",

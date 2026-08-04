@@ -44,6 +44,10 @@ interface FakeRemote {
   rows: Map<string, RemoteRow>;
   pushCalls: number;
   failNext: boolean;
+  /** ITEM 12: forces the next DIRECT corpus READ to fail (PostgREST-style error). */
+  failNextRead: boolean;
+  /** ITEM 12: number of paginated `.range()` calls the read path issued. */
+  readPages: number;
 }
 
 interface LearningStoreModule {
@@ -56,6 +60,17 @@ interface LearningStoreModule {
     available: boolean; pulled: number; merged: number; backfilled: number; total: number;
   }>;
   getPendingRemotePushCount(): number;
+  fetchRemoteOutcomesDirect(limit: number): Promise<{
+    available: boolean; outcomes: any[]; pages: number; truncatedByLimit: boolean;
+    reason: string; detail: string | null;
+  }>;
+  getLearningCorpusStats(): {
+    hydrateAttempts: number; hydrateSuccesses: number; hydrateUnavailableCount: number;
+    lastPulled: number | null; lastTotal: number | null; lastPages: number | null;
+    lastTruncatedByLimit: boolean; lastUnavailableReason: string | null;
+    lastUnavailableAt: number | null; lastSuccessAt: number | null; hydrated: boolean;
+  };
+  __resetLearningCorpusStatsForTest(): void;
   __remote: FakeRemote;
 }
 
@@ -79,10 +94,74 @@ async function writeLearningStoreSandbox(): Promise<string> {
       /^import\s+\{\s*Platform\s*\}\s+from\s+["']react-native["'];?\r?\n/m,
       'const Platform = { OS: "web" as const };\n',
     )
+    // ITEM 12: learningStore now imports AsyncStorage (durable corpus counters)
+    // and the Supabase client (the DIRECT paginated corpus read). Both are stubbed
+    // here so the REAL pagination/counter logic is what the test exercises.
+    .replace(
+      /^import\s+AsyncStorage\s+from\s+["']@react-native-async-storage\/async-storage["'];?\r?\n/m,
+      `
+const __counterStorage = new Map<string, string>();
+const AsyncStorage = {
+  async getItem(key: string): Promise<string | null> { return __counterStorage.get(key) ?? null; },
+  async setItem(key: string, value: string): Promise<void> { __counterStorage.set(key, value); },
+  async removeItem(key: string): Promise<void> { __counterStorage.delete(key); },
+};
+`,
+    )
+    .replace(
+      /^import\s+\{\s*createClient,\s*type\s+SupabaseClient\s*\}\s+from\s+["']@supabase\/supabase-js["'];?\r?\n/m,
+      `
+type SupabaseClient = any;
+function __toDbRow(o: any): any {
+  return {
+    signal_id: o.signalId,
+    ts: typeof o.timestamp === 'number' ? new Date(o.timestamp).toISOString() : String(o.timestamp),
+    direction: o.direction ?? null,
+    result: o.result,
+    entry_price: o.entryPrice,
+    exit_price: o.exitPrice,
+    pnl: o.pnl,
+    confidence: o.confidence ?? null,
+    realized_r: o.realizedR ?? null,
+    is_scratch: o.isScratch ?? null,
+    signal_duration_ms: o.signalDuration ?? null,
+    feature_schema_version: o.featureSchemaVersion ?? null,
+    features: o.features ?? {},
+    misleading_features: o.misleadingFeatures ?? null,
+  };
+}
+function createClient(_url: string, _key: string, _opts?: any): any {
+  return {
+    from(_table: string) {
+      return {
+        select(_cols: string) {
+          const q: any = {
+            order(_c: string, _o?: any) { return q; },
+            async range(from: number, to: number) {
+              if (__remote.failNextRead) {
+                __remote.failNextRead = false;
+                return { data: null, error: { message: 'simulated corpus outage', code: 'PGRST999' } };
+              }
+              __remote.readPages += 1;
+              const rows = Array.from(__remote.rows.values())
+                .sort((a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+                .slice(from, to + 1)
+                .map(__toDbRow);
+              return { data: rows, error: null };
+            },
+          };
+          return q;
+        },
+      };
+    },
+  };
+}
+`,
+    )
     .replace(
       /^import\s+\{\s*trpcClient\s*\}\s+from\s+["']@\/lib\/trpc["'];?\r?\n/m,
       `
-const __remote = { rows: new Map<string, any>(), pushCalls: 0, failNext: false };
+const __remote = { rows: new Map<string, any>(), pushCalls: 0, failNext: false, failNextRead: false, readPages: 0 };
 export const __remoteStore = __remote;
 const trpcClient = {
   learning: {

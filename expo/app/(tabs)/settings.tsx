@@ -24,6 +24,7 @@ import {
   getShadowWriteSuccesses,
 } from "@/services/shadowSignalService";
 import { getTier0Counters } from "@/services/srZoneTier0Service";
+import { getLearningCorpusStats, hydrateLearningCorpusStats } from "@/services/learningStore";
 
 function getProviderLabel(provider: unknown): string {
   if (provider === "google") {
@@ -299,6 +300,10 @@ export default function SettingsScreen() {
       // anon key. It used to be fetched through the 503-prone Rork backend
       // route (`shadow.summary`), which is why SECTION 6 reported 5 rows while
       // shadow_signals_v1 actually held 413.
+      // ITEM 12(d): load the durable corpus counters BEFORE they are read into the
+      // export, so the export reports durable totals rather than this process's slice.
+      await hydrateLearningCorpusStats().catch(() => undefined);
+
       const [modelWeights, modelHealth, diagnosticEvents, shadowSellSummary, telegramOutbox] =
         await Promise.all([
           signalEngine.getRawModelWeightsForExport(),
@@ -324,6 +329,8 @@ export default function SettingsScreen() {
         directionalLayerStats: signalEngine.getDirectionalLayerStats(),
         telegramDeliveryStats: getTelegramDeliveryStats(),
         telegramOutbox,
+        // ITEM 12(d): durable corpus-hydration counters (rehydrated above).
+        learningCorpusStats: getLearningCorpusStats(),
       });
 
       // ITEM 9: the artifact is published DIRECTLY to Supabase Storage via the

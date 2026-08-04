@@ -1,7 +1,81 @@
-import { Platform } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import { trpcClient } from '@/lib/trpc';
+const Platform = { OS: "web" as const };
+
+const __corpus: any = {
+  rows: [],
+  rangeCalls: [],
+  failNextRead: false,
+  trpcGetOutcomesCalls: 0,
+  trpcPushCalls: 0,
+  storage: new Map<string, string>(),
+};
+export const __corpusStore = __corpus;
+const AsyncStorage = {
+  async getItem(key: string): Promise<string | null> { return __corpus.storage.get(key) ?? null; },
+  async setItem(key: string, value: string): Promise<void> { __corpus.storage.set(key, value); },
+  async removeItem(key: string): Promise<void> { __corpus.storage.delete(key); },
+};
+
+type SupabaseClient = any;
+/** Fake PostgREST. Enforces the real contract: a .range() window is inclusive
+ *  and a response NEVER exceeds the requested window size. */
+function createClient(_url: string, _key: string, _opts?: any): any {
+  return {
+    from(_t: string) {
+      return {
+        select(_c: string) {
+          const q: any = {
+            order(_col: string, _o?: any) { return q; },
+            async range(from: number, to: number) {
+              if (__corpus.failNextRead) {
+                __corpus.failNextRead = false;
+                return { data: null, error: { message: 'simulated corpus outage', code: 'PGRST999' } };
+              }
+              __corpus.rangeCalls.push({ from, to });
+              const sorted = [...__corpus.rows].sort(
+                (a: any, b: any) => new Date(b.ts).getTime() - new Date(a.ts).getTime(),
+              );
+              const page = sorted.slice(from, to + 1).map((r: any) => ({
+                signal_id: r.signalId,
+                ts: r.ts,
+                direction: 'BUY',
+                result: 'WIN',
+                entry_price: 4000,
+                exit_price: 4004,
+                pnl: 4,
+                confidence: 0.8,
+                realized_r: 0.5,
+                is_scratch: false,
+                signal_duration_ms: 60000,
+                feature_schema_version: 2,
+                features: {},
+                misleading_features: null,
+              }));
+              return { data: page, error: null };
+            },
+          };
+          return q;
+        },
+      };
+    },
+  };
+}
+
+const trpcClient = {
+  learning: {
+    pushOutcomes: {
+      async mutate(input: { outcomes: any[] }) {
+        __corpus.trpcPushCalls += 1;
+        return { success: true, reason: 'ok', upserted: input.outcomes.length };
+      },
+    },
+    getOutcomes: {
+      async query(_i?: { limit?: number }) {
+        __corpus.trpcGetOutcomesCalls += 1;
+        return { outcomes: [], available: true };
+      },
+    },
+  },
+} as any;
 
 /**
  * Step 3 — persisted learning memory storage.

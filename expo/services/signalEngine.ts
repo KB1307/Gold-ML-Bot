@@ -4,7 +4,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { fetchHistoricalData, trpcClient } from "@/lib/trpc";
 import { createClient as createSupabaseClient, type SupabaseClient } from "@supabase/supabase-js";
 import { Platform } from "react-native";
-import { appendOutcome as appendOutcomeToStore, getAllOutcomes as getAllOutcomesFromStore, getOutcomeCount as getOutcomeCountFromStore, migrateLegacyOutcomesIfEmpty, pruneToCap as pruneOutcomeStoreToCap, pushOutcomesToRemote, hydrateFromRemote as hydrateLearningStoreFromRemote, type StoredTradeOutcome } from "@/services/learningStore";
+import { appendOutcome as appendOutcomeToStore, getAllOutcomes as getAllOutcomesFromStore, getOutcomeCount as getOutcomeCountFromStore, migrateLegacyOutcomesIfEmpty, pruneToCap as pruneOutcomeStoreToCap, pushOutcomesToRemote, hydrateFromRemote as hydrateLearningStoreFromRemote, getLearningCorpusStats, type StoredTradeOutcome } from "@/services/learningStore";
 import { resolveSignalWithBars } from "@/services/signalResolver";
 import type { OhlcBar } from "@/services/barStore";
 import { appendDiagnosticEvent } from "@/services/diagnosticEventStore";
@@ -1108,6 +1108,10 @@ class SignalGenerationEngine {
   private tradeOutcomes: TradeOutcome[] = [];
   private modelWeights: Map<string, number> = new Map();
   private lastTrainingTime: number = 0;
+  /** ITEM 12 / 11(b): outcome count the persisted weight vector was trained on. */
+  private corpusSizeAtTraining: number | null = null;
+  /** ITEM 12 / 11(b): hydrateUnavailableCount as of that training pass. */
+  private hydrateUnavailableAtTraining: number | null = null;
   private performanceMetrics: {
     recentWinRate: number;
     profitFactor: number;
@@ -6698,9 +6702,18 @@ class SignalGenerationEngine {
     console.log(`   Weight Normalization: ✅ Complete (prevents single feature monopolization)`);
     console.log('='.repeat(80) + '\n');
     
+    // ITEM 12 / 11(b): record HOW MANY outcomes these weights were trained on, and
+    // how many durable-corpus reads had come back UNAVAILABLE by then. Without
+    // both numbers a weight vector's provenance is unrecoverable - weights trained
+    // on the full corpus are indistinguishable from weights trained on a truncated
+    // one after a failed hydrate.
+    this.corpusSizeAtTraining = trainingData.length;
+    this.hydrateUnavailableAtTraining = getLearningCorpusStats().hydrateUnavailableCount;
     const persistData = {
       weights: Array.from(this.modelWeights.entries()),
       lastTrainingTime: this.lastTrainingTime,
+      corpusSizeAtTraining: this.corpusSizeAtTraining,
+      hydrateUnavailableAtTraining: this.hydrateUnavailableAtTraining,
     };
     AsyncStorage.setItem(MODEL_WEIGHTS_KEY, JSON.stringify(persistData)).catch((error: unknown) => {
       console.error('Failed to persist model weights:', error);
@@ -8720,15 +8733,19 @@ class SignalGenerationEngine {
    * has never been retrained yet, so callers can render an explicit
    * "never retrained" message instead of a misleading empty section.
    */
-  async getRawModelWeightsForExport(): Promise<{ weights: [string, number][]; lastTrainingTime: number } | null> {
+  async getRawModelWeightsForExport(): Promise<{ weights: [string, number][]; lastTrainingTime: number; corpusSizeAtTraining: number | null; hydrateUnavailableAtTraining: number | null } | null> {
     try {
       const weightsData = await AsyncStorage.getItem(MODEL_WEIGHTS_KEY);
       if (!weightsData) return null;
       const parsed = JSON.parse(weightsData);
       const weights: [string, number][] = Array.isArray(parsed?.weights) ? parsed.weights : Array.isArray(parsed) ? parsed : [];
       const lastTrainingTime: number = typeof parsed?.lastTrainingTime === 'number' ? parsed.lastTrainingTime : 0;
+      // ITEM 12: null (NOT 0) when the persisted vector predates this telemetry -
+      // "provenance unknown" and "trained on zero outcomes" are different claims.
+      const corpusSizeAtTraining: number | null = typeof parsed?.corpusSizeAtTraining === 'number' ? parsed.corpusSizeAtTraining : null;
+      const hydrateUnavailableAtTraining: number | null = typeof parsed?.hydrateUnavailableAtTraining === 'number' ? parsed.hydrateUnavailableAtTraining : null;
       if (weights.length === 0 && !lastTrainingTime) return null;
-      return { weights, lastTrainingTime };
+      return { weights, lastTrainingTime, corpusSizeAtTraining, hydrateUnavailableAtTraining };
     } catch (error) {
       console.error('[SignalEngine] Failed to read raw model weights for export:', error);
       return null;
