@@ -166,6 +166,118 @@ const serializeShadowError = (err: unknown): string => {
   try { return JSON.stringify(err); } catch { return String(err); }
 };
 
+/**
+ * ITEM 7 — SHADOW SUMMARY READ, REPOINTED DIRECTLY AT SUPABASE.
+ *
+ * SECTION 6 of the diagnostics export reported 5 shadow rows while
+ * `shadow_signals_v1` actually held 413, because the summary was fetched through
+ * the 503-prone Rork backend route (`shadow.summary`). That is the same defect
+ * class as the Telegram delivery path: a backend that flaps sitting on a path it
+ * has no business being on.
+ *
+ * DATA-SOURCE RULE: this read goes DIRECTLY to Supabase via the PUBLIC anon key,
+ * which already holds an RLS SELECT policy on this table (empirically verified
+ * 2026-07-31). No Rork backend anywhere. The aggregation below is deliberately
+ * identical in shape to the retired backend route so SECTION 6 renders unchanged.
+ *
+ * Returns null (never a zeroed summary) when the read fails, so "unknown" and
+ * "genuinely zero rows" stay distinguishable in the export.
+ */
+export interface ShadowSellSummaryResult {
+  count: number;
+  dateRange: { oldest: string; newest: string } | null;
+  sessionBreakdown: Record<string, number>;
+  htfBreakdown: Record<string, number>;
+  avgGeometry: {
+    entry: number;
+    sl: number;
+    tp1: number;
+    tp2: number;
+    tp3: number;
+    atr: number;
+    confidence: number;
+  } | null;
+  recent: Record<string, unknown>[];
+}
+
+export async function fetchShadowSellSummary(days = 30): Promise<ShadowSellSummaryResult | null> {
+  const client = getShadowClient();
+  if (!client) return null;
+
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+  // PostgREST caps a response at 1000 rows, which is exactly how a summary can
+  // silently under-report. Paginate explicitly.
+  const PAGE = 1000;
+  const rows: Record<string, unknown>[] = [];
+  for (let page = 0; page < 20; page += 1) {
+    const { data, error } = await client
+      .from('shadow_signals_v1')
+      .select('created_at, session_name, hour_utc, htf_trend, entry, sl, tp1, tp2, tp3, atr, confidence, regime')
+      .gte('created_at', since)
+      .order('created_at', { ascending: false })
+      .range(page * PAGE, page * PAGE + PAGE - 1);
+
+    if (error) {
+      console.warn(`[ShadowSell] SHADOW_SUMMARY_READ_FAILED: ${serializeShadowError(error)}`);
+      return null;
+    }
+    const batch = (data ?? []) as Record<string, unknown>[];
+    rows.push(...batch);
+    if (batch.length < PAGE) break;
+  }
+
+  if (rows.length === 0) {
+    return {
+      count: 0,
+      dateRange: null,
+      sessionBreakdown: {},
+      htfBreakdown: {},
+      avgGeometry: null,
+      recent: [],
+    };
+  }
+
+  const sessionBreakdown: Record<string, number> = {};
+  const htfBreakdown: Record<string, number> = {};
+  let sumEntry = 0, sumSl = 0, sumTp1 = 0, sumTp2 = 0, sumTp3 = 0, sumAtr = 0, sumConf = 0;
+
+  for (const r of rows) {
+    const s = typeof r.session_name === 'string' ? r.session_name : 'UNKNOWN';
+    sessionBreakdown[s] = (sessionBreakdown[s] ?? 0) + 1;
+    const h = typeof r.htf_trend === 'string' ? r.htf_trend : 'UNKNOWN';
+    htfBreakdown[h] = (htfBreakdown[h] ?? 0) + 1;
+    sumEntry += Number(r.entry);
+    sumSl += Number(r.sl);
+    sumTp1 += Number(r.tp1);
+    sumTp2 += Number(r.tp2);
+    sumTp3 += Number(r.tp3);
+    sumAtr += Number(r.atr);
+    sumConf += Number(r.confidence);
+  }
+
+  const n = rows.length;
+  return {
+    count: n,
+    dateRange: {
+      oldest: String(rows[n - 1].created_at),
+      newest: String(rows[0].created_at),
+    },
+    sessionBreakdown,
+    htfBreakdown,
+    avgGeometry: {
+      entry: sumEntry / n,
+      sl: sumSl / n,
+      tp1: sumTp1 / n,
+      tp2: sumTp2 / n,
+      tp3: sumTp3 / n,
+      atr: sumAtr / n,
+      confidence: sumConf / n,
+    },
+    recent: rows.slice(0, 10),
+  };
+}
+
 export function pushShadowSellRecord(record: ShadowSellRecord): void {
   const client = getShadowClient();
   if (!client) {

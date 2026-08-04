@@ -9,12 +9,20 @@ import { AccountSettingsCard } from "@/components/AccountSettingsCard";
 import { useState, useEffect, useMemo } from "react";
 import { Stack, useRouter } from "expo-router";
 import { getBackgroundTaskStatus } from "@/services/backgroundTaskService";
-import { getTelegramDeliveryStats, sendTelegramMessage } from "@/services/telegramNotifier";
+import {
+  fetchTelegramOutboxSummary,
+  getTelegramDeliveryStats,
+  sendTelegramMessage,
+} from "@/services/telegramNotifier";
 import { signalEngine } from "@/services/signalEngine";
 import { buildDiagnosticsExportText } from "@/services/diagnosticsExport";
 import { getApiOrigin } from "@/lib/trpc";
 import { getRecentDiagnosticEvents } from "@/services/diagnosticEventStore";
-import { getShadowWriteFailures, getShadowWriteSuccesses } from "@/services/shadowSignalService";
+import {
+  fetchShadowSellSummary,
+  getShadowWriteFailures,
+  getShadowWriteSuccesses,
+} from "@/services/shadowSignalService";
 import { getTier0Counters } from "@/services/srZoneTier0Service";
 
 function getProviderLabel(provider: unknown): string {
@@ -287,15 +295,18 @@ export default function SettingsScreen() {
     setIsUrlCopied(false);
 
     try {
-      const [modelWeights, modelHealth, diagnosticEvents, shadowSellSummary] = await Promise.all([
-        signalEngine.getRawModelWeightsForExport(),
-        Promise.resolve(signalEngine.getModelHealthMetrics()),
-        getRecentDiagnosticEvents(1000).catch(() => []),
-        fetch(`${getApiOrigin()}/api/trpc/shadow.summary?input=${encodeURIComponent(JSON.stringify({ json: { days: 30 } }))}`)
-          .then(r => r.ok ? r.json() : null)
-          .then(d => d?.result?.data?.json ?? null)
-          .catch(() => null),
-      ]);
+      // ITEM 7: the shadow summary is now read DIRECTLY from Supabase via the
+      // anon key. It used to be fetched through the 503-prone Rork backend
+      // route (`shadow.summary`), which is why SECTION 6 reported 5 rows while
+      // shadow_signals_v1 actually held 413.
+      const [modelWeights, modelHealth, diagnosticEvents, shadowSellSummary, telegramOutbox] =
+        await Promise.all([
+          signalEngine.getRawModelWeightsForExport(),
+          Promise.resolve(signalEngine.getModelHealthMetrics()),
+          getRecentDiagnosticEvents(1000).catch(() => []),
+          fetchShadowSellSummary(30).catch(() => null),
+          fetchTelegramOutboxSummary(72).catch(() => null),
+        ]);
 
       const content = buildDiagnosticsExportText({
         signalHistory,
@@ -312,6 +323,7 @@ export default function SettingsScreen() {
         },
         directionalLayerStats: signalEngine.getDirectionalLayerStats(),
         telegramDeliveryStats: getTelegramDeliveryStats(),
+        telegramOutbox,
       });
 
       const response = await fetch(`${getApiOrigin()}/api/trpc/diagnostics.saveExport`, {

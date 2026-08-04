@@ -73,6 +73,25 @@ export interface DiagnosticsExportInput {
    * and "zero failures" are not the same claim.
    */
   telegramDeliveryStats?: TelegramDeliveryStatsInput | null;
+  /**
+   * ITEM 6(c): live state of the durable Telegram outbox (`telegram_outbox_v1`),
+   * read DIRECTLY from Supabase via the anon key. The client-side counters can
+   * only describe what THIS process saw; the outbox is the durable record of
+   * whether an alert was eventually delivered by the pg_cron drain or aged out.
+   * Optional — the section reports NOT INSTRUMENTED rather than zeros.
+   */
+  telegramOutbox?: TelegramOutboxSummaryInput | null;
+}
+
+/** ITEM 6(c): durable outbox state for SECTION 9. */
+export interface TelegramOutboxSummaryInput {
+  pending: number;
+  delivered: number;
+  deliveredOnRetry: number;
+  agedOut: number;
+  oldestPendingAgeSec: number | null;
+  lastError: string | null;
+  windowHours: number;
 }
 
 /** ITEM 5(d): shape of the durable alert-delivery counters for SECTION 9. */
@@ -82,6 +101,10 @@ export interface TelegramDeliveryStatsInput {
   alertsFailed: number;
   dispatchAttempts: number;
   dispatchFailures: number;
+  /** ITEM 6(c): durable-outbox counters. Optional so older callers still compile. */
+  outboxEnqueued?: number;
+  outboxEnqueueFailures?: number;
+  outboxHandoffs?: number;
   lastFailureReason: string | null;
   lastFailureAt: number | null;
   lastSuccessAt: number | null;
@@ -433,14 +456,19 @@ function formatDirectionalLayerSection(
 }
 
 /**
- * SECTION 9 -- ITEM 5(d): Telegram alert delivery health.
+ * SECTION 9 -- ITEM 5(d) + ITEM 6(c): Telegram alert delivery health.
  *
- * Exists because the alert path runs through the Rork backend, which returns
- * 503 in bursts. A burst longer than the client's retry horizon loses the alert
- * outright, and nothing used to record that.
+ * Existed because the alert path ran through the Rork backend, which returns 503
+ * in bursts; a burst longer than the client's retry horizon lost the alert
+ * outright and nothing recorded it. ITEM 6 moved delivery to the Supabase Edge
+ * Function `send-telegram-alert` behind a durable outbox, so this section now
+ * reports BOTH what this process saw and what the durable outbox holds.
  */
-function formatTelegramDeliverySection(stats: TelegramDeliveryStatsInput | null | undefined): string {
-  const lines = [DRULE, "SECTION 9 - TELEGRAM ALERT DELIVERY (ITEM 5d)", DRULE];
+function formatTelegramDeliverySection(
+  stats: TelegramDeliveryStatsInput | null | undefined,
+  outbox?: TelegramOutboxSummaryInput | null,
+): string {
+  const lines = [DRULE, "SECTION 9 - TELEGRAM ALERT DELIVERY (ITEM 5d / ITEM 6c)", DRULE];
 
   if (!stats) {
     lines.push("NOT INSTRUMENTED - caller did not supply telegramDeliveryStats.");
@@ -464,6 +492,41 @@ function formatTelegramDeliverySection(stats: TelegramDeliveryStatsInput | null 
   lines.push(`Last failure: ${stats.lastFailureAt ? safeDate(stats.lastFailureAt) : "never"}`);
   lines.push(`Last failure reason: ${stats.lastFailureReason ?? "n/a"}`);
   lines.push(`Counters rehydrated from durable storage: ${stats.hydrated ? "YES" : "NO (process-fresh)"}`);
+  lines.push("");
+  lines.push("-- OUTBOX HANDLING BY THIS PROCESS (ITEM 6c) --");
+  lines.push(
+    `Alerts persisted to telegram_outbox_v1:   ${stats.outboxEnqueued ?? "n/a (pre-ITEM-6 client)"}`,
+  );
+  lines.push(
+    `Outbox insert failures (function enrolled): ${stats.outboxEnqueueFailures ?? "n/a (pre-ITEM-6 client)"}`,
+  );
+  lines.push(
+    `Handed to the drain (persisted, not delivered inline): ${stats.outboxHandoffs ?? "n/a (pre-ITEM-6 client)"}`,
+  );
+  lines.push("");
+  lines.push("-- DURABLE OUTBOX STATE (read DIRECTLY from Supabase, anon key) --");
+  if (!outbox) {
+    lines.push("NOT INSTRUMENTED - caller supplied no telegramOutbox summary, or the");
+    lines.push("  direct Supabase read failed. This is NOT the same as an empty outbox.");
+  } else {
+    lines.push(`Window: last ${outbox.windowHours}h`);
+    lines.push(`PENDING (awaiting a drain retry):     ${outbox.pending}`);
+    lines.push(`DELIVERED:                            ${outbox.delivered}`);
+    lines.push(`  of which delivered ON RETRY:        ${outbox.deliveredOnRetry}`);
+    lines.push(`AGED OUT (never delivered, TTL 10m):  ${outbox.agedOut}`);
+    lines.push(
+      `Oldest pending age: ${outbox.oldestPendingAgeSec === null ? "n/a" : outbox.oldestPendingAgeSec + "s"}`,
+    );
+    lines.push(`Most recent outbox error: ${outbox.lastError ?? "none"}`);
+    lines.push("");
+    lines.push("AGED_OUT is DERIVED, not assumed: across 40,000 anchor minutes of");
+    lines.push("  gold_m1_bars the +/-$2.0 entry band is still touched 95% @2m, 76% @5m,");
+    lines.push("  59.7% @10m, 50.4% @15m. At 10 minutes an alert is about as likely to be");
+    lines.push("  unexecutable as executable, so delivery stops rather than pushing the");
+    lines.push("  executor into a stale trade.");
+    lines.push("REFUTATION THRESHOLDS: agedOut > 0 means a trade was never sent;");
+    lines.push("  pending with oldestPendingAge > 120s means the pg_cron drain is not running.");
+  }
   lines.push("");
   lines.push("These counters are DURABLE (AsyncStorage key telegram_delivery_counters_v1)");
   lines.push("  and survive an app reload, so they accumulate across the install lifetime.");
@@ -499,7 +562,7 @@ export function buildDiagnosticsExportText(input: DiagnosticsExportInput): strin
     "",
     formatDirectionalLayerSection(input.directionalLayerStats),
     "",
-    formatTelegramDeliverySection(input.telegramDeliveryStats),
+    formatTelegramDeliverySection(input.telegramDeliveryStats, input.telegramOutbox),
     "",
     DRULE,
     "END OF EXPORT",

@@ -1,12 +1,32 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-import { trpcClient } from "@/lib/trpc";
 import { TradingSignal } from "@/types/trading";
 
-// The Telegram bot token and chat IDs now live server-side only
-// (backend/trpc/routes/telegram.ts, TELEGRAM_BOT_TOKEN env var). This file
-// just formats messages and calls the backend — nothing secret is bundled
-// into the client anymore.
+// ─────────────────────────────────────────────────────────────────────────────
+// ITEM 6 — THE RORK BACKEND IS OFF THE TELEGRAM DELIVERY PATH.
+//
+// Previously: client -> Rork Hono/tRPC backend (`telegram.sendAlert`) -> Telegram.
+// That backend flaps 503; the client retried for ~2.4s total against outages
+// measured in tens of seconds, the send was fire-and-forget, and the error was
+// swallowed. Alerts were therefore LOST SILENTLY and the downstream MT5 executor
+// never received those trades.
+//
+// Now:  client --(anon key)--> Supabase Edge Function `send-telegram-alert`
+//                        --> api.telegram.org
+//
+// DATA-SOURCE RULE: no Rork backend anywhere on this path. TELEGRAM_BOT_TOKEN is
+// a Supabase SECRET, so it stays server-side; the client only ever holds the
+// public anon key.
+//
+// DURABLE OUTBOX: the alert is first PERSISTED to `telegram_outbox_v1` via the
+// anon key (the Design-B write pattern already proven for shadow_signals_v1),
+// and only then dispatched. If dispatch fails for any reason — Supabase blip,
+// Telegram outage, the app being killed mid-flight — the row stays PENDING and a
+// pg_cron drain (every minute) retries it until it is DELIVERED or AGED_OUT.
+// Delivery therefore no longer depends on this process staying alive, which a
+// wider retry horizon alone could never achieve.
+// ─────────────────────────────────────────────────────────────────────────────
 
 function formatPrice(value: number): string {
   return value.toFixed(1);
@@ -17,6 +37,17 @@ function formatPrice(value: number): string {
 // lag between sending and receiving the signal. TPs/SL remain anchored to the
 // single entry point.
 const ENTRY_ZONE_BAND = 2.0;
+
+/**
+ * Outbox aging horizon, in minutes. DERIVED, not assumed — see
+ * `expo/scripts/measureAlertAgingHorizon.ts`: across 40,000 anchor minutes of
+ * gold_m1_bars, the probability that price still touches the ±$2.0 entry band at
+ * t0+D is 100% @1m, 95% @2m, 76% @5m, 59.7% @10m, 50.4% @15m, 27.7% @60m. Ten
+ * minutes is where a delivered alert becomes about as likely to be unexecutable
+ * as executable; past it, firing late would more often push the executor into a
+ * stale trade than recover a lost one.
+ */
+const OUTBOX_TTL_MINUTES = 10;
 
 function formatEntryZone(entryPrice: number): string {
   const low = entryPrice - ENTRY_ZONE_BAND;
@@ -30,18 +61,93 @@ export interface TelegramSendResult {
   error?: string;
 }
 
+// ── Supabase delivery path (anon key only) ──────────────────────────────────
+
+const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL?.trim() ?? "";
+const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY?.trim() ?? "";
+const OUTBOX_TABLE = "telegram_outbox_v1";
+const FUNCTION_NAME = "send-telegram-alert";
+
+let outboxClient: SupabaseClient | null = null;
+
+function getOutboxClient(): SupabaseClient | null {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    return null;
+  }
+  if (!outboxClient) {
+    outboxClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+  }
+  return outboxClient;
+}
+
+interface DeliveryFunctionResponse {
+  ok?: boolean;
+  delivered?: boolean;
+  agedOut?: boolean;
+  alreadyDelivered?: boolean;
+  attempts?: number;
+  error?: string;
+}
+
+/**
+ * Invokes the Supabase Edge Function that owns Telegram delivery. Returns the
+ * HTTP status so a transport failure and a Telegram-side rejection stay
+ * distinguishable in the counters.
+ */
+async function invokeDeliveryFunction(
+  body: Record<string, unknown>,
+  timeoutMs = 20_000,
+): Promise<{ status: number; payload: DeliveryFunctionResponse | null; error?: string }> {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    return { status: 0, payload: null, error: "Supabase URL / anon key are not configured" };
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${SUPABASE_URL}/functions/v1/${FUNCTION_NAME}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        apikey: SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    let payload: DeliveryFunctionResponse | null = null;
+    try {
+      payload = (await response.json()) as DeliveryFunctionResponse;
+    } catch {
+      payload = null;
+    }
+    return { status: response.status, payload, error: payload?.error };
+  } catch (error: unknown) {
+    clearTimeout(timeoutId);
+    return {
+      status: 0,
+      payload: null,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// ITEM 5(d) — DURABLE ALERT-DELIVERY TELEMETRY
+// ITEM 5(d) + ITEM 6(c) — DURABLE ALERT-DELIVERY TELEMETRY
 //
-// The alert is dispatched fire-and-forget (`void attemptSend(1)`), and every
-// failure path below only ever reached `console.warn`. A Telegram alert that
-// never arrived was therefore INVISIBLE in the diagnostics export: nothing
-// counted it, nothing surfaced it, and the downstream MT5 bot simply never
-// received the trade.
+// Every failure path used to reach only `console.warn`, so an alert that never
+// arrived was INVISIBLE in the diagnostics export. These counters make that
+// impossible, and they are DURABLE (AsyncStorage) because Item 4 established
+// that process-lifetime counters reset on reload and captured nothing across a
+// full trading day.
 //
-// These counters make that impossible. They are DURABLE (AsyncStorage), not
-// process-lifetime, because Item 4 already established that process-lifetime
-// counters reset on app reload and captured nothing across a full trading day.
+// ITEM 6(c) extends them to the outbox: an alert that this process could not
+// deliver but DID persist is not lost — it is pending a drain retry — and the
+// counters must say which of the two happened.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const TELEGRAM_DELIVERY_COUNTERS_KEY = "telegram_delivery_counters_v1";
@@ -52,12 +158,21 @@ export interface TelegramDeliveryStats {
   alertsAttempted: number;
   /** Alerts that reached every configured chat successfully. */
   alertsDelivered: number;
-  /** Alerts that exhausted every retry without success — a LOST trade. */
+  /** Alerts that could not even be PERSISTED to the outbox — genuinely lost. */
   alertsFailed: number;
-  /** Individual HTTP/tRPC dispatch attempts, including retries. */
+  /** Individual HTTP dispatch attempts to the Edge Function, including retries. */
   dispatchAttempts: number;
   /** Individual attempts that failed (transport error or ok:false). */
   dispatchFailures: number;
+  /** Alerts durably enrolled in telegram_outbox_v1 by this process. */
+  outboxEnqueued: number;
+  /** Outbox inserts that failed, forcing the function-side enrollment fallback. */
+  outboxEnqueueFailures: number;
+  /**
+   * Alerts this process could not deliver inline but which ARE persisted and
+   * awaiting the pg_cron drain. NOT lost — see the outbox table for final state.
+   */
+  outboxHandoffs: number;
   lastFailureReason: string | null;
   lastFailureAt: number | null;
   lastSuccessAt: number | null;
@@ -71,6 +186,9 @@ const deliveryStats: TelegramDeliveryStats = {
   alertsFailed: 0,
   dispatchAttempts: 0,
   dispatchFailures: 0,
+  outboxEnqueued: 0,
+  outboxEnqueueFailures: 0,
+  outboxHandoffs: 0,
   lastFailureReason: null,
   lastFailureAt: null,
   lastSuccessAt: null,
@@ -110,6 +228,9 @@ export function hydrateTelegramDeliveryStats(): Promise<void> {
           deliveryStats.alertsFailed += parsed.alertsFailed ?? 0;
           deliveryStats.dispatchAttempts += parsed.dispatchAttempts ?? 0;
           deliveryStats.dispatchFailures += parsed.dispatchFailures ?? 0;
+          deliveryStats.outboxEnqueued += parsed.outboxEnqueued ?? 0;
+          deliveryStats.outboxEnqueueFailures += parsed.outboxEnqueueFailures ?? 0;
+          deliveryStats.outboxHandoffs += parsed.outboxHandoffs ?? 0;
           deliveryStats.lastFailureReason = deliveryStats.lastFailureReason ?? parsed.lastFailureReason ?? null;
           deliveryStats.lastFailureAt = deliveryStats.lastFailureAt ?? parsed.lastFailureAt ?? null;
           deliveryStats.lastSuccessAt = deliveryStats.lastSuccessAt ?? parsed.lastSuccessAt ?? null;
@@ -147,6 +268,9 @@ function persistDeliveryStats(force: boolean): void {
     alertsFailed: deliveryStats.alertsFailed,
     dispatchAttempts: deliveryStats.dispatchAttempts,
     dispatchFailures: deliveryStats.dispatchFailures,
+    outboxEnqueued: deliveryStats.outboxEnqueued,
+    outboxEnqueueFailures: deliveryStats.outboxEnqueueFailures,
+    outboxHandoffs: deliveryStats.outboxHandoffs,
     lastFailureReason: deliveryStats.lastFailureReason,
     lastFailureAt: deliveryStats.lastFailureAt,
     lastSuccessAt: deliveryStats.lastSuccessAt,
@@ -167,7 +291,87 @@ export function getTelegramDeliveryStats(): TelegramDeliveryStats {
   return { ...deliveryStats };
 }
 
-const RETRYABLE_STATUS_CODES = new Set([0, 408, 429, 500, 502, 503, 504]);
+/** ITEM 6(c): live outbox state, read DIRECTLY from Supabase via the anon key. */
+export interface TelegramOutboxSummary {
+  pending: number;
+  delivered: number;
+  deliveredOnRetry: number;
+  agedOut: number;
+  oldestPendingAgeSec: number | null;
+  lastError: string | null;
+  windowHours: number;
+}
+
+/**
+ * Reads the durable outbox state for the diagnostics export. DIRECT Supabase
+ * read via the anon key (SELECT is RLS-permitted) — never through the Rork
+ * backend, which is exactly the defect class this item exists to remove.
+ */
+export async function fetchTelegramOutboxSummary(
+  windowHours = 72,
+): Promise<TelegramOutboxSummary | null> {
+  const client = getOutboxClient();
+  if (!client) {
+    return null;
+  }
+
+  const sinceIso = new Date(Date.now() - windowHours * 3_600_000).toISOString();
+  const { data, error } = await client
+    .from(OUTBOX_TABLE)
+    .select("status, delivered_on_retry, created_at, last_error")
+    .gte("created_at", sinceIso)
+    .order("created_at", { ascending: false })
+    .limit(1000);
+
+  if (error) {
+    console.warn(`[Telegram] Outbox summary read failed: ${error.message}`);
+    return null;
+  }
+
+  const rows = (data ?? []) as {
+    status: string;
+    delivered_on_retry: boolean | null;
+    created_at: string;
+    last_error: string | null;
+  }[];
+
+  let pending = 0;
+  let delivered = 0;
+  let deliveredOnRetry = 0;
+  let agedOut = 0;
+  let oldestPendingMs: number | null = null;
+  let lastError: string | null = null;
+
+  for (const row of rows) {
+    if (row.status === "PENDING") {
+      pending += 1;
+      const created = new Date(row.created_at).getTime();
+      if (oldestPendingMs === null || created < oldestPendingMs) {
+        oldestPendingMs = created;
+      }
+    } else if (row.status === "DELIVERED") {
+      delivered += 1;
+      if (row.delivered_on_retry === true) deliveredOnRetry += 1;
+    } else if (row.status === "AGED_OUT") {
+      agedOut += 1;
+    }
+    if (lastError === null && row.last_error) {
+      lastError = row.last_error;
+    }
+  }
+
+  return {
+    pending,
+    delivered,
+    deliveredOnRetry,
+    agedOut,
+    oldestPendingAgeSec:
+      oldestPendingMs === null ? null : Math.round((Date.now() - oldestPendingMs) / 1000),
+    lastError,
+    windowHours,
+  };
+}
+
 const MAX_SEND_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 800;
 
@@ -177,12 +381,10 @@ function delay(ms: number): Promise<void> {
 
 /**
  * Sends an arbitrary custom message to all configured Telegram chats via the
- * backend proxy and awaits the result.
- *
- * Retries a couple of times on transient failures (backend cold start /
- * capacity blips surface as network errors or 5xx/429 statuses) so a
- * one-off hiccup doesn't show up to the user as a hard "failed to send"
- * error when a retry would have gone through fine.
+ * Supabase Edge Function and awaits the result. Used by Settings > "Send test
+ * message". Enrolled in the same durable outbox as real alerts so a failure is
+ * retried rather than lost, and tagged `kind = 'TEST'` so test traffic never
+ * pollutes the alert delivery statistics.
  */
 export async function sendTelegramMessage(text: string): Promise<TelegramSendResult> {
   const trimmed = text.trim();
@@ -193,20 +395,20 @@ export async function sendTelegramMessage(text: string): Promise<TelegramSendRes
   let lastResult: TelegramSendResult = { ok: false, status: 0, error: "Unknown error" };
 
   for (let attempt = 1; attempt <= MAX_SEND_ATTEMPTS; attempt += 1) {
-    try {
-      const result = await trpcClient.telegram.sendMessage.mutate({ text: trimmed });
-      if (result.ok) {
-        return result;
-      }
-      lastResult = result;
-      if (!RETRYABLE_STATUS_CODES.has(result.status)) {
-        return result;
-      }
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[Telegram] sendMessage backend call failed (attempt ${attempt}/${MAX_SEND_ATTEMPTS}):`, message);
-      lastResult = { ok: false, status: 0, error: message };
+    const { status, payload, error } = await invokeDeliveryFunction({
+      text: trimmed,
+      kind: "TEST",
+      ttlMinutes: OUTBOX_TTL_MINUTES,
+    });
+
+    if (status === 200 && payload?.delivered === true) {
+      return { ok: true, status };
     }
+
+    lastResult = { ok: false, status, error: error ?? `delivery function returned ${status}` };
+    console.warn(
+      `[Telegram] Test message delivery failed (attempt ${attempt}/${MAX_SEND_ATTEMPTS}, status ${status}): ${lastResult.error}`,
+    );
 
     if (attempt < MAX_SEND_ATTEMPTS) {
       await delay(RETRY_DELAY_MS * attempt);
@@ -218,7 +420,7 @@ export async function sendTelegramMessage(text: string): Promise<TelegramSendRes
 
 function buildTelegramMessage(signal: TradingSignal, numberOfTPs: 1 | 2 | 3 = 3): string {
   const entryPrice = signal.entryPriceWithSlippage || signal.entryPrice;
-  const dot = signal.type === "BUY" ? "\u{1F7E2}" : "\u{1F534}"; // ✅ Quote syntax mismatch fixed here
+  const dot = signal.type === "BUY" ? "\u{1F7E2}" : "\u{1F534}";
 
   const lines = [
     `${dot} *SIGNAL ALERT* ${dot}`,
@@ -244,11 +446,21 @@ function buildTelegramMessage(signal: TradingSignal, numberOfTPs: 1 | 2 | 3 = 3)
   return lines.join("\n");
 }
 
+/** Exposed for the delivery test so the executor-facing format is asserted, not assumed. */
+export function __buildTelegramMessageForTest(
+  signal: TradingSignal,
+  numberOfTPs: 1 | 2 | 3 = 3,
+): string {
+  return buildTelegramMessage(signal, numberOfTPs);
+}
+
 /**
- * Sends a Telegram alert for a newly generated trading signal via the
- * backend proxy. Fire-and-forget from the caller's perspective — the
- * mutation is dispatched without awaiting so callers keep returning
- * immediately, matching the previous behavior.
+ * Persists the alert to the durable outbox, then dispatches it.
+ *
+ * Order matters: PERSIST FIRST. If the process dies, the network drops, or the
+ * Edge Function is briefly unavailable, the row is already durable and the
+ * pg_cron drain will deliver it (or age it out at the derived 10-minute
+ * horizon). Only an alert that could not be persisted AT ALL is counted as lost.
  */
 export function sendTelegramAlert(signal: TradingSignal, numberOfTPs: 1 | 2 | 3 = 3): void {
   const text = buildTelegramMessage(signal, numberOfTPs);
@@ -260,50 +472,115 @@ export function sendTelegramAlert(signal: TradingSignal, numberOfTPs: 1 | 2 | 3 
     deliveryStats.lastFailureAt = Date.now();
   };
 
-  /** Marks the alert as permanently lost once every retry is exhausted. */
+  /** The alert is persisted but undelivered by this process — the drain owns it now. */
+  const handOffToOutbox = (outboxId: number, reason: string): void => {
+    deliveryStats.outboxHandoffs += 1;
+    deliveryStats.lastFailureReason = reason;
+    deliveryStats.lastFailureAt = Date.now();
+    console.warn(
+      `[Telegram] ALERT PENDING IN OUTBOX for signal ${signalId} (outboxId=${outboxId}) after ${MAX_SEND_ATTEMPTS} inline attempts: ${reason}. The pg_cron drain will retry until delivered or aged out at ${OUTBOX_TTL_MINUTES}m.`,
+    );
+    persistDeliveryStats(true);
+  };
+
+  /** Neither the outbox insert nor the function-side enrollment worked — genuinely lost. */
   const giveUp = (reason: string): void => {
     deliveryStats.alertsFailed += 1;
     deliveryStats.lastFailureReason = reason;
     deliveryStats.lastFailureAt = Date.now();
     console.error(
-      `[Telegram] ALERT LOST for signal ${signalId} after ${MAX_SEND_ATTEMPTS} attempts: ${reason}`,
+      `[Telegram] ALERT LOST for signal ${signalId} — could not persist to the outbox: ${reason}`,
     );
     persistDeliveryStats(true);
   };
 
-  const attemptSend = async (attempt: number): Promise<void> => {
-    deliveryStats.dispatchAttempts += 1;
+  const markDelivered = (): void => {
+    deliveryStats.alertsDelivered += 1;
+    deliveryStats.lastSuccessAt = Date.now();
+    persistDeliveryStats(true);
+    console.log(`[Telegram] Alert DELIVERED for signal ${signalId}`);
+  };
+
+  const enqueue = async (): Promise<number | null> => {
+    const client = getOutboxClient();
+    if (!client) {
+      deliveryStats.outboxEnqueueFailures += 1;
+      return null;
+    }
     try {
-      const result = await trpcClient.telegram.sendAlert.mutate({ text });
-      if (result.ok) {
-        deliveryStats.alertsDelivered += 1;
-        deliveryStats.lastSuccessAt = Date.now();
-        persistDeliveryStats(true);
-        console.log(`[Telegram] Alert dispatched for signal ${signalId}`);
+      const { data, error } = await client
+        .from(OUTBOX_TABLE)
+        .insert({
+          signal_id: signalId,
+          message: text,
+          parse_mode: "Markdown",
+          kind: "ALERT",
+          expires_at: new Date(Date.now() + OUTBOX_TTL_MINUTES * 60_000).toISOString(),
+        })
+        .select("id")
+        .maybeSingle();
+
+      if (error || !data) {
+        deliveryStats.outboxEnqueueFailures += 1;
+        console.warn(
+          `[Telegram] Outbox insert failed for signal ${signalId}: ${error?.message ?? "no row returned"}`,
+        );
+        return null;
+      }
+      deliveryStats.outboxEnqueued += 1;
+      return (data as { id: number }).id;
+    } catch (error: unknown) {
+      deliveryStats.outboxEnqueueFailures += 1;
+      console.warn(
+        `[Telegram] Outbox insert threw for signal ${signalId}:`,
+        error instanceof Error ? error.message : String(error),
+      );
+      return null;
+    }
+  };
+
+  const run = async (): Promise<void> => {
+    const outboxId = await enqueue();
+
+    // The dispatch body: an id when the row is ours, otherwise the raw text so
+    // the function enrolls the alert itself. Either way it becomes durable
+    // before it is ever delivered.
+    const body: Record<string, unknown> =
+      outboxId !== null
+        ? { outboxId }
+        : { text, signalId, parseMode: "Markdown", kind: "ALERT", ttlMinutes: OUTBOX_TTL_MINUTES };
+
+    let lastReason = "unknown";
+    for (let attempt = 1; attempt <= MAX_SEND_ATTEMPTS; attempt += 1) {
+      deliveryStats.dispatchAttempts += 1;
+      const { status, payload, error } = await invokeDeliveryFunction(body);
+
+      if (status === 200 && (payload?.delivered === true || payload?.alreadyDelivered === true)) {
+        markDelivered();
         return;
       }
-      const reason = `backend reported per-chat failures (attempt ${attempt})`;
-      recordFailure(reason);
-      console.warn(`[Telegram] Alert dispatch reported failures for signal ${signalId} (attempt ${attempt}/${MAX_SEND_ATTEMPTS})`);
-      if (attempt < MAX_SEND_ATTEMPTS) {
-        await delay(RETRY_DELAY_MS * attempt);
-        await attemptSend(attempt + 1);
-      } else {
-        giveUp(reason);
+
+      if (payload?.agedOut === true) {
+        lastReason = "aged out before delivery";
+        recordFailure(lastReason);
+        break;
       }
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      recordFailure(message);
+
+      lastReason = error ?? `delivery function returned ${status}`;
+      recordFailure(lastReason);
       console.warn(
-        `[Telegram] Network error dispatching alert for signal ${signalId} (attempt ${attempt}/${MAX_SEND_ATTEMPTS}):`,
-        message,
+        `[Telegram] Alert dispatch failed for signal ${signalId} (attempt ${attempt}/${MAX_SEND_ATTEMPTS}, status ${status}): ${lastReason}`,
       );
+
       if (attempt < MAX_SEND_ATTEMPTS) {
         await delay(RETRY_DELAY_MS * attempt);
-        await attemptSend(attempt + 1);
-      } else {
-        giveUp(message);
       }
+    }
+
+    if (outboxId !== null) {
+      handOffToOutbox(outboxId, lastReason);
+    } else {
+      giveUp(lastReason);
     }
   };
 
@@ -311,6 +588,6 @@ export function sendTelegramAlert(signal: TradingSignal, numberOfTPs: 1 | 2 | 3 
   // already contains this process's increments.
   void hydrateTelegramDeliveryStats().finally(() => {
     deliveryStats.alertsAttempted += 1;
-    void attemptSend(1);
+    void run();
   });
 }

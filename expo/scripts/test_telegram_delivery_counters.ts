@@ -1,18 +1,19 @@
 /**
- * ITEM 5(d) — proves the Telegram alert-delivery counters actually record a
- * silent failure, and that the diagnostics export surfaces it.
+ * ITEM 5(d) + ITEM 6 — proves the Telegram delivery path records what actually
+ * happened, and that the DURABLE OUTBOX changes "lost" into "pending".
  *
- * The defect being guarded: sendTelegramAlert dispatches fire-and-forget
- * (`void attemptSend(1)`) and every failure path reached only console.warn, so
- * an alert that never arrived was invisible in the export — a trade the
- * downstream MT5 bot never received, with no trace anywhere.
+ * The defect being guarded: delivery ran through the Rork backend (503-prone),
+ * the send was fire-and-forget, the error was swallowed, and the retry horizon
+ * was ~2.4s against outages measured in tens of seconds. An alert that never
+ * arrived was invisible — a trade the MT5 bot never received, with no trace.
  *
- * METHOD: the REAL trpcClient is used. Only the HTTP transport (global.fetch)
- * is stubbed, so the whole client stack — superjson transform, the custom retry
- * wrapper in lib/trpc.ts, and the notifier's own retry loop — is exercised
- * exactly as in production. The 503 body is byte-identical to what the live
- * Rork backend returns (empty body, status 503), verified by curl against
- * https://dev-rc77lvmdg2w595ubnei0z.rorktest.dev/api/trpc/telegram.sendAlert.
+ * METHOD: the REAL notifier and the REAL supabase-js client are used. Only the
+ * HTTP transport (global.fetch) is stubbed, so the outbox insert, the Edge
+ * Function invocation, the retry loop and the counter persistence are all
+ * exercised exactly as in production. Nothing is mirrored or reimplemented.
+ *
+ * NOTE: a unit test is necessary but NOT sufficient for Item 6. The live sweep
+ * against the deployed Edge Function is the proof; this file is the regression net.
  */
 
 import { mock } from "bun:test";
@@ -37,25 +38,57 @@ mock.module("@react-native-async-storage/async-storage", () => ({
   default: asyncStorageStub,
 }));
 
+process.env.EXPO_PUBLIC_SUPABASE_URL ??= "https://stub.supabase.co";
+process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ??= "stub-anon-key";
+
 // ── Stub the HTTP transport only ──
-let transportMode: "flap503" | "ok" = "flap503";
-let httpCalls = 0;
+let functionMode: "down503" | "ok" = "down503";
+let outboxMode: "ok" | "fail" = "ok";
+let functionCalls = 0;
+let outboxInserts = 0;
+let lastFunctionBody: Record<string, unknown> | null = null;
 
 const originalFetch = globalThis.fetch;
 globalThis.fetch = (async (input: unknown, init?: unknown): Promise<Response> => {
   const url = typeof input === "string" ? input : String((input as { url?: string })?.url ?? "");
-  if (!url.includes("telegram.sendAlert")) {
-    return originalFetch(input as RequestInfo, init as RequestInit);
+  const options = (init ?? {}) as { body?: string };
+
+  if (url.includes("/rest/v1/telegram_outbox_v1")) {
+    outboxInserts += 1;
+    if (outboxMode === "fail") {
+      return new Response(JSON.stringify({ message: "permission denied (stub)" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    // Shape verified against the LIVE table, not assumed: an anon insert with
+    // `.select("id").maybeSingle()` returns a bare OBJECT (`{"id":1}`), not an
+    // array. The first version of this stub returned an array, which made the
+    // notifier compute `{ outboxId: undefined }` — a TEST-CONSTRUCTION error,
+    // recorded here rather than quietly corrected.
+    return new Response(JSON.stringify({ id: 4242 }), {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    });
   }
-  httpCalls += 1;
-  if (transportMode === "flap503") {
-    // Exactly what the live Rork backend returns during a flap: empty body, 503.
-    return new Response("", { status: 503, statusText: "Service Unavailable" });
+
+  if (url.includes("/functions/v1/send-telegram-alert")) {
+    functionCalls += 1;
+    try {
+      lastFunctionBody = JSON.parse(options.body ?? "{}") as Record<string, unknown>;
+    } catch {
+      lastFunctionBody = null;
+    }
+    if (functionMode === "down503") {
+      return new Response("", { status: 503, statusText: "Service Unavailable" });
+    }
+    return new Response(JSON.stringify({ ok: true, delivered: true, attempts: 1 }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
   }
-  return new Response(
-    JSON.stringify({ result: { data: { json: { ok: true, results: [] } } } }),
-    { status: 200, headers: { "content-type": "application/json" } },
-  );
+
+  return originalFetch(input as RequestInfo, init as RequestInit);
 }) as typeof globalThis.fetch;
 
 async function main(): Promise<void> {
@@ -64,7 +97,7 @@ async function main(): Promise<void> {
   type ExportInput = Parameters<typeof buildDiagnosticsExportText>[0];
 
   const signal = {
-    id: "ITEM5D-TEST-1",
+    id: "ITEM6-TEST-1",
     type: "BUY" as const,
     entryPrice: 4000,
     sl: 3990,
@@ -73,48 +106,72 @@ async function main(): Promise<void> {
     tp3: 4021,
   } as unknown as Parameters<typeof notifier.sendTelegramAlert>[0];
 
-  // ── Case 1: backend flapping 503 for the whole retry horizon -> LOST alert ──
-  transportMode = "flap503";
+  // ── ITEM 6(e): the executor-facing message format must be BYTE-IDENTICAL ──
+  const rendered = notifier.__buildTelegramMessageForTest(signal, 3);
+  const expected = [
+    "\u{1F7E2} *SIGNAL ALERT* \u{1F7E2}",
+    "",
+    "*SYMBOL:* XAUUSD",
+    "",
+    "*ACTION:* BUY",
+    "",
+    "*ENTRY ZONE:* 3998.0 - 4002.0",
+    "",
+    "*STOP LOSS:* 3990.0",
+    "",
+    "*TAKE PROFIT 1:* 4007.0",
+    "*TAKE PROFIT 2:* 4014.0",
+    "*TAKE PROFIT 3:* 4021.0",
+  ].join("\n");
+  check(
+    "ITEM 6(e): message format unchanged — MT5 executor needs zero changes",
+    rendered === expected,
+    rendered === expected ? "byte-identical to the pre-Item-6 format" : JSON.stringify(rendered),
+  );
+
+  // ── Case 1: delivery function down, outbox insert OK -> PENDING, not LOST ──
+  functionMode = "down503";
+  outboxMode = "ok";
   notifier.sendTelegramAlert(signal, 3);
-  // Notifier horizon: 3 attempts with 800ms + 1600ms backoff => ~2.4s.
   await new Promise((r) => setTimeout(r, 6000));
 
-  const afterFail = notifier.getTelegramDeliveryStats();
+  const afterDown = notifier.getTelegramDeliveryStats();
   check(
-    "a 503 flap is counted as a LOST alert",
-    afterFail.alertsFailed === 1,
-    `alertsFailed=${afterFail.alertsFailed} (expected 1)`,
+    "alert is PERSISTED to the outbox before any dispatch",
+    afterDown.outboxEnqueued === 1 && outboxInserts === 1,
+    `outboxEnqueued=${afterDown.outboxEnqueued} outboxInserts=${outboxInserts}`,
   );
   check(
-    "every retry was actually attempted",
-    afterFail.dispatchAttempts === 3,
-    `dispatchAttempts=${afterFail.dispatchAttempts} (expected 3)`,
+    "a persisted-but-undelivered alert is a HANDOFF, not a loss",
+    afterDown.outboxHandoffs === 1 && afterDown.alertsFailed === 0,
+    `outboxHandoffs=${afterDown.outboxHandoffs} alertsFailed=${afterDown.alertsFailed} (expected 1 / 0)`,
   );
   check(
-    "per-attempt failures counted",
-    afterFail.dispatchFailures === 3,
-    `dispatchFailures=${afterFail.dispatchFailures} (expected 3)`,
+    "every inline retry was actually attempted",
+    afterDown.dispatchAttempts === 3 && afterDown.dispatchFailures === 3,
+    `dispatchAttempts=${afterDown.dispatchAttempts} dispatchFailures=${afterDown.dispatchFailures}`,
+  );
+  check(
+    "dispatch references the persisted row by id (so the drain can finish the job)",
+    lastFunctionBody?.outboxId === 4242,
+    `body=${JSON.stringify(lastFunctionBody)}`,
   );
   check(
     "failure reason recorded, not swallowed",
-    (afterFail.lastFailureReason ?? "").length > 0,
-    `lastFailureReason=${JSON.stringify(afterFail.lastFailureReason)}`,
+    (afterDown.lastFailureReason ?? "").length > 0,
+    `lastFailureReason=${JSON.stringify(afterDown.lastFailureReason)}`,
   );
   check(
-    "a failed alert is NOT miscounted as delivered",
-    afterFail.alertsDelivered === 0,
-    `alertsDelivered=${afterFail.alertsDelivered} (expected 0)`,
-  );
-  check(
-    "the 503 actually reached the transport (real client stack exercised)",
-    httpCalls >= 3,
-    `httpCalls=${httpCalls} (expected >= 3)`,
+    "no Rork backend on the delivery path",
+    functionCalls === 3,
+    `Edge Function calls=${functionCalls}, trpc calls=0 (module no longer imports trpcClient)`,
   );
 
-  // ── Case 2: backend healthy -> delivered on the first attempt ──
-  transportMode = "ok";
-  httpCalls = 0;
-  notifier.sendTelegramAlert({ ...signal, id: "ITEM5D-TEST-2" } as typeof signal, 3);
+  // ── Case 2: function healthy -> delivered on the first attempt ──
+  functionMode = "ok";
+  functionCalls = 0;
+  outboxInserts = 0;
+  notifier.sendTelegramAlert({ ...signal, id: "ITEM6-TEST-2" } as typeof signal, 3);
   await new Promise((r) => setTimeout(r, 2500));
 
   const afterOk = notifier.getTelegramDeliveryStats();
@@ -125,31 +182,54 @@ async function main(): Promise<void> {
   );
   check(
     "a success does not retry",
-    httpCalls === 1,
-    `httpCalls=${httpCalls} (expected 1)`,
-  );
-  check(
-    "two alerts attempted in total",
-    afterOk.alertsAttempted === 2,
-    `alertsAttempted=${afterOk.alertsAttempted} (expected 2)`,
+    functionCalls === 1,
+    `functionCalls=${functionCalls} (expected 1)`,
   );
 
-  // ── Case 3: counters are DURABLE, not process-lifetime (the Item 4 lesson) ──
+  // ── Case 3: outbox insert fails AND function fails -> genuinely LOST ──
+  functionMode = "down503";
+  outboxMode = "fail";
+  notifier.sendTelegramAlert({ ...signal, id: "ITEM6-TEST-3" } as typeof signal, 3);
+  await new Promise((r) => setTimeout(r, 6000));
+
+  const afterLost = notifier.getTelegramDeliveryStats();
+  check(
+    "an alert that could not even be PERSISTED is counted as LOST",
+    afterLost.alertsFailed === 1,
+    `alertsFailed=${afterLost.alertsFailed} (expected 1)`,
+  );
+  check(
+    "the failed insert is counted, and the function-side enrollment fallback was used",
+    afterLost.outboxEnqueueFailures === 1 && afterLost.outboxEnqueued === 2,
+    `outboxEnqueueFailures=${afterLost.outboxEnqueueFailures} outboxEnqueued=${afterLost.outboxEnqueued}`,
+  );
+  check(
+    "three alerts attempted in total",
+    afterLost.alertsAttempted === 3,
+    `alertsAttempted=${afterLost.alertsAttempted} (expected 3)`,
+  );
+
+  // ── Case 4: counters are DURABLE, not process-lifetime (the Item 4 lesson) ──
   const persistedRaw = store.get("telegram_delivery_counters_v1") ?? "";
   let persistedOk = false;
   try {
-    const parsed = JSON.parse(persistedRaw) as { alertsFailed?: number; alertsDelivered?: number };
-    persistedOk = parsed.alertsFailed === 1 && parsed.alertsDelivered === 1;
+    const parsed = JSON.parse(persistedRaw) as {
+      alertsFailed?: number;
+      alertsDelivered?: number;
+      outboxHandoffs?: number;
+    };
+    persistedOk =
+      parsed.alertsFailed === 1 && parsed.alertsDelivered === 1 && parsed.outboxHandoffs === 1;
   } catch {
     persistedOk = false;
   }
   check(
-    "counters persisted to durable storage (survive an app reload)",
+    "counters (including the new outbox ones) persist across a reload",
     persistedOk,
-    `persisted=${persistedRaw.slice(0, 200)}`,
+    `persisted=${persistedRaw.slice(0, 240)}`,
   );
 
-  // ── Case 4: the export SURFACES the loss (the whole point of 5d) ──
+  // ── Case 5: the export surfaces both the process view and the durable outbox ──
   const baseInput: ExportInput = {
     signalHistory: [],
     modelWeights: { lastTrainingTime: Date.now(), weights: [["rsi", 0.42]] } as ExportInput["modelWeights"],
@@ -184,6 +264,15 @@ async function main(): Promise<void> {
   const withStats = buildDiagnosticsExportText({
     ...baseInput,
     telegramDeliveryStats: notifier.getTelegramDeliveryStats(),
+    telegramOutbox: {
+      pending: 1,
+      delivered: 7,
+      deliveredOnRetry: 2,
+      agedOut: 1,
+      oldestPendingAgeSec: 45,
+      lastError: "chat -100... status 0: network error",
+      windowHours: 72,
+    },
   });
   check(
     "export renders SECTION 9",
@@ -195,17 +284,26 @@ async function main(): Promise<void> {
     /Alerts LOST \(all retries exhausted\): 1/.test(withStats),
     withStats.split("\n").filter((l) => l.includes("LOST")).join(" | "),
   );
-
-  // Omitting the stats must read as UNKNOWN, never as "zero failures".
-  const withoutStats = buildDiagnosticsExportText(baseInput);
   check(
-    "omitted stats report NOT INSTRUMENTED, not 0 failures",
-    withoutStats.includes("NOT INSTRUMENTED") && !/Alerts LOST[^\n]*: 0/.test(withoutStats),
+    "export shows the durable outbox state (pending / on-retry / aged out)",
+    /PENDING \(awaiting a drain retry\):     1/.test(withStats) &&
+      /of which delivered ON RETRY:        2/.test(withStats) &&
+      /AGED OUT \(never delivered, TTL 10m\):  1/.test(withStats),
+    withStats.split("\n").filter((l) => /PENDING|ON RETRY|AGED OUT/.test(l)).join(" | "),
+  );
+
+  const withoutOutbox = buildDiagnosticsExportText({
+    ...baseInput,
+    telegramDeliveryStats: notifier.getTelegramDeliveryStats(),
+  });
+  check(
+    "a missing outbox summary reports NOT INSTRUMENTED, not an empty outbox",
+    withoutOutbox.includes("NOT INSTRUMENTED - caller supplied no telegramOutbox summary"),
     "absence is not reported as a clean bill of health",
   );
 
   // ── Report ──
-  console.log("\n=== ITEM 5(d) — TELEGRAM DELIVERY COUNTER TESTS ===\n");
+  console.log("\n=== ITEM 5(d) / ITEM 6 — TELEGRAM DELIVERY + OUTBOX TESTS ===\n");
   let passed = 0;
   checks.forEach((c) => {
     console.log(`${c.pass ? "PASS" : "FAIL"}  ${c.name}\n      ${c.detail}`);
@@ -215,7 +313,7 @@ async function main(): Promise<void> {
 
   const start = withStats.indexOf("SECTION 9");
   console.log("--- SECTION 9 as rendered ---");
-  console.log(withStats.slice(start - 71, start + 1400));
+  console.log(withStats.slice(start - 71, start + 2200));
 
   globalThis.fetch = originalFetch;
   if (passed !== checks.length) process.exit(1);

@@ -295,6 +295,50 @@ evaluated by a script rather than by hand.
 
 ---
 
+## 3e. TELEGRAM DELIVERY IS OFF THE RORK BACKEND (ITEM 6, 2026-08-04)
+
+**LIVE.** Delivery path is now:
+`client --(anon key)--> Supabase Edge Function send-telegram-alert --> api.telegram.org`.
+No Rork backend anywhere. `TELEGRAM_BOT_TOKEN` is a Supabase SECRET (set via
+`supabase secrets set`, digest visible in `supabase secrets list`), so it stays
+server-side; the client holds only the public anon key.
+
+**Durable outbox, not more retries:** every alert is first PERSISTED to
+`telegram_outbox_v1` (anon INSERT + SELECT via RLS; UPDATE/DELETE denied and
+empirically verified blocked), then dispatched. Delivery state is mutated only by
+the Edge Function with the service role. A pg_cron job `drain-telegram-outbox`
+(`* * * * *`, pg_net -> Edge Function, same architecture as `refresh-sr-zones`)
+retries PENDING rows until DELIVERED or AGED_OUT, so delivery no longer depends on
+the client being open.
+
+**Aging horizon = 10 minutes, DERIVED not assumed** (`expo/scripts/measureAlertAgingHorizon.ts`,
+40,000 anchor minutes of gold_m1_bars): P(price still touches the +/-$2.0 entry
+band at t0+D) = 100% @1m, 95% @2m, 88% @3m, 76% @5m, 59.7% @10m, 50.4% @15m,
+27.7% @60m. At 10m an alert is about as likely to be unexecutable as executable,
+so delivery stops rather than pushing the executor into a stale trade.
+
+**Live evidence (2026-08-04):** 12/12 availability probes HTTP 200; 3/3 real
+end-to-end sends delivered to BOTH chats (`attempts:1`, chat status 200/200,
+1.37-2.23s); a row inserted via the ANON key with `expires_at` in the past was
+marked `AGED_OUT` by the cron drain inside 60s with no client involvement; anon
+UPDATE and DELETE against that row affected 0 rows.
+
+**Message format is byte-identical** to the pre-Item-6 format and the chat IDs are
+unchanged, so the MT5 executor needs ZERO changes (asserted in
+`test_telegram_delivery_counters.ts`, 17/17).
+
+## 3f. ITEM 7 — THE 413-vs-5 SHADOW DISCREPANCY WAS NOT THE BACKEND (2026-08-04)
+
+The premise was that SECTION 6 reported 5 rows because the summary was fetched
+through the 503-prone backend. MEASURED: `shadow_signals_v1` holds 413 rows, but
+**408 of them are from 2026-03** and only **5 fall inside the section's 30-day
+window** (service-key `count exact` = 413 all-time / 5 last-30d; the anon direct
+read returns exactly 5). SECTION 6's "5" was CORRECT. The read was repointed
+directly at Supabase anyway (DATA-SOURCE RULE + a real latent 1000-row PostgREST
+cap, now paginated), but no under-reporting bug existed. The retired backend route
+was observed returning 200 then 503 within a single script run — the flap is real,
+it just was not the cause here.
+
 ## 4. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
 
 **Finding (from prior session, `expo/scripts/analyzeDriftVetoOnBuy.ts`):** the Phase 2 counter-trend drift veto IS over-firing on BUYs. It dropped **4/50** counter-trend BUYs that had **positive EV (+0.2295R, 75% win rate)**. Three of the four were winners (+1.149R, +0.385R, +0.385R). The veto is costing the long book **$3.8 in net $** and **+0.0036R in EV per signal**. The veto threshold (2.0×ATR) may be too low for BUYs, or the counter-trend classification may be too broad.

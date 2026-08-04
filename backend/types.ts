@@ -177,6 +177,54 @@ export type Database = {
         }
         Relationships: []
       }
+      telegram_outbox_v1: {
+        Row: {
+          attempts: number
+          created_at: string
+          delivered_at: string | null
+          delivered_on_retry: boolean
+          expires_at: string
+          id: number
+          kind: string
+          last_error: string | null
+          message: string
+          next_attempt_at: string
+          parse_mode: string | null
+          signal_id: string | null
+          status: string
+        }
+        Insert: {
+          attempts?: number
+          created_at?: string
+          delivered_at?: string | null
+          delivered_on_retry?: boolean
+          expires_at?: string
+          id?: number
+          kind?: string
+          last_error?: string | null
+          message: string
+          next_attempt_at?: string
+          parse_mode?: string | null
+          signal_id?: string | null
+          status?: string
+        }
+        Update: {
+          attempts?: number
+          created_at?: string
+          delivered_at?: string | null
+          delivered_on_retry?: boolean
+          expires_at?: string
+          id?: number
+          kind?: string
+          last_error?: string | null
+          message?: string
+          next_attempt_at?: string
+          parse_mode?: string | null
+          signal_id?: string | null
+          status?: string
+        }
+        Relationships: []
+      }
       trade_outcomes_v1: {
         Row: {
           confidence: number | null
