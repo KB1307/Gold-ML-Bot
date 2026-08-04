@@ -1,4 +1,5 @@
 import { resolveSignalWithBars } from "../services/signalResolver";
+import { ENTRY_MATURITY_MS } from "../services/signalResolver";
 
 const PIP = 0.1;
 const P = 3250;
@@ -220,6 +221,46 @@ const r15 = resolveSignalWithBars(maturedFlat, maturedFlatBars, { fromScratch: t
 check("S15a", r15.newStatus === "CLOSED", `status=${r15.newStatus}`);
 check("S15b", r15.resolvedAtBarTs !== undefined, `resolvedAtBarTs=${r15.resolvedAtBarTs} (must not be undefined)`);
 check("S15c", r15.resolvedAtBarTs === lastMaturedFlatBarTs, `resolvedAtBarTs=${r15.resolvedAtBarTs} matches last real evaluated bar ${lastMaturedFlatBarTs}`);
+
+// ─── ITEM 1: EXPIRED_MISSED_ENTRY minimum-maturity gate ─────────────────────
+// Reproduces the live defect: a signal only MINUTES old, whose few bars never
+// touched the entry zone, was stamped terminal EXPIRED_MISSED_ENTRY. The bars
+// below sit clear of the entry band (entry 3250, band +/-1.0, extended tol 3.0)
+// and clear of both SL (3243) and TP1 (3253), so entry is genuinely unconfirmed
+// on this evidence -- the ONLY thing that should differ is signal age.
+const noTouchBars = [
+  bar(T0 + 2*oneMin, P-4,   P-6,   P-5),
+  bar(T0 + 3*oneMin, P-4.2, P-6.1, P-5.4),
+  bar(T0 + 4*oneMin, P-4.1, P-5.9, P-5.2),
+  bar(T0 + 5*oneMin, P-4.3, P-6.2, P-5.5),
+];
+
+console.log("S16: 4-minute-old signal with 4 non-touching bars must NOT expire (the reported 7p9apa/6k0m6n defect)");
+const youngMiss: any = { ...base, id: "young-miss", status: "ACTIVE", targetsHit: 0,
+  timestamp: new Date(T0), createdAt: T0 };
+const r16 = resolveSignalWithBars(youngMiss, noTouchBars, { fromScratch: true, evalNowMs: T0 + 5*oneMin });
+check("S16a", r16.newStatus !== "EXPIRED_MISSED_ENTRY", `status=${r16.newStatus} (must NOT be EXPIRED_MISSED_ENTRY at 5m old)`);
+check("S16b", r16.entryConfirmed === false, `entryConfirmed=${r16.entryConfirmed} (entry genuinely never touched -- the gate is about MATURITY, not entry detection)`);
+check("S16c", r16.outcomeResult === null, `outcome=${r16.outcomeResult} (no win/loss may be recorded)`);
+
+console.log("S17: the SAME bars on a signal older than the 2h maturity window DO expire (proves the gate is time-based, not a blanket disable)");
+const maturedMiss: any = { ...base, id: "matured-miss", status: "ACTIVE", targetsHit: 0,
+  timestamp: new Date(T0), createdAt: T0 };
+const r17 = resolveSignalWithBars(maturedMiss, noTouchBars, { fromScratch: true, evalNowMs: T0 + 3*60*oneMin });
+check("S17a", r17.newStatus === "EXPIRED_MISSED_ENTRY", `status=${r17.newStatus} (3h old, identical bars)`);
+check("S17b", r17.outcomeResult === null, `outcome=${r17.outcomeResult}`);
+
+console.log("S18: boundary — exactly at ENTRY_MATURITY_MS expires; one ms short does not");
+const r18a = resolveSignalWithBars({ ...maturedMiss, id: "boundary-at" }, noTouchBars,
+  { fromScratch: true, evalNowMs: T0 + ENTRY_MATURITY_MS });
+const r18b = resolveSignalWithBars({ ...maturedMiss, id: "boundary-1ms" }, noTouchBars,
+  { fromScratch: true, evalNowMs: T0 + ENTRY_MATURITY_MS - 1 });
+check("S18a", r18a.newStatus === "EXPIRED_MISSED_ENTRY", `at maturity: status=${r18a.newStatus}`);
+check("S18b", r18b.newStatus !== "EXPIRED_MISSED_ENTRY", `1ms short: status=${r18b.newStatus}`);
+
+console.log("S19: forward-seeded (live) mode holds the signal's existing status instead of expiring it early");
+const r19 = resolveSignalWithBars({ ...youngMiss, id: "young-fwd" }, noTouchBars, { evalNowMs: T0 + 5*oneMin });
+check("S19a", r19.newStatus === "ACTIVE", `status=${r19.newStatus} (stays ACTIVE, so the active-signal lock is NOT released early)`);
 
 console.log(`\n${pass}/${pass+fail} assertions passed.`);
 if (fail > 0) { console.error(`❌ ${fail} FAILED`); process.exit(1); }

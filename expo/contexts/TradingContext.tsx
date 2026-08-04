@@ -756,6 +756,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         } catch (err) {
           console.warn('⚠️ [BarStore] stats lookup failed:', err);
         }
+        // ITEM 4: restore the SECTION 8 (F6 criterion 4) counters before any
+        // generation attempt can increment them, so a reload no longer zeroes a
+        // full trading day's readiness/stand-aside record.
+        await signalEngine.loadDirectionalLayerCounters();
         const loadedDailyOHLC = await signalEngine.loadPersistedLearningData();
         await loadPersistedData();
         if (loadedDailyOHLC && loadedDailyOHLC.length > 0) {

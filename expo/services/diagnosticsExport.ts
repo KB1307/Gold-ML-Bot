@@ -401,7 +401,10 @@ function formatDirectionalLayerSection(
   lines.push(`Stand-aside rate: ${stats.checks > 0 ? pct.toFixed(2) + "%" : "n/a (no checks yet)"}`);
   lines.push(`Directional layer ready right now: ${stats.readyNow ? "YES" : "NO"}`);
   lines.push("");
-  lines.push("Counters are process-lifetime (reset on app reload), like the shadow-write counters.");
+  lines.push("ITEM 4: these counters are DURABLE. They are persisted to AsyncStorage under");
+  lines.push("  directional_layer_counters_v1 and rehydrated at init, so they survive an app");
+  lines.push("  reload and accumulate across the install lifetime, not one process. A flush");
+  lines.push("  happens at most once per 15s, so a hard kill can lose up to 15s of counts.");
   lines.push("F6 criterion 4 refutation threshold: stand-aside rate > 5% of market-open attempts.");
   return lines.join("\n");
 }

@@ -17,6 +17,30 @@ const PIP = 0.1;
  * lock is scope-invariant: it always protects half the banked first target.
  */
 export const POST_TP1_PROFIT_LOCK_R = 0.35;
+
+/**
+ * ITEM 1 — MINIMUM MATURITY BEFORE A SIGNAL MAY BE CALLED EXPIRED_MISSED_ENTRY.
+ *
+ * The EXPIRED_MISSED_ENTRY branch below previously had NO time condition: it
+ * asked only "did entry get confirmed across whatever bars exist" and, if not,
+ * stamped the terminal status. With `safeBarStart = createdAt + 60s`, a signal
+ * four minutes old has ~4 bars, so the branch fired on evidence that cannot
+ * support the conclusion (observed live: 7p9apa at barCount=4, 6k0m6n at
+ * barCount=5 then 6).
+ *
+ * WHAT TTL DOES THE ENGINE ACTUALLY USE? There is no dedicated entry TTL. The
+ * `timeToLive` field on a signal (signalEngine.ts:7456) is an estimated
+ * time-to-TP3, not an entry-validity window, and nothing reads it. The only
+ * real, already-live construct that defines how long a signal is considered to
+ * be playing out is the 2-hour resolution window, used identically in three
+ * independent places: `catchUpAndEvaluateSignals` (twoHoursInMs),
+ * `auditTerminalSLSignals` (default resolutionWindowMs), and this file's own
+ * sibling `fromScratch` maturity branch. Reusing that one value keeps a single
+ * maturity definition in the resolver instead of inventing a second, and it is
+ * deliberately conservative: it can only DELAY an expiry verdict, never create
+ * one, so it cannot manufacture a win or a loss.
+ */
+export const ENTRY_MATURITY_MS = 2 * 60 * 60 * 1000;
 /** Absolute floor so a degenerate/zero stop distance still locks something real. */
 export const POST_TP1_PROFIT_LOCK_MIN_PIPS = 5;
 /** The lock must always sit strictly inside TP1, never at or beyond it. */
@@ -347,8 +371,21 @@ export function resolveSignalWithBars(
       currentStatus === 'PARTIAL_WIN_SL_HIT' ||
       currentStatus === 'SL_AFTER_BE';
     if (!anyTargetHit) {
-      currentStatus = 'EXPIRED_MISSED_ENTRY';
-      outcomeResult = null;
+      // ITEM 1(b): a signal may only be declared EXPIRED_MISSED_ENTRY once it is
+      // at least as old as ENTRY_MATURITY_MS. Before that it is simply not yet
+      // expired — it keeps whatever non-terminal status it already had, and a
+      // later pass with more bars decides.
+      const expiryEvalNow = opts.evalNowMs ?? Date.now();
+      const ageMs = expiryEvalNow - signalCreatedAtMs;
+      if (ageMs >= ENTRY_MATURITY_MS) {
+        currentStatus = 'EXPIRED_MISSED_ENTRY';
+        outcomeResult = null;
+      } else {
+        console.log(
+          `${prefix} ⏳ Entry not confirmed yet, but signal is only ${(ageMs / 60000).toFixed(1)}m old ` +
+          `(< ${(ENTRY_MATURITY_MS / 60000).toFixed(0)}m maturity, ${evalBars.length} bars) — holding ${currentStatus}, NOT expiring`,
+        );
+      }
     }
   } else if (
     fromScratch &&
@@ -360,7 +397,7 @@ export function resolveSignalWithBars(
     // is what corrects a false ALL_TARGETS_HIT whose price action shows no real
     // target was ever reached.
     const evalNow = opts.evalNowMs ?? Date.now();
-    const matured = evalNow - signalCreatedAtMs >= 2 * 60 * 60 * 1000;
+    const matured = evalNow - signalCreatedAtMs >= ENTRY_MATURITY_MS;
     if (matured) {
       // STEP 3 FIX (confirmed resolvedAtBarTs gap): this "matured, no terminal bar
       // event fired" branch never set resolvedAtBarTs before this fix, so it fell

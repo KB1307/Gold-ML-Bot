@@ -337,6 +337,18 @@ const LEARNING_STORAGE_KEY = 'trade_outcomes_learning';
 const MODEL_WEIGHTS_KEY = 'model_weights_v1';
 const DAILY_OHLC_STORAGE_KEY = 'daily_ohlc_history_v1';
 /**
+ * ITEM 4 — durable home for the SECTION 8 (F6 criterion 4) counters.
+ *
+ * They were process-lifetime, so an app reload zeroed them and a full trading
+ * day exported as "Readiness checks: 0, Stand-asides: 0" — indistinguishable
+ * from "never checked". AsyncStorage is chosen over Supabase deliberately: these
+ * are per-install process telemetry with no cross-device meaning, the write must
+ * never depend on a network path (the Rork backend flaps 503 and is WRITE-only
+ * by rule), and the engine already persists its other durable counters and model
+ * state through this same key space.
+ */
+const DIRECTIONAL_LAYER_COUNTERS_KEY = 'directional_layer_counters_v1';
+/**
  * Step 3 — expanded persisted learning memory.
  * A 24h accelerated real-market replay (scripts/runSignalSimulation.ts)
  * produced 5 signals/day with 2 reaching a terminal WIN/LOSS outcome the same
@@ -1200,6 +1212,10 @@ class SignalGenerationEngine {
    */
   private directionalStandAsideChecks: number = 0;
   private directionalStandAsideCount: number = 0;
+  /** ITEM 4: last epoch ms the counters above were flushed to AsyncStorage. */
+  private directionalCountersFlushedAt: number = 0;
+  /** ITEM 4: set once the persisted counters have been read back in. */
+  private directionalCountersHydrated: boolean = false;
   private signalsGeneratedCount: number = 0;
   private successfulSignalsGenerated: number = 0;
   private recentAttemptTimestamps: number[] = [];
@@ -2214,7 +2230,53 @@ class SignalGenerationEngine {
     const ready = m5 !== null && barRSI(m5, 14) !== null;
     this.directionalStandAsideChecks += 1;
     if (!ready) this.directionalStandAsideCount += 1;
+    this.persistDirectionalLayerCounters();
     return ready;
+  }
+
+  /**
+   * ITEM 4: hydrate the SECTION 8 counters from AsyncStorage so they survive an
+   * app reload. Idempotent; a corrupt or absent record leaves them at whatever
+   * the current process has already counted (never resets a live count down).
+   */
+  public async loadDirectionalLayerCounters(): Promise<void> {
+    if (this.directionalCountersHydrated) return;
+    this.directionalCountersHydrated = true;
+    try {
+      const raw = await AsyncStorage.getItem(DIRECTIONAL_LAYER_COUNTERS_KEY);
+      if (!raw) {
+        console.log('ℹ️ [DirectionalCounters] no persisted counters yet — starting from 0');
+        return;
+      }
+      const parsed = JSON.parse(raw) as { checks?: unknown; standAsides?: unknown };
+      const checks = typeof parsed.checks === 'number' && Number.isFinite(parsed.checks) ? parsed.checks : 0;
+      const standAsides = typeof parsed.standAsides === 'number' && Number.isFinite(parsed.standAsides) ? parsed.standAsides : 0;
+      this.directionalStandAsideChecks = Math.max(this.directionalStandAsideChecks, Math.floor(checks));
+      this.directionalStandAsideCount = Math.max(this.directionalStandAsideCount, Math.floor(standAsides));
+      console.log(`✓ [DirectionalCounters] restored checks=${this.directionalStandAsideChecks} standAsides=${this.directionalStandAsideCount}`);
+    } catch (error: unknown) {
+      console.warn('⚠️ [DirectionalCounters] load failed (non-blocking):', error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
+   * ITEM 4: throttled fire-and-forget flush. Readiness is checked on every
+   * generation attempt, so an unthrottled write would hammer AsyncStorage; a
+   * 15s floor keeps at most one write per 15s while never losing more than that
+   * much of a count on a hard reload.
+   */
+  private persistDirectionalLayerCounters(): void {
+    const now = Date.now();
+    if (now - this.directionalCountersFlushedAt < 15_000) return;
+    this.directionalCountersFlushedAt = now;
+    const payload = JSON.stringify({
+      checks: this.directionalStandAsideChecks,
+      standAsides: this.directionalStandAsideCount,
+      updatedAt: now,
+    });
+    AsyncStorage.setItem(DIRECTIONAL_LAYER_COUNTERS_KEY, payload).catch((error: unknown) => {
+      console.warn('⚠️ [DirectionalCounters] persist failed (non-blocking):', error instanceof Error ? error.message : String(error));
+    });
   }
 
   /**
