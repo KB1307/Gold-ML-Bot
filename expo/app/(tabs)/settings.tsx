@@ -16,7 +16,7 @@ import {
 } from "@/services/telegramNotifier";
 import { signalEngine } from "@/services/signalEngine";
 import { buildDiagnosticsExportText } from "@/services/diagnosticsExport";
-import { getApiOrigin } from "@/lib/trpc";
+import { publishDiagnosticsExport } from "@/services/diagnosticsExportStore";
 import { getRecentDiagnosticEvents } from "@/services/diagnosticEventStore";
 import {
   fetchShadowSellSummary,
@@ -326,19 +326,16 @@ export default function SettingsScreen() {
         telegramOutbox,
       });
 
-      const response = await fetch(`${getApiOrigin()}/api/trpc/diagnostics.saveExport`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ json: { content } }),
-      });
-
-      if (!response.ok) {
-        const text = await response.text().catch(() => '');
-        throw new Error(`Server responded ${response.status}: ${text.slice(0, 200)}`);
+      // ITEM 9: the artifact is published DIRECTLY to Supabase Storage via the
+      // anon key. It used to be POSTed to the 503-prone Rork backend and held in
+      // a process-lifetime in-memory variable — a flap could deny us the whole
+      // evidence base. The URL returned is the IMMUTABLE per-export object, so it
+      // can never serve a previous export from a cache.
+      const published = await publishDiagnosticsExport(content);
+      setExportUrl(published.url);
+      if (!published.latestPointerUpdated) {
+        setExportError('Export published, but the latest.txt pointer could not be updated.');
       }
-
-      const url = `${getApiOrigin()}/api/export/latest`;
-      setExportUrl(url);
     } catch (error) {
       setExportError(error instanceof Error ? error.message : 'Failed to export diagnostics.');
     } finally {

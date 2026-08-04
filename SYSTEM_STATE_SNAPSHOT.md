@@ -339,6 +339,83 @@ cap, now paginated), but no under-reporting bug existed. The retired backend rou
 was observed returning 200 then 503 within a single script run — the flap is real,
 it just was not the cause here.
 
+## 3g. ITEM 9 — THE EXPORT ARTIFACT IS OFF THE RORK BACKEND (2026-08-04)
+
+**LIVE.** `Settings > Export Diagnostics` now publishes DIRECTLY to Supabase Storage
+via the anon key: `expo/services/diagnosticsExportStore.ts` ->
+bucket `diagnostics`. No Rork backend anywhere. The retired path
+(`diagnostics.saveExport` + `GET /api/export/latest`) stored the artifact in a
+PROCESS-LIFETIME in-memory variable on the 503-prone backend — a flap or a
+restart could deny the whole evidence base.
+
+**Design choice — Storage object, not a table row.** A table row must be read
+back through PostgREST, which returns JSON-escaped content; the artifact is
+plain text read by humans and parsed by `forwardMonitor.ts`. A Storage object
+serves the exact bytes as `text/plain`.
+
+**Staleness is eliminated structurally, not by cache headers.** Each export is
+written to an IMMUTABLE `exports/<iso>.txt` object and THAT url is handed to the
+user; `latest.txt` is a mutable pointer for tooling and is the only object anon
+may overwrite (RLS restricts UPDATE to `name = 'latest.txt'`).
+
+**Live evidence (`expo/scripts/probeItem9ExportPath.ts`, 18/18 PASS):** sha256 of
+the published 21,402-byte payload identical on read-back for both the archive and
+`latest.txt`; `content-type: text/plain`; 12/12 reads HTTP 200; a SECOND export
+left the first archive URL byte-identical; anon DELETE removed 0 objects; anon
+upsert over an archive returned `new row violates row-level security policy` and
+the content was preserved; both archives reconciled via the service key.
+
+**Migration:** `004-diagnostics-export-storage` (bucket + 3 policies, additive).
+
+## 3h. ITEM 10 — THE 408 MARCH ROWS ARE SIMULATION OUTPUT (2026-08-04)
+
+**RESOLVED. Not timestamp corruption. Nothing deleted.** The 408 rows dated
+2026-03-18/19 in `shadow_signals_v1` were written by
+`expo/scripts/runSignalSimulation.ts`, whose fake clock starts at
+`SIMULATION_START_MS = Date.UTC(2026, 2, 17, 20, 0, 0)` = **2026-03-17T20:00:00Z**
+(month index 2 = March) and advances in `STEP_MS = 30_000` steps over a synthetic
+~$3010-3055 price band.
+
+Measured (`expo/scripts/investigateItem10Reconcile.ts`, read-only, service key):
+- 408/408 March `created_at` values lie exactly on the 30-second grid anchored to
+  `SIMULATION_START_MS`; 0/5 of the real July rows do.
+- 408/408 offsets are >= the 1.5h warmup; max offset 48.89h (a 48h+ sim run).
+- 408/408 have `signal_id` embedded epoch === `created_at` exactly.
+- 408/408 entries fall in $3023.7-3054 while `gold_m1_bars` holds **0 rows** in
+  March 2026 (coverage starts 2026-06-18, close 4272.17).
+- MARCH ATR p50 = 0.2 vs live p50 = 4.3 — the synthetic series is far smoother.
+- Serial ids: the 5 real July rows are ids 12-16; the March-dated rows are ids
+  **21-428 contiguous**, i.e. INSERTED AFTER them.
+
+**10(b) — `created_at` is SIGNAL-DERIVED, not insert-time.** The column has
+`DEFAULT now()` (migration 001) but the client OVERRIDES it:
+`shadowSignalService.ts:114` writes `created_at: new Date(r.createdAt).toISOString()`.
+So any harness with a faked clock stamps its own time into a durable table.
+This is by design for real signals (the signal's own creation instant is the
+useful key) but it means **the table cannot distinguish live rows from harness
+rows by time**. Filter by `id > 16`, or by price band, until a provenance column
+exists. NO provenance column exists today — reported, not fixed.
+
+## 3i. ITEM 11 — learning.getOutcomes IS BACKEND-DEPENDENT (2026-08-04, NOT FIXED)
+
+`learningStore.hydrateFromRemote()` reads the durable corpus through
+`trpcClient.learning.getOutcomes` — the Rork backend. On failure it catches,
+`console.warn`s and returns `{ available: false, pulled: 0 }`; `signalEngine`
+logs nothing when `available === false` and proceeds with the LOCAL tier only.
+On web the local tier is an in-memory array wiped on every reload, so a 503 at
+startup means the model can train on an EMPTY or truncated corpus with no error
+in the export.
+
+Live probe (`expo/scripts/investigateItem11LearningRead.ts`): the API_BASE_URL
+origin returned 200 12/12 with real outcome rows; the FUNCTIONS_URL origin
+returned `503 no bundle deployed` 12/12. `trade_outcomes_v1` holds **51 rows**
+(WIN 24 / LOSS 27, BUY 23 / SELL 28, schema v2 20 / v1 31) and **anon SELECT can
+read all 51**, so a direct repoint needs no new policy.
+
+**NOT IMPLEMENTED — proposal only.** No telemetry records the corpus size used at
+training, so whether a given `model_weights_v1` came from a truncated corpus is
+UNKNOWABLE from current artifacts (rule 8). Retrain requires >= 20 outcomes.
+
 ## 4. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
 
 **Finding (from prior session, `expo/scripts/analyzeDriftVetoOnBuy.ts`):** the Phase 2 counter-trend drift veto IS over-firing on BUYs. It dropped **4/50** counter-trend BUYs that had **positive EV (+0.2295R, 75% win rate)**. Three of the four were winners (+1.149R, +0.385R, +0.385R). The veto is costing the long book **$3.8 in net $** and **+0.0036R in EV per signal**. The veto threshold (2.0×ATR) may be too low for BUYs, or the counter-trend classification may be too broad.
