@@ -63,6 +63,29 @@ export interface DiagnosticsExportInput {
    * "no data" and "zero stand-asides" are not the same claim.
    */
   directionalLayerStats?: { checks: number; standAsides: number; readyNow: boolean } | null;
+  /**
+   * ITEM 5(d): durable Telegram alert-delivery counters from
+   * `telegramNotifier.getTelegramDeliveryStats()`. The alert dispatch is
+   * fire-and-forget and every failure previously reached only `console.warn`,
+   * so a lost alert -- a trade the downstream MT5 bot never received -- was
+   * completely invisible here. Optional so older callers still compile; the
+   * section then reports NOT INSTRUMENTED rather than 0/0, because "no data"
+   * and "zero failures" are not the same claim.
+   */
+  telegramDeliveryStats?: TelegramDeliveryStatsInput | null;
+}
+
+/** ITEM 5(d): shape of the durable alert-delivery counters for SECTION 9. */
+export interface TelegramDeliveryStatsInput {
+  alertsAttempted: number;
+  alertsDelivered: number;
+  alertsFailed: number;
+  dispatchAttempts: number;
+  dispatchFailures: number;
+  lastFailureReason: string | null;
+  lastFailureAt: number | null;
+  lastSuccessAt: number | null;
+  hydrated: boolean;
 }
 
 /** TIER_0 S/R zone read-path health counters for SECTION 7. */
@@ -409,6 +432,46 @@ function formatDirectionalLayerSection(
   return lines.join("\n");
 }
 
+/**
+ * SECTION 9 -- ITEM 5(d): Telegram alert delivery health.
+ *
+ * Exists because the alert path runs through the Rork backend, which returns
+ * 503 in bursts. A burst longer than the client's retry horizon loses the alert
+ * outright, and nothing used to record that.
+ */
+function formatTelegramDeliverySection(stats: TelegramDeliveryStatsInput | null | undefined): string {
+  const lines = [DRULE, "SECTION 9 - TELEGRAM ALERT DELIVERY (ITEM 5d)", DRULE];
+
+  if (!stats) {
+    lines.push("NOT INSTRUMENTED - caller did not supply telegramDeliveryStats.");
+    lines.push("This is NOT the same as zero failures. Treat as unknown.");
+    return lines.join("\n");
+  }
+
+  const deliveryRate = stats.alertsAttempted > 0
+    ? ((stats.alertsDelivered / stats.alertsAttempted) * 100).toFixed(2) + "%"
+    : "n/a (no alerts attempted yet)";
+
+  lines.push(`Alerts attempted (signals emitted): ${stats.alertsAttempted}`);
+  lines.push(`Alerts DELIVERED to every chat:     ${stats.alertsDelivered}`);
+  lines.push(`Alerts LOST (all retries exhausted): ${stats.alertsFailed}`);
+  lines.push(`Delivery rate: ${deliveryRate}`);
+  lines.push("");
+  lines.push(`Dispatch attempts incl. retries: ${stats.dispatchAttempts}`);
+  lines.push(`Dispatch attempt failures:       ${stats.dispatchFailures}`);
+  lines.push("");
+  lines.push(`Last success: ${stats.lastSuccessAt ? safeDate(stats.lastSuccessAt) : "never"}`);
+  lines.push(`Last failure: ${stats.lastFailureAt ? safeDate(stats.lastFailureAt) : "never"}`);
+  lines.push(`Last failure reason: ${stats.lastFailureReason ?? "n/a"}`);
+  lines.push(`Counters rehydrated from durable storage: ${stats.hydrated ? "YES" : "NO (process-fresh)"}`);
+  lines.push("");
+  lines.push("These counters are DURABLE (AsyncStorage key telegram_delivery_counters_v1)");
+  lines.push("  and survive an app reload, so they accumulate across the install lifetime.");
+  lines.push("REFUTATION THRESHOLD: alertsFailed > 0 means at least one emitted signal was");
+  lines.push("  never delivered to the MT5 bot. Any non-zero value is a lost trade.");
+  return lines.join("\n");
+}
+
 export function buildDiagnosticsExportText(input: DiagnosticsExportInput): string {
   const sections = [
     DRULE,
@@ -435,6 +498,8 @@ export function buildDiagnosticsExportText(input: DiagnosticsExportInput): strin
     formatTier0ZoneSection(input.tier0ZoneHealth),
     "",
     formatDirectionalLayerSection(input.directionalLayerStats),
+    "",
+    formatTelegramDeliverySection(input.telegramDeliveryStats),
     "",
     DRULE,
     "END OF EXPORT",

@@ -9,7 +9,7 @@ import { AccountSettingsCard } from "@/components/AccountSettingsCard";
 import { useState, useEffect, useMemo } from "react";
 import { Stack, useRouter } from "expo-router";
 import { getBackgroundTaskStatus } from "@/services/backgroundTaskService";
-import { sendTelegramMessage } from "@/services/telegramNotifier";
+import { getTelegramDeliveryStats, sendTelegramMessage } from "@/services/telegramNotifier";
 import { signalEngine } from "@/services/signalEngine";
 import { buildDiagnosticsExportText } from "@/services/diagnosticsExport";
 import { getApiOrigin } from "@/lib/trpc";
@@ -311,6 +311,7 @@ export default function SettingsScreen() {
           ...signalEngine.getTier0DegradationStats(),
         },
         directionalLayerStats: signalEngine.getDirectionalLayerStats(),
+        telegramDeliveryStats: getTelegramDeliveryStats(),
       });
 
       const response = await fetch(`${getApiOrigin()}/api/trpc/diagnostics.saveExport`, {
