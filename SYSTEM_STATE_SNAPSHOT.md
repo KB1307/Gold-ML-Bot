@@ -507,6 +507,54 @@ sample SPLITS: record the new commit here, the UTC instant it went live, and
 re-baseline every counter, because the durable counters accumulate across the
 install lifetime and will otherwise mix two code states in one rate.
 
+## 3m. ITEM 14 — CRITERION-4 THRESHOLD CONFLICT RESOLVED (2026-08-05)
+
+**THE THRESHOLD IS 5%, NOT 25%.** Resolved in favour of the artifact, not the prose.
+
+- `5` is the PRE-REGISTERED value and exists in three places in the repo:
+  `expo/scripts/forwardMonitor.ts:75` (`standAsideRatePct: 5` — the value actually
+  evaluated), `expo/services/diagnosticsExport.ts:541` (the printed line), and
+  `expo/services/signalEngine.ts:1135` (the counter's own doc comment).
+- `25%` exists NOWHERE in the repo. `grep -rn "25%"` across forwardMonitor,
+  diagnosticsExport and signalEngine returns only an unrelated ATR band and an
+  unrelated win-rate log. It originated in agent chat prose and was never
+  pre-registered. Adopting it would have been a 5x post-hoc loosening of a live
+  threshold (rule 1). **Any stop-condition table quoting 25% is WRONG.**
+
+**They measure the SAME quantity** — numerator `standAsides`, denominator
+`checks`, both from SECTION 8. No change to the number was needed.
+
+**The denominator label "market-open attempts" is CORRECT — verified, not
+assumed.** `isDirectionalLayerReady()` (`signalEngine.ts:2154`) has exactly ONE
+call site, `generateSignal()` at `signalEngine.ts:6977`, and
+`TradingContext.tsx:2619` returns BEFORE that call when the market is closed
+(`if (!outlook.isMarketOpen) { ... return; }`; generation is at :2668).
+Closed-market minutes therefore enter NEITHER the numerator nor the denominator.
+This mattered: had the counter been unconditional, every weekend check would have
+been a stand-aside (stale bars) and pushed the rate toward 100%, guaranteeing a
+false REFUTATION at any threshold below ~30%.
+
+**TWO STALE LABELS — REPORTED, NOT FIXED (freeze):**
+1. `signalEngine.ts:1137` still says the counters are "Process-lifetime … they
+   monitor the CURRENT process, not history." ITEM 4 made them DURABLE. Comment
+   stale, code right. NOT edited — moving `signalEngine.ts` mid-freeze for a
+   comment is not worth the split.
+2. SECTION 8 prints `Readiness checks this process:` — stale for the same reason.
+   NOT edited **deliberately**: `parseStandAside()` (`forwardMonitor.ts:160`)
+   matches that exact string and every archived export in `diagnostics/exports/`
+   carries it, so renaming it would break the parser against historical
+   artifacts. The section's own ITEM 4 lines already state the counters are
+   durable, so the export self-corrects in place.
+
+**FIXED (read-only script, string-only):** `forwardMonitor.ts` criterion 4 used to
+print "counters are process-lifetime. They reset on app reload … read them from an
+export taken after a long session." That was the dangerous one — it advised the
+OPPOSITE of the truth. Because the counters are cumulative across the install
+lifetime they cannot be windowed after the fact, so the pre-week baseline MUST be
+subtracted from BOTH numbers to judge one code state. Replaced with the corrected
+denominator statement plus the baseline-subtraction requirement.
+`test_forward_monitor_parsers.ts` still 14/14 after the edit.
+
 ## 4. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
 
 **Finding (from prior session, `expo/scripts/analyzeDriftVetoOnBuy.ts`):** the Phase 2 counter-trend drift veto IS over-firing on BUYs. It dropped **4/50** counter-trend BUYs that had **positive EV (+0.2295R, 75% win rate)**. Three of the four were winners (+1.149R, +0.385R, +0.385R). The veto is costing the long book **$3.8 in net $** and **+0.0036R in EV per signal**. The veto threshold (2.0×ATR) may be too low for BUYs, or the counter-trend classification may be too broad.

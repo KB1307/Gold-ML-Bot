@@ -459,8 +459,13 @@ async function main(): Promise<void> {
   say("  Metric   : bar-layer stand-asides as a share of readiness checks (SECTION 8 of the export).");
   say(`  Threshold: REFUTED above ${REFUTE.standAsideRatePct}% — that is a bar-freshness/ingest problem, not a directional one,`);
   say("             and it would silently suppress the whole book.");
-  say("  NOTE: counters are process-lifetime. They reset on app reload, so a short-lived process");
-  say("        under-reports the denominator. Read them from an export taken after a long session.");
+  say("  DENOMINATOR is market-open ONLY: isDirectionalLayerReady() is reached only from");
+  say("        generateSignal(), and TradingContext returns before that call when the market is");
+  say("        closed, so closed-market minutes enter NEITHER the numerator nor the denominator.");
+  say("  ITEM 14 CORRECTION: these counters are DURABLE and CUMULATIVE across the install");
+  say("        lifetime (AsyncStorage, ITEM 4). They do NOT reset on reload, as this script used");
+  say("        to claim. The rate below therefore spans EVERY code state since install; to judge");
+  say("        one code state, subtract the pre-week baseline from BOTH numbers first.");
   {
     say();
     if (!standAside) {
