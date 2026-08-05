@@ -337,11 +337,17 @@ async function main(): Promise<void> {
   const badInOldCross = gate2Bad.filter(r => oldVia.get(r.p.index) === 'levels-cross').length;
   console.log(`    of the ${gate2Bad.length} GATE-2 differences: ${badInOldZone} were old-zone-confirmed, ${badInOldCross} were old-levels-cross-confirmed`);
   console.log(`\n  GATE 2 RESTRICTED to signals the OLD resolver confirmed ON A ZONE TOUCH`);
-  console.log(`  (this is the population the gate wording meant by "the 359 zone-confirmed"):`);
+  console.log(`  (the population the gate wording meant by "the 359 zone-confirmed"):`);
   console.log(`    n=${oldZoneRows.length}, differences=${badInOldZone} -> ${badInOldZone === 0 ? 'IDENTICAL' : 'NOT IDENTICAL'}`);
-  console.log(`  REPORTED, NOT ADOPTED. Swapping the gate's denominator after seeing the result`);
-  console.log(`  would be exactly the post-hoc loosening the rules forbid. The LITERAL gate as`);
-  console.log(`  pre-registered is the one that counts, and it FAILED.`);
+  if (gate2) {
+    console.log(`  This restricted view is REPORTED ONLY and was NOT needed: the LITERAL`);
+    console.log(`  pre-registered GATE 2 above (all ${zoneRows.length} zone-confirmed) PASSED on its own`);
+    console.log(`  terms, so no denominator was swapped and no threshold was loosened.`);
+  } else {
+    console.log(`  REPORTED, NOT ADOPTED. Swapping the gate's denominator after seeing the result`);
+    console.log(`  would be exactly the post-hoc loosening the rules forbid. The LITERAL gate as`);
+    console.log(`  pre-registered is the one that counts, and it FAILED.`);
+  }
   if (oldCrossRows.length > 0) {
     console.log(`\n  THE AFFECTED POPULATION — old confirmation was a levels-cross (n=${oldCrossRows.length}):`);
     for (const r of oldCrossRows.slice(0, 30)) {

@@ -421,6 +421,8 @@ function statusColorFor(status: TradingSignal["status"]): string {
   if (status === "SL_AFTER_BE") return "#FFD700";
   if (status === "TP2_HIT" || status === "TP1_HIT") return "#FFA500";
   if (status === "SL_HIT" || status === "EXPIRED_MISSED_ENTRY") return "#ef4444";
+  // ITEM 21: neutral grey, never red — no position was ever opened.
+  if (status === "NEVER_FILLABLE") return "#94a3b8";
   if (status === "ACTIVE" || status === "PARTIALLY_MANAGED") return "#38bdf8";
   return "#9ca3af";
 }
@@ -437,6 +439,7 @@ function shortStatus(status: TradingSignal["status"], targetsHit: number): strin
     case "SL_AFTER_BE": return "SL After BE";
     case "SL_HIT": return "SL Hit";
     case "EXPIRED_MISSED_ENTRY": return "Missed";
+    case "NEVER_FILLABLE": return "Never Fillable";
     case "CLOSED": return "Closed";
     default: return status;
   }

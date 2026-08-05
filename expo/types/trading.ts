@@ -1,6 +1,18 @@
 export type SignalType = "BUY" | "SELL";
 
-export type SignalStatus = "ACTIVE" | "TP1_HIT" | "TP2_HIT" | "TP3_HIT" | "ALL_TARGETS_HIT" | "SL_HIT" | "SL_AFTER_BE" | "CLOSED" | "PARTIALLY_MANAGED" | "EXPIRED_MISSED_ENTRY" | "PARTIAL_WIN_SL_HIT";
+/**
+ * ITEM 21 — `NEVER_FILLABLE` is a distinct terminal status, NOT a variant of
+ * EXPIRED_MISSED_ENTRY. It means the signal's TP1 or SL was genuinely reached in
+ * the bars, so the old resolver credited it a WIN or a LOSS, but no bar ever
+ * traded through the entry band — the position it was paid for could not have
+ * existed. It is excluded from EV, is never a win and never a loss, and renders
+ * neutral (never red) so it cannot be misread as a stop-out.
+ *
+ * Kept separate from EXPIRED_MISSED_ENTRY on purpose: that status means "levels
+ * were never reached either", which is an ordinary miss. This one means the book
+ * was actively over-credited, which is a defect worth counting on its own.
+ */
+export type SignalStatus = "ACTIVE" | "TP1_HIT" | "TP2_HIT" | "TP3_HIT" | "ALL_TARGETS_HIT" | "SL_HIT" | "SL_AFTER_BE" | "CLOSED" | "PARTIALLY_MANAGED" | "EXPIRED_MISSED_ENTRY" | "NEVER_FILLABLE" | "PARTIAL_WIN_SL_HIT";
 
 export interface FeatureConfidence {
   feature: string;

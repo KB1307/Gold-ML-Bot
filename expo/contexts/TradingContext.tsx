@@ -90,7 +90,7 @@ const CHART_STALL_FAILOVER_MS = 20000;
 const GUIDE_PRICE_STALE_THRESHOLD_MS = 12000;
 const MIN_MEANINGFUL_PRICE_CHANGE = 0.03;
 const HISTORICAL_RECONCILIATION_INTERVAL_MS = 30000;
-const TERMINAL_SIGNAL_STATUSES: SignalStatus[] = ["CLOSED", "SL_HIT", "SL_AFTER_BE", "ALL_TARGETS_HIT", "TP3_HIT", "PARTIAL_WIN_SL_HIT", "EXPIRED_MISSED_ENTRY"];
+const TERMINAL_SIGNAL_STATUSES: SignalStatus[] = ["CLOSED", "SL_HIT", "SL_AFTER_BE", "ALL_TARGETS_HIT", "TP3_HIT", "PARTIAL_WIN_SL_HIT", "EXPIRED_MISSED_ENTRY", "NEVER_FILLABLE"];
 // Item 2 (sweep/force-audit bookkeeping): hoisted to module scope so both the
 // guaranteed daily sweep effect AND runManualAudit share the exact same keys -
 // a manual "Force Audit" must count as satisfying the day's sweep requirement,
@@ -411,6 +411,9 @@ export function getEffectiveExitPrice(signal: TradingSignal): number {
     case "CLOSED":
       return signal.exitPrice ?? signal.entryPrice;
     case "EXPIRED_MISSED_ENTRY":
+    // ITEM 21: never filled, so the only defensible "exit" is the entry itself,
+    // which makes its P/L exactly zero rather than a fabricated win or loss.
+    case "NEVER_FILLABLE":
       return signal.entryPrice;
     default:
       return signal.exitPrice ?? signal.entryPrice;
@@ -436,6 +439,8 @@ const WIN_OUTCOME_STATUSES: SignalStatus[] = ["ALL_TARGETS_HIT", "TP3_HIT", "PAR
 export function classifySignalOutcome(signal: TradingSignal, basePositionSize: number): SignalOutcomeClass {
   if (OPEN_OUTCOME_STATUSES.includes(signal.status)) return "OPEN";
   if (signal.status === "EXPIRED_MISSED_ENTRY") return "NO_TRADE";
+  // ITEM 21: levels were reached but entry never was — no position existed.
+  if (signal.status === "NEVER_FILLABLE") return "NO_TRADE";
   if (WIN_OUTCOME_STATUSES.includes(signal.status)) return "WIN";
   if (signal.status === "SL_HIT") return "LOSS";
   // CLOSED (manual/expired close): decide by realized P/L.
@@ -503,6 +508,7 @@ export function computeSignalPnL(signal: TradingSignal, basePositionSize: number
     "SL_HIT",
     "CLOSED",
     "EXPIRED_MISSED_ENTRY",
+    "NEVER_FILLABLE",
   ];
   if (!terminalStatuses.includes(signal.status)) return 0;
 
@@ -533,7 +539,8 @@ export function computeSignalPnL(signal: TradingSignal, basePositionSize: number
   // position was actually opened. EXPIRED_MISSED_ENTRY never filled, so it pays
   // nothing. This is deliberately applied AFTER the structural clamp: a genuine
   // stop-out costs slightly MORE than a clean -1R, which is what really happens.
-  const positionWasTaken = signal.status !== "EXPIRED_MISSED_ENTRY";
+  // ITEM 21: NEVER_FILLABLE never opened either, so it pays no execution cost.
+  const positionWasTaken = signal.status !== "EXPIRED_MISSED_ENTRY" && signal.status !== "NEVER_FILLABLE";
   const netDirectional = positionWasTaken
     ? clampedDirectional - EXECUTION_COST_PRICE_UNITS
     : clampedDirectional;

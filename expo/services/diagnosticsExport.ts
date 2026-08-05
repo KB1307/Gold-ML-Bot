@@ -546,6 +546,16 @@ function formatDirectionalLayerSection(
   lines.push("  reload and accumulate across the install lifetime, not one process. A flush");
   lines.push("  happens at most once per 15s, so a hard kill can lose up to 15s of counts.");
   lines.push("F6 criterion 4 refutation threshold: stand-aside rate > 5% of market-open attempts.");
+  lines.push("  ITEM 26: 5% is the ONLY threshold governing criterion 4, and it is the same");
+  lines.push("  number forwardMonitor.ts gates on (REFUTE.standAsideRatePct = 5). The 25% that");
+  lines.push("  circulates alongside it is a DIFFERENT quantity from a DIFFERENT criterion:");
+  lines.push("  criterion 2's `atrUnchangedBand` = +/-25%, the band within which realised ATR");
+  lines.push("  counts as unchanged. It is not a stand-aside threshold and must never be read");
+  lines.push("  against the rate above.");
+  lines.push("  NUMERATOR = readiness checks where the bar layer was unavailable or stale.");
+  lines.push("  DENOMINATOR = market-open readiness checks only: isDirectionalLayerReady() is");
+  lines.push("  reached only from generateSignal(), which is not called when the market is");
+  lines.push("  closed, so closed-market minutes enter neither number.");
   return lines.join("\n");
 }
 

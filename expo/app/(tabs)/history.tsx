@@ -34,6 +34,8 @@ const getDisplayTargetsHit = (signal: TradingSignal): number => {
       return 1;
     case "SL_HIT":
     case "EXPIRED_MISSED_ENTRY":
+    // ITEM 21: the levels printed, but no position existed to bank them.
+    case "NEVER_FILLABLE":
       return 0;
     default:
       // ACTIVE / PARTIALLY_MANAGED / CLOSED: trust the live counter.
@@ -41,7 +43,7 @@ const getDisplayTargetsHit = (signal: TradingSignal): number => {
   }
 };
 
-const TERMINAL_PNL_STATUSES: TradingSignal["status"][] = ["ALL_TARGETS_HIT", "TP3_HIT", "PARTIAL_WIN_SL_HIT", "SL_AFTER_BE", "SL_HIT", "CLOSED", "EXPIRED_MISSED_ENTRY"];
+const TERMINAL_PNL_STATUSES: TradingSignal["status"][] = ["ALL_TARGETS_HIT", "TP3_HIT", "PARTIAL_WIN_SL_HIT", "SL_AFTER_BE", "SL_HIT", "CLOSED", "EXPIRED_MISSED_ENTRY", "NEVER_FILLABLE"];
 
 export default function HistoryScreen() {
   const { signalHistory, deleteSignalFromHistory, signalUpdateTrigger, isLoading, settings, runManualAudit } = useTrading();
@@ -138,6 +140,10 @@ export default function HistoryScreen() {
       case "SL_HIT":
       case "EXPIRED_MISSED_ENTRY":
         return "#ef4444";
+      // ITEM 21: deliberately NEUTRAL, never red. A signal that could not be
+      // entered is not a loss, and must never read as one on this screen.
+      case "NEVER_FILLABLE":
+        return "#94a3b8";
       default:
         return "#999";
     }
@@ -225,6 +231,7 @@ export default function HistoryScreen() {
     if (status === "SL_HIT") return "Stop Loss Hit";
     if (status === "SL_AFTER_BE") return "SL After Breakeven • TP1 Banked • No Capital Loss";
     if (status === "EXPIRED_MISSED_ENTRY") return "Missed Entry";
+    if (status === "NEVER_FILLABLE") return "Never Fillable • Levels Reached, Entry Never Available";
     if (status === "PARTIAL_WIN_SL_HIT") return "TP1 + TP2 Banked • Runner Breakeven";
     if (status === "ALL_TARGETS_HIT" || status === "TP3_HIT" || targetsHit === 3) return "All Targets Acquired";
     if (status === "CLOSED") {

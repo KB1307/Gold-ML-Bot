@@ -97,6 +97,25 @@ export function getPostTP1LockPrice(signal: TradingSignal, override?: LadderOver
   return Number(raw.toFixed(1));
 }
 
+/**
+ * ITEM 21 (NARROW / "OPTION 2") — how entry was obtained, for provenance only.
+ *
+ * `'zone'`          the bar actually traded through the entry band (a real fill).
+ * `'levels-cross'`  the confirming bar only reached TP1/SL, never the entry band.
+ *                   This is the pre-existing behaviour and is DELIBERATELY LEFT
+ *                   INTACT: 11 of the 12 such signals measured did touch their
+ *                   entry band on a LATER bar, i.e. they were genuinely fillable,
+ *                   just later than the confirming bar.
+ * `null`            no fill at all (never entered, or never fillable).
+ *
+ * WHY NO `'gap'` MEMBER. The original Item 21 spec asked for gap repricing. It was
+ * built, gated, and REVERTED: deferring confirmation moves the confirmation BAR,
+ * which re-walks the ladder from a different start and rewrote 18 of 378 outcomes
+ * (two LOSS->WIN). Measured genuine gap fills = 0, so repricing bought nothing and
+ * risked everything. This narrow form changes NO confirmation timing at all.
+ */
+export type EntryVia = 'zone' | 'levels-cross' | null;
+
 export interface ResolverOutcome {
   newStatus: SignalStatus;
   targetsHit: number;
@@ -106,6 +125,10 @@ export interface ResolverOutcome {
   breakevenTime?: string;
   entryConfirmed: boolean;
   resolvedAtBarTs?: number;
+  /** ITEM 21: provenance of the fill. Observational — never feeds the ladder. */
+  entryVia?: EntryVia;
+  /** ITEM 21: price the fill actually happened at, or null. NEVER 0. */
+  entryFillPrice?: number | null;
 }
 
 function getProtectedExitPrice(signal: TradingSignal, targetsHit: number, override?: LadderOverride): number {
@@ -162,6 +185,16 @@ export function resolveSignalWithBars(
   let breakevenTime = fromScratch ? undefined : signal.breakevenTime;
   let resolvedAtBarTs: number | undefined;
 
+  /**
+   * ITEM 21: was the entry credited from the STORED status rather than derived
+   * from price action in this call? If so this call has no evidence about
+   * fillability (the bar that filled it may predate the window we were handed),
+   * so the never-fillable reclassification below MUST NOT fire.
+   */
+  const entrySeededFromStoredStatus = !fromScratch && entryConfirmed;
+  let entryVia: EntryVia = entrySeededFromStoredStatus ? 'zone' : null;
+  let entryFillPrice: number | null = entrySeededFromStoredStatus ? signal.entryPrice : null;
+
   const entryMin = Math.min(signal.entryPrice, signal.entryPriceWithSlippage);
   const entryMax = Math.max(signal.entryPrice, signal.entryPriceWithSlippage);
   const ENTRY_TOL = 1.0;
@@ -171,6 +204,26 @@ export function resolveSignalWithBars(
   const slTriggerPrice = isBuy ? signal.sl - slSlack : signal.sl + slSlack;
 
   const postTP1Lock = getPostTP1LockPrice(signal, opts.ladder);
+
+  /**
+   * ITEM 21 (NARROW) — did ANY evaluated bar trade through the entry band?
+   *
+   * Computed as a PRE-PASS over every evaluated bar, deliberately OUTSIDE the
+   * resolution loop, so it cannot influence which bar confirms entry, which bar
+   * resolves the ladder, or when the loop breaks. The resolution loop below is
+   * byte-for-byte the pre-Item-21 logic.
+   *
+   * The widest tolerance the confirmation logic itself accepts
+   * (EXTENDED_ENTRY_TOL) is used, so this can only ever be MORE permissive than
+   * the fill test — it fires only when the band was never reachable AT ALL.
+   *
+   * SYMMETRY (Item 21e): this test is side-agnostic by construction — one
+   * expression for BUY and SELL, no per-direction branch — so it cannot correct
+   * winners more aggressively than losers and cannot manufacture a worse EV.
+   */
+  const everTouchedEntryBand = evalBars.some(
+    b => b.low <= (entryMax + EXTENDED_ENTRY_TOL) && b.high >= (entryMin - EXTENDED_ENTRY_TOL),
+  );
 
   for (const bar of evalBars) {
     if (!entryConfirmed) {
@@ -184,6 +237,10 @@ export function resolveSignalWithBars(
         : bar.high >= (entryMin - EXTENDED_ENTRY_TOL) && bar.low <= (entryMax + EXTENDED_ENTRY_TOL);
       if (touchedZone || crossedTp1 || crossedSl || touchedExtended) {
         entryConfirmed = true;
+        // Provenance ONLY. The condition above is unchanged, so confirmation
+        // timing and the ladder walk are identical to pre-Item-21.
+        entryVia = (touchedZone || touchedExtended) ? 'zone' : 'levels-cross';
+        entryFillPrice = signal.entryPrice;
       } else {
         continue;
       }
@@ -361,7 +418,48 @@ export function resolveSignalWithBars(
     }
   }
 
-  if (!entryConfirmed) {
+  /**
+   * ITEM 21 (NARROW / "OPTION 2") — NEVER_FILLABLE reclassification.
+   *
+   * Fires ONLY when entry was credited by a TP1/SL levels-cross AND no evaluated
+   * bar ever traded through the entry band. Such a signal was booked a result on
+   * a position that could not have existed. It is relabelled and removed from EV;
+   * it is never a win and never a loss.
+   *
+   * Deliberate limits, so this can only touch the measured defect:
+   *  - it changes NO confirmation timing and NO ladder walk (pre-pass only);
+   *  - it never fires on a seeded (stored-status) confirmation, which carries no
+   *    fillability evidence in this call;
+   *  - it requires ENTRY_MATURITY_MS, the same maturity floor Item 1 put on
+   *    EXPIRED_MISSED_ENTRY, so a young signal whose first bar spikes through TP1
+   *    is never stamped with an irreversible terminal early;
+   *  - direction-symmetric, so it cannot manufacture a falsely worse EV.
+   */
+  const fillabilityEvalNow = opts.evalNowMs ?? Date.now();
+  if (
+    entryConfirmed &&
+    !entrySeededFromStoredStatus &&
+    !everTouchedEntryBand &&
+    evalBars.length > 0 &&
+    fillabilityEvalNow - signalCreatedAtMs >= ENTRY_MATURITY_MS
+  ) {
+    console.log(
+      `${prefix} 🚫 NEVER_FILLABLE: levels were reached but no bar of ${evalBars.length} ever traded ` +
+      `the entry band [${(entryMin - EXTENDED_ENTRY_TOL).toFixed(1)}, ${(entryMax + EXTENDED_ENTRY_TOL).toFixed(1)}] ` +
+      `— discarding ${currentStatus}/${currentTargetsHit} (was ${outcomeResult ?? 'null'}), excluded from EV`,
+    );
+    currentStatus = 'NEVER_FILLABLE';
+    currentTargetsHit = 0;
+    exitPrice = signal.entryPrice;
+    outcomeResult = null;
+    breakevenReached = false;
+    breakevenTime = undefined;
+    entryConfirmed = false;
+    entryVia = null;
+    entryFillPrice = null;
+  }
+
+  if (!entryConfirmed && currentStatus !== 'NEVER_FILLABLE') {
     const anyTargetHit =
       currentTargetsHit > 0 ||
       currentStatus === 'TP1_HIT' ||
@@ -438,5 +536,7 @@ export function resolveSignalWithBars(
     breakevenTime,
     entryConfirmed,
     resolvedAtBarTs,
+    entryVia,
+    entryFillPrice,
   };
 }

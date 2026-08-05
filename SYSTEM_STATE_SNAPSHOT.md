@@ -705,6 +705,77 @@ evidence. Not implemented.
 slReachedFromEntry`, but `analyzeSignalWithHistoricalData` output is discarded —
 `signalResolver` is authoritative at `:1743-1750`, so it has no live effect.
 
+**SUPERSEDED IN PART BY §3p:** the "-0.0079R / EV 0.0840R" figure above was measured
+with the REVERTED repricing build, whose 18 outcome rewrites are inside that number.
+The narrow fix's clean figure is **+0.0919R -> +0.0893R, delta -0.0026R**. Item 23's
+OFF column moves with it (wide set OFF EV 0.0893R, ON 0.0808R — still WORSE in R, so
+the Item 23 verdict is unchanged).
+
+## 3p. ITEM 21 NARROW FIX — ALL THREE GATES CLOSED. ITEM 26 RESOLVED. ITEM 27 PRE-FLIGHT. (2026-08-05)
+
+**PARENT COMMIT: `7057160aebd4a824f5974fd3ad1a997f30b91309`.** The new commit hash is
+created by platform sync AFTER this turn; it plus the UTC instant the reloaded client
+first runs it are STILL the missing freeze-point record. Pre-split counters as of the
+12:54Z export: SECTION 8 `3116 checks / 14 stand-asides / 0.45%`; SECTION 9 outbox
+(72h) `DELIVERED 7 / PENDING 0 / AGED_OUT 1`; SECTION 2 `hydrates 11/11, UNAVAILABLE 0`.
+
+### ITEM 21 (narrow / "Option 2") — BUILT AND GATED. GATES 1/2/3 ALL PASS.
+`expo/services/signalResolver.ts`: the confirmation condition is byte-unchanged
+(`touchedZone || crossedTp1 || crossedSl || touchedExtended`), so NO confirmation
+timing and NO ladder walk moved. Added:
+- `everTouchedEntryBand`, computed as a PRE-PASS over evalBars OUTSIDE the resolution
+  loop, at the widest tolerance the confirmation logic itself accepts;
+- `entryVia: 'zone' | 'levels-cross' | null` + `entryFillPrice` (provenance only,
+  never feeds the ladder; `null`, never 0, when there was no fill);
+- terminal `NEVER_FILLABLE` when entry was credited by a levels-cross AND no bar ever
+  traded the band — guarded by: never on a seeded stored-status confirmation,
+  `evalBars > 0`, and `ENTRY_MATURITY_MS` (the same maturity floor Item 1 put on
+  EXPIRED_MISSED_ENTRY, so a young signal is never stamped irreversibly early).
+No `'gap'` member and no gap repricing: measured genuine gaps = 0, and the repricing
+build rewrote 18 of 378 outcomes, so it stays REVERTED.
+
+Evidence (`bun scripts/verifyItems21to24.ts`, BOTH sides the REAL resolver):
+```
+GATE 1  over-credited -> NEVER_FILLABLE      : PASS
+GATE 2  all 359 zone-confirmed BIT-IDENTICAL : PASS
+GATE 3  nothing NOT-ENTERED -> ENTERED       : PASS
+canonical EV: 0.0919R n=379 -> 0.0893R n=378   delta -0.0026R
+only reclassified signal: [116] BUY 3977.3 ALL_TARGETS_HIT -> NEVER_FILLABLE
+the other 19 old levels-cross confirmations: outcome UNCHANGED
+```
+The restricted-denominator variant is still printed but was NOT needed and NOT
+adopted — the literal pre-registered gate passed on its own terms.
+`NEVER_FILLABLE` threaded through `types/trading.ts`, `TradingContext.tsx` (terminal
+list, exit=entry, NO_TRADE, no execution cost), `history.tsx` (neutral `#94a3b8`,
+never red), `telemetry.tsx`.
+
+### ITEM 26 — THERE IS NO THRESHOLD CONFLICT. BOTH SOURCES ARE 5%.
+- `expo/services/diagnosticsExport.ts:548` prints `> 5%`.
+- `expo/scripts/forwardMonitor.ts:75` gates on `REFUTE.standAsideRatePct = 5`.
+Same quantity, same numerator (readiness checks where the bar layer was unavailable
+or stale), same market-open-only denominator. The 25% is a DIFFERENT criterion:
+`forwardMonitor.ts:71` `atrUnchangedBand = 0.25` — criterion 2's +/-25% realised-ATR
+band. The export now states this explicitly (string-only, no logic change).
+
+### ITEM 27 — PRE-FLIGHT: GO, with two OBSERVABILITY gaps named
+PASS: Telegram Edge Function live probe (HTTP 400 from the function's OWN validator,
+anon key, no Rork backend in the path) + `telegram_outbox_v1` newest row DELIVERED
+2026-08-05T17:29:22Z attempts=1; Storage export byte-identical (455,949 B,
+`exports/2026-08-05T12-54-27-645Z.txt` === `latest.txt`, anon Storage REST only);
+SECTION 2 corpus counters durable (11/11 hydrates, 0 UNAVAILABLE, 51 rows / 1 page);
+`gold_m1_bars` newest bar 1.7 min old (external Python sync IS running);
+`sr_zones_v1` 9.7 min; SELLs live.
+FLAG: outbox AGED_OUT = 1 in 72h. SECTION 9's own refutation threshold says
+agedOut > 0 means one emitted signal never reached the executor.
+VACUOUS — cannot be proven from outside the client, and both need the user to act:
+1. Item 17's entry-anchor counters exist (`getEntryAnchorGateStats()`) but are
+   rendered NOWHERE, including the export. Mid-week they are observable ONLY via the
+   `[EntryAnchorStale]` / `[GeometryUnwinnable]` runtime log tags. FIX = pass them
+   into the export the way SECTION 8 does.
+2. The export does not echo `allowShortSignals`, so its live value is INFERRED from
+   behaviour (newest suppressed shadow SELL is 2026-07-31; SELLs kept emitting after
+   it, e.g. [5] SELL 2026-08-04T15:08Z), not read.
+
 ## 4. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
 
 **Finding (from prior session, `expo/scripts/analyzeDriftVetoOnBuy.ts`):** the Phase 2 counter-trend drift veto IS over-firing on BUYs. It dropped **4/50** counter-trend BUYs that had **positive EV (+0.2295R, 75% win rate)**. Three of the four were winners (+1.149R, +0.385R, +0.385R). The veto is costing the long book **$3.8 in net $** and **+0.0036R in EV per signal**. The veto threshold (2.0×ATR) may be too low for BUYs, or the counter-trend classification may be too broad.
