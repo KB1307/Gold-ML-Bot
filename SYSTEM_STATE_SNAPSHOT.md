@@ -484,6 +484,29 @@ Measured by `expo/scripts/investigateItem13ProvenanceBackfill.ts` (read-only):
 
 **NOT BUILT. No migration run.**
 
+## 3l. CODE FREEZE FOR THE FORWARD MEASUREMENT WEEK (2026-08-05)
+
+**FREEZE POINT: `d7fc9dfbd0ded6c948e97255831afa526299f5c7` (`d7fc9df`), branch `main`,
+2026-08-04 20:53:59 +0000.** At freeze, `git status` showed **0 dirty files outside
+`.rork/history/`** (agent transcripts, not app code), so the whole app is
+attributable to that one commit. This section itself is a doc-only commit made
+after the freeze; it changes no runtime code and does not move the freeze point.
+
+**QUEUED, DELIBERATELY NOT BUILT during the week:**
+- **ITEM 13** (provenance `source` column). Specced + backfill rule verified
+  413/413. Risk is DORMANT: `runSignalSimulation.ts` is a manual script that
+  cannot run on its own. A migration on two production tables during the
+  measurement week adds change-risk to the exact period being measured.
+- **ITEM 8** (rejection-reason telemetry). Criterion 4 already has a real
+  denominator from the durable SECTION 8 counters, so Item 8 is not required to
+  evaluate this week.
+
+**AUTHORISED work during the week:** diagnosis of exports only, plus any
+STOP-AND-FIX condition actually firing. If a fix lands mid-week the forward
+sample SPLITS: record the new commit here, the UTC instant it went live, and
+re-baseline every counter, because the durable counters accumulate across the
+install lifetime and will otherwise mix two code states in one rate.
+
 ## 4. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
 
 **Finding (from prior session, `expo/scripts/analyzeDriftVetoOnBuy.ts`):** the Phase 2 counter-trend drift veto IS over-firing on BUYs. It dropped **4/50** counter-trend BUYs that had **positive EV (+0.2295R, 75% win rate)**. Three of the four were winners (+1.149R, +0.385R, +0.385R). The veto is costing the long book **$3.8 in net $** and **+0.0036R in EV per signal**. The veto threshold (2.0×ATR) may be too low for BUYs, or the counter-trend classification may be too broad.
