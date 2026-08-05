@@ -555,6 +555,90 @@ subtracted from BOTH numbers to judge one code state. Replaced with the correcte
 denominator statement plus the baseline-subtraction requirement.
 `test_forward_monitor_parsers.ts` still 14/14 after the edit.
 
+## 3n. ITEMS 17-19 — FREEZE BROKEN DELIBERATELY (2026-08-05)
+
+**PARENT COMMIT (pre-change): `0c91885d1f8a69f3891712f6ce27707e584167a7`,
+`main`, 2026-08-05 07:46:26 +0000.** The new commit hash is created by the
+platform sync AFTER this turn, so it is NOT yet knowable here and must be
+recorded, together with the UTC instant the reloaded client first ran it, plus
+the pre-split counter values. **The forward sample SPLITS at that instant.**
+
+**RUNTIME CODE CHANGED — exactly one file, `expo/services/signalEngine.ts`:**
+- `lastRealPriceObservedAt` / `lastRealPriceSource` (new module vars), written
+  ONLY by `markPriceSuccess` (real fetch) and `setExternalPrice` (real tick).
+  Deliberately NOT written by the cache/stale replay branches.
+- `ENTRY_ANCHOR_MAX_AGE_MS = 60s`, `REPLAYED_PRICE_SOURCE_MARKERS`.
+- ITEM 17b guard in `generateSignal()`, BEFORE `calculateMarketFeatures()`.
+- ITEM 17c unconditional geometry gate, BEFORE the returned signal literal.
+- 4 counters + `getEntryAnchorGateStats()`.
+No resolver, scoring, gate, telegram or write path was touched. Items 13, 8 and
+all of 19 remain UNBUILT.
+
+### 17a — the entry anchor had NO freshness check (the real defect)
+`signalEngine.ts:7338 const entryPrice = this.currentPrice`. The only freshness
+notion was `now - lastFetchTime` (`:6955`), and **`updateCurrentPrice()` resets
+`lastFetchTime = Date.now()` at `:1555` even when `fetchLiveGoldPrice()` REPLAYED
+a cached quote** (`:1064` up to 600s, `:1071` unbounded age). The age clock is
+reset on a stale quote, so an arbitrarily old anchor reports as fresh. Bar layer
+had `BAR_MAX_AGE_M1_MS = 3min`; the anchor had nothing.
+
+### 17d/17e — measured on the LIVE export + LIVE gold_m1_bars (anon direct)
+`expo/scripts/investigateItems17to19.ts`, 392 signals, 379 with a bar at their
+generation minute, 38053 bars.
+- Anchor-vs-Vantage divergence: p50 $0.61, p90 $2.13, p95 $2.73, p99 $5.32,
+  max $11.68. Signal [4] at $7.95 is p99.7 — a genuine tail event, not basis.
+- **17c would have rejected 11 of 379 (2.90%)** — already at/past TP1 at their
+  own generation minute. Stored outcomes: **7 ALL_TARGETS_HIT**, 2
+  PARTIAL_WIN_SL_HIT, 1 SL_HIT, 1 SL_AFTER_BE. So the gate costs mostly
+  *recorded wins* — wins that were unwinnable as specified (see 18).
+- Anchor AGE is NOT INSTRUMENTED historically, so 17b's rejection count is
+  NOT retrospectively measurable (rule 8). Divergence is a different quantity
+  and was not substituted for it.
+
+### 18 — THE RESOLVER CREDITS UNTAKEABLE SIGNALS (confirmed, MATERIAL)
+`signalResolver.ts:180` `const crossedTp1 = isBuy ? bar.high >= signal.tp1 : ...`
+OR-ed into the entry confirmation at `:185`.
+- **12 of 379 signals were confirmed ONLY via `crossedTp1`, never touching the
+  entry zone. ALL 12 are stored ALL_TARGETS_HIT, mean +1.4000R.**
+- EV including them **+0.0778R** (n=379); excluding them **+0.0346R** (n=367).
+  **Removing them costs -0.0432R — 56% of the measured EV comes from 12 trades
+  that could never have been entered as specified.**
+- Baseline reconciliation: re-resolved EV +0.0778R vs canonical +0.0889R. The
+  gap is re-resolution method, not the same number; both are reported.
+
+### 19a — the multiplier is NOT pinned; the export mixes ENGINE GENERATIONS
+Reconciled (rule 5): `ATR: x)` matches all 392 rows spanning 0.40..124.20 =
+several code generations. Only the **39** rows printing the current
+`SL <p>p (<m>x ATR) | Multiplier: <x>x` triple came from today's geometry code.
+Within those 39: multiplier **1.00x x34**, 1.04x x2, 1.10x/1.01x/1.03x x1;
+SL **80p x28**, 50p x5, 83p x2, 88p/81p/58p/66p x1; ATR 0.90..6.60.
+**Cause: unit mismatch.** `max(1.0, min(1.6, 0.7 + atr*0.06))` exceeds 1.0 only
+when ATR > 5.00 **price-$** (= 50 pips). Only 5 of 39 signals qualify. The
+formula was calibrated for ATR in PIPS but `features.atr` is in price-$, so the
+multiplier sits on its 1.0 FLOOR. It is computed and effectively discarded, not
+disabled. The 1.2xATR noise floor is p50 19.2p / max 79.2p, never above 80p, so
+`max(configured, floor)` = the manual SL in 39/39.
+
+### 19e — ON mode as specified is WORSE. Do not adopt on this evidence.
+n=39 (POWER: underpowered, stated before the result). ON-mode SL p50 33.6p vs
+80p actual. **OFF re-resolved EV +0.0064R / 48.7% WR; ON -0.3372R / 33.3% WR.**
+Per-signal $ at 1 unit: OFF +0.263, ON -0.671. Tighter ATR stops sit INSIDE the
+noise floor — the exact defect the 1.2xATR floor exists to prevent.
+
+### 19b/19c — GATE COULD NOT CLOSE. NOT IMPLEMENTED. See report.
+19b ("OFF: manual tp1/tp2/tp3Pips honoured literally") and 19d ("do NOT change
+default behaviour in this pass") are mutually exclusive: OFF **is** the default,
+and `DEFAULT_SETTINGS` is tp1 49 / tp2 74 / tp3 98 / sl 70, so honouring them
+literally moves TP1 from 0.70R (56p) to 49p = 0.61R on an 80p stop, reinstating
+the sub-0.70R TP1 that B3 removed after measuring it forced a 53.9% breakeven
+win rate. That is an unmeasured geometry change to the default path during the
+measurement week. STOPPED per the standing rule rather than guessing.
+
+### Evidence commands
+`bun expo/scripts/investigateItems17to19.ts <export.txt>`
+`bun expo/scripts/test_item17_entry_anchor_guards.ts` -> 13/13
+`runChecks(expo)` -> clean.
+
 ## 4. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
 
 **Finding (from prior session, `expo/scripts/analyzeDriftVetoOnBuy.ts`):** the Phase 2 counter-trend drift veto IS over-firing on BUYs. It dropped **4/50** counter-trend BUYs that had **positive EV (+0.2295R, 75% win rate)**. Three of the four were winners (+1.149R, +0.385R, +0.385R). The veto is costing the long book **$3.8 in net $** and **+0.0036R in EV per signal**. The veto threshold (2.0×ATR) may be too low for BUYs, or the counter-trend classification may be too broad.

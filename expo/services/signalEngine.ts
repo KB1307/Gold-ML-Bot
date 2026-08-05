@@ -248,6 +248,19 @@ interface MarketFeatures {
 const CACHE_DURATION = 7000;
 let cachedGoldPrice: number | null = null;
 let lastFetchTime: number = 0;
+/**
+ * ITEM 17b — the instant a price was genuinely OBSERVED from a live source.
+ *
+ * This is deliberately NOT `lastFetchTime`. `lastFetchTime` is reset to now()
+ * by `updateCurrentPrice()` even when `fetchLiveGoldPrice()` returned a CACHED
+ * or STALE value (see the cache-replay branches in fetchLiveGoldPrice), so
+ * `now - lastFetchTime` reports a fresh anchor while the underlying quote is
+ * arbitrarily old. That is the mechanism behind the 02:48Z staleness event.
+ * This variable is written ONLY where a real new quote arrives.
+ */
+let lastRealPriceObservedAt: number = 0;
+/** Source tag of the last genuinely observed (non-replayed) price. */
+let lastRealPriceSource: string = 'none';
 let lastPriceSource: string = 'connecting...';
 let lastKnownGoodPrice: number = 0;
 let _consecutiveFailures: number = 0;
@@ -427,6 +440,27 @@ const SCALPER_TP3_STRETCH_R = 1.5;
 const SCALPER_TP3_STRETCH_MAX_R = 1.6;
 /** Stops must clear the real noise floor: never tighter than 1.2 x ATR. */
 const MIN_SL_ATR_MULTIPLE = 1.2;
+/**
+ * ITEM 17b — maximum age of the ENTRY ANCHOR at signal generation.
+ *
+ * Threshold derivation (age itself is NOT INSTRUMENTED historically, so it
+ * could not be measured retrospectively — rule 8 applies and this is decided
+ * on first principles, bounded by what WAS measurable):
+ *   - EXTERNAL_PRICE_MAX_AGE_MS (15s) is the pre-existing, pre-registered
+ *     definition of "fresh" for this exact anchor, so the cap must not be
+ *     tighter than that or healthy operation would be rejected.
+ *   - 60s is 4x that window, so it cannot fire on a healthy feed, and is ~5x
+ *     TIGHTER than the >=5 minute staleness measured on the 02:48Z event.
+ *   - Measured consequence at the tail: anchor-vs-Vantage divergence reached
+ *     p99 $5.32 / max $11.68 over 379 signals, and TP1 sits only ~$4-5.6 away,
+ *     so a tail-stale anchor is the entire first target wide.
+ * The cap is the OUTER bound; the source-quality check below is what actually
+ * catches the measured failure, since the cache-replay path can return a quote
+ * of unbounded age while resetting the age clock.
+ */
+const ENTRY_ANCHOR_MAX_AGE_MS = 60 * 1000;
+/** Source tags that mean "this quote was replayed, not observed" (ITEM 17b). */
+const REPLAYED_PRICE_SOURCE_MARKERS = ['cache', 'stale', 'last-known'] as const;
 const VOL_REGIME_ATR_LOW_MAX = 2.5;
 const VOL_REGIME_ATR_HIGH_MIN = 6.0;
 const COUNTER_TREND_CONFIDENCE_PREMIUM = 0.10;
@@ -769,6 +803,9 @@ async function fetchIntermarketData(): Promise<IntermarketData> {
 function markPriceSuccess(price: number, source: string, now: number): { price: number; source: string } {
   cachedGoldPrice = price;
   lastFetchTime = now;
+  // ITEM 17b: a real quote actually arrived on this path.
+  lastRealPriceObservedAt = now;
+  lastRealPriceSource = source;
   lastPriceSource = source;
   lastKnownGoodPrice = price;
   _consecutiveFailures = 0;
@@ -1249,6 +1286,16 @@ class SignalGenerationEngine {
   private static readonly BAR_MAX_AGE_M1_MS = 3 * 60 * 1000;
   private static readonly BAR_MAX_AGE_M5_MS = 15 * 60 * 1000;
   private static readonly BAR_MAX_AGE_M15_MS = 45 * 60 * 1000;
+  /**
+   * ITEM 17b/17c counters. A guard that silently emits nothing would reduce
+   * measured signal volume with NO denominator, which is exactly how
+   * "NOT INSTRUMENTED" gets misread as "zero". Both a numerator and a
+   * denominator are therefore recorded for each gate.
+   */
+  private entryAnchorChecks: number = 0;
+  private entryAnchorStaleRejections: number = 0;
+  private geometrySanityChecks: number = 0;
+  private geometryUnwinnableRejections: number = 0;
   private quasimodolLevels: QuasimodolLevel[] = [];
   private sessionSweeps: SessionSweep[] = [];
   /**
@@ -2352,6 +2399,29 @@ class SignalGenerationEngine {
   
   getPriceSource(): string {
     return lastPriceSource;
+  }
+
+  /**
+   * ITEM 17b/17c telemetry. Numerator AND denominator for both new gates, so a
+   * volume drop can be attributed instead of guessed. `null` is never returned
+   * as 0 — a zero check count means the gate has not run, not that it passed.
+   */
+  getEntryAnchorGateStats(): {
+    anchorChecks: number;
+    anchorStaleRejections: number;
+    geometryChecks: number;
+    geometryUnwinnableRejections: number;
+    anchorAgeMsNow: number | null;
+    lastRealPriceSource: string;
+  } {
+    return {
+      anchorChecks: this.entryAnchorChecks,
+      anchorStaleRejections: this.entryAnchorStaleRejections,
+      geometryChecks: this.geometrySanityChecks,
+      geometryUnwinnableRejections: this.geometryUnwinnableRejections,
+      anchorAgeMsNow: lastRealPriceObservedAt > 0 ? Date.now() - lastRealPriceObservedAt : null,
+      lastRealPriceSource,
+    };
   }
 
   pushExternalPrice(price: number, source: string): void {
@@ -6965,6 +7035,33 @@ class SignalGenerationEngine {
       return null;
     }
     
+    // ── ITEM 17b: ENTRY-ANCHOR FRESHNESS GUARD ──────────────────────────
+    // signal.entryPrice is stamped from this.currentPrice. Before this guard
+    // the only freshness notion on that anchor was `now - lastFetchTime`, and
+    // lastFetchTime is reset by updateCurrentPrice() even when
+    // fetchLiveGoldPrice() REPLAYED a cached/stale quote — so an arbitrarily
+    // old anchor reported as fresh. The bar layer has BAR_MAX_AGE_M1_MS
+    // (3 min); the entry anchor had no equivalent at all. It does now.
+    //
+    // On breach: emit NOTHING. No bar close and no second venue is
+    // substituted, because either would price the entry off a different
+    // instrument than the one the signal claims to trade.
+    this.entryAnchorChecks += 1;
+    const anchorAgeMs = lastRealPriceObservedAt > 0
+      ? Date.now() - lastRealPriceObservedAt
+      : Number.POSITIVE_INFINITY;
+    const anchorSourceLower = lastPriceSource.toLowerCase();
+    const anchorIsReplayed = REPLAYED_PRICE_SOURCE_MARKERS.some(m => anchorSourceLower.includes(m));
+    if (anchorAgeMs > ENTRY_ANCHOR_MAX_AGE_MS || anchorIsReplayed) {
+      this.entryAnchorStaleRejections += 1;
+      const ageLabel = Number.isFinite(anchorAgeMs) ? `${(anchorAgeMs / 1000).toFixed(1)}s` : 'never observed';
+      console.log('❌ REJECTED [EntryAnchorStale]: entry anchor is not a live observation — emitting nothing');
+      console.log(`   [EntryAnchorStale] age=${ageLabel} (cap ${(ENTRY_ANCHOR_MAX_AGE_MS / 1000).toFixed(0)}s) | replayed=${anchorIsReplayed} | source="${lastPriceSource}" | lastRealSource="${lastRealPriceSource}"`);
+      console.log(`   [EntryAnchorStale] 💡 A stale anchor prices the entry away from the market, so the first target can already be behind price. No bar close or second venue is substituted, by design.`);
+      console.log(`${'='.repeat(80)}\n`);
+      return null;
+    }
+
     const features = await this.calculateMarketFeatures();
 
     // ITEM F1 — STAND ASIDE RATHER THAN SERVE STALE/ABSENT STRUCTURE.
@@ -7588,6 +7685,29 @@ class SignalGenerationEngine {
     const tier0AdjustedConfidence = parseFloat(
       (analysis.confidence * tier0Degradation.confidenceMultiplier).toFixed(4),
     );
+
+    // ── ITEM 17c: UNCONDITIONAL GEOMETRY SANITY GATE ────────────────────
+    // A signal whose FIRST target is already behind the market is unwinnable
+    // as specified: it can only be filled worse than its own TP1, so the
+    // designed R:R cannot be realised no matter what price does next.
+    // Checked against the freshest live price at EMISSION time (ticks do
+    // arrive during the awaits above), NOT against a bar close.
+    //
+    // Deliberately unconditional — no setting disables it, because there is no
+    // configuration under which emitting an unwinnable ladder is correct.
+    this.geometrySanityChecks += 1;
+    const emissionPrice = this.currentPrice;
+    const tp1AlreadyBehind = analysis.signalType === 'BUY'
+      ? emissionPrice >= tp1
+      : emissionPrice <= tp1;
+    if (tp1AlreadyBehind) {
+      this.geometryUnwinnableRejections += 1;
+      console.log('❌ REJECTED [GeometryUnwinnable]: TP1 is already behind the live price — emitting nothing');
+      console.log(`   [GeometryUnwinnable] ${analysis.signalType} anchor=${entryPrice.toFixed(2)} livePrice=${emissionPrice.toFixed(2)} TP1=${tp1.toFixed(2)} SL=${sl.toFixed(2)} | drift since anchor $${(emissionPrice - entryPrice).toFixed(2)}`);
+      console.log(`   [GeometryUnwinnable] 💡 Measured on 379 historical signals: 11 (2.90%) were already at/past TP1 at their own generation minute, and 7 of those were nonetheless stored ALL_TARGETS_HIT.`);
+      console.log(`${'='.repeat(80)}\n`);
+      return null;
+    }
 
     return {
       id: `signal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -8774,6 +8894,9 @@ export function setExternalPrice(price: number, source: string): void {
   lastPriceSource = source;
   lastKnownGoodPrice = price;
   _consecutiveFailures = 0;
+  // ITEM 17b: chart-bridge / WebSocket ticks are genuine live observations.
+  lastRealPriceObservedAt = Date.now();
+  lastRealPriceSource = source;
 
   signalEngine.pushExternalPrice(price, source);
 }
