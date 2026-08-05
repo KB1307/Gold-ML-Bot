@@ -531,12 +531,12 @@ export default function SettingsScreen() {
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
                 <Target size={20} color="#22c55e" />
-                <Text style={styles.sectionTitle}>Take Profit Levels (Pips)</Text>
+                <Text style={styles.sectionTitle}>Take Profit Levels (Engine-Derived)</Text>
               </View>
               
               <View style={styles.inputRow}>
                 <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>TP1</Text>
+                  <Text style={styles.inputLabel}>TP1 (0.70R)</Text>
                   <TextInput
                     style={styles.input}
                     value={tp1Pips}
@@ -547,7 +547,7 @@ export default function SettingsScreen() {
                   />
                 </View>
                 <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>TP2</Text>
+                  <Text style={styles.inputLabel}>TP2 (1.05R)</Text>
                   <TextInput
                     style={styles.input}
                     value={tp2Pips}
@@ -558,7 +558,7 @@ export default function SettingsScreen() {
                   />
                 </View>
                 <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>TP3</Text>
+                  <Text style={styles.inputLabel}>TP3 (1.40R)</Text>
                   <TextInput
                     style={styles.input}
                     value={tp3Pips}
@@ -570,8 +570,18 @@ export default function SettingsScreen() {
                 </View>
               </View>
 
+              {/*
+                ITEM 22 — the settings tab used to claim these pip values set the
+                targets. They do not. The engine derives every TP from the
+                REALISED stop distance at 0.70R / 1.05R / 1.40R, so the numbers
+                typed here have no effect on emitted geometry. The fields are
+                kept (not deleted) because a future MEASURED manual-geometry
+                toggle will need them — but the label now tells the truth.
+              */}
               <Text style={styles.helperText}>
-                1 pip = 0.1 XAUUSD. Configure target distances from entry price.
+                Not used by the engine. TP distances are derived from the realised stop:
+                TP1 = 0.70R, TP2 = 1.05R, TP3 = 1.40R. These values are stored for a
+                future manual-geometry mode and do not affect signals today.
               </Text>
             </View>
 
@@ -583,7 +593,7 @@ export default function SettingsScreen() {
               
               <View style={styles.inputRow}>
                 <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>Base SL</Text>
+                  <Text style={styles.inputLabel}>Base SL (Used)</Text>
                   <TextInput
                     style={styles.input}
                     value={slPips}

@@ -639,6 +639,72 @@ measurement week. STOPPED per the standing rule rather than guessing.
 `bun expo/scripts/test_item17_entry_anchor_guards.ts` -> 13/13
 `runChecks(expo)` -> clean.
 
+## 3o. ITEM 21 GATE FAILED — REVERTED. ITEM 22 SHIPPED. ITEMS 23/24 MEASURED. (2026-08-05)
+
+**PARENT COMMIT (pre-change): `3c83cdaf8cd5df308bfdd0477a4601eb18e7a60d`.** The new
+commit hash is created by platform sync AFTER this turn and must be recorded with
+the UTC instant the reloaded client first ran it plus pre-split counters.
+
+### ITEM 21 — BUILT, GATED, **FAILED GATE 2, REVERTED**. NOT DONE.
+Evidence: `bun expo/scripts/verifyItems21to24.ts` (both resolvers are the REAL
+function; BEFORE recovered via `git show HEAD:expo/services/signalResolver.ts`).
+- GATE 1 (over-credited -> NEVER_FILLABLE or gap-priced): **PASS**
+- GATE 2 (zone-confirmed BIT-IDENTICAL): **FAIL — 18 of 378 differ**
+- GATE 3 (nothing goes NOT-ENTERED -> ENTERED): **PASS**
+
+**Blocker, exactly:** deferring confirmation instead of confirming on a
+levels-cross moves the confirmation BAR later, so the ladder is re-walked from a
+different starting bar. 18 signals change outcome, including SL_HIT->ALL_TARGETS_HIT
+([223]), SL_HIT->SL_AFTER_BE ([251],[347]) and ALL_TARGETS_HIT->SL_AFTER_BE
+([352],[353],[373],[381]). All 18 were old-LEVELS-CROSS confirmations; **0 of the
+359 genuinely old-zone-confirmed signals differ.** Restricting GATE 2 to those 359
+gives 0 differences, but that denominator swap is post-hoc loosening and was
+reported, NOT adopted.
+
+### ITEM 18's MATERIALITY NUMBER WAS OVERSTATED BY ME. CORRECTED.
+The 18b mirror recorded the FIRST confirmation mechanism and stopped. The real
+resolver keeps scanning, so 11 of those 12 later touched their entry band and were
+genuinely fillable — just later. Measured with the real resolver:
+- **NEVER_FILLABLE = 1 of 379 (0.26%)**, signal [116], BUY 3977.3, old R +1.080.
+- Genuine gap fills = **0**.
+- Canonical EV: **~~+0.0919R (n=379)~~ -> +0.0840R (n=378)**, delta **-0.0079R**.
+**NOT 12 signals and NOT 56% of EV.** The "contaminating every hour" premise is
+falsified by measurement; that is why shipping unverified logic was refused.
+
+### ITEM 22 — SHIPPED (no gate; no geometry change, no sample risk)
+`expo/app/(tabs)/settings.tsx`: TP section retitled "Engine-Derived", labels
+"TP1 (0.70R)/TP2 (1.05R)/TP3 (1.40R)", Base SL -> "Base SL (Used)", helper text now
+states the entered TP values are NOT used. Fields deliberately NOT deleted.
+`expo/services/diagnosticsExport.ts`: every signal now prints
+`geometry mode: SL: manual slPips · TPs: R-derived 0.70/1.05/1.40`.
+No `useDynamicGeometry`, no pip value changed, ladder untouched.
+
+### ITEM 23 — UNIT-CORRECTED MULTIPLIER: THE TWO SETS DISAGREE. NOT ADOPTABLE.
+`max(1.0, min(1.6, 0.7 + atr*0.6))` — a LARGER stop, a different intervention from
+19e's smaller stop.
+- Printed-ATR set (n=39, engine's own input, UNDERPOWERED): mult p50 1.60,
+  SL p50 123.2p (7.11x ATR); OFF EV +0.0731R/WR 51.3%/PF 1.150 vs
+  **ON EV +0.3965R/WR 66.7%/PF 2.190**, $ 0.782 -> 4.101.
+- Wide set (n=378, ATR(14) recomputed from `gold_m1_bars`, uniformly labelled but
+  Vantage-ATR not engine-ATR): SL p50 81.6p (4.22x ATR); OFF EV +0.0840R/WR 65.1%
+  vs **ON EV +0.0676R/WR 57.4%** — WORSE in R, better in $ (0.510 -> 0.637).
+**Sets disagree in SIGN.** Trusted set = the wide one (uniform labels, 10x power);
+the n=39 result is a 1.60x-clamp artifact on a high-ATR slice. Verdict: no adoption
+evidence. Not implemented.
+
+### ITEM 24 — CONTAMINATION OF PRIOR CLOSED ANALYSES: 1 SIGNAL, 0.26%
+- Affected population = 1 (signal [116], BUY). SELL share **0**.
+- (b) Item D "no ladder adopted" SURVIVES; Item C "SELL-side conclusions reverse"
+  SURVIVES (zero SELL exposure); SELL-suppression EV comparison SURVIVES.
+- (c) `trade_outcomes_v1` total **51 rows**; rows matching an affected id = **0**.
+  ID-FORM CONTROL: 23 of 200 export ids DO match, so the id forms agree and the
+  zero is a real absence, not a failed join. **The retraining corpus is clean.**
+
+### 4 legacy defects REPORTED, NOT FIXED (freeze)
+`TradingContext.tsx:1217` still auto-confirms on `tpReachedFromEntry ||
+slReachedFromEntry`, but `analyzeSignalWithHistoricalData` output is discarded —
+`signalResolver` is authoritative at `:1743-1750`, so it has no live effect.
+
 ## 4. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
 
 **Finding (from prior session, `expo/scripts/analyzeDriftVetoOnBuy.ts`):** the Phase 2 counter-trend drift veto IS over-firing on BUYs. It dropped **4/50** counter-trend BUYs that had **positive EV (+0.2295R, 75% win rate)**. Three of the four were winners (+1.149R, +0.385R, +0.385R). The veto is costing the long book **$3.8 in net $** and **+0.0036R in EV per signal**. The veto threshold (2.0×ATR) may be too low for BUYs, or the counter-trend classification may be too broad.
