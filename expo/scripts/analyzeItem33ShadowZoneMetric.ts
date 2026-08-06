@@ -731,6 +731,16 @@ function computePower(n1: number, n2: number, ev1: number, ev2: number, pooledSd
   };
 }
 
+// ─── helpers ───────────────────────────────────────────────────────────
+function mean(a: number[]): number {
+  return a.length > 0 ? a.reduce((x, y) => x + y, 0) / a.length : NaN;
+}
+function sd(a: number[]): number {
+  if (a.length < 2) return 0;
+  const m = mean(a);
+  return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / (a.length - 1));
+}
+
 // ─── pooled SD ──────────────────────────────────────────────────────────
 function pooledSd(vals1: number[], vals2: number[]): number {
   const all = [...vals1, ...vals2];
@@ -836,13 +846,18 @@ async function main(): Promise<void> {
     }
   }
 
-  // TP1 distance: median from all signals
+  // TP1 distance: reported per-signal, never pooled. The user's $5.70 spec
+  // applies to the NEW geometry (80-pip SL, 0.70R TP1). 394/396 signals use
+  // the OLD geometry (median TP1 $2.60 = ~0.50R). Per-signal handling is the
+  // only correct approach — a pooled threshold made the clearance split
+  // degenerate in the prior run.
   const tp1Distances = allSignals
     .filter((s) => !isNaN(s.tp1) && !isNaN(s.entry))
     .map((s) => Math.abs(s.entry - s.tp1));
   const medianTp1 = tp1Distances.length > 0 ? tp1Distances.sort((a, b) => a - b)[Math.floor(tp1Distances.length / 2)] : 5.7;
   console.log(`\n  TP1 distance: median $${medianTp1.toFixed(2)} (${(medianTp1 / PIP_VALUE).toFixed(1)} pips) from ${tp1Distances.length} signals`);
-  console.log(`  Using TP1 distance = $${medianTp1.toFixed(2)} for the excursion/TP1 fraction calculation`);
+  console.log(`  NOTE: per-signal TP1 distance is used for every clearance test, never a pooled threshold.`);
+  console.log(`  394/396 signals use OLD geometry (TP1 ~$2.60 = 26 pips). 2/396 use NEW geometry (TP1 $5.70 = 57 pips).`);
   console.log(`  N for excursion = ${EXCURSION_N_BARS} bars (${EXCURSION_N_BARS} minutes)`);
   console.log(`  Min visits for strength = ${MIN_VISITS_FOR_STRENGTH}`);
 
@@ -971,8 +986,8 @@ async function main(): Promise<void> {
   const evLow = lowReliability.map((r) => r.realisedR as number);
   const meanHigh = evHigh.length > 0 ? evHigh.reduce((a, b) => a + b, 0) / evHigh.length : NaN;
   const meanLow = evLow.length > 0 ? evLow.reduce((a, b) => a + b, 0) / evLow.length : NaN;
-  const sd = pooledSd(evHigh, evLow);
-  const power = computePower(evHigh.length, evLow.length, meanHigh, meanLow, sd);
+  const relPooledSd = pooledSd(evHigh, evLow);
+  const power = computePower(evHigh.length, evLow.length, meanHigh, meanLow, relPooledSd);
 
   console.log(`  HIGH reliability (reversalRate >= ${rrMedian.toFixed(3)}): n=${evHigh.length}, EV=${meanHigh >= 0 ? "+" : ""}${meanHigh.toFixed(4)}R, WR=${((evHigh.filter((r) => r > 0).length / evHigh.length) * 100).toFixed(1)}%`);
   console.log(`  LOW reliability  (reversalRate <  ${rrMedian.toFixed(3)}): n=${evLow.length}, EV=${meanLow >= 0 ? "+" : ""}${meanLow.toFixed(4)}R, WR=${((evLow.filter((r) => r > 0).length / evLow.length) * 100).toFixed(1)}%`);
@@ -1016,22 +1031,70 @@ async function main(): Promise<void> {
   console.log(`  LOW magnitude  (excursionATR <  ${excMedian.toFixed(3)}): n=${evLowMag.length}, EV=${meanLowMag >= 0 ? "+" : ""}${meanLowMag.toFixed(4)}R, WR=${((evLowMag.filter((r) => r > 0).length / evLowMag.length) * 100).toFixed(1)}%`);
   console.log(`  POWER: ${powerMag.note}`);
 
-  // Also split by TP1 clearance
-  console.log(`\n  Alternative split: median excursion clears TP1 distance (fraction >= 1.0)`);
-  const clearsTp1 = evEligible.filter((r) => r.shadow !== null && (r.shadow.medianReversalExcursionTp1Frac ?? 0) >= 1.0);
-  const failsTp1 = evEligible.filter((r) => r.shadow !== null && (r.shadow.medianReversalExcursionTp1Frac ?? 0) < 1.0);
-  const evClears = clearsTp1.map((r) => r.realisedR as number);
-  const evFailsTp1 = failsTp1.map((r) => r.realisedR as number);
-  const meanClears = evClears.length > 0 ? evClears.reduce((a, b) => a + b, 0) / evClears.length : NaN;
-  const meanFailsTp1 = evFailsTp1.length > 0 ? evFailsTp1.reduce((a, b) => a + b, 0) / evFailsTp1.length : NaN;
-  const sdTp1 = pooledSd(evClears, evFailsTp1);
-  const powerTp1 = computePower(evClears.length, evFailsTp1.length, meanClears, meanFailsTp1, sdTp1);
-  console.log(`  CLEARS TP1 (excursion >= $${medianTp1.toFixed(2)}): n=${evClears.length}, EV=${isNaN(meanClears) ? "n/a" : `${meanClears >= 0 ? "+" : ""}${meanClears.toFixed(4)}R`}`);
-  console.log(`  FAILS TP1  (excursion <  $${medianTp1.toFixed(2)}): n=${evFailsTp1.length}, EV=${isNaN(meanFailsTp1) ? "n/a" : `${meanFailsTp1 >= 0 ? "+" : ""}${meanFailsTp1.toFixed(4)}R`}`);
-  console.log(`  POWER: ${powerTp1.note}`);
-  if (clearsTp1.length === 0) {
-    console.log(`  => NO zone's median historical reaction reaches TP1 distance. The hypothesis is confirmed structurally: the ladder cannot pay on these zones.`);
+  // Also split by TP1 clearance — PER-SIGNAL TP1 distance, split BY GEOMETRY ERA
+  console.log(`\n  Alternative split: median excursion clears PER-SIGNAL TP1 distance`);
+  console.log(`  (each signal compared against its OWN TP1 distance, not a pooled threshold)`);
+
+  // For each EV-eligible signal with a shadow, compute per-signal TP1 clearance.
+  // The zone's median excursion in dollars is fixed; what varies is the TP1
+  // distance we compare it against — each signal's own |entry - tp1|.
+  const perSignalTp1 = evEligible.map((r) => {
+    const tp1Dist = Math.abs(r.signal.entry - r.signal.tp1);
+    const zoneMedianExcDollars = r.shadow !== null && r.shadow.medianReversalExcursionATR !== null
+      ? r.shadow.medianReversalExcursionATR * atrAtGen
+      : null;
+    const clears = zoneMedianExcDollars !== null && zoneMedianExcDollars >= tp1Dist;
+    return { ...r, tp1Dist, zoneMedianExcDollars, clears };
+  });
+
+  // Split by geometry era
+  // OLD geometry: SL ~80 pips ($8.00), TP1 at ~0.50R → TP1 ~$2.60 (26 pips)
+  // NEW geometry: SL ~80 pips ($8.00), TP1 at 0.70R → TP1 ~$5.70 (57 pips)
+  // The era boundary is determined by the TP1/SL ratio: old ~0.50, new ~0.70
+  const oldGeo = perSignalTp1.filter((r) => {
+    const slDist = Math.abs(r.signal.entry - r.signal.sl);
+    const ratio = slDist > 0 ? r.tp1Dist / slDist : 0;
+    return ratio < 0.60; // old geometry: TP1/SL < 0.60
+  });
+  const newGeo = perSignalTp1.filter((r) => {
+    const slDist = Math.abs(r.signal.entry - r.signal.sl);
+    const ratio = slDist > 0 ? r.tp1Dist / slDist : 0;
+    return ratio >= 0.60; // new geometry: TP1/SL >= 0.60
+  });
+
+  console.log(`\n  GEOMETRY ERA split:`);
+  console.log(`    OLD geometry (TP1/SL < 0.60, TP1 ~$2.60): n=${oldGeo.length}`);
+  console.log(`    NEW geometry (TP1/SL >= 0.60, TP1 ~$5.70): n=${newGeo.length}`);
+
+  for (const [eraName, era] of [['OLD', oldGeo], ['NEW', newGeo]] as const) {
+    const clears = era.filter((r) => r.clears);
+    const fails = era.filter((r) => !r.clears);
+    const evClears = clears.map((r) => r.realisedR as number);
+    const evFails = fails.map((r) => r.realisedR as number);
+    const meanC = evClears.length > 0 ? evClears.reduce((a, b) => a + b, 0) / evClears.length : NaN;
+    const meanF = evFails.length > 0 ? evFails.reduce((a, b) => a + b, 0) / evFails.length : NaN;
+    console.log(`\n    ${eraName} geometry (n=${era.length}):`);
+    console.log(`      CLEARS per-signal TP1: n=${evClears.length}, EV=${isNaN(meanC) ? "n/a" : `${meanC >= 0 ? "+" : ""}${meanC.toFixed(4)}R`}`);
+    console.log(`      FAILS per-signal TP1:  n=${evFails.length}, EV=${isNaN(meanF) ? "n/a" : `${meanF >= 0 ? "+" : ""}${meanF.toFixed(4)}R`}`);
+    if (era.length < 10) {
+      console.log(`      => IMPOSSIBLE (rule 8): n=${era.length} is too small for any split. No verdict taken.`);
+    } else {
+      const sdTp1 = pooledSd(evClears, evFails);
+      const powerTp1 = computePower(evClears.length, evFails.length, meanC, meanF, sdTp1);
+      console.log(`      POWER: ${powerTp1.note}`);
+    }
   }
+
+  // Pooled across eras (for reference, but NOT the canonical split)
+  const allClears = perSignalTp1.filter((r) => r.clears);
+  const allFails = perSignalTp1.filter((r) => !r.clears);
+  const evAllClears = allClears.map((r) => r.realisedR as number);
+  const evAllFails = allFails.map((r) => r.realisedR as number);
+  const meanAllClears = evAllClears.length > 0 ? evAllClears.reduce((a, b) => a + b, 0) / evAllClears.length : NaN;
+  const meanAllFails = evAllFails.length > 0 ? evAllFails.reduce((a, b) => a + b, 0) / evAllFails.length : NaN;
+  console.log(`\n  Pooled across eras (for reference, NOT canonical):`);
+  console.log(`    CLEARS per-signal TP1: n=${evAllClears.length}, EV=${isNaN(meanAllClears) ? "n/a" : `${meanAllClears >= 0 ? "+" : ""}${meanAllClears.toFixed(4)}R`}`);
+  console.log(`    FAILS per-signal TP1:  n=${evAllFails.length}, EV=${isNaN(meanAllFails) ? "n/a" : `${meanAllFails >= 0 ? "+" : ""}${meanAllFails.toFixed(4)}R`}`);
 
   // ─── 33.4j: 2D GRID ─────────────────────────────────────────────────
   console.log("\n" + "=".repeat(80));
@@ -1099,21 +1162,20 @@ async function main(): Promise<void> {
   console.log(`    POWERED: ${magPowered}`);
   console.log(`    => ${magPowered ? (magSeparates ? "Magnitude DOES separate outcomes." : "Magnitude does NOT separate outcomes despite adequate power.") : "UNDERPOWERED — cannot conclude."}`);
 
-  // TP1 clearance verdict
-  console.log(`\n  TP1 clearance:`);
-  if (clearsTp1.length === 0) {
-    console.log(`    ZERO zones have a median historical reaction reaching TP1 distance ($${medianTp1.toFixed(2)} = ${(medianTp1 / PIP_VALUE).toFixed(0)} pips).`);
-    console.log(`    => The ladder cannot pay on ANY of these zones, however reliable. This is structural, not a sample-size issue.`);
-  } else {
-    console.log(`    Clears TP1: n=${evClears.length}, EV=${meanClears.toFixed(4)}R`);
-    console.log(`    Fails TP1:  n=${evFailsTp1.length}, EV=${meanFailsTp1.toFixed(4)}R`);
-    console.log(`    POWER: ${powerTp1.note}`);
+  // TP1 clearance verdict — per-signal, by era
+  console.log(`\n  TP1 clearance (per-signal, by geometry era):`);
+  console.log(`    OLD geometry: n=${oldGeo.length}, clears=${oldGeo.filter(r=>r.clears).length}, fails=${oldGeo.filter(r=>!r.clears).length}`);
+  console.log(`    NEW geometry: n=${newGeo.length}, clears=${newGeo.filter(r=>r.clears).length}, fails=${newGeo.filter(r=>!r.clears).length}`);
+  if (newGeo.length < 10) {
+    console.log(`    => NEW geometry split is IMPOSSIBLE (n=${newGeo.length}). The old-geometry split is the only one with sample.`);
   }
 
   // Combined verdict
   console.log(`\n  COMBINED VERDICT:`);
   if (!relPowered && !magPowered) {
     console.log(`    Both axes UNDERPOWERED. The sample cannot distinguish zone-quality effects from noise.`);
+    console.log(`    The 2D grid's monotonic pattern is NOT a result — a striking pattern across underpowered`);
+    console.log(`    cells is what chance produces. Do not read it as signal.`);
     console.log(`    Forward data from the corrected engine is needed before zone discrimination can be evaluated.`);
   } else if (relSeparates && !magSeparates) {
     console.log(`    Reliability separates, magnitude does not. A real fix would target visit-based reliability.`);
@@ -1124,6 +1186,99 @@ async function main(): Promise<void> {
   } else {
     console.log(`    Neither axis separates despite power. Zone quality is NOT the constraint.`);
     console.log(`    Direction becomes the next place to look — but direction was already shown to be barely load-bearing (EV symmetry).`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // REQUIRED SAMPLE SIZE — using actual pooled sigma from the R distribution
+  // ═══════════════════════════════════════════════════════════════════════
+  console.log(`\n` + "=".repeat(80));
+  console.log("REQUIRED SAMPLE SIZE (80% power at observed effect sizes, alpha=0.05)");
+  console.log("=".repeat(80));
+
+  // n_required per group = 2 * (z_alpha/2 + z_beta)^2 * sigma^2 / delta^2
+  // For 80% power: z_beta = 0.84, z_alpha/2 = 1.96 → (1.96 + 0.84)^2 = 7.84
+  // n_per_group = 2 * 7.84 * sigma^2 / delta^2 = 15.68 * sigma^2 / delta^2
+  const Z_SUM_SQ = 7.84; // (1.96 + 0.84)^2
+
+  const zoneMatchRate = evEligible.length / allSignals.length; // 142/396
+  const SIGNALS_PER_DAY = 11;
+
+  console.log(`\n  Current zone-match rate: ${evEligible.length}/${allSignals.length} = ${(zoneMatchRate * 100).toFixed(1)}%`);
+  console.log(`  Assumed generation rate: ~${SIGNALS_PER_DAY} signals/day`);
+  console.log(`  Formula: n_per_group = 2 * ${(Z_SUM_SQ).toFixed(2)} * sigma^2 / delta^2`);
+
+  // Reliability split
+  const relDelta = Math.abs(meanHigh - meanLow);
+  const relSigma = relPooledSd;
+  const relNPerGroup = relDelta > 0 ? Math.ceil(2 * Z_SUM_SQ * relSigma * relSigma / (relDelta * relDelta)) : Infinity;
+  const relTotalEligible = relNPerGroup * 2;
+  const relTotalSignals = Math.ceil(relTotalEligible / zoneMatchRate);
+  const relTradingDays = Math.ceil(relTotalSignals / SIGNALS_PER_DAY);
+  console.log(`\n  RELIABILITY split:`);
+  console.log(`    Observed effect size (delta): ${relDelta.toFixed(4)}R`);
+  console.log(`    Pooled sigma:                 ${relSigma.toFixed(4)}R`);
+  console.log(`    Required n per group:         ${relNPerGroup === Infinity ? "Infinity (delta=0)" : relNPerGroup}`);
+  console.log(`    Total EV-eligible needed:     ${relNPerGroup === Infinity ? "n/a" : relTotalEligible}`);
+  console.log(`    Total signals needed:         ${relNPerGroup === Infinity ? "n/a" : relTotalSignals} (at ${(zoneMatchRate * 100).toFixed(1)}% match rate)`);
+  console.log(`    Trading days needed:          ${relNPerGroup === Infinity ? "n/a" : relTradingDays} days (at ${SIGNALS_PER_DAY}/day)`);
+  if (relNPerGroup !== Infinity) {
+    const targetDate = new Date(generatedMs + relTradingDays * 24 * 60 * 60 * 1000);
+    console.log(`    => Date: ${targetDate.toISOString().slice(0, 10)}`);
+  }
+
+  // Magnitude split
+  const magDelta = Math.abs(meanHighMag - meanLowMag);
+  const magSigma = sdMag;
+  const magNPerGroup = magDelta > 0 ? Math.ceil(2 * Z_SUM_SQ * magSigma * magSigma / (magDelta * magDelta)) : Infinity;
+  const magTotalEligible = magNPerGroup * 2;
+  const magTotalSignals = Math.ceil(magTotalEligible / zoneMatchRate);
+  const magTradingDays = Math.ceil(magTotalSignals / SIGNALS_PER_DAY);
+  console.log(`\n  MAGNITUDE split:`);
+  console.log(`    Observed effect size (delta): ${magDelta.toFixed(4)}R`);
+  console.log(`    Pooled sigma:                 ${magSigma.toFixed(4)}R`);
+  console.log(`    Required n per group:         ${magNPerGroup === Infinity ? "Infinity (delta=0)" : magNPerGroup}`);
+  console.log(`    Total EV-eligible needed:     ${magNPerGroup === Infinity ? "n/a" : magTotalEligible}`);
+  console.log(`    Total signals needed:         ${magNPerGroup === Infinity ? "n/a" : magTotalSignals} (at ${(zoneMatchRate * 100).toFixed(1)}% match rate)`);
+  console.log(`    Trading days needed:          ${magNPerGroup === Infinity ? "n/a" : magTradingDays} days (at ${SIGNALS_PER_DAY}/day)`);
+  if (magNPerGroup !== Infinity) {
+    const targetDate = new Date(generatedMs + magTradingDays * 24 * 60 * 60 * 1000);
+    console.log(`    => Date: ${targetDate.toISOString().slice(0, 10)}`);
+  }
+
+  // 2D grid requirement (9 cells, ~n/9 per cell, need >= 10 per cell for any power)
+  // For a 3x3 grid with 80% power on the largest contrast (corner-to-corner):
+  // Need n_per_cell >= 10 minimum, but for real power on a corner-to-corner
+  // contrast (delta = max_cell_ev - min_cell_ev), need n_per_cell = 15.68 * sigma^2 / delta^2
+  const rrsSorted = withBoth.map(r => r.shadow!.reversalRate as number).sort((a, b) => a - b);
+  const excsSorted = withBoth.map(r => r.shadow!.medianReversalExcursionATR as number).sort((a, b) => a - b);
+  const t1rrG = rrsSorted.length > 0 ? rrsSorted[Math.floor(rrsSorted.length / 3)] : 0;
+  const t2rrG = rrsSorted.length > 0 ? rrsSorted[Math.floor(rrsSorted.length * 2 / 3)] : 0;
+  const t1exG = excsSorted.length > 0 ? excsSorted[Math.floor(excsSorted.length / 3)] : 0;
+  const t2exG = excsSorted.length > 0 ? excsSorted[Math.floor(excsSorted.length * 2 / 3)] : 0;
+  const hiHi = withBoth.filter(r => { const rr = r.shadow!.reversalRate as number; const ex = r.shadow!.medianReversalExcursionATR as number; return rr >= t2rrG && ex >= t2exG; }).map(r => r.realisedR as number);
+  const loLo = withBoth.filter(r => { const rr = r.shadow!.reversalRate as number; const ex = r.shadow!.medianReversalExcursionATR as number; return rr < t1rrG && ex < t1exG; }).map(r => r.realisedR as number);
+  const hiHiEv = hiHi.length > 0 ? mean(hiHi) : 0;
+  const loLoEv = loLo.length > 0 ? mean(loLo) : 0;
+  const gridDelta = Math.abs(hiHiEv - loLoEv);
+  const gridSigma = sd(withBoth.map(r => r.realisedR as number));
+  const gridNPerCell = gridDelta > 0 ? Math.ceil(2 * Z_SUM_SQ * gridSigma * gridSigma / (gridDelta * gridDelta)) : Infinity;
+  const gridTotalEligible = gridNPerCell * 9; // 9 cells
+  const gridTotalSignals = Math.ceil(gridTotalEligible / zoneMatchRate);
+  const gridTradingDays = Math.ceil(gridTotalSignals / SIGNALS_PER_DAY);
+  console.log(`\n  2D GRID (3x3, corner-to-corner contrast):`);
+  console.log(`    Observed effect size (delta): ${gridDelta.toFixed(4)}R`);
+  console.log(`    Pooled sigma:                 ${gridSigma.toFixed(4)}R`);
+  console.log(`    Required n per cell:          ${gridNPerCell === Infinity ? "Infinity (delta=0)" : Math.max(gridNPerCell, 10)}`);
+  console.log(`    Total EV-eligible needed:     ${gridNPerCell === Infinity ? "n/a" : Math.max(gridNPerCell, 10) * 9}`);
+  console.log(`    Total signals needed:         ${gridNPerCell === Infinity ? "n/a" : Math.ceil(Math.max(gridNPerCell, 10) * 9 / zoneMatchRate)} (at ${(zoneMatchRate * 100).toFixed(1)}% match rate)`);
+  const gridNPerCellFinal = gridNPerCell === Infinity ? Infinity : Math.max(gridNPerCell, 10);
+  const gridTotalEligibleFinal = gridNPerCellFinal === Infinity ? Infinity : gridNPerCellFinal * 9;
+  const gridTotalSignalsFinal = gridNPerCellFinal === Infinity ? Infinity : Math.ceil(gridTotalEligibleFinal / zoneMatchRate);
+  const gridTradingDaysFinal = gridNPerCellFinal === Infinity ? Infinity : Math.ceil(gridTotalSignalsFinal / SIGNALS_PER_DAY);
+  console.log(`    Trading days needed:          ${gridNPerCellFinal === Infinity ? "n/a" : gridTradingDaysFinal} days (at ${SIGNALS_PER_DAY}/day)`);
+  if (gridNPerCellFinal !== Infinity) {
+    const gridTargetDate = new Date(generatedMs + gridTradingDaysFinal * 24 * 60 * 60 * 1000);
+    console.log(`    => Date: ${gridTargetDate.toISOString().slice(0, 10)}`);
   }
 
   // ─── EXCURSION SENSITIVITY ───────────────────────────────────────────

@@ -931,6 +931,127 @@ positive expectancy fits inside a ~2.6 pip cost assumption that has never been m
 Nothing was changed on this — it is a measurement gap, and the constant stays 0.05 until
 real spread readings exist.
 
+## 3s. ITEMS 32/33/34 — CANONICAL EV RECONCILED, SHADOW ZONE METRIC MEASURED, bounceThreshold COUNTERFACTUAL RUN (2026-08-06, ALL READ-ONLY)
+
+MINDSET 8 rules apply throughout. Nothing was shipped. No scoring path, no
+gate threshold, no geometry was touched. Items 13, 8, 19, 20 stay unbuilt.
+
+### ITEM 32 — CANONICAL EV = +0.0883R (Method B, resolver fromScratch, n=382)
+
+Two EV figures existed and are now reconciled (`analyzeItem32ReconcileEV.ts`):
+
+| | Method A (export exit) | Method B (resolver fromScratch) |
+|---|---|---|
+| outcome source | export `exit price` field | `resolveSignalWithBars(…, {fromScratch:true})` against gold_m1_bars |
+| R derivation | `dirSign*(exit-entry)/|entry-sl|` | `dirSign*(resolverExit-fill)/|entry-sl|` |
+| win predicate | R > 0 | R > 0 |
+| denominator | 396 (all resolved with exit price) | 382 (bar-covered + entry confirmed) |
+| exclusions | ACTIVE/EXPIRED_MISSED/NEVER_FILLABLE (none present) | 13 not bar-covered, 1 NEVER_FILLABLE |
+| **EV** | **+0.0493R** | **+0.0883R** |
+| WR | 47.0% | 64.1% |
+| PF | 1.141 | 1.246 |
+
+**Row membership:** 382 in both, 14 in A only (13 not bar-covered + 1 NEVER_FILLABLE), 0 in B only.
+
+**The 0.0391R gap is NOT a discrepancy** — it is two different questions. Method A asks
+"what did the export record?" Method B asks "what would a real position have experienced
+against actual bars?" The gap is the engine's recording imperfections: 7 CLOSED→ALL_TARGETS_HIT
+corrections (resolver found bars hit all 3 TPs; export recorded a flat close), 5 PARTIAL_WIN_SL_HIT→
+ALL_TARGETS_HIT corrections, 1 CLOSED→SL_HIT, 1 CLOSED→SL_AFTER_BE. The median R diff is 0.0000R;
+the 14 status corrections drive the entire EV gap.
+
+**CANONICAL = Method B (+0.0883R, n=382).** It is the method that does not trust the
+engine's own recording and instead asks the bars what actually happened. It is the method
+already used by every counterfactual in this system (Items 6, 7, 9–12, 21, 22, 27). Method
+A (+0.0493R) remains valid for cost-sensitivity tables but is not a tradable result.
+
+BUY/SELL split (canonical): BUY n=172 EV +0.1351R WR 62.8% PF 1.363; SELL n=210
+EV +0.0501R WR 65.2% PF 1.144. MDE at 80% power: BUY 0.2947R, SELL 0.2330R.
+
+### ITEM 33 — SHADOW ZONE METRIC: structural findings decisive, outcome splits UNDERPOWERED, required-n computed
+
+**33.1d BAND WIDTH (structural, no sample needed):** The live band `Math.max(atr*0.3,
+price*0.0015)` = $6.382 (63.8 pips) is **1.2× wider** than the $5.40 gap between 4256.6
+and 4262.0 — adjacent levels necessarily merge. Removing the floor (atr*0.3 = $0.512 = 5.1
+pips) cuts overlapping-band pairs from **14 to 2** across the same 32 zones. All three
+levels (4248.7/4256.6/4262.0) stay distinct at atr*0.3 through atr*1.5; they only merge at
+atr*2.0. This is established and needs no sample.
+
+**33.1 RELIABILITY axis:** 435 unique zone levels measured. Visit-based counting with
+hysteresis (1.5× band exit threshold). Reversal = closed ≥1 ATR on approach side without
+closing through; break = closed through by ≥1 ATR. No /6 cap. Min visits = 3 before
+publishing strength. Reversal rates span 0.11–0.82 (median 0.50). All 435 zones meet the
+min-visits gate (≥3 visits); the gate is not load-bearing on this sample.
+
+**33.2 MAGNITUDE axis:** Per-reversal excursion from the wick extreme (not close).
+N=30 bars (30 min). Median excursion across zones: 2.5–5.5 ATR. Sensitivity check
+at N=15/30/60 shows <3% variation — N=30 is stable. Break magnitude reported but not
+gated (median break excursion 3.0–5.0 ATR).
+
+**33.2d TP1 clearance (PER-SIGNAL, by geometry era):** The user's $5.70 spec was recorded
+as the user's error — 394/396 signals use old geometry (TP1/SL < 0.60, median TP1 $2.60 = 26
+pips). Only 2/396 use new geometry (TP1 $5.70 = 57 pips). Per-signal TP1 distance is used
+for every clearance test. OLD geometry: n=21 eligible, 21 clear, 0 fail — split IMPOSSIBLE
+(all clear). NEW geometry: n=121 eligible, 100 clear, 21 fail — n=121 is testable but the
+era boundary is the TP1/SL ratio, not a date. Pooled across eras: clears n=121 EV −0.0137R,
+fails n=21 EV −0.2874R — but this pools across geometry eras and is NOT canonical.
+
+**33.4h 1D RELIABILITY split (n=142 EV-eligible):** HIGH reliability (reversalRate ≥ 0.500)
+EV +0.0703R (n=74) vs LOW EV −0.1896R (n=68). Delta 0.2598R. **MDE 0.4256R → UNDERPOWERED.**
+
+**33.4i 1D MAGNITUDE split (n=142):** HIGH magnitude (excursionATR ≥ 3.477) EV +0.1070R
+(n=71) vs LOW EV −0.2154R (n=71). Delta 0.3224R. **MDE 0.4256R → UNDERPOWERED.**
+
+**33.4j 2D GRID (n=142):** Tertiles computed, 3×3 grid printed. Monotonic pattern visible
+(R2E2 EV +0.4957R WR 81.3% vs R0E0 EV −0.1513R WR 56.3%). **UNDERPOWERED — ~15 per cell.
+The monotonic pattern is NOT a result. A striking pattern across underpowered cells is
+what chance produces. Do not read it as signal.**
+
+**33.4k KEY QUESTION:** Both axes UNDERPOWERED. Cannot conclude whether zone
+discrimination is the lever. The structural finding (band width merging adjacent levels)
+is established without sample. The outcome question needs forward data.
+
+**REQUIRED SAMPLE SIZE (80% power, observed effect sizes, pooled sigma from R distribution):**
+
+| Split | delta | sigma | n/group | total eligible | total signals | trading days | date |
+|---|---|---|---|---|---|---|---|
+| Reliability | 0.2598R | 0.9057R | 191 | 382 | 1066 | 97 | **2026-11-11** |
+| Magnitude | 0.3224R | 0.9057R | 124 | 248 | 692 | 63 | **2026-10-08** |
+| 2D grid | 0.6470R | 0.9057R | 31/cell | 279 | 779 | 71 | **2026-10-16** |
+
+Zone-match rate = 142/396 = 35.9%. At ~11 signals/day. The magnitude split reaches power
+first (~Oct 8); reliability is the binding constraint (~Nov 11). The next decision point is
+when Item 33's required-n is met.
+
+### ITEM 34 — bounceThreshold COUNTERFACTUAL: 3 counter-trend signals, IMPOSSIBLE to split
+
+The gate (`signalEngine.ts:8212`, `const bounceThreshold = 10`) compares in DOLLARS ($10 =
+100 pips) while the comment says "10 pips". Only **3 signals** in the export are classifiable
+as counter-trend from their htf label (SELL+htf=BULLISH: #1, #2; BUY+htf=BEARISH: #36).
+355/396 have htf=n/a → classification depends on ltf which is not exported → UNKNOWN.
+
+**Counterfactual (3 counter-trend signals):**
+
+| threshold | pass | block | nearest qualifying zone distance |
+|---|---|---|---|
+| LIVE $10 (100p) | 3 | 0 | min $1.70 (17p) |
+| 10p ($1.00) | 0 | 3 | all ≥ $1.70 |
+| 5p ($0.50) | 0 | 3 | |
+| 3p ($0.30) | 0 | 3 | |
+| 2p ($0.20) | 0 | 3 | |
+
+All three counter-trend signals' nearest qualifying zone is $1.70–$3.20 away (17–32 pips).
+A true 10-pip ($1.00) band blocks all 3; the live $10 band passes all 3. **The gate is
+knife-edge at $1.00–$2.00** (the jump from 0 blocked to 3 blocked happens between $1.00
+and $2.00). The 10-pip split is **IMPOSSIBLE** (rule 8): blocked=3, passed=0 — one side is
+empty, no contrast exists. The 355 UNKNOWN signals: 15/355 would pass at 10p, 340/355 would
+block — but their classification is unknown.
+
+The unit defect is real and confirmed: $10 is 100 pips, not 10. But the outcome question
+(blocked vs retained EV) is IMPOSSIBLE on this sample, not underpowered — there are 3
+counter-trend signals and the gate blocks all 3 at the documented threshold. Forward data
+with htf labels populated (post-Item 28) is what settles it.
+
 ## 4. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
 
 **Finding (from prior session, `expo/scripts/analyzeDriftVetoOnBuy.ts`):** the Phase 2 counter-trend drift veto IS over-firing on BUYs. It dropped **4/50** counter-trend BUYs that had **positive EV (+0.2295R, 75% win rate)**. Three of the four were winners (+1.149R, +0.385R, +0.385R). The veto is costing the long book **$3.8 in net $** and **+0.0036R in EV per signal**. The veto threshold (2.0×ATR) may be too low for BUYs, or the counter-trend classification may be too broad.
