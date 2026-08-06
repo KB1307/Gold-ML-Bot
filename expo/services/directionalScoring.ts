@@ -62,6 +62,8 @@
  * and adding new unvalidated weight is the Item 3 mistake repeated.
  */
 
+import type { AttentionSide } from './attentionTelemetry';
+
 /** Keys whose value derives from a tick window. May NEVER score. */
 export const TICK_DERIVED_DIRECTIONAL_KEYS = [
   'strong_uptrend',
@@ -155,8 +157,23 @@ export class DirectionalScoreAccumulator {
   /**
    * @param attention shared attention-score map (also carries pure telemetry
    *                  entries written directly by the caller).
+   * @param sides ITEM 29 (telemetry only): parallel map recording WHICH SIDE of
+   *              this accumulator each attention entry actually moved, captured
+   *              here at the call site instead of being guessed later from the
+   *              key's wording. It is a `string -> AttentionSide` (string union)
+   *              map: it carries no number, so it cannot be added into
+   *              `buyStrength` / `sellStrength` even by accident, and nothing in
+   *              this class ever reads it back.
    */
-  constructor(private readonly attention: Map<string, number>) {}
+  constructor(
+    private readonly attention: Map<string, number>,
+    private readonly sides?: Map<string, AttentionSide>,
+  ) {}
+
+  /** Telemetry-only side record. Never read by any scoring path. */
+  private noteSide(key: string, side: AttentionSide): void {
+    this.sides?.set(key, side);
+  }
 
   get buy(): number {
     return this.buyStrength;
@@ -169,11 +186,13 @@ export class DirectionalScoreAccumulator {
   addBuy(key: DirectionalFeatureKey, weight: number, recordAttention: boolean = true): void {
     this.buyStrength += weight;
     if (recordAttention) this.attention.set(key, weight);
+    this.noteSide(key, 'BUY');
   }
 
   addSell(key: DirectionalFeatureKey, weight: number, recordAttention: boolean = true): void {
     this.sellStrength += weight;
     if (recordAttention) this.attention.set(key, weight);
+    this.noteSide(key, 'SELL');
   }
 
   /**
@@ -195,11 +214,13 @@ export class DirectionalScoreAccumulator {
   penalizeBuy(key: DirectionalFeatureKey, penalty: number): void {
     this.buyStrength = Math.max(0, this.buyStrength - penalty);
     this.attention.set(key, -penalty);
+    this.noteSide(key, 'BUY_PENALTY');
   }
 
   penalizeSell(key: DirectionalFeatureKey, penalty: number): void {
     this.sellStrength = Math.max(0, this.sellStrength - penalty);
     this.attention.set(key, -penalty);
+    this.noteSide(key, 'SELL_PENALTY');
   }
 
   /**
@@ -209,5 +230,6 @@ export class DirectionalScoreAccumulator {
    */
   noteTelemetry(key: TickDerivedDirectionalKey, value: number): void {
     this.attention.set(`${TICK_TELEMETRY_PREFIX}${key}`, value);
+    this.noteSide(`${TICK_TELEMETRY_PREFIX}${key}`, 'TELEMETRY');
   }
 }

@@ -1,4 +1,5 @@
-import { PerformanceMetrics, TradingSignal } from "@/types/trading";
+import { FeatureConfidence, PerformanceMetrics, TradingSignal } from "@/types/trading";
+import { renderAttentionAnnotation } from "@/services/attentionTelemetry";
 import type { signalEngine } from "@/services/signalEngine";
 import type { DiagnosticEvent } from "@/services/diagnosticEventStore";
 
@@ -183,6 +184,27 @@ function safeDate(value: unknown): string {
   }
 }
 
+/**
+ * ITEM 29 - one attention entry, rendered so it can no longer be misread.
+ *
+ * The OLD rendering printed `Math.abs(score) * 100` with no side, so a -12
+ * penalty against the signal's own direction and a +12 bonus for it were the
+ * same eight characters, and a bullish-family entry on a SELL row looked like
+ * evidence FOR the SELL. Now the SIGNED value is printed (falling back to the
+ * legacy magnitude when a pre-ITEM-29 record has no signed value) together with
+ * the side the accumulator actually moved and, when it conflicts, an explicit
+ * OPPOSES-<direction> marker. `side-unclassified` / `sides not instrumented`
+ * are printed rather than assuming agreement.
+ */
+function renderFeature(f: FeatureConfidence, signalType: "BUY" | "SELL"): string {
+  const value = typeof f.signedScore === "number" ? f.signedScore : f.score;
+  const magnitude = `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
+  if (f.side === undefined) {
+    return `${f.feature}=${magnitude}(side-not-instrumented)`;
+  }
+  return `${f.feature}=${magnitude}(${renderAttentionAnnotation(f.side, signalType)})`;
+}
+
 function formatSignal(signal: TradingSignal, index: number): string {
   const lines: string[] = [];
   lines.push(`[${index + 1}] ${signal.type} @ ${signal.entryPrice}  —  status: ${signal.status}`);
@@ -204,15 +226,50 @@ function formatSignal(signal: TradingSignal, index: number): string {
   // scoring path. Rendered as one greppable, machine-parsable line.
   const lc = signal.learningContext;
   if (lc) {
+    // ITEM 29 (rendering honesty): a v1 record NEVER HELD these fields, which is
+    // a different fact from "the field was expected and came back empty". Both
+    // used to print `n/a`, which is how "htf unlabelled on 89% of rows" got read
+    // as a live instrumentation failure when it is a historical schema boundary
+    // (v2 landed 2026-07-29; every row after it carries htf). `not-instrumented`
+    // states the schema boundary explicitly.
+    const schema = typeof lc.schemaVersion === "number" ? lc.schemaVersion : 1;
+    const wide = (value: unknown, rendered: string): string =>
+      value === undefined || value === null ? (schema < 2 ? `not-instrumented(v${schema})` : "n/a") : rendered;
     const parts: string[] = [
       `rsi=${Number.isFinite(lc.rsi) ? lc.rsi.toFixed(2) : "n/a"}`,
-      `regime=${lc.regimeType ?? "n/a"}`,
-      `regimeStrength=${typeof lc.regimeStrength === "number" ? lc.regimeStrength.toFixed(3) : "n/a"}`,
+      `schemaVersion=${schema}`,
+      `regime=${wide(lc.regimeType, String(lc.regimeType))}`,
+      `regimeStrength=${wide(lc.regimeStrength, typeof lc.regimeStrength === "number" ? lc.regimeStrength.toFixed(3) : "")}`,
       `atr=${Number.isFinite(lc.atr) ? lc.atr.toFixed(3) : "n/a"}`,
-      `htf=${lc.htfTrend ?? "n/a"}`,
-      `adx=${typeof lc.adx === "number" ? lc.adx.toFixed(1) : "n/a"}`,
+      `htf=${wide(lc.htfTrendAtGate ?? lc.htfTrend, String(lc.htfTrendAtGate ?? lc.htfTrend))}`,
+      `adx=${wide(lc.adx, typeof lc.adx === "number" ? lc.adx.toFixed(1) : "")}`,
     ];
     lines.push(`    forward telemetry: ${parts.join("  ")}`);
+  }
+  // ITEM 28 - COUNTER-TREND GATE RECORD. The classifier and the intraday drift
+  // veto used to leave no durable trace of the four values they decided on, so
+  // "did the veto see what we think it saw" was unanswerable for every past
+  // signal. Read from the signal's own frozen telemetry record, falling back to
+  // the identically-named v3 learningContext fields. `not-instrumented` means
+  // the signal predates the record and is deliberately distinct from a value.
+  const gate = signal.counterTrendTelemetry;
+  const gateLc = signal.learningContext;
+  const gateSchema = typeof gateLc?.schemaVersion === "number" ? gateLc.schemaVersion : 1;
+  if (gate || (gateLc && gateSchema >= 3 && gateLc.counterTrendClassified !== undefined)) {
+    const counterTrend = gate?.counterTrendClassified ?? gateLc?.counterTrendClassified;
+    const drift = gate?.recentDrift ?? gateLc?.recentDrift ?? null;
+    const driftAgainst = gate?.driftAgainst ?? gateLc?.driftAgainst ?? null;
+    const threshold = gate?.driftVetoThreshold ?? gateLc?.driftVetoThreshold ?? null;
+    const predicate = gate?.driftVetoPredicateTrue ?? gateLc?.driftVetoPredicateTrue;
+    const sweepReclaim = gate?.sweepReclaimConfirmed ?? gateLc?.sweepReclaimConfirmedAtGate;
+    const override = gate?.driftVetoOverrideApplied ?? gateLc?.driftVetoOverrideApplied;
+    const spread = gate?.spreadPipsAtEntry ?? gateLc?.spreadPipsAtEntry ?? null;
+    const ltf = gate?.ltfTrendAtGate ?? gateLc?.ltfTrendAtGate;
+    lines.push(
+      `    counter-trend gate: counterTrend=${counterTrend ?? "n/a"}  htfAtGate=${gate?.htfTrendAtGate ?? gateLc?.htfTrendAtGate ?? "n/a"}  ltfAtGate=${ltf ?? "n/a"}  drift=${drift === null ? "uncomputable" : `$${drift.toFixed(2)}`}  driftAgainst=${driftAgainst === null ? "n/a" : `$${driftAgainst.toFixed(2)}`}  driftVetoThreshold=${threshold === null ? "n/a" : `$${threshold.toFixed(2)}`}  vetoPredicate=${predicate ?? "n/a"}  sweepReclaimConfirmed=${sweepReclaim ?? "n/a"}  vetoOverrideApplied=${override ?? "n/a"}  spreadPipsAtEntry=${spread === null ? "none-observed" : spread.toFixed(2)}`,
+    );
+  } else {
+    lines.push(`    counter-trend gate: not-instrumented (signal predates ITEM 28 telemetry)`);
   }
   if (signal.riskJustification) {
     lines.push(`    rationale: ${signal.riskJustification}`);
@@ -225,13 +282,16 @@ function formatSignal(signal: TradingSignal, index: number): string {
   // settings tab used to imply: slPips is honoured, tp1/tp2/tp3Pips are ignored.
   lines.push(`    geometry mode: SL: manual slPips · TPs: R-derived 0.70/1.05/1.40`);
   if (signal.topFeatures?.length) {
-    const features = signal.topFeatures.map((f) => `${f.feature}=${f.score.toFixed(2)}`).join(", ");
+    const features = signal.topFeatures.map((f) => renderFeature(f, signal.type)).join(", ");
     lines.push(`    top features: ${features}`);
   }
   if (signal.fullAttentionScores?.length) {
-    lines.push(`    full attention scores (${signal.fullAttentionScores.length} total):`);
+    const opposing = signal.fullAttentionScores.filter((f) => f.opposesSignal === true);
+    lines.push(
+      `    full attention scores (${signal.fullAttentionScores.length} total${signal.fullAttentionScores.some((f) => f.side !== undefined) ? `, ${opposing.length} OPPOSING this ${signal.type}` : ", sides not instrumented"}):`,
+    );
     signal.fullAttentionScores.forEach((f) => {
-      lines.push(`      ${f.feature}=${f.score.toFixed(2)}`);
+      lines.push(`      ${renderFeature(f, signal.type)}`);
     });
   }
   if (signal.srZonesSnapshot?.length) {

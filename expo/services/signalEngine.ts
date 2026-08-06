@@ -11,6 +11,13 @@ import { appendDiagnosticEvent } from "@/services/diagnosticEventStore";
 import { fetchTier0SRZones, recordTier0FallbackUse } from "@/services/srZoneTier0Service";
 import { DirectionalScoreAccumulator } from "@/services/directionalScoring";
 import {
+  attentionOpposesSignal,
+  attentionSideForKey,
+  buildCounterTrendGateTelemetry,
+  type AttentionSide,
+  type CounterTrendGateTelemetry,
+} from "@/services/attentionTelemetry";
+import {
   aggregateBars,
   barADX,
   barBollinger,
@@ -589,7 +596,12 @@ const TIME_WEIGHTS = {
  * Version stamped onto every newly-captured learning feature vector.
  * 1 = the legacy six scalars only; 2 = the wide vector (see SignalLearningContext).
  */
-const LEARNING_FEATURE_SCHEMA_VERSION = 2;
+/**
+ * 3 = v2 wide vector PLUS the ITEM 28 counter-trend-gate / execution-cost
+ * telemetry block. Every consumer checks `>= 2`, so the bump is backward
+ * compatible and legacy records keep declaring 1 or 2 truthfully.
+ */
+const LEARNING_FEATURE_SCHEMA_VERSION = 3;
 
 function createDefaultLearningContext(): SignalLearningContext {
   return {
@@ -5199,6 +5211,12 @@ class SignalGenerationEngine {
     sentimentImpact: number;
     fibonacciAlignment: boolean;
     attentionScores: Map<string, number>;
+    /**
+     * ITEM 29 (telemetry only): which side of the accumulator each attention
+     * entry actually moved, recorded at the call site. Carries string-union
+     * values, never numbers, so it cannot enter any strength/confidence sum.
+     */
+    attentionSides: Map<string, AttentionSide>;
   } {
     const now = new Date();
     const hour = now.getUTCHours();
@@ -5214,7 +5232,10 @@ class SignalGenerationEngine {
     // COMPILE error, not a review miss. See that module's header for the full
     // rationale (design decision on first-principles grounds; the measurement at
     // n=369 was underpowered and could not adjudicate).
-    const dir = new DirectionalScoreAccumulator(attentionScores);
+    // ITEM 29: the accumulator now also records WHICH SIDE each entry moved into
+    // this parallel map. Telemetry only - see attentionTelemetry.ts header.
+    const attentionSides = new Map<string, AttentionSide>();
+    const dir = new DirectionalScoreAccumulator(attentionScores, attentionSides);
     
     console.log('\n🔍 MULTI-TIMEFRAME ANALYSIS:');
     console.log('='.repeat(60));
@@ -5663,6 +5684,7 @@ class SignalGenerationEngine {
         sentimentImpact: 0,
         fibonacciAlignment: false,
         attentionScores,
+        attentionSides,
       };
     }
     
@@ -5684,6 +5706,7 @@ class SignalGenerationEngine {
         sentimentImpact: 0,
         fibonacciAlignment: false,
         attentionScores,
+        attentionSides,
       };
     }
     
@@ -5833,6 +5856,7 @@ class SignalGenerationEngine {
       sentimentImpact: parseFloat(sentimentImpact.toFixed(2)),
       fibonacciAlignment,
       attentionScores,
+      attentionSides,
     };
   }
   
@@ -6309,6 +6333,7 @@ class SignalGenerationEngine {
   private buildLearningContext(
     features: MarketFeatures,
     geometry: { entryPrice: number; slDistance: number; tp1Distance: number; confidence: number },
+    gate?: CounterTrendGateTelemetry,
   ): SignalLearningContext {
     const now = new Date();
     const price = geometry.entryPrice;
@@ -6393,6 +6418,21 @@ class SignalGenerationEngine {
         ? parseFloat((geometry.tp1Distance / geometry.slDistance).toFixed(3))
         : undefined,
       confidenceAtEntry: parseFloat(geometry.confidence.toFixed(4)),
+
+      // ITEM 28 (v3): written from the SAME frozen telemetry record attached to
+      // the signal, so the learning corpus and the signal record can never
+      // disagree about what the gate saw. Absent (not zero) on any path that
+      // does not supply it.
+      htfTrendAtGate: gate?.htfTrendAtGate,
+      ltfTrendAtGate: gate?.ltfTrendAtGate,
+      counterTrendClassified: gate?.counterTrendClassified,
+      recentDrift: gate?.recentDrift,
+      driftAgainst: gate?.driftAgainst,
+      driftVetoThreshold: gate?.driftVetoThreshold,
+      driftVetoPredicateTrue: gate?.driftVetoPredicateTrue,
+      sweepReclaimConfirmedAtGate: gate?.sweepReclaimConfirmed,
+      driftVetoOverrideApplied: gate?.driftVetoOverrideApplied,
+      spreadPipsAtEntry: gate?.spreadPipsAtEntry,
     };
   }
 
@@ -7191,6 +7231,30 @@ class SignalGenerationEngine {
       }
     }
     
+    // ── ITEM 28: COUNTER-TREND GATE TELEMETRY (non-scoring record) ──────────
+    // Everything below is a READ of values the gate above already produced. It
+    // is computed AFTER the veto block, so a vetoed signal never reaches here
+    // (it returned null) and the surviving signal carries the exact arithmetic
+    // the veto applied to it. `recentDrift` is reused verbatim when the
+    // classifier computed it; when the classifier short-circuited (not
+    // counter-trend, so `recentDrift` is null by construction) the drift is
+    // recomputed by the same pure helper purely so the record is populated for
+    // every signal. Nothing here is read by any branch, threshold or sum.
+    const counterTrendTelemetry: CounterTrendGateTelemetry = buildCounterTrendGateTelemetry({
+      signalType: analysis.signalType,
+      htfTrend,
+      ltfTrend: ltfTrendForGate,
+      counterTrendClassified: isCounterTrendSignal,
+      recentDrift: recentDrift !== null ? recentDrift : this.computeRecentDrift(),
+      atr: features.atr,
+      driftAtrVetoMultiple: COUNTER_TREND_DRIFT_ATR_VETO,
+      overrideConfidence: COUNTER_TREND_DRIFT_OVERRIDE_CONFIDENCE,
+      confidence: analysis.confidence,
+      sweepReclaimConfirmed: features.sessionSweeps.some(s => s.reversalConfirmed),
+      spreadPips: this.lastKnownSpreadPips > 0 ? this.lastKnownSpreadPips : null,
+    });
+    console.log(`🧾 GATE TELEMETRY: counterTrend=${counterTrendTelemetry.counterTrendClassified} htf=${counterTrendTelemetry.htfTrendAtGate} ltf=${counterTrendTelemetry.ltfTrendAtGate} drift=${counterTrendTelemetry.recentDrift ?? 'n/a'} against=${counterTrendTelemetry.driftAgainst ?? 'n/a'} threshold=${counterTrendTelemetry.driftVetoThreshold ?? 'n/a'} predicate=${counterTrendTelemetry.driftVetoPredicateTrue} sweepReclaim=${counterTrendTelemetry.sweepReclaimConfirmed} override=${counterTrendTelemetry.driftVetoOverrideApplied} spread=${counterTrendTelemetry.spreadPipsAtEntry ?? 'none'}`);
+
     if (isCounterTrendSignal && !trendChangeDetected && !largePriceMovement) {
       // Proposal #5: Asymmetric gate - RSI extreme with confirmed sweep bypasses 5-min requirement
       const rsiExtreme = features.rsi < 25 || features.rsi > 75;
@@ -7518,9 +7582,22 @@ class SignalGenerationEngine {
       .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
       .slice(0, 3);
     
+    // ITEM 29: `feature` and `score` are produced by the SAME expressions as
+    // before (display name, absolute magnitude x100) so no UI or parser changes
+    // meaning. `signedScore` / `side` / `opposesSignal` are additive fields that
+    // finally make a penalty distinguishable from a bonus, and a bullish entry
+    // riding on a SELL visible as opposing rather than as supporting evidence.
+    // The side comes from `attentionSides` (recorded at the call site by the
+    // accumulator) and falls back to the static table only for entries written
+    // straight into the attention map.
+    const resolveSide = (rawKey: string): AttentionSide =>
+      analysis.attentionSides.get(rawKey) ?? attentionSideForKey(rawKey);
     const topFeatures: FeatureConfidence[] = sortedAttention.map(([feature, score]) => ({
       feature: feature.replace(/_/g, ' ').toUpperCase(),
       score: parseFloat((Math.abs(score) * 100).toFixed(1)),
+      signedScore: parseFloat((score * 100).toFixed(1)),
+      side: resolveSide(feature),
+      opposesSignal: attentionOpposesSignal(resolveSide(feature), analysis.signalType),
     }));
 
     // Part B (diagnostics): capture EVERY entry in attentionScores, not just
@@ -7530,6 +7607,9 @@ class SignalGenerationEngine {
       .map(([feature, score]) => ({
         feature: feature.replace(/_/g, ' ').toUpperCase(),
         score: parseFloat((Math.abs(score) * 100).toFixed(1)),
+        signedScore: parseFloat((score * 100).toFixed(1)),
+        side: resolveSide(feature),
+        opposesSignal: attentionOpposesSignal(resolveSide(feature), analysis.signalType),
       }));
 
     // Per-signal srZones snapshot: capture the exact detectSRZones() output
@@ -7734,7 +7814,8 @@ class SignalGenerationEngine {
         slDistance: Math.abs(entryPriceWithSlippage - sl),
         tp1Distance: Math.abs(tp1 - entryPriceWithSlippage),
         confidence: analysis.confidence,
-      }),
+      }, counterTrendTelemetry),
+      counterTrendTelemetry,
       timeToLive: timeToLiveMinutes,
       nextMoveContext,
       latencyWarning,

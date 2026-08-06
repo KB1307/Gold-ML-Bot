@@ -1,3 +1,7 @@
+import type { AttentionSide, CounterTrendGateTelemetry } from "@/services/attentionTelemetry";
+
+export type { AttentionSide, CounterTrendGateTelemetry };
+
 export type SignalType = "BUY" | "SELL";
 
 /**
@@ -16,7 +20,31 @@ export type SignalStatus = "ACTIVE" | "TP1_HIT" | "TP2_HIT" | "TP3_HIT" | "ALL_T
 
 export interface FeatureConfidence {
   feature: string;
+  /**
+   * ABSOLUTE contribution x100, unchanged since v1 so every existing UI and
+   * parser keeps reading the same number. ITEM 29: this field alone is
+   * MISLEADING on its own — a +0.35 bonus and a -0.12 penalty both render as a
+   * positive magnitude here. Use `signedScore` / `side` when interpreting.
+   */
   score: number;
+  /**
+   * ITEM 29 (additive): the TRUE signed contribution x100. Negative means the
+   * entry SUBTRACTED from the side it was recorded against (a penalty).
+   */
+  signedScore?: number;
+  /**
+   * ITEM 29 (additive): which side of the directional accumulator this entry
+   * actually moved, captured at the call site — not inferred from the key name.
+   * 'UNCLASSIFIED' means the record does not establish a side; it must never be
+   * read as agreement with the signal.
+   */
+  side?: AttentionSide;
+  /**
+   * ITEM 29 (additive): true when this entry's favoured direction is the
+   * OPPOSITE of the signal that carried it. Undefined/false on unclassified or
+   * non-directional entries.
+   */
+  opposesSignal?: boolean;
 }
 
 export interface MacroEvent {
@@ -73,6 +101,15 @@ export interface TradingSignal {
   trailingSLLevel?: 'ENTRY' | 'TP1' | 'TP2';
   learningContext?: SignalLearningContext;
   slAuditVersion?: string;
+  /**
+   * ITEM 28 (additive, telemetry only): exactly what the counter-trend
+   * classifier and the intraday drift veto saw for THIS signal — drift, the
+   * ATR-scaled threshold, the sweep-reclaim flag, the resulting predicate, the
+   * HTF/LTF labels the gate read, and the real spread applied at entry. These
+   * values previously existed only in a console log, so no historical signal
+   * could be checked against the rule that let it through.
+   */
+  counterTrendTelemetry?: CounterTrendGateTelemetry;
 }
 
 export interface MarketSession {
@@ -240,6 +277,36 @@ export interface SignalLearningContext {
   tp1Distance?: number;
   plannedRR?: number;
   confidenceAtEntry?: number;
+
+  // ---- v3: counter-trend gate + execution-cost telemetry (ITEM 28) ----
+  // Present when schemaVersion >= 3. Every field mirrors the identically-named
+  // field on CounterTrendGateTelemetry and is written from the SAME pure record,
+  // so the learning corpus and the signal record can never disagree.
+  /** HTF label the counter-trend gate itself read (v2 `htfTrend` is the same call). */
+  htfTrendAtGate?: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  /** LTF label the counter-trend gate itself read. */
+  ltfTrendAtGate?: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  /** Did the B1-repaired classifier call this signal counter-trend? */
+  counterTrendClassified?: boolean;
+  /** Signed 5-min drift in dollars over the veto lookback; null = uncomputable. */
+  recentDrift?: number | null;
+  /** Drift re-signed so positive = against this signal's direction. */
+  driftAgainst?: number | null;
+  /** The atr x veto-multiple value driftAgainst was compared against. */
+  driftVetoThreshold?: number | null;
+  /** True when driftAgainst >= driftVetoThreshold. */
+  driftVetoPredicateTrue?: boolean;
+  /** Sweep with reversalConfirmed present at gate time? */
+  sweepReclaimConfirmedAtGate?: boolean;
+  /** Predicate fired but sweep + conviction override allowed the entry. */
+  driftVetoOverrideApplied?: boolean;
+  /**
+   * REAL bid/ask spread in pips applied to this entry, or null when no live
+   * reading existed. This is the field that makes cost-adjusted expectancy
+   * measurable forward — before it existed, no durable store anywhere held a
+   * single observed spread.
+   */
+  spreadPipsAtEntry?: number | null;
 }
 
 export interface PerformanceMetrics {

@@ -867,6 +867,70 @@ Measured on 4256.6 over 2026-08-06T03:00-07:00Z (241 of 241 minutes present):
 Nothing was proposed. No engine, resolver, gate or scoring code was touched.
 Items 13, 8, 19, 20 remain UNBUILT.
 
+## 3r. ITEMS 28 & 29 — GATE TELEMETRY BUILT, FEATURE RENDERING FIXED. COST MODEL: NO RECORD EXISTS. (2026-08-06)
+
+### ITEM 28 — counter-trend gate telemetry (BUILT, no scoring path touched)
+
+Every signal now carries a frozen `counterTrendTelemetry` record (also mirrored into
+`learningContext` v3, so it persists into `trade_outcomes_v1.features`): `htfTrendAtGate`,
+`ltfTrendAtGate`, `counterTrendClassified`, `recentDrift`, `driftAgainst`,
+`driftVetoThreshold`, `driftVetoPredicateTrue`, `sweepReclaimConfirmed`,
+`driftVetoOverrideApplied`, `spreadPipsAtEntry`. Built in
+`expo/services/attentionTelemetry.ts` by a pure function; rendered as a
+`counter-trend gate:` line in SECTION 1 of the export. `null` always means
+"uncomputable", never 0, and pre-Item-28 signals render `not-instrumented`.
+
+**Structural proof (28d), automated in `expo/scripts/test_item28_29_telemetry.ts`:** the
+current `signalEngine.ts` is diffed against `git show HEAD:` and every added/removed
+non-comment line is asserted to mention no scoring identifier (buy/sellSignalStrength,
+dir.add*/penalize*, baseConfidence, rawConfidence, smoothedConfidence,
+tier0AdjustedConfidence, calibrationPenalty, dynamicSlPips, atrMultiplier, `return null`
+…). The drift-veto branch and the B1 classifier are asserted byte-identical. Every
+`attentionScores.get('…')` lookup in the engine is enumerated and asserted disjoint from
+the telemetry field names (runtime counterpart of the compile-time
+`assertTelemetryKeysAreNotScoringKeys`). 32/32 checks pass.
+
+### ITEM 29 — the export's feature rendering was misleading (FIXED)
+
+Two defects, both rendering-only: (a) `Math.abs(score)*100` made a **-0.12 penalty**
+print identically to a **+0.12 bonus**; (b) a bullish-family key on a SELL row read as
+evidence FOR the SELL when it was recorded because the BUY accumulator moved. The side
+is now captured **at the call site** (`DirectionalScoreAccumulator` writes a parallel
+`string -> AttentionSide` map — no number, so it cannot enter a strength sum), the export
+prints the **signed** value plus `buy-side,OPPOSES-SELL` / `buy-penalty,OPPOSES-BUY` /
+`context`, and keys whose side is genuinely call-site-dependent (`fibonacci_alignment`,
+`rsi_learned_modulation`, `sr_zone_*`, `multi_touch_sr_confirmation`) print
+`side-unclassified` rather than being guessed. `feature` and `score` are unchanged, so
+no UI or existing parser shifts meaning.
+
+Also fixed: `htf=n/a` on 355/396 export rows was NOT a live instrumentation failure. It
+is a schema boundary — v2 landed 2026-07-29, and **every row from 2026-07-30 onward has
+htf populated (40/40)**. Those rows are v1 six-scalar records that never held the field,
+and the export now prints `not-instrumented(v1)` instead of `n/a` plus an explicit
+`schemaVersion=` token.
+
+### COST MODEL — `EXECUTION_COST_PER_TRADE_USD = 0.05` IS UNEVIDENCED (finding, NOT changed)
+
+Probed every durable store (`expo/scripts/fetchExportAndProbeSpread.ts`):
+`gold_m1_bars` = (id, timestamp, open, high, low, close, volume) — no bid/ask;
+`shadow_signals_v1` — no spread column; export text — **0 lines** mention spread/bid/ask.
+**No durable record anywhere holds a single observed XAU spread. POWER = 0 rows.**
+Worse, `setLastKnownSpread()` has **zero call sites**, so `lastKnownSpreadPips` is always
+0 — the real spread never entered entry geometry either, and `calculateSpreadRatio()`
+can never reach `sufficient:true` (which also means the Part B order-flow path is
+permanently on its neutral baseline). Item 28's `spreadPipsAtEntry` closes the RECORD
+gap forward, but it will log `none-observed` until a caller feeds real bid/ask in.
+
+Measured sensitivity (`expo/scripts/analyzeExecutionCostSensitivity.ts`, 396 resolved
+rows, realised R computed from each record's own exit price and stop distance):
+gross EV **+0.0493R**, real risk$ median $5.20 (p10 $3.90 / p90 $8.30).
+Net EV: **+0.0397R @ $0.05** · +0.0207R @ $0.15 · **+0.0017R @ $0.25** · -0.0174R @ $0.35.
+**Breakeven round-trip cost = $0.259 (2.59 pips).** BUY-only breakeven $0.369 (3.69 pips);
+SELL-only $0.181 (1.81 pips). The assumed $0.05 is **0.5 pips**, i.e. the entire book's
+positive expectancy fits inside a ~2.6 pip cost assumption that has never been measured.
+Nothing was changed on this — it is a measurement gap, and the constant stays 0.05 until
+real spread readings exist.
+
 ## 4. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
 
 **Finding (from prior session, `expo/scripts/analyzeDriftVetoOnBuy.ts`):** the Phase 2 counter-trend drift veto IS over-firing on BUYs. It dropped **4/50** counter-trend BUYs that had **positive EV (+0.2295R, 75% win rate)**. Three of the four were winners (+1.149R, +0.385R, +0.385R). The veto is costing the long book **$3.8 in net $** and **+0.0036R in EV per signal**. The veto threshold (2.0×ATR) may be too low for BUYs, or the counter-trend classification may be too broad.
