@@ -735,6 +735,11 @@ function computePower(n1: number, n2: number, ev1: number, ev2: number, pooledSd
 function mean(a: number[]): number {
   return a.length > 0 ? a.reduce((x, y) => x + y, 0) / a.length : NaN;
 }
+function profitFactor(rs: number[]): number {
+  const gw = rs.filter((r) => r > 0).reduce((a, b) => a + b, 0);
+  const gl = Math.abs(rs.filter((r) => r < 0).reduce((a, b) => a + b, 0));
+  return gl === 0 ? Infinity : gw / gl;
+}
 function sd(a: number[]): number {
   if (a.length < 2) return 0;
   const m = mean(a);
@@ -1073,9 +1078,13 @@ async function main(): Promise<void> {
     const evFails = fails.map((r) => r.realisedR as number);
     const meanC = evClears.length > 0 ? evClears.reduce((a, b) => a + b, 0) / evClears.length : NaN;
     const meanF = evFails.length > 0 ? evFails.reduce((a, b) => a + b, 0) / evFails.length : NaN;
+    const wrC = evClears.length > 0 ? (evClears.filter((r) => r > 0).length / evClears.length) * 100 : NaN;
+    const wrF = evFails.length > 0 ? (evFails.filter((r) => r > 0).length / evFails.length) * 100 : NaN;
+    const pfC = evClears.length > 0 ? profitFactor(evClears) : NaN;
+    const pfF = evFails.length > 0 ? profitFactor(evFails) : NaN;
     console.log(`\n    ${eraName} geometry (n=${era.length}):`);
-    console.log(`      CLEARS per-signal TP1: n=${evClears.length}, EV=${isNaN(meanC) ? "n/a" : `${meanC >= 0 ? "+" : ""}${meanC.toFixed(4)}R`}`);
-    console.log(`      FAILS per-signal TP1:  n=${evFails.length}, EV=${isNaN(meanF) ? "n/a" : `${meanF >= 0 ? "+" : ""}${meanF.toFixed(4)}R`}`);
+    console.log(`      CLEARS per-signal TP1: n=${evClears.length}, EV=${isNaN(meanC) ? "n/a" : `${meanC >= 0 ? "+" : ""}${meanC.toFixed(4)}R`}, WR=${isNaN(wrC) ? "n/a" : wrC.toFixed(1) + "%"}, PF=${isNaN(pfC) ? "n/a" : pfC.toFixed(3)}`);
+    console.log(`      FAILS per-signal TP1:  n=${evFails.length}, EV=${isNaN(meanF) ? "n/a" : `${meanF >= 0 ? "+" : ""}${meanF.toFixed(4)}R`}, WR=${isNaN(wrF) ? "n/a" : wrF.toFixed(1) + "%"}, PF=${isNaN(pfF) ? "n/a" : pfF.toFixed(3)}`);
     if (era.length < 10) {
       console.log(`      => IMPOSSIBLE (rule 8): n=${era.length} is too small for any split. No verdict taken.`);
     } else {

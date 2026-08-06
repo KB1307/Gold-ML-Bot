@@ -966,7 +966,23 @@ already used by every counterfactual in this system (Items 6, 7, 9–12, 21, 22,
 A (+0.0493R) remains valid for cost-sensitivity tables but is not a tradable result.
 
 BUY/SELL split (canonical): BUY n=172 EV +0.1351R WR 62.8% PF 1.363; SELL n=210
-EV +0.0501R WR 65.2% PF 1.144. MDE at 80% power: BUY 0.2947R, SELL 0.2330R.
+EV +0.0501R WR 65.2% PF 1.144. MDE at 80% power (each vs zero): BUY 0.2947R, SELL 0.2330R.
+
+**BUY vs SELL DIFFERENCE power (Follow-up 2):** Observed difference (BUY−SELL) = +0.0850R.
+Pooled SD 0.9101R, SE of difference 0.0936R, MDE (80% power, alpha=0.05) = 0.2621R.
+0.0850R < 0.2621R → **UNDERPOWERED.** The BUY/SELL gap is directionally consistent with
+the PF finding (1.363 vs 1.144) but consistency is not confirmation — the gap is not
+distinguishable from zero at this sample size.
+
+**CLOSED semantics (Follow-up 4):** CLOSED is NOT a snapshot artifact of an unresolved
+signal. In `signalResolver.ts:522`, CLOSED is set by the fromScratch resolver ONLY when
+entry was filled but NO TP/SL bar event ever fired AND the signal has matured past
+ENTRY_MATURITY_MS with zero targets hit — it is a genuine resolution (exit at last
+evaluated bar's close, outcome null = flat). The engine (`signalEngine.ts:7474`) treats
+CLOSED as a resolved status for signal-lock release. The 7 export CLOSED→ALL_TARGETS_HIT
+corrections in Item 32 are the resolver finding bars the engine's live tracker missed —
+CLOSED in the export meant the live tracker gave up before a bar event it should have
+caught, not that the signal was still open at export time.
 
 ### ITEM 33 — SHADOW ZONE METRIC: structural findings decisive, outcome splits UNDERPOWERED, required-n computed
 
@@ -992,9 +1008,14 @@ gated (median break excursion 3.0–5.0 ATR).
 as the user's error — 394/396 signals use old geometry (TP1/SL < 0.60, median TP1 $2.60 = 26
 pips). Only 2/396 use new geometry (TP1 $5.70 = 57 pips). Per-signal TP1 distance is used
 for every clearance test. OLD geometry: n=21 eligible, 21 clear, 0 fail — split IMPOSSIBLE
-(all clear). NEW geometry: n=121 eligible, 100 clear, 21 fail — n=121 is testable but the
-era boundary is the TP1/SL ratio, not a date. Pooled across eras: clears n=121 EV −0.0137R,
-fails n=21 EV −0.2874R — but this pools across geometry eras and is NOT canonical.
+(all clear). NEW geometry: n=121 eligible, 100 clear, 21 fail — the one clearance test
+that is NOT impossible. Outcome split (POWER FIRST):
+  CLEARS n=100 EV −0.0036R WR 58.0% PF 0.991
+  FAILS  n=21  EV −0.2874R WR 47.6% PF 0.425
+  Observed delta 0.2839R, MDE 0.4646R → UNDERPOWERED.
+  The direction is what the zone-reaction hypothesis predicts (clears > fails) but
+  0.2839R < 0.4646R MDE — this is not a result. Pooled across eras (NOT canonical):
+clears n=121 EV −0.0137R, fails n=21 EV −0.2874R — pools across geometry eras.
 
 **33.4h 1D RELIABILITY split (n=142 EV-eligible):** HIGH reliability (reversalRate ≥ 0.500)
 EV +0.0703R (n=74) vs LOW EV −0.1896R (n=68). Delta 0.2598R. **MDE 0.4256R → UNDERPOWERED.**
@@ -1020,8 +1041,12 @@ is established without sample. The outcome question needs forward data.
 | 2D grid | 0.6470R | 0.9057R | 31/cell | 279 | 779 | 71 | **2026-10-16** |
 
 Zone-match rate = 142/396 = 35.9%. At ~11 signals/day. The magnitude split reaches power
-first (~Oct 8); reliability is the binding constraint (~Nov 11). The next decision point is
-when Item 33's required-n is met.
+first (~Oct 8); the 2D extreme-cell comparison reaches power ~Oct 16 (its effect size is
+~2.5× larger than the reliability marginal); reliability is the binding constraint (~Nov 11).
+**Planning note (Follow-up 3):** when enough data accumulates, check the 2D extreme-cell
+comparison FIRST (~Oct 16) rather than waiting on the reliability marginal (~Nov 11) —
+it may answer the more specific question sooner. The next decision point is when Item 33's
+required-n is met.
 
 ### ITEM 34 — bounceThreshold COUNTERFACTUAL: 3 counter-trend signals, IMPOSSIBLE to split
 

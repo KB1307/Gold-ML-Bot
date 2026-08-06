@@ -130,6 +130,12 @@ function profitFactor(rs: number[]): number {
   const gl = Math.abs(rs.filter((r) => r < 0).reduce((a, b) => a + b, 0));
   return gl === 0 ? Infinity : gw / gl;
 }
+function pooledSd(vals1: number[], vals2: number[]): number {
+  const all = [...vals1, ...vals2];
+  if (all.length < 2) return 0;
+  const m = all.reduce((a, b) => a + b, 0) / all.length;
+  return Math.sqrt(all.reduce((s, v) => s + (v - m) ** 2, 0) / (all.length - 1));
+}
 
 async function fetchBars(client: SupabaseClient, fromMs: number, toMs: number): Promise<OhlcBar[]> {
   const page = 1000;
@@ -431,6 +437,31 @@ async function main(): Promise<void> {
     console.log(`    MDE (80% power, alpha=0.05) = ${mde === Infinity ? 'n/a (n<10)' : mde.toFixed(4) + 'R'}`);
     console.log(`    Risk$ median = ${median(sub.map((m) => Math.abs(m.signal.entry - m.signal.sl))).toFixed(2)}`);
   }
+
+  // BUY vs SELL DIFFERENCE power (not each against zero)
+  const buyRs = methodB.filter((m) => m.signal.direction === 'BUY').map((m) => m.r as number);
+  const sellRs = methodB.filter((m) => m.signal.direction === 'SELL').map((m) => m.r as number);
+  const evBuy = mean(buyRs);
+  const evSell = mean(sellRs);
+  const observedDiff = evBuy - evSell;
+  const sigmaPooled = pooledSd(buyRs, sellRs);
+  const nBuy = buyRs.length;
+  const nSell = sellRs.length;
+  // SE of the difference: sigma_pooled * sqrt(1/n1 + 1/n2)
+  const seDiff = sigmaPooled * Math.sqrt(1 / nBuy + 1 / nSell);
+  // MDE at 80% power, alpha=0.05 two-sided: (z_alpha + z_beta) * SE = 2.8 * SE
+  const mdeDiff = 2.8 * seDiff;
+  const poweredDiff = nBuy >= 10 && nSell >= 10 && Math.abs(observedDiff) >= mdeDiff;
+  console.log('\n' + '─'.repeat(80));
+  console.log('BUY vs SELL — DIFFERENCE POWER (not each against zero)');
+  console.log('─'.repeat(80));
+  console.log(`  BUY  EV = ${evBuy >= 0 ? '+' : ''}${evBuy.toFixed(4)}R  n=${nBuy}  SD=${sd(buyRs).toFixed(4)}`);
+  console.log(`  SELL EV = ${evSell >= 0 ? '+' : ''}${evSell.toFixed(4)}R  n=${nSell}  SD=${sd(sellRs).toFixed(4)}`);
+  console.log(`  Observed difference (BUY - SELL) = ${observedDiff >= 0 ? '+' : ''}${observedDiff.toFixed(4)}R`);
+  console.log(`  Pooled SD = ${sigmaPooled.toFixed(4)}R`);
+  console.log(`  SE of difference = ${seDiff.toFixed(4)}R`);
+  console.log(`  MDE (80% power, alpha=0.05) = ${mdeDiff.toFixed(4)}R`);
+  console.log(`  POWER: ${poweredDiff ? 'POWERED — difference is distinguishable from zero' : 'UNDERPOWERED — observed difference ' + Math.abs(observedDiff).toFixed(4) + 'R < MDE ' + mdeDiff.toFixed(4) + 'R'}`);
 
   // Full book
   console.log(`\n  FULL BOOK (n=${rsB.length}):`);
