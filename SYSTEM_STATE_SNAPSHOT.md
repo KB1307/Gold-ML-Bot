@@ -776,6 +776,97 @@ VACUOUS — cannot be proven from outside the client, and both need the user to 
    behaviour (newest suppressed shadow SELL is 2026-07-31; SELLs kept emitting after
    it, e.g. [5] SELL 2026-08-04T15:08Z), not read.
 
+## 3q. DIRECTION-SELECTION INVESTIGATION (2026-08-06) — READ-ONLY, NOTHING BUILT
+
+`expo/scripts/investigateDirectionSelection.ts` (new, read-only). Export 489,276 B
+generated 2026-08-06T07:50:26Z; 39,150 `gold_m1_bars` rows read DIRECT via anon key;
+canonical bar-covered 383, resolved with a real fill 382; BOOK BASELINE WR 64.1% /
+EV 0.0883R / PF 1.246.
+
+### STEP 1 — MECHANISM CONFIRMED. A SIGN/DISPLAY defect, not a weight defect.
+`signalEngine.ts:5245`, inside `if (htfTrend === 'BULLISH')`:
+`if (rsiOversold || (rsiNeutralBearish && ltfTrend === 'BEARISH')) { rsiBuyContribution
++= 0.35; attentionScores.set('counter_trend_bounce_setup', 0.35); }`
+It adds to **rsiBuyContribution** only — it contributes **0.00 to sell strength** and is
+unreachable from the `htfTrend === 'BEARISH'` branch. `attentionScores` is a flat
+side-agnostic Map and `diagnosticsExport.ts:228` prints it unsigned, so on a SELL the
+export renders `COUNTER TREND BOUNCE SETUP=35.00` as if it supported the SELL. The +35
+never scored the SELL. Both live SELLs fired with their own second-strongest recorded
+evidence pointing the OTHER WAY, and no gate can see that, because the attention map
+carries no side.
+
+### STEP 1b — the classifier and the drift veto DID evaluate both SELLs.
+`isCounterTrendSignal` (`:7154`) includes `SELL && htfTrend==='BULLISH'` -> TRUE for
+both. 60-min drift RECONSTRUCTED from real M1 bars (the engine's own 5-min array is
+not persisted, so this is the input rebuilt, not a replay):
+- [1] drift **-8.60**, threshold atr 1.6 x 2.0 = **3.20** -> predicate FALSE, veto
+  correctly silent. Price then ran **+$30.20** against it. The veto looks BACKWARD at a
+  falling hour; the trade died in the rising hour that followed.
+- [2] drift **+4.44**, threshold atr 1.9 x 2.0 = **3.80** -> predicate **TRUE, it
+  should have REJECTED**. It emitted anyway. Confidence 90.0% >= the 0.85 override
+  floor, so the sweep-reversal OVERRIDE at `:7182` is the only path that emits it.
+  Which of the two actually happened is **NOT MEASURABLE** (rule 8): neither
+  `recentDrift` nor `sessionSweeps[].reversalConfirmed` is exported or durably logged.
+  FORWARD EVIDENCE THAT SETTLES IT: export `recentDrift`, its threshold and
+  `sweepReclaimConfirmed` on every counter-trend signal.
+- UNITS DEFECT (separate): `validateStructuralConditions` `const bounceThreshold = 10`
+  (`:8131`) is compared as `Math.abs(zone.price - currentPrice) < 10` = **$10 = 100
+  pips**, while its own comment and user-facing tip both say "10 pips". Both SELLs sat
+  $3.20 / $1.70 from RESISTANCE 4256.6 — they pass a $10 band and would FAIL a true
+  10-pip band. The gate is 10x looser than documented.
+
+### STEP 1c/1d — UNDERPOWERED, and partly IMPOSSIBLE. No verdict taken.
+`htf` is `n/a` on **341 of 382 (89.3%)**, so the htf split is IMPOSSIBLE on 9 of every
+10 signals. Feature carriers: only **12** in the canonical set (10 BUY / 2 SELL). Every
+carrier cell's Wilson 95% interval spans the baseline:
+- ALL carriers n=12 WR 50.0% EV -0.1355R, WR95 [25.4, 74.6] -> UNDERPOWERED
+- carriers opposing htf n=2 — and those 2 ARE the two live SELLs, so the cell is the
+  complaint restated, not independent evidence about it
+- SELL RSI<40 n=107 WR 67.3% **EV +0.1132R**; BUY RSI>60 n=87 WR 65.5% **EV +0.1916R**.
+  Both POSITIVE. The RSI-side-mismatch hypothesis is NOT confirmed — on this sample it
+  points the OPPOSITE way, so "veto SELLs at low RSI" has no support.
+
+### STEP 2 — the pre-registered mirror metric came out DEGENERATE. Reported, not used.
+Mirror = same entry, same SL/TP distances, opposite side, REAL resolver, fromScratch.
+"Of signals that LOST, what fraction would have WON mirrored?" = **137 of 137 = 100%**,
+and that is a **TAUTOLOGY**: all 137 losers are `targetsHit=0` full-1.00R stops, TP1
+sits at 0.70R, so price travelling 1.00R against the issued side necessarily passed the
+mirror's TP1 first, and the mirror's own stop cannot have printed first or the issued
+side would have banked TP3. The metric as specified cannot answer 2(d). It is printed
+with the degeneracy proof attached rather than quoted as a finding.
+Non-degenerate readings:
+- WHOLE BOOK ACTUAL EV 0.0883R WR 64.1% vs **MIRROR EV 0.0776R WR 65.7%** — the
+  mirrored book is ALSO profitable, so the book's EV is not coming from direction
+  selection; it is coming from the 0.70R-TP1 ladder.
+- **BOTH SIDES WON in 114 of 382 (29.8%)** — the 0.70R TP1 was reachable in BOTH
+  directions from the same entry, so the side chosen was irrelevant in ~30% of rows.
+- issued SELL ACTUAL 0.0501R vs MIRROR 0.0202R; issued BUY ACTUAL 0.1351R vs MIRROR
+  0.1476R. The two live SELLs mirrored: both PARTIAL_WIN_SL_HIT, +0.595R / +0.588R.
+LIMIT restated: NOT an achievable strategy; nothing here proposes inverting the book.
+
+### STEP 3 — TOUCH COUNT MEASURES OCCUPANCY. CONFIRMED. Cause = the zoneWidth floor.
+`refresh-sr-zones/index.ts:119` (script port `computeAndWriteZones.ts:134`):
+`zoneWidth = Math.max(atr * 0.3, currentPrice * 0.0015)`. Live: `atr*0.3 = 0.65` but
+`price*0.0015 = 6.42`, so **the floor ALWAYS wins** and the band is **+/-$6.42 = 128
+pips wide**. The touch predicate `if (Math.abs(close - cluster.price) < zoneWidth)
+touches++` runs per BAR, so consecutive minutes each count separately.
+Measured on 4256.6 over 2026-08-06T03:00-07:00Z (241 of 241 minutes present):
+- 148 of 241 bars "touch" (61.4% of minutes) in only **14 distinct visits**, longest
+  single uninterrupted run **52 consecutive bars**, all counted separately.
+- **CROSSINGS 15 vs genuine REVERSALS 3 = 5.00 : 1** — crossings dominate, so the
+  metric measures occupancy, not structure.
+- `touchScore = min(1, touches/6)` saturates at SIX touches. Across all **1226** zone
+  rows: touches p50 1 / p75 100 / max 1488; **47.6% already saturated** (touches>6);
+  29.6% carry reaction >= 90%. Above 6 the count is decoration — 284 and 1488 score
+  identically, so "284 touches / 97%" conveys no more than "6 touches".
+- The 128-pip band on 4256.6 spans [4250.2, 4263.0], which also contains SUPPORT
+  4248.7's band and RESISTANCE 4262.0's band. Support and resistance OVERLAP, which is
+  how the counter-trend gate found a "qualifying RESISTANCE" inside a range price was
+  oscillating straight through.
+
+Nothing was proposed. No engine, resolver, gate or scoring code was touched.
+Items 13, 8, 19, 20 remain UNBUILT.
+
 ## 4. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
 
 **Finding (from prior session, `expo/scripts/analyzeDriftVetoOnBuy.ts`):** the Phase 2 counter-trend drift veto IS over-firing on BUYs. It dropped **4/50** counter-trend BUYs that had **positive EV (+0.2295R, 75% win rate)**. Three of the four were winners (+1.149R, +0.385R, +0.385R). The veto is costing the long book **$3.8 in net $** and **+0.0036R in EV per signal**. The veto threshold (2.0×ATR) may be too low for BUYs, or the counter-trend classification may be too broad.
