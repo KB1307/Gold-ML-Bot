@@ -1077,6 +1077,119 @@ The unit defect is real and confirmed: $10 is 100 pips, not 10. But the outcome 
 counter-trend signals and the gate blocks all 3 at the documented threshold. Forward data
 with htf labels populated (post-Item 28) is what settles it.
 
+## 3t. ITEMS 35/36 — RESOLVER DIVERGENCE ROOT CAUSE + NEW-GEOMETRY ERA MEASUREMENT (2026-08-07, ALL READ-ONLY)
+
+MINDSET 8 rules apply throughout. Nothing was shipped. No engine code touched.
+
+### ITEM 35 — MECHANISM GAP: audit window (2h) is shorter than outcome window (8h+)
+
+**Scripts:** `expo/scripts/analyzeItem35ResolverDivergence.ts`. 18 CLOSED signals in
+the export, 9 bar-covered. Of the 9 bar-covered, 7 are corrected by 8h fromScratch.
+
+**The answer is (b) MECHANISM, not (a) scheduling.** Every single corrected signal's
+terminal event occurred AFTER the 2h audit window:
+
+```
+  idx  dir   entry   2h_status   8h_status          TP_event_ts              hours_to_TP  within_2h
+   15  BUY   4037.4  CLOSED      ALL_TARGETS_HIT    2026-08-03T19:21:00Z      2.70h        NO
+   16  BUY   4037.2  CLOSED      ALL_TARGETS_HIT    2026-08-03T19:21:00Z      2.72h        NO
+   18  BUY   4036.9  CLOSED      ALL_TARGETS_HIT    2026-08-03T19:21:00Z      2.85h        NO
+   19  BUY   4037.5  CLOSED      ALL_TARGETS_HIT    2026-08-03T19:21:00Z      2.87h        NO
+   22  BUY   4037.4  CLOSED      ALL_TARGETS_HIT    2026-08-03T19:21:00Z      3.06h        NO
+   32  BUY   4108.2  CLOSED      SL_HIT             2026-07-31T00:21:00Z      2.06h        NO
+  232  BUY   4123.7  CLOSED      SL_AFTER_BE        2026-07-09T22:01:00Z      2.95h        NO
+```
+
+TP events WITHIN 2h audit window: **0**. TP events AFTER 2h audit window: **7**.
+
+The mechanism trace (code-confirmed, not inferred):
+
+1. **Live path** (`catchUpAndEvaluateSignals`, `TradingContext.tsx:1468`): signals >2h old
+   are marked CLOSED WITHOUT checking bars — `if (signalAge > twoHoursInMs) { status = "CLOSED" }`.
+   Once CLOSED, `catchUpAndEvaluateSignals` skips it on every subsequent pass (line 1450).
+2. **Audit path** (`auditTerminalSLSignals`, `TradingContext.tsx:1948`): `resolutionWindowMs =
+   twoHoursInMs = 2h` by default. The daily sweep (line 3198) calls WITHOUT `windowMs` override.
+   `getAuditBars` fetches bars from `signalTs` to `min(now, signalTs + 2h)` (line 1971).
+   `resolveSignalWithBars` with `fromScratch:force` evaluates only those 2h of bars.
+3. **fromScratch offline** (Item 32 script): evaluates 8h of bars, finds TP events at 2.06–3.06h.
+
+The audit window (2h = `ENTRY_MATURITY_MS`) is the MATURITY threshold, not the OUTCOME window.
+These are different concepts that were conflated: ENTRY_MATURITY_MS defines how long to wait
+before declaring a signal EXPIRED_MISSED_ENTRY (no fill). It was never intended to bound how
+long a signal can take to hit TP3 after entry. The real outcome window is longer.
+
+**Current state (35c):** 18 CLOSED signals in export, 9 not bar-covered (cannot verify),
+7 corrected by 8h fromScratch (all beyond 2h), 2 confirmed as CLOSED. **0 of 7 corrections
+are within the 2h audit window.** Force Audit now would correct 0 of these 7 — the audit
+window must be widened first.
+
+**No backend-side scheduled re-audit exists.** Only `sr_zones_v1` refresh has a pg_cron
+schedule. Signal outcome reconciliation is entirely client-side (foreground useEffect +
+setInterval, 21:00–22:00 UTC with 25h catch-up). The daily sweep IS scheduled but only runs
+while the app JS context is alive.
+
+**Recommendation (NOT implemented):** extend `resolutionWindowMs` beyond 2h to match the
+actual outcome window. The live `catchUpAndEvaluateSignals` CLOSED-at-2h assignment (line
+1468) should also be re-examined — it marks CLOSED without bar evidence, which is the
+initial wrong assignment the audit then confirms. Do NOT implement without measuring impact
+(bar count/CPU/memory per signal at wider windows).
+
+### ITEM 36 — NEW-GEOMETRY ERA: POSITIVE, NOT NEGATIVE — UNDERPOWERED vs OLD
+
+**Script:** `expo/scripts/analyzeItem36GeometryEra.ts`. The user's reference to "approximately
+-0.0529R" was the zone-matched subset (n=121 from Item 33.2d). The FULL canonical population
+tells a different story.
+
+**36a — OLD vs NEW geometry direct two-group comparison (POWER FIRST):**
+
+```
+  OLD geometry (TP1/SL < 0.60):  n=219, EV=+0.0874R, WR=67.1%, PF=1.269, SD=0.8264
+  NEW geometry (TP1/SL >= 0.60): n=163, EV=+0.0699R, WR=58.9%, PF=1.171, SD=1.0074
+  Observed difference (OLD - NEW) = +0.0175R
+  Pooled SD = 0.9068R, SE of difference = 0.0938R
+  MDE (80% power, alpha=0.05) = 0.2627R
+  POWER: UNDERPOWERED — 0.0175R < 0.2627R
+```
+
+The NEW-geometry era is **POSITIVE** (+0.0699R, n=163), not negative. The era gap of +0.0175R
+is ~15× below the MDE of 0.2627R → UNDERPOWERED. The NEW era is not distinguishable from the
+OLD era. The negative EV the user referenced was from the zone-matched subset (n=121, which
+excludes signals without a matched S/R zone), not the full canonical population.
+
+**36b — NEW-geometry outcomes by day (regime shift vs losing streak):**
+
+19 trading days, 10 negative-EV days, 9 positive-EV days. The cumulative EV stays positive
+throughout (+0.0699R final). The worst stretch is Jul 29–31 (EV −0.12R to −0.70R, n=6–11/day)
+but Aug 3 recovers sharply (+0.71R, n=13). The last two days (Aug 5–6) show +0.30R then −1.00R
+(n=2 each, too small to be meaningful). The negative days are interspersed with positive days
+— this is a positive-EV system producing routine losing streaks, not a regime shift.
+
+**36c — trade_outcomes_v1 current state:**
+
+51 total rows in `trade_outcomes_v1`. All 51 have `ts` after the export date (the durable
+store is more recent than the export snapshot). Full corpus EV: −0.1818R, WR 47.1%, n=51.
+This is a DIFFERENT population than the export (51 vs 382 resolved) — it only contains
+outcomes recorded by the live learning engine, which has its own recording gaps (the
+Item 32 reconciliation showed 14 status corrections, and `trade_outcomes_v1` captures what
+the live path recorded, not what the bars show). `trade_outcomes_v1` does not store SL/TP1
+fields, so geometry-era classification cannot be done from the durable store. The export's
+n=163 NEW-geometry signals remain the best available sample.
+
+**36d — TP1/SL ratio fragility vs separate effect:**
+
+Within-NEW split at own median ratio (0.6667): HIGH ratio n=107 EV +0.0582R, LOW ratio n=56
+EV +0.0924R. Within-NEW difference −0.0342R, MDE 0.4652R → UNDERPOWERED. The direction is
+opposite to the fragility hypothesis (higher ratio performs worse, but the difference is
+noise-level). The era gap cannot be attributed to the TP1/SL ratio alone — but it also
+cannot be distinguished from zero at this sample size. There may be a separate regime effect
+(market conditions, signal selection changes correlated with the era boundary) but it is
+not measurable yet.
+
+**VERDICT:** The NEW-geometry era is positive (+0.0699R). The era gap (+0.0175R) is
+UNDERPOWERED. The currently-observed losing stretch is a routine negative streak that a
+positive-EV system produces — 10 of 19 days negative, but cumulative EV stays positive
+throughout. No regime shift is detectable.
+
 ## 4. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
 
 **Finding (from prior session, `expo/scripts/analyzeDriftVetoOnBuy.ts`):** the Phase 2 counter-trend drift veto IS over-firing on BUYs. It dropped **4/50** counter-trend BUYs that had **positive EV (+0.2295R, 75% win rate)**. Three of the four were winners (+1.149R, +0.385R, +0.385R). The veto is costing the long book **$3.8 in net $** and **+0.0036R in EV per signal**. The veto threshold (2.0×ATR) may be too low for BUYs, or the counter-trend classification may be too broad.
