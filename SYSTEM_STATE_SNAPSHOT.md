@@ -1190,6 +1190,104 @@ UNDERPOWERED. The currently-observed losing stretch is a routine negative streak
 positive-EV system produces — 10 of 19 days negative, but cumulative EV stays positive
 throughout. No regime shift is detectable.
 
+### ITEM 37 — LEARNING CORPUS IS 33.3% CONTAMINATED (2026-08-07, READ-ONLY)
+
+**Script:** `expo/scripts/analyzeItem37CorpusContamination.ts`. All 51 `trade_outcomes_v1`
+rows matched to export by signal_id, all 51 bar-covered. Each resolved fromScratch
+with 8h bars (canonical Method B), compared to corpus `result` field.
+
+**CONTAMINATION RATE: 17 / 51 = 33.3%** of bar-covered corpus rows carry the wrong
+WIN/LOSS label. This is the direct downstream consequence of the Item 35 mechanism
+gap — the corpus records what the live path committed, not what the bars show.
+
+**Direction of contamination:**
+
+```
+  Label AGREES:     34 / 51 (66.7%)
+  Label DISAGREES:  17 / 51 (33.3%)
+    False LOSS (corpus=LOSS, bars=WIN):   10 / 51 (19.6%)
+    False WIN  (corpus=WIN,  bars=LOSS):   7 / 51 (13.7%)
+```
+
+**False LOSS signals (10) — the Item 35 mechanism gap:**
+
+```
+  idx  dir   entry   corpus    resolver             resolver_R  corpus_R
+  246  SELL  4041.3  LOSS      ALL_TARGETS_HIT      +1.0588R    -1.0000
+  249  SELL  4050.1  LOSS      SL_AFTER_BE          +0.3333R    -1.0000
+  344  SELL  4086.6  LOSS      SL_AFTER_BE          +0.3295R    -1.0000
+   33  BUY   4103.0  LOSS      ALL_TARGETS_HIT      +1.4253R    -1.0000
+   36  BUY   4065.2  LOSS      PARTIAL_WIN_SL_HIT   +0.5976R    -1.0000
+  250  SELL  4055.8  LOSS      SL_AFTER_BE          +0.3269R    -1.0000
+  251  SELL  4073.6  LOSS      ALL_TARGETS_HIT      +1.0588R    -1.0000
+  253  SELL  4120.0  LOSS      SL_AFTER_BE          +0.3000R    -1.0000
+  379  BUY   4044.5  LOSS      SL_AFTER_BE          +0.3485R    -1.0000
+   15  BUY   4037.4  LOSS      ALL_TARGETS_HIT      +1.6000R    -0.0062
+```
+
+These 10 signals were marked CLOSED at >2h age (the live path's line 1468),
+`recordTradeOutcome(LOSS)` was called, and the 2h-windowed audit confirmed
+CLOSED. The 8h fromScratch replay finds TP events at 2.06–3.06h that the audit
+never saw. The corpus carries LOSS labels for signals that were actually wins —
+ALL_TARGETS_HIT (3), SL_AFTER_BE (5), PARTIAL_WIN_SL_HIT (1).
+
+**False WIN signals (7) — phantom TP from live tick monitor:**
+
+```
+  idx  dir   entry   corpus  resolver   resolver_R  corpus_R
+  243  BUY   4038.0  WIN     SL_HIT     -1.0000R    +1.1500
+  245  BUY   4043.9  WIN     SL_HIT     -1.0000R    +1.2241
+  341  BUY   4073.7  WIN     SL_HIT     -1.0000R    +1.0674
+  342  BUY   4086.8  WIN     SL_HIT     -1.0000R    +1.1818
+  345  BUY   4095.4  WIN     SL_HIT     -1.0000R    +1.0787
+  362  SELL  4023.0  WIN     SL_HIT     -1.0000R    +0.3146
+   62  SELL  4130.7  WIN     SL_HIT     -1.0000R    +1.6250
+```
+
+These 7 signals were recorded as WIN by the live tick monitor (a phantom tick
+banked a false TP), but the bars show SL was actually hit. The audit window gap
+does NOT explain these — the SL event is within the 2h window, so the audit
+SHOULD have caught them. This is a separate contamination source: the live tick
+monitor's phantom-TP recording that the audit either hasn't corrected (scheduling)
+or confirmed (the forward-seeded audit path can't undo a falsely-banked TP without
+force=true, and the daily sweep does run force=true — so either the sweep hasn't
+run for these signals, or the 2h window issue also affects the SL-side correction).
+
+**Impact on learning:**
+
+```
+  Corpus EV (from realized_r):  -0.1818R  (n=51)
+  Resolver EV (from 8h bars):   -0.0770R  (n=51)
+  Corpus WR:   47.1%
+  Resolver WR: 52.9%
+```
+
+The corpus EV is −0.1818R; the bar-verified EV is −0.0770R. The corpus is
+**more negative than reality** by 0.105R — the 10 false LOSS labels drag the
+corpus EV down more than the 7 false WIN labels drag it up. The learning engine
+is training on a pessimistically biased label set.
+
+**Implication for retraining:** The `walkForwardOptimization` path
+(`signalEngine.ts:6615`) trains on `this.tradeOutcomes`, which is populated from
+`recordTradeOutcome` calls — the same calls that pushed the wrong labels to
+`trade_outcomes_v1`. The local in-memory corpus and the durable corpus are
+contaminated identically. Every retrain between now and a corpus correction is
+fitting to labels that are 33.3% wrong. The model is learning that winning
+setups are losing setups (10 false LOSS) and that losing setups are winning
+setups (7 false WIN), which corrupts feature weights in both directions.
+
+**What would fix it (NOT implemented):**
+1. Fix the Item 35 mechanism gap first (widen `resolutionWindowMs` beyond 2h).
+2. Run a full force=true audit with the wider window against every signal in
+   the corpus, re-deriving outcomes from bars.
+3. Update `trade_outcomes_v1` rows with corrected `result`, `pnl`, `realized_r`.
+4. Clear the in-memory `this.tradeOutcomes` and repopulate from the corrected
+   durable store.
+5. Retrain only after the corpus is clean.
+
+Do NOT skip step 1 — correcting the corpus without fixing the mechanism means
+the next batch of signals re-contaminates it.
+
 ## 4. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
 
 **Finding (from prior session, `expo/scripts/analyzeDriftVetoOnBuy.ts`):** the Phase 2 counter-trend drift veto IS over-firing on BUYs. It dropped **4/50** counter-trend BUYs that had **positive EV (+0.2295R, 75% win rate)**. Three of the four were winners (+1.149R, +0.385R, +0.385R). The veto is costing the long book **$3.8 in net $** and **+0.0036R in EV per signal**. The veto threshold (2.0×ATR) may be too low for BUYs, or the counter-trend classification may be too broad.
