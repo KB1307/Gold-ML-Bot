@@ -1,5 +1,6 @@
 import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC, SignalLearningContext, DetectedSRZone } from "@/types/trading";
 import { pushShadowSellRecord, type ShadowSellRecord } from "@/services/shadowSignalService";
+import { pushEmittedSignalRecord } from "@/services/emittedSignalService";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { fetchHistoricalData, trpcClient } from "@/lib/trpc";
 import { createClient as createSupabaseClient, type SupabaseClient } from "@supabase/supabase-js";
@@ -529,7 +530,15 @@ const NEAR_MISS_FLAG_MIN_SAMPLE = 3;
 interface NearMissEntry {
   timestamp: number;
   signalType: SignalType;
+  /** SMOOTHED confidence — the value every gate actually compares against. */
   confidence: number;
+  /**
+   * ITEM 54(b): RAW pre-smoothing confidence for the same scoring run, captured
+   * so the UI and export can show both and never conflate them. Display and
+   * telemetry only — no gate reads this. Undefined if the rejection happened
+   * before any scoring run produced a raw value.
+   */
+  rawConfidence?: number;
   strengthDiff: number;
   reason: string;
   // Hypothetical trade snapshot at the moment of rejection, captured so the
@@ -1249,7 +1258,29 @@ class SignalGenerationEngine {
     BUY: { n: 0, meanR: 0 },
     SELL: { n: 0, meanR: 0 },
   };
-  private confidenceHistory: number[] = [];
+  /**
+   * ITEM 54(a) — confidence smoother state, now keyed BY DIRECTION.
+   *
+   * This was a single engine-level `confidenceHistory: number[]` shared across
+   * every scoring run. `smoothConfidence` blends 15% of the PREVIOUS entry, so a
+   * fresh BUY setup was being blended with whatever the last run scored — often
+   * an unrelated SELL candidate from a different minute and a different regime.
+   * That is the same shared-mutable-field defect class Item 51 fixed in
+   * `lastSignalStrengthDifference`: engine-level state read as if it were
+   * per-setup state. Keying by candidate direction means a BUY only ever blends
+   * with the previous BUY score and a SELL with the previous SELL score.
+   */
+  private confidenceHistoryByDirection: Record<'BUY' | 'SELL', number[]> = {
+    BUY: [],
+    SELL: [],
+  };
+
+  /**
+   * ITEM 54(b) — last RAW (pre-smoothing) confidence, telemetry only.
+   * Surfaced next to the smoothed value so the two are never conflated in the
+   * UI or the export. Never read by any scoring or gating path.
+   */
+  private lastRawConfidence: number | null = null;
   private lastFeatureCorrelationCheck: number = 0;
   private featureCorrelationStatus: string = 'HEALTHY';
   private modelHealthScore: number = 100;
@@ -4599,24 +4630,40 @@ class SignalGenerationEngine {
     return { name: nearest.name, impact: nearest.impact, timeUntilEvent: nearest.timeUntilEvent };
   }
   
-  private smoothConfidence(rawConfidence: number): number {
-    this.confidenceHistory.push(rawConfidence);
-    if (this.confidenceHistory.length > CONFIDENCE_SMOOTHING_WINDOW) {
-      this.confidenceHistory.shift();
+  /**
+   * ITEM 54(a): smoothing is now scoped to the candidate direction, so a BUY
+   * candidate can no longer inherit 15% of an unrelated SELL candidate's score.
+   * Behaviour for a run of same-direction candidates is unchanged.
+   */
+  private smoothConfidence(rawConfidence: number, candidateDirection: 'BUY' | 'SELL'): number {
+    this.lastRawConfidence = rawConfidence;
+
+    const history = this.confidenceHistoryByDirection[candidateDirection];
+    history.push(rawConfidence);
+    if (history.length > CONFIDENCE_SMOOTHING_WINDOW) {
+      history.shift();
     }
 
     // Minimal smoothing: blend 85% raw + 15% previous to preserve true signal confidence
     // while avoiding frame-to-frame jitter. Previous aggressive EMA was clustering all
     // signals near the 66% mean regardless of actual setup quality.
-    const prev = this.confidenceHistory.length >= 2
-      ? this.confidenceHistory[this.confidenceHistory.length - 2]
+    const prev = history.length >= 2
+      ? history[history.length - 2]
       : rawConfidence;
     const blended = 0.85 * rawConfidence + 0.15 * prev;
     const finalConfidence = Math.min(blended, MAX_CONFIDENCE_CAP);
 
-    console.log(`🔄 Confidence (light blend): Raw ${(rawConfidence * 100).toFixed(1)}% -> Final ${(finalConfidence * 100).toFixed(1)}% (prev ${(prev * 100).toFixed(1)}%)`);
+    console.log(`🔄 Confidence (light blend, ${candidateDirection}): Raw ${(rawConfidence * 100).toFixed(1)}% -> Final ${(finalConfidence * 100).toFixed(1)}% (prev ${candidateDirection} ${(prev * 100).toFixed(1)}%)`);
 
     return parseFloat(finalConfidence.toFixed(3));
+  }
+
+  /**
+   * ITEM 54(b) — RAW (pre-smoothing) confidence of the most recent scoring run.
+   * Telemetry/display only. Returns null before the first scored run.
+   */
+  getLastRawConfidence(): number | null {
+    return this.lastRawConfidence;
   }
   
   private calculateFeatureCorrelation(): void {
@@ -5868,7 +5915,7 @@ class SignalGenerationEngine {
     console.log(`📊 Confidence Breakdown: base=${(0.40 + signalStrength * 0.40).toFixed(3)}, alignment=+${alignmentBonus.toFixed(3)}, bonuses=${(baseConfidence - 0.40 - signalStrength * 0.40 - alignmentBonus).toFixed(3)}, penalties=-${dataQualityPenalty.toFixed(3)}, calibration=-${calibrationPenalty.toFixed(3)}, raw=${rawConfidence.toFixed(3)}`);
     this.lastSignalStrengthDifference = strengthDifference;
     
-    const smoothedConfidence = this.smoothConfidence(rawConfidence);
+    const smoothedConfidence = this.smoothConfidence(rawConfidence, isBullish ? 'BUY' : 'SELL');
     
     console.log('📊 Attention Scores:', Array.from(attentionScores.entries()).map(([k, v]) => `${k}: ${v.toFixed(2)}`).join(', '));
     
@@ -7817,8 +7864,44 @@ class SignalGenerationEngine {
       return null;
     }
 
+    const emittedSignalId = `signal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    // ITEM 52(b) — EMISSION PERSISTENCE. Fire-and-forget durable write of every
+    // emitted signal to emitted_signals_v1, mirroring pushShadowSellRecord's
+    // proven anon-key path. Placed here, at the single confirmed-emission return,
+    // so it records exactly what the caller receives and nothing that was
+    // rejected. Never awaited: it cannot block, delay, or alter generation.
+    //
+    // This is the prerequisite for durable resolution. Capture was 12.9% because
+    // emission was never persisted server-side at all, so a replay resolver had
+    // no population to replay.
+    pushEmittedSignalRecord({
+      signalId: emittedSignalId,
+      emittedAt: Date.now(),
+      direction: analysis.signalType,
+      entry: parseFloat(entryPriceWithSlippage.toFixed(1)),
+      sl: parseFloat(sl.toFixed(1)),
+      tp1: parseFloat(tp1.toFixed(1)),
+      tp2: parseFloat(tp2.toFixed(1)),
+      tp3: parseFloat(tp3.toFixed(1)),
+      confidence: tier0AdjustedConfidence,
+      rawConfidence: this.lastRawConfidence,
+      strengthDiff: this.lastSignalStrengthDifference,
+      slMultiplier: parseFloat(atrMultiplier.toFixed(2)),
+      atr: features.atr,
+      regime: features.marketRegime.type,
+      sessionName: features.liquidityWindow?.sessionName ?? null,
+      hourUtc: new Date().getUTCHours(),
+      htfTrend: this.detectHTFTrend(features),
+      ltfTrend: null,
+      rsi: features.rsi,
+      srZonesSnapshot,
+      attentionScores: fullAttentionScores,
+      source: 'LIVE',
+    });
+
     return {
-      id: `signal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      id: emittedSignalId,
       timestamp: new Date(),
       type: analysis.signalType,
       entryPrice: parseFloat(entryPrice.toFixed(1)),
@@ -8467,7 +8550,12 @@ class SignalGenerationEngine {
     const inDiffBand = strengthDiff >= NEAR_MISS_DIFF_LOW && strengthDiff < NEAR_MISS_DIFF_HIGH;
     if (!inConfBand && !inDiffBand) return;
 
+    // ITEM 54(b): stamp the RAW confidence from the scoring run that produced
+    // this rejection alongside the smoothed one. Read-only telemetry.
     const entry: NearMissEntry = { timestamp: Date.now(), signalType, confidence, strengthDiff, reason };
+    if (this.lastRawConfidence !== null) {
+      entry.rawConfidence = this.lastRawConfidence;
+    }
     if (snapshot) {
       // Step 6: capture a hypothetical entry/TP/SL snapshot (same ATR-scaled sizing
       // an accepted signal would have used) so this rejected setup can later be
@@ -8491,7 +8579,10 @@ class SignalGenerationEngine {
     if (this.nearMisses.length > NEAR_MISS_MAX_ENTRIES) {
       this.nearMisses = this.nearMisses.slice(-NEAR_MISS_MAX_ENTRIES);
     }
-    console.log(`🔍 NEAR-MISS logged: ${signalType} conf ${(confidence * 100).toFixed(1)}% diff ${strengthDiff.toFixed(3)} - ${reason}`);
+    const rawLabel = entry.rawConfidence !== undefined
+      ? ` (raw ${(entry.rawConfidence * 100).toFixed(1)}%)`
+      : '';
+    console.log(`🔍 NEAR-MISS logged: ${signalType} smoothed conf ${(confidence * 100).toFixed(1)}%${rawLabel} diff ${strengthDiff.toFixed(3)} - ${reason}`);
   }
 
   getRecentNearMisses(): NearMissEntry[] {

@@ -384,7 +384,11 @@ export default function TelemetryScreen() {
                       <Text style={[styles.todayBadgeText, { color: nm.signalType === "BUY" ? "#22c55e" : "#ef4444" }]}>{nm.signalType}</Text>
                     </View>
                     <View style={styles.todayItemBody}>
-                      <Text style={styles.todayItemPrice}>{(nm.confidence * 100).toFixed(1)}% · diff {nm.strengthDiff.toFixed(3)}</Text>
+                      <Text style={styles.todayItemPrice}>
+                        smoothed {(nm.confidence * 100).toFixed(1)}%
+                        {nm.rawConfidence !== undefined ? ` · raw ${(nm.rawConfidence * 100).toFixed(1)}%` : ""}
+                        {" · diff "}{nm.strengthDiff.toFixed(3)}
+                      </Text>
                       <Text style={styles.todayItemMeta} numberOfLines={1}>
                         {new Date(nm.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · {nm.reason}
                       </Text>
