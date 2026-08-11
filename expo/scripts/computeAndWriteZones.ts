@@ -131,7 +131,13 @@ function computeZones(bars: Bar[], now: number): ServerSRZone[] {
     atrCount++;
   }
   const atr = atrCount > 0 ? atrSum / atrCount : currentPrice * 0.001;
-  const zoneWidth = Math.max(atr * 0.3, currentPrice * 0.0015);
+  // ITEM 48(b): must stay in lockstep with signalEngine.ts ZONE_WIDTH_FLOOR_PCT.
+  // The old 0.0015 floor ($6.38 at gold $4,250) always beat the atr*0.3 term
+  // (~$0.65), so every written zone got a fixed 128-pip band and genuinely
+  // distinct levels were merged into one. 0.00015 makes the floor a true
+  // low-ATR safety net and lets real volatility govern the band.
+  const ZONE_WIDTH_FLOOR_PCT = 0.0001;
+  const zoneWidth = Math.max(atr * 0.3, currentPrice * ZONE_WIDTH_FLOOR_PCT);
 
   type Candidate = { price: number; source: ZoneSource; alwaysAdmit?: boolean };
   const candidates: Candidate[] = [];

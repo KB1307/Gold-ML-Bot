@@ -506,6 +506,16 @@ const TREND_FAST_PATH_CONFIDENCE = 0.66;
 const MOMENTUM_BREAKOUT_CONFIDENCE = 0.70;
 const MOMENTUM_BREAKOUT_PIPS = 30;
 const MOMENTUM_BREAKOUT_MAX_BARS = 3;
+// ITEM 48(b): low-volatility safety net for S/R zone merge/touch distance.
+// Must stay BELOW `atr * 0.3` in normal conditions so the ATR term actually
+// governs band width. Calibrated against the real distribution of
+// (atr*0.3)/price over 233 hourly samples of live gold_m1_bars: p25 = 9.56e-5,
+// p50 = 1.22e-4. 0.0001 sits just above p25, so the floor binds only in roughly
+// the bottom quartile of volatility (a genuinely quiet tape) and real ATR
+// governs the other ~72%. The previous 0.0015 produced $6.38 at gold $4,250
+// versus an atr*0.3 term of ~$0.55, so it won 233/233 samples — the ATR term
+// was unreachable dead code and every zone got a fixed 128-pip band.
+const ZONE_WIDTH_FLOOR_PCT = 0.0001;
 const NEAR_MISS_CONFIDENCE_LOW = 0.60;
 const NEAR_MISS_CONFIDENCE_HIGH = 0.68;
 const NEAR_MISS_DIFF_LOW = 0.04;
@@ -3558,7 +3568,15 @@ class SignalGenerationEngine {
     // floor — it needs to stay tight enough to keep genuinely distinct levels
     // separate (at $3,250 gold that's ~$4.9, vs. the ~$26 the pivot fix's 0.008
     // coefficient would produce, which would over-merge distinct S/R levels).
-    const zoneWidth = Math.max(atr * 0.3, currentPrice * 0.0015);
+    // ITEM 48(b) SCALE FIX. The floor was `currentPrice * 0.0015`, which at gold
+    // $4,250 is $6.38 — while the intended governing term `atr * 0.3` is ~$0.65
+    // at a typical M1 ATR of ~$2.2. The floor therefore ALWAYS won and the ATR
+    // term was dead code: every zone got a fixed +/-$6.38 (128-pip) band no
+    // matter what real volatility was doing, which merged genuinely distinct
+    // levels into one band. Drop the coefficient 10x so the floor is a true
+    // low-volatility safety net (binding only when ATR is below ~$2.1) and the
+    // ATR term governs in normal conditions, as originally intended.
+    const zoneWidth = Math.max(atr * 0.3, currentPrice * ZONE_WIDTH_FLOOR_PCT);
 
     if (this.priceHistory.length < 20 || this.highHistory.length < 20 || this.lowHistory.length < 20) {
       console.log('⚠️ S/R Zones: Insufficient data for zone detection');
@@ -5673,6 +5691,14 @@ class SignalGenerationEngine {
     console.log(`   Strength Difference: ${strengthDifference.toFixed(3)} (Base Min: ${MIN_SIGNAL_STRENGTH_DIFFERENCE_BASE})`);
     
     if (winningStrength < MIN_SIGNAL_CONVICTION_THRESHOLD) {
+      // ITEM 51 STALENESS FIX. `lastSignalStrengthDifference` used to be assigned
+      // ONLY on the success path (after every gate passed). Every rejection
+      // returned early and left the field holding the diff from whatever run last
+      // succeeded — sometimes many minutes old. recordNearMiss() reads that same
+      // field, so every "Setup Brewing" row logged between two successful runs
+      // was stamped with one identical, stale diff regardless of its own inputs.
+      // Assign on EVERY exit path so the value always describes THIS evaluation.
+      this.lastSignalStrengthDifference = strengthDifference;
       console.log(`\n❌ REJECTED: Winning strength ${winningStrength.toFixed(3)} below conviction threshold ${MIN_SIGNAL_CONVICTION_THRESHOLD}`);
       console.log('   Market shows no clear directional bias');
       console.log('   Status: NEUTRAL / STAND DOWN');
@@ -5694,6 +5720,8 @@ class SignalGenerationEngine {
       console.log(`📉 Adaptive diff gate: ${adaptiveAdjust.toFixed(3)} (low-bucket EV positive)`);
     }
     if (strengthDifference < regimeMinDiff) {
+      // ITEM 51 STALENESS FIX (see the conviction-gate exit above).
+      this.lastSignalStrengthDifference = strengthDifference;
       console.log(`\n❌ REJECTED: Strength difference ${strengthDifference.toFixed(3)} too small (regime ${features.marketRegime.type} min: ${regimeMinDiff})`);
       console.log(`   BUY: ${buySignalStrength.toFixed(3)} vs SELL: ${sellSignalStrength.toFixed(3)}`);
       console.log('   Market indecision detected - prevents conflicting signals');
@@ -8209,7 +8237,19 @@ class SignalGenerationEngine {
     if (isCounterTrend) {
       console.log('\n🔄 COUNTER-TREND FILTER: Checking Bounce off Major Level');
 
-      const bounceThreshold = 10;
+      // ITEM 48(a) UNIT FIX. This constant was `10` and was compared directly
+      // against `Math.abs(level.price - currentPrice)`, which is a DOLLAR
+      // distance — so the gate was a $10 (= 100-pip) band while its name, its
+      // log line and the user-facing tip all said "10 pips". At gold's 0.1
+      // pip value, 10 pips is $1.00, not $10.00. The band was 10x too wide,
+      // which is why the 6 Aug counter-trend SELLs at $3.20 and $1.70 from the
+      // nearest resistance both passed a filter that was supposed to require a
+      // genuine bounce off a level. Express the threshold in pips and convert
+      // to dollars explicitly at the comparison site so the two can never
+      // silently diverge again.
+      const bounceThresholdPips = 10;
+      const bouncePipValue = 0.1;
+      const bounceThreshold = bounceThresholdPips * bouncePipValue;
       let nearMajorLevel = false;
       let levelDescription = 'None';
 
@@ -8244,7 +8284,7 @@ class SignalGenerationEngine {
         }
       }
 
-      console.log(`   Bounce Threshold: ${bounceThreshold} pips`);
+      console.log(`   Bounce Threshold: ${bounceThresholdPips} pips ($${bounceThreshold.toFixed(2)})`);
       console.log(`   Near Major Level: ${nearMajorLevel ? 'YES' : 'NO'}`);
       if (nearMajorLevel) {
         console.log(`   Level: ${levelDescription}`);
@@ -8252,7 +8292,7 @@ class SignalGenerationEngine {
 
       if (!nearMajorLevel) {
         const reason = `COUNTER-TREND REJECTED: Not bouncing off a real, previously-tested structural level`;
-        const tip = `Counter-trend signals require price within ${bounceThreshold} pips of a Bullish/Bearish OB, or an S/R zone with reaction strength >= 30% and at least 2 confirmed touches - not just a nearby arithmetic pivot.`;
+        const tip = `Counter-trend signals require price within ${bounceThresholdPips} pips ($${bounceThreshold.toFixed(2)}) of a Bullish/Bearish OB, or an S/R zone with reaction strength >= 30% and at least 2 confirmed touches - not just a nearby arithmetic pivot.`;
         console.log(`   ❌ ${reason}`);
         console.log(`   💡 ${tip}`);
         console.log('='.repeat(60) + '\n');
