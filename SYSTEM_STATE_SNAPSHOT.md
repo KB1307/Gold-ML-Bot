@@ -1611,6 +1611,117 @@ corrected re-fits to the same wrong labels. The decision is the user's, on these
 correction must also address `:2882`/`:2930`, or the corpus re-contaminates from the false-WIN
 side immediately after the repair.
 
+## 3v. ITEMS 41 & 42 — FALSE-LOSS MECHANISM FIXED, LIVE TP BRANCHES GATED (2026-08-11, FIRST ENGINE CHANGE SINCE ITEM 22)
+
+Scripts: `test_item41_false_loss_fix_replay.ts`, `test_item42_tp_gate_replay.ts` (both read-only).
+Engine files modified: `expo/contexts/TradingContext.tsx`, `expo/services/diagnosticEventStore.ts`.
+**SL-side logic and Path 3 were NOT touched.** `runChecks(expo)` clean.
+
+### ITEM 41 — THE 2h WALL-CLOCK LOSS STAMP IS GONE
+
+One canonical constant now owns maturity on all three paths, so they cannot drift apart
+again:
+
+```
+  TradingContext.tsx:259   const RESOLUTION_WINDOW_MS = 8 * 60 * 60 * 1000;
+```
+
+8h is the Item 38 measured basis, not a preference: corrections flatten at 8h (0 further
+corrections at 12h/24h), |EV(12h)-EV(8h)| = 0.0000R, cost 447.4 bars/signal vs a 5000 veto.
+
+```
+  41a  audit default windowMs   twoHoursInMs -> RESOLUTION_WINDOW_MS   (~:1998)
+  41b  catch-up ">2h => CLOSED + recordTradeOutcome(LOSS)"  DELETED
+       replaced by barWindowEnd/isMatured + coverage-gated resolution (:1512-:1513)
+  41c  live monitor ">2h => CLOSED" wall-clock stamp        REMOVED
+       now `if (signalAge > RESOLUTION_WINDOW_MS) return signal;`
+  all three `twoHoursInMs` declarations removed
+```
+
+41c was beyond the literal brief and is called out deliberately: the live monitor held a
+SECOND evidence-free CLOSED that fed `:1450`'s skip guard. Without removing it, 41c's own
+premise would have been false.
+
+**A label is never guessed.** Resolution runs `fromScratch` only when `assessBarCoverage`
+reports dense; thin coverage leaves the status untouched for a later pass.
+
+Replay of all 51 corpus rows through the fixed path (47 dense-covered, 4 left unchanged):
+
+```
+  G41-1  10 false-LOSS rows, 10 now WIN, 0 still LOSS                 PASS
+  G41-2  30 rows where corpus and bars already agree, 0 flipped       PASS
+  G41-3  4 thin-coverage rows, 0 of them labelled anyway              PASS
+```
+
+Note on the brief's wording: it said "the 7 known false-LOSS signals". Item 37's measured
+split is 10 false LOSS + 7 false WIN = 17. The 10-row set is what Item 41 owns; the 7 are
+the false-WIN set and belong to Item 42.
+
+EV on the replayed set (informational only — Item 43 owns the durable correction):
+corpus as stored -0.1818R (n=51) vs fixed path -0.1335R (n=47), delta **+0.0483R**.
+
+### ITEM 42 — LIVE TP3 BRANCHES NOW MEET THE SL SIDE'S OWN EVIDENCE STANDARD
+
+42a gates BOTH terminal TP3 branches through `confirmTPHit`, which calls the SAME already-
+validated pure helper as `confirmSLHit` with the SAME three constants — no new parameter
+was invented:
+
+```
+  SL_CONFIRMATION_MIN_PENETRATION_PIPS  >= 1.5 pips
+  SL_CONFIRMATION_MIN_DURATION_MS       >= 2500 ms
+  SL_CONFIRMATION_MIN_TICKS             >= 2 ticks
+```
+
+TP1/TP2 are deliberately left ungated: they are non-terminal, and gating TP1 would move the
+post-TP1 profit lock — i.e. SL-side behaviour, which is out of scope.
+
+42b adds `LIVE_TICK_TP_CANDIDATE` / `LIVE_TICK_TP_HIT`, carrying `venue`, `refPrice`,
+`penetrationPips`, `elapsedMs`, `tickCount`, `concurrentBarClose` and `barVsTickDelta`.
+This is the instrument whose absence made Item 39a impossible.
+
+**G42-1 COULD NOT BE CLOSED, AND IS NOT CLAIMED.** Item 39 established SL was touched FIRST
+on real bars in 7 of 7. Any bar-faithful tick stream therefore reaches the SL branch before
+TP3 is ever evaluated — the UNGATED mirror already returns SL_HIT for all 7, so the replay
+contains no false WIN for the gate to refuse. The corpus WIN could only have come from prices
+that disagree with `gold_m1_bars`, and those literal ticks are unrecoverable (24h rolling
+store, signals from 2026-07-01..2026-07-22, no TP telemetry type existed). IMPOSSIBLE, not
+underpowered. **The 7 rows are NOT claimed fixed by Item 42.** What this does establish is
+narrower and useful: they are not reproducible from Vantage prices at all, so venue divergence
+(Phase 0 Item 4) is the only mechanism still standing, and 42b settles it on the next event.
+
+G42-1b replaces it with a test that IS decisive for the shipped code, on a real signal's real
+levels:
+
+```
+  stream      UNGATED (old code)   GATED (Item 42a)   verdict
+  FLICKER     ALL_TARGETS_HIT      TP2_HIT            defect reproduced, then refused
+  SUSTAINED   ALL_TARGETS_HIT      ALL_TARGETS_HIT    genuine TP3 still banked
+```
+
+FLICKER = one lone tick 0.5 pips past TP3 (sub-threshold on all three axes). SUSTAINED = 4-5
+pips past TP3 held across 5 ticks / 60s. A no-op gate banks both; an over-conservative gate
+refuses both. The shipped gate does neither.
+
+Control arm (G42-2), size set by the data and reported whatever it came out as:
+
+```
+  bar-verified genuine ALL_TARGETS_HIT signals   7
+  still banked by the LIVE MONITOR under gate    6
+  no longer banked live                          1   (idx 367, n0xo9skxy)
+```
+
+The 1 is NOT a lost win. The bar resolver is authoritative and UNCHANGED by Item 42 — the 8h
+audit still books it as ALL_TARGETS_HIT from real bars. The gate only removes the live
+monitor's authority to bank a terminal on evidence that would not survive the SL side's own
+standard.
+
+### STATE AFTER 41+42
+
+Both re-contamination mechanisms from §3u are closed at the source. The corpus itself is
+still wrong — 17 bad rows are still stored, and `model_weights_v1` is still trained on them
+(33.3% by count, 26.5% by decay weight). **Item 43 (corpus correction) and Item 44 (single
+retrain) have NOT been started.**
+
 ## 4. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
 
 **Finding (from prior session, `expo/scripts/analyzeDriftVetoOnBuy.ts`):** the Phase 2 counter-trend drift veto IS over-firing on BUYs. It dropped **4/50** counter-trend BUYs that had **positive EV (+0.2295R, 75% win rate)**. Three of the four were winners (+1.149R, +0.385R, +0.385R). The veto is costing the long book **$3.8 in net $** and **+0.0036R in EV per signal**. The veto threshold (2.0×ATR) may be too low for BUYs, or the counter-trend classification may be too broad.

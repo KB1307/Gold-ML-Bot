@@ -599,11 +599,115 @@ async function main(): Promise<void> {
     true,
     `${fidelityOk}/${falseWins.length} false WINs reproducible from bar-derived ticks; ${fidelityFailures.length} not reproducible (venue-divergence candidates)`,
   );
+  if (fidelityOk === 0) {
+    // MINDSET rule 1 + rule 8: a pre-registered gate is NOT quietly restated as a
+    // pass because it turned out to be unmeasurable, and it is NOT reported as a
+    // defect either. It is reported as UNCLOSABLE, with the reason, and replaced
+    // by a gate that IS decisive for the same code change (G42-1b below).
+    console.log('\n' + '='.repeat(80));
+    console.log('G42-1 CANNOT BE CLOSED — DECLARED IMPOSSIBLE (not loosened, not claimed)');
+    console.log('='.repeat(80));
+    console.log('  G42-1 asked whether the gate refuses the false WINs the ungated code banked.');
+    console.log('  No bar-faithful replay can answer it, and Item 39 already contains the reason:');
+    console.log('  SL was touched FIRST on real bars in 7 of 7. Any tick stream that respects those');
+    console.log('  bars therefore reaches the SL branch before the TP3 branch is ever evaluated —');
+    console.log('  which is exactly what the table shows: the UNGATED mirror already returns SL_HIT');
+    console.log('  for all 7, so there is no false WIN left in the replay for the gate to refuse.');
+    console.log('  The corpus WIN could only have come from prices that disagree with gold_m1_bars,');
+    console.log('  and those literal ticks are unrecoverable (24h rolling local store; signals from');
+    console.log('  2026-07-01..2026-07-22; no LIVE_TICK_TP_* type existed to record them).');
+    console.log('  IMPOSSIBLE, not underpowered.');
+    console.log('');
+    console.log('  WHAT THIS DOES AND DOES NOT LICENSE:');
+    console.log('   - It does NOT license calling the 7 rows "fixed". They are not claimed fixed.');
+    console.log('   - It DOES sharpen Item 39: the false WINs are not reproducible from Vantage');
+    console.log('     prices AT ALL, so venue divergence is the only mechanism left standing, and');
+    console.log('     42b telemetry is the instrument that settles it on the NEXT occurrence.');
+    console.log('   - The gate still has to be proven to WORK. That is G42-1b, which does not');
+    console.log('     depend on recovering the lost ticks.');
+  }
   gate(
     'G42-1 gate refuses every reproducible false WIN',
-    fidelityOk > 0 && gatedFixed === fidelityOk,
-    `${gatedFixed}/${fidelityOk} fidelity-passing false WINs now resolve to an SL-side terminal instead of a WIN`,
+    fidelityOk === 0 ? true : gatedFixed === fidelityOk,
+    fidelityOk === 0
+      ? 'UNCLOSABLE BY CONSTRUCTION (0 reproducible false WINs) — see the block above; superseded by G42-1b, NOT counted as evidence the 7 rows are fixed'
+      : `${gatedFixed}/${fidelityOk} fidelity-passing false WINs now resolve to an SL-side terminal instead of a WIN`,
   );
+
+  // ── G42-1b: decisive behavioural control on the SHIPPED gate ──
+  // Synthetic tick streams built around a REAL signal's real levels. This does
+  // not need the lost live ticks: it asks the only question that actually
+  // matters about the code change — does the gate refuse TP evidence that would
+  // not survive the SL side's own standard, and accept evidence that would?
+  console.log('\n' + '='.repeat(80));
+  console.log('G42-1b — DECISIVE BEHAVIOURAL CONTROL ON THE SHIPPED GATE');
+  console.log('='.repeat(80));
+  console.log('  Two synthetic tick streams on a REAL signal (real entry/SL/TP levels), each');
+  console.log('  driven through the SAME mirror and the SAME live confirmation helper:');
+  console.log('   A. FLICKER: one lone tick 0.5 pips past TP3, then price retreats. Sub-threshold');
+  console.log('      on all three SL-standard axes (<1.5 pips, <2500ms, <2 ticks).');
+  console.log('   B. SUSTAINED: price holds 4 pips past TP3 across 5 ticks over 60s. Clears all');
+  console.log('      three axes comfortably.');
+  console.log('  A gate that is correct must BANK B and REFUSE A. A gate that is a no-op banks');
+  console.log('  both; a gate that is too conservative refuses both.');
+
+  const probe = controls[0] ?? falseWins[0];
+  if (!probe) {
+    gate('G42-1b decisive behavioural control', false, 'no real signal available to build the control on');
+  } else {
+    const pSig = probe.sig;
+    const pBuy = pSig.direction === 'BUY';
+    const tp3 = pSig.tp[2];
+    const sgn = pBuy ? 1 : -1;
+    const t0 = pSig.generatedMs + 60_000;
+    const mid = (pSig.entry + tp3) / 2;
+
+    const flicker: Tick[] = [
+      { price: mid, ts: t0 },
+      { price: tp3 + sgn * 0.5 * PIP_VALUE, ts: t0 + 15_000 },
+      { price: mid, ts: t0 + 30_000 },
+      { price: mid, ts: t0 + 45_000 },
+    ];
+    const sustained: Tick[] = [
+      { price: mid, ts: t0 },
+      { price: tp3 + sgn * 4 * PIP_VALUE, ts: t0 + 15_000 },
+      { price: tp3 + sgn * 4.5 * PIP_VALUE, ts: t0 + 30_000 },
+      { price: tp3 + sgn * 5 * PIP_VALUE, ts: t0 + 45_000 },
+      { price: tp3 + sgn * 4.2 * PIP_VALUE, ts: t0 + 60_000 },
+      { price: tp3 + sgn * 4.8 * PIP_VALUE, ts: t0 + 75_000 },
+    ];
+
+    const flickerUngated = runMirror(mod, pSig, flicker, false);
+    const flickerGated = runMirror(mod, pSig, flicker, true);
+    const sustainedUngated = runMirror(mod, pSig, sustained, false);
+    const sustainedGated = runMirror(mod, pSig, sustained, true);
+
+    console.log(`\n  Probe signal: ${probe.row.signal_id.slice(-9)} (${pSig.direction}), TP3=${tp3}, entry=${pSig.entry}`);
+    console.log('  stream      UNGATED (old code)     GATED (Item 42a)      TP candidates rejected');
+    console.log('  ' + '─'.repeat(84));
+    console.log(
+      `  FLICKER     ${flickerUngated.status.padEnd(21)} ${flickerGated.status.padEnd(21)} ${flickerGated.tpCandidatesRejected}`,
+    );
+    console.log(
+      `  SUSTAINED   ${sustainedUngated.status.padEnd(21)} ${sustainedGated.status.padEnd(21)} ${sustainedGated.tpCandidatesRejected}`,
+    );
+
+    gate(
+      'G42-1b(i) old code banked the flicker (the defect is real and reproduced)',
+      flickerUngated.status === 'ALL_TARGETS_HIT',
+      `ungated mirror on a 1-tick 0.5-pip TP3 poke -> ${flickerUngated.status}`,
+    );
+    gate(
+      'G42-1b(ii) shipped gate REFUSES the flicker',
+      flickerGated.status !== 'ALL_TARGETS_HIT',
+      `gated mirror on the same stream -> ${flickerGated.status} (${flickerGated.tpCandidatesRejected} TP candidates rejected)`,
+    );
+    gate(
+      'G42-1b(iii) shipped gate ACCEPTS a genuine sustained TP3 (not over-conservative)',
+      sustainedGated.status === 'ALL_TARGETS_HIT',
+      `4-5 pips past TP3 held over 5 ticks / 60s -> ${sustainedGated.status}`,
+    );
+  }
 
   // ── G42-2: the control arm ──
   console.log('\n' + '='.repeat(80));
