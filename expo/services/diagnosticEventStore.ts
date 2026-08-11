@@ -24,6 +24,23 @@ export type DiagnosticEventType =
   | 'LIVE_TICK_SL_CANDIDATE'
   | 'LIVE_TICK_SL_HIT'
   /**
+   * ITEM 42b -- the missing TP-side counterparts of LIVE_TICK_SL_*.
+   *
+   * Item 39a had to be declared an IMPOSSIBLE measurement partly because these
+   * two types did not exist: the live tick monitor's terminal TP branch banked
+   * ALL_TARGETS_HIT with no gate AND no telemetry, so the price that triggered a
+   * false WIN left no trace anywhere. Fired now by confirmTPHit in
+   * TradingContext, carrying the triggering price, its VENUE tag (detail.venue,
+   * the live feed the read came from) and the concurrent local 1m bar close plus
+   * their delta (detail.concurrentBarClose / detail.barVsTickDelta). That delta
+   * is the discriminator: a large one means venue divergence (the live feed
+   * disagreeing with the bars that later audit the signal), a small one means a
+   * genuine confirmation-logic question. Purely observational, like every other
+   * type here -- fire-and-forget, never gates a decision.
+   */
+  | 'LIVE_TICK_TP_CANDIDATE'
+  | 'LIVE_TICK_TP_HIT'
+  /**
    * STEP 2 (GC=F/spot investigation): fired whenever the bar-resolver
    * (resolveSignalWithBars) produces a terminal or changed outcome during
    * catch-up reconciliation or an audit pass -- records which real bar

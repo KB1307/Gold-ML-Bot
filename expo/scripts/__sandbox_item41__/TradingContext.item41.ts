@@ -1,23 +1,54 @@
-import createContextHook from "@nkzw/create-context-hook";
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { TradingSignal, SignalStatus, Settings, MarketOutlook, PerformanceMetrics, PositionSizing, DailyOHLC } from "@/types/trading";
-import { signalEngine, setExternalPrice, fetchLiveGoldPriceFallback } from "@/services/signalEngine";
-import { Platform, AppState, type AppStateStatus } from "react-native";
-import { fetchHistoricalData } from "@/lib/trpc";
-import { goldWebSocketService } from "@/services/goldWebSocketService";
-import { 
-  registerBackgroundTask, 
-  setupNotificationChannel, 
-  requestNotificationPermissions,
-  sendSignalNotification
-} from "@/services/backgroundTaskService";
-import { subscribeToChartPrice, subscribeToChartHeartbeat } from "@/services/chartPriceBridge";
-import { ensureBarStoreReady, ingestTickAllTimeframes, upsertBars, getBars, getBarStoreStats, pruneOldBars, getLatestBarTimestamp, type OhlcBar } from "@/services/barStore";
-import { resolveSignalWithBars, getPostTP1LockPrice as computePostTP1LockPrice, POST_TP1_PROFIT_LOCK_R } from "@/services/signalResolver";
-import { sendTelegramAlert } from "@/services/telegramNotifier";
-import { appendDiagnosticEvent, pruneOldDiagnosticEvents, ensureDiagnosticEventStoreReady, type DiagnosticEventType } from "@/services/diagnosticEventStore";
-import { supabase } from "@/lib/supabase";
+import type { TradingSignal, SignalStatus, Settings, MarketOutlook, PerformanceMetrics, PositionSizing, DailyOHLC } from "../../types/trading.ts";
+type AppStateStatus = string;
+const AsyncStorage = { async getItem() { return null; }, async setItem() {}, async removeItem() {} } as any;
+const signalEngine = {} as any;
+function setExternalPrice(..._args: unknown[]): void {}
+async function fetchLiveGoldPriceFallback(..._args: unknown[]): Promise<unknown> { return null; }
+const Platform = { OS: "web" as const };
+const AppState = { addEventListener() { return { remove() {} }; }, currentState: "active" } as any;
+async function fetchHistoricalData(..._args: unknown[]): Promise<unknown> { return null; }
+const goldWebSocketService = {} as any;
+function registerBackgroundTask(..._args: unknown[]): void {}
+function setupNotificationChannel(..._args: unknown[]): void {}
+async function requestNotificationPermissions(..._args: unknown[]): Promise<boolean> { return false; }
+async function sendSignalNotification(..._args: unknown[]): Promise<void> {}
+function subscribeToChartPrice(..._args: unknown[]): () => void { return () => {}; }
+function subscribeToChartHeartbeat(..._args: unknown[]): () => void { return () => {}; }
+type OhlcBar = unknown;
+async function ensureBarStoreReady(..._args: unknown[]): Promise<void> {}
+async function ingestTickAllTimeframes(..._args: unknown[]): Promise<void> {}
+async function upsertBars(..._args: unknown[]): Promise<void> {}
+async function getBars(..._args: unknown[]): Promise<unknown[]> { return []; }
+async function getBarStoreStats(..._args: unknown[]): Promise<unknown> { return {}; }
+async function pruneOldBars(..._args: unknown[]): Promise<void> {}
+async function getLatestBarTimestamp(..._args: unknown[]): Promise<number> { return 0; }
+function resolveSignalWithBars(..._args: unknown[]): unknown { return null; }
+const POST_TP1_PROFIT_LOCK_R = 0.35;
+function computePostTP1LockPrice(signal: { type: string; entryPrice: number; sl: number; tp1: number }): number {
+  const stopDistance = Math.abs(signal.entryPrice - signal.sl);
+  const minDelta = 5 * 0.1;
+  const rBased = Number.isFinite(stopDistance) && stopDistance > 0 ? stopDistance * POST_TP1_PROFIT_LOCK_R : minDelta;
+  const tp1Distance = Math.abs(signal.tp1 - signal.entryPrice);
+  const ceiling = Number.isFinite(tp1Distance) && tp1Distance > 0 ? tp1Distance * 0.9 : Number.POSITIVE_INFINITY;
+  const delta = Math.min(Math.max(rBased, minDelta), ceiling);
+  const raw = signal.type === 'BUY' ? signal.entryPrice + delta : signal.entryPrice - delta;
+  return Number(raw.toFixed(1));
+}
+const supabase = { from() { return { select() { return { data: null, error: null }; } }; } } as any;
+async function sendTelegramAlert(..._args: unknown[]): Promise<void> {}
+async function appendDiagnosticEvent(..._args: unknown[]): Promise<void> {}
+async function pruneOldDiagnosticEvents(..._args: unknown[]): Promise<void> {}
+async function ensureDiagnosticEventStoreReady(..._args: unknown[]): Promise<void> {}
+type DiagnosticEventType = string;
+function createContextHook<T>(factory: () => T): [(props: { children?: unknown }) => unknown, () => T] {
+  return [(() => null) as unknown as (props: { children?: unknown }) => unknown, factory];
+}
+function useState<T>(initial: T): [T, (v: T) => void] { return [initial, () => {}]; }
+function useEffect(..._args: unknown[]): void {}
+function useCallback<T>(fn: T): T { return fn; }
+function useMemo<T>(fn: () => T): T { return fn(); }
+function useRef<T>(initial: T): { current: T } { return { current: initial }; }
+
 
 const INDEPENDENT_POLL_INTERVAL_MS = 12000;
 const INDEPENDENT_POLL_NO_PRICE_INTERVAL_MS = 5000;
