@@ -1722,6 +1722,125 @@ still wrong — 17 bad rows are still stored, and `model_weights_v1` is still tr
 (33.3% by count, 26.5% by decay weight). **Item 43 (corpus correction) and Item 44 (single
 retrain) have NOT been started.**
 
+## 3w. ITEMS 43 & 44 — CORPUS CORRECTED TO BAR TRUTH, RETRAIN MEASURED (2026-08-11)
+
+Scripts: `item43_correct_corpus.ts` (the only WRITING script in this sequence),
+`test_item43b_local_tier_repopulate.ts`, `item44_retrain_on_corrected_corpus.ts`.
+Engine file modified: `expo/services/learningStore.ts` (43b). `runChecks(expo)` clean.
+
+### ITEM 43(a) — ALL 17 ROWS REWRITTEN TO THEIR BAR-VERIFIED TRUTH
+
+Census, not a sample: all 51 durable rows re-derived from real Vantage bars over the 8h
+window. 51/51 had recoverable geometry, 0 unmatched, 0 flat resolutions. Exactly 17
+disagreed — the same 17 Items 37/39/40 identified, no more and no fewer.
+
+Stored values reproduce the engine's own convention rather than a new one
+(`signalEngine.ts:6440,:6472,:562`): `pnl = ±|exit-entry|`, `realized_r = pnl/|entry-sl|`,
+`is_scratch = |R| < 0.15`. Reads anon-direct; writes service-role only.
+
+```
+  10 false LOSS -> WIN     idx 15, 33, 36, 246, 249, 250, 251, 253, 344, 379
+   7 false WIN  -> LOSS    idx 62, 243, 245, 341, 342, 345, 362
+```
+
+The 7 false-WIN rows WERE corrected despite Item 42's G42-1 being unclosable, because those
+are different questions: "what did price do" is settled with certainty by bars (SL first in
+7 of 7, three gate closures in Item 39); "can a replay reproduce the live monitor banking
+them" is what died with the lost ticks. The corpus stores the first answer.
+
+```
+  G43-1 exactly the 17 disagreeing rows written, 0 errors             PASS
+  G43-2 independent read-back (fresh anon client) confirms 17/17      PASS
+  G43-3 0 of 51 bar-resolvable rows still disagree                    PASS
+  G43-4 no row created or deleted (51 before, 51 after)               PASS
+```
+
+### ITEM 43(b) — THE HYDRATE PATH WOULD HAVE THROWN THE CORRECTION AWAY
+
+Reading the live path (not assuming) found the corrections could never have reached the tier
+the model trains from. `hydrateFromRemote()` merged as a pure UNION BY signalId — "a
+signalId already present locally is left untouched". On any device already holding the 17
+stale rows (the normal case on native, where the tier is durable SQLite) the durable
+correction was silently discarded, forever, with nothing in the logs.
+
+Fixed in `learningStore.ts`: on a label/R conflict the DURABLE row wins, because the local
+tier is only ever a cache of it (learningStore's own stated contract). Local-only rows are
+still never discarded — they are still backfilled upward. Relabels are logged and returned
+as a new `refreshed` count.
+
+Proven against the real module and the real corrected corpus, by seeding a tier with the
+exact pre-Item-43 labels:
+
+```
+  G43b-1 17/17 rows carry the corrected label after hydration         PASS
+  G43b-2 zero stale labels remain                                    PASS
+  G43b-3 row count preserved (52 -> 52), no signalId lost            PASS
+  G43b-4 CONTROL: 34 already-correct rows byte-identical             PASS
+  G43b-5 a local-only row SURVIVES (a refresh, not a wipe)           PASS
+```
+
+### ITEM 43(c) — CORRECTED CORPUS EV
+
+```
+  BEFORE  n=50  EV=-0.1853R  WR=48.0%  PF=0.644
+  AFTER   n=51  EV=-0.1476R  WR=52.9%  PF=0.686
+  DELTA        EV +0.0377R   WR +4.9pp
+```
+
+This is a corrected MEASUREMENT of the same past trades, not an improvement in the strategy.
+Nothing about the engine got better between BEFORE and AFTER. Note the corpus EV
+(-0.1476R) still differs from the canonical bar-replay EV (+0.0800R, Item 38) — the corpus
+prices real entry fills, the replay prices bar geometry; §3s owns that reconciliation.
+
+### ITEM 44 — RETRAIN MEASURED; THE LIVE VECTOR IS STILL THE CONTAMINATED ONE
+
+`model_weights_v1` is device AsyncStorage with no server copy, so writing the live vector
+from a script is IMPOSSIBLE by architecture. What was done instead is the part that answers
+the question: the REAL `retrainModel()` over the REAL corrected corpus, on the same n=51
+training set Item 40 reconstructed, so the ONLY variable is the 17 labels.
+
+**G44-4 (cold-start control reproduces the live vector) could NOT close, and is not claimed.**
+Both cold arms returned rsi_weight = exactly -0.600000 against the live -0.956150. The
+arithmetic names the cause: `W_final = 0.4*W_historical + 0.6*W_recent` (`:6774`), and a cold
+engine has `W_historical = 0`, so a fully saturated -1.0 fit can only reach -0.6. -0.956150
+is the fixed point that many COMPOUNDING cycles converge toward. Reproducing it needs the
+full retrain history, which Item 40 already established is never persisted. IMPOSSIBLE, not
+underpowered.
+
+First-principles consequence, and the operationally useful number: the device will not cold
+start either — its next retrain blends the corrected fit against the contaminated vector it
+holds. Seeding the live vector as `W_historical` via the real `loadPersistedLearningData()`
+gives the warm-start prediction:
+
+```
+  feature             LIVE (now)   WARM on OLD    WARM on CORRECTED   delta(corr-old)
+  rsi_weight           -0.956150     -0.982460           -0.982460         +0.000000
+  atr_weight            0.564880      0.475395            0.288458         -0.186937
+  sentiment_weight     -0.142306     -0.248917           -0.396034         -0.147117
+  volume_weight         0.052717      0.069033            0.077075         +0.008042
+  timeWindow_weight    -0.044876     -0.077962           -0.076128         +0.001834
+  dxy_weight            0.000273      0.000109            0.000109         +0.000000
+```
+
+```
+  G44-1 training set carries zero stale labels (0 of 51)                     PASS
+  G44-2 n=51 === Item 40's corpusSizeAtTraining (labels are only variable)   PASS
+  G44-3 6/6 features defined and finite                                      PASS
+  G44-4b(i)   warm seed verified === live vector to 1e-9 before training      PASS
+  G44-4b(ii)  labels demonstrably move weights (max delta 0.186937)          PASS
+  G44-4b(iii) corrected retrain deterministic across two runs (1e-12)        PASS
+```
+
+Contamination cost the model most on `atr_weight` (0.475 -> 0.288, a 39% overstatement of
+volatility's discriminative power) and `sentiment_weight` (-0.249 -> -0.396). `rsi_weight`
+is saturated at the clamp in both arms, so the labels cannot move it. No sign flips.
+
+**LIVE STATUS, stated plainly: the device still holds the contaminated
+2026-08-06T07:50:00.730Z vector.** 43(b) changed the INPUT, so the next scheduled retrain
+(48h / drift / confidence degradation) reproduces the corrected column. FALSIFIABLE CHECK:
+export SECTION 2 must show a `Last training time` later than 2026-08-06T07:50:00.730Z with
+those weights. Until that timestamp moves, nothing here has reached production.
+
 ## 4. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
 
 **Finding (from prior session, `expo/scripts/analyzeDriftVetoOnBuy.ts`):** the Phase 2 counter-trend drift veto IS over-firing on BUYs. It dropped **4/50** counter-trend BUYs that had **positive EV (+0.2295R, 75% win rate)**. Three of the four were winners (+1.149R, +0.385R, +0.385R). The veto is costing the long book **$3.8 in net $** and **+0.0036R in EV per signal**. The veto threshold (2.0×ATR) may be too low for BUYs, or the counter-trend classification may be too broad.

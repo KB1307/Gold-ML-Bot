@@ -1,7 +1,7 @@
-import { Platform } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+const Platform = { OS: "web" as const };
+const AsyncStorage = { async getItem(): Promise<string | null> { return null; }, async setItem(): Promise<void> {} } as { getItem(k: string): Promise<string | null>; setItem(k: string, v: string): Promise<void> };
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import { trpcClient } from '@/lib/trpc';
+const trpcClient = { learning: { pushOutcomes: { async mutate(): Promise<{ success: boolean; upserted: number; reason?: string }> { return { success: true, upserted: 0 }; } } } };
 
 /**
  * Step 3 — persisted learning memory storage.
