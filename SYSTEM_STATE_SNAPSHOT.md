@@ -1288,6 +1288,329 @@ setups (7 false WIN), which corrupts feature weights in both directions.
 Do NOT skip step 1 — correcting the corpus without fixing the mechanism means
 the next batch of signals re-contaminates it.
 
+## 3u. ITEMS 38/39/40 — WIDEN-WINDOW IMPACT, FALSE-WIN MECHANISM, LIVE-WEIGHT CONTAMINATION (2026-08-11, ALL READ-ONLY)
+
+Scripts: `analyzeItem38WidenWindowImpact.ts`, `analyzeItem39FalseWinMechanism.ts`,
+`analyzeItem39bMechanismAttribution.ts`, `analyzeItem39cSLAnchorCorrected.ts`,
+`analyzeItem40WeightContamination.ts`. No engine file modified (`git status` shows only
+new untracked scripts). Nothing shipped.
+
+### ITEM 38 — WIDEN-WINDOW IMPACT: 8h IS THE CORRECT DEFAULT, COST IS TRIVIAL
+
+Pre-registered gates: G1 flatten = first width where the next adds <10% of total-24h
+corrections; G2 EV within 0.01R of next wider; G3 veto if >5000 bars/signal.
+
+```
+  width  n_resolved       EV      WR       PF      SD
+  2h            378  +0.0456R  63.0%  1.125  0.8845
+  4h            380  +0.0749R  63.4%  1.207  0.9065
+  8h            382  +0.0800R  63.6%  1.222  0.9068
+  12h           382  +0.0800R  63.6%  1.222  0.9068
+  24h           382  +0.0800R  63.6%  1.222  0.9068
+```
+
+Status changes vs the 2h baseline, and cost:
+
+```
+  width   changed_vs_2h  newly_WIN  newly_LOSS  still_CLOSED  avg_bars/sig  max_bars
+  2h                  0          0           0             9         117.3       120
+  4h                 10          8           0             2         232.5       240
+  8h                 12         10           0             2         447.4       480
+  12h                12         10           0             2         654.6       720
+  24h                12         10           0             2        1235.4      1440
+```
+
+Incremental correction curve:
+
+```
+  2h -> 4h    10 corrections   83.3% of total   EV +0.0293R
+  4h -> 8h     2 corrections   16.7% of total   EV +0.0051R
+  8h -> 12h    0 corrections    0.0% of total   EV +0.0000R
+  12h -> 24h   0 corrections    0.0% of total   EV +0.0000R
+```
+
+**G1 PASS: the curve flattens at 8h.** **G2 PASS:** |EV(12h) - EV(8h)| = 0.0000R.
+**G3 PASS:** max 1440 bars/signal at 24h, far under the 5000 ceiling; at the recommended
+8h it is 447 avg / 480 max bars per signal. Cost is NOT a constraint — the 2h default was
+never a performance decision.
+
+Every correction is one-directional: **10 newly WIN, 0 newly LOSS.** Widening only ever
+discovers wins the 2h window truncated. `CLOSED` drops 9 -> 2, `NEVER_FILLABLE` 5 -> 1.
+The 2h window understated EV by 0.0344R (+0.0456R -> +0.0800R): **43% of the canonical EV
+was invisible at 2h.**
+
+The 7 Item-35 signals — all correct at 4h, none need more than 4h:
+
+```
+  idx        2h                  4h / 8h / 12h / 24h
+  15     CLOSED   ->   ALL_TARGETS_HIT
+  16     CLOSED   ->   ALL_TARGETS_HIT
+  18     CLOSED   ->   ALL_TARGETS_HIT
+  19     CLOSED   ->   ALL_TARGETS_HIT
+  22     CLOSED   ->   ALL_TARGETS_HIT
+  32     CLOSED   ->   SL_HIT
+  232    CLOSED   ->   SL_AFTER_BE
+```
+
+**RECOMMENDED (not implemented): `resolutionWindowMs` default 2h -> 8h.** 8h captures 100%
+of available corrections at 36% of the 24h bar cost.
+
+### ITEM 38(ii) — DOES `force:true` OVERRIDE THE :1450 SKIP? THE QUESTION CONFLATES TWO FUNCTIONS
+
+`:1450` and `force:true` are **in different functions**. They do not interact.
+
+- `:1450` lives in **`catchUpAndEvaluateSignals`**. It skips CLOSED/SL_HIT/SL_AFTER_BE/
+  ALL_TARGETS_HIT/PARTIAL_WIN_SL_HIT. That function has **no `force` parameter at all** —
+  `force:true` cannot reach it, override it, or alter it in any way.
+- `force:true` is an option of **`auditTerminalSLSignals`** (`:1918`), a separate function.
+  Its loop gate is `:1964`: `if (!isTerminal || (!force && alreadyAudited && tooOldForBars))`.
+  `CLOSED` **is** in `TERMINAL_SIGNAL_STATUSES` (`:93`), so `isTerminal` is true for CLOSED
+  signals and they **are** audited. `force` bypasses only the audit-lock/too-old skip, and
+  sets `fromScratch: force` (`:1995`) so a falsely-banked terminal can be undone.
+
+**So: the audit DOES re-examine CLOSED signals today; the `:1450` skip never blocked it.**
+Force Audit corrects 0 of 7 **solely** because `resolutionWindowMs = 2h` (`:1948`) and
+`toTime = signalTs + resolutionWindowMs` (`:1971`) — it re-reads the same 2h of bars and
+re-confirms CLOSED. Widening the window alone is therefore **sufficient to correct the
+existing 7**, with no change to `:1450`.
+
+**BUT `:1468` must ALSO change to stop RE-CONTAMINATION going forward.** Two separate
+requirements, not to be conflated:
+
+1. **Repair existing** wrong rows: widen `resolutionWindowMs`. Sufficient on its own.
+2. **Stop new** wrong rows: fix `:1468`, which marks CLOSED at >2h *without checking any
+   bars* and calls `recordTradeOutcome(..., 'LOSS')` at `:1478`. That is the origin of every
+   false LOSS. Left in place it keeps writing wrong LOSS labels a widened audit must then
+   chase and correct after the fact.
+
+### ITEM 39 — FALSE-WIN MECHANISM: **NOT** A PHANTOM TICK. TWO HYPOTHESES REJECTED BY THEIR OWN GATES.
+
+My Item 37 write-up speculated these 7 came from "the live tick monitor banking a phantom TP".
+**That hypothesis is REJECTED by its own pre-registered gate.** Recorded because a wrong
+hypothesis stated as fact is exactly what MINDSET rule 2 exists to catch.
+
+**39b EXIT-PRICE FINGERPRINT.** Each live terminal branch writes a deterministic exitPrice, so
+the corpus `exit_price` identifies which branch fired — provenance from data, not code reading:
+
+```
+  idx  dir   corpus_exit    tp3   partial   after_be_lock      sl   => BRANCH
+  243  BUY        4044.9 4044.9    4040.2          4039.8  4032.0   ALL_TARGETS_HIT (TP3)
+  245  BUY        4051.0 4051.0    4046.2          4045.9  4038.1   ALL_TARGETS_HIT (TP3)
+  341  BUY        4083.2 4083.2    4076.9          4076.5  4064.8   ALL_TARGETS_HIT (TP3)
+  342  BUY        4097.2 4097.2    4090.2          4089.6  4078.0   ALL_TARGETS_HIT (TP3)
+  345  BUY        4105.0 4105.0    4098.6          4098.2  4086.5   ALL_TARGETS_HIT (TP3)
+  362  SELL       4020.2 4013.4    4019.8          4020.2  4031.9   SL_AFTER_BE (post-TP1 lock)
+  62   SELL       4124.2 4124.2    4128.4          4129.3  4134.7   ALL_TARGETS_HIT (TP3)
+```
+
+6 of 7 came through the **ALL_TARGETS_HIT TP3 branch**, 1 through **SL_AFTER_BE**.
+
+**HYPOTHESIS 1 (phantom tick) — REJECTED.** Gate G1 required: no bar in the full 24h window
+reaches the banked TP. Result: **0 of 7.** All 7 genuinely touched their TP on real Vantage
+bars. There was no phantom price.
+
+```
+  idx  dir   implied_TP   MFE_24h   TP_touched?    TP_at     SL_at   which FIRST
+  243  BUY       4044.9    4136.1           YES   +0.61h    +0.04h   SL first
+  245  BUY       4051.0    4136.1           YES   +1.79h    +0.08h   SL first
+  341  BUY       4083.2    4144.0           YES  +19.59h    +1.42h   SL first
+  342  BUY       4097.2    4144.0           YES  +20.38h    +0.41h   SL first
+  345  BUY       4105.0    4144.0           YES  +21.76h    +0.13h   SL first
+  362  SELL      4019.9    4012.9           YES   +0.78h    +0.32h   SL first
+  62   SELL      4124.2    4040.1           YES   +1.17h    +0.14h   SL first
+```
+
+**SL was touched FIRST in 7 of 7.** The defect is ORDERING/CONFIRMATION, not price quality.
+
+**HYPOTHESIS 2 (SL-confirmation asymmetry for all 7) — ALSO REJECTED, and my first attempt to
+test it was itself methodologically wrong.** Item 39b counted "bars closing beyond SL" over the
+full 24h, which for idx 345 returned 1160 bars — that only reflects price collapsing and
+staying down all day and says nothing about the first-touch moment. Corrected in Item 39c by
+anchoring strictly at the FIRST SL touch:
+
+```
+  idx  dir  SL_touch  touch_bar  pen_at  consec_closed  returned_inside  TP_touch  TP<2h
+  243  BUY    +0.04h     CLOSED   12.4p              1             YES     +0.61h    YES
+  245  BUY    +0.08h       WICK    7.1p              0             YES     +1.79h    YES
+  341  BUY    +1.42h       WICK    0.9p              0             YES    +19.59h     NO
+  342  BUY    +0.41h     CLOSED    7.2p              1             YES    +20.38h     NO
+  345  BUY    +0.13h       WICK    0.6p              0             YES    +21.76h     NO
+  362  SELL   +0.32h     CLOSED    7.4p              2             YES     +0.78h    YES
+  62   SELL   +0.14h       WICK    8.3p              0             YES     +1.17h    YES
+```
+
+Corrected attribution — **the 7 do NOT share one mechanism**:
+
+```
+  2 signals  A      (245, 62)        wick-only first touch + TP inside 2h -> confirm asymmetry
+  2 signals  B      (341, 345)       wick-only first touch + TP only reachable at +19h/+21h
+  3 signals  NOT-A  (243, 342, 362)  first touch CLOSED beyond SL -> live SHOULD have confirmed
+```
+
+Bar coverage is clean for all 7 (120 bars per 2h window, max gap 1 min), so the resolver's
+SL_HIT labels are trustworthy (G3: 0 of 7 untrustworthy).
+
+**THE REAL ASYMMETRY, named.** The live tick monitor applies a strongly asymmetric evidentiary
+standard:
+
+- **SL side** is gated by `confirmSLHit` (`TradingContext.tsx:2812`), requiring >=1.5 pips
+  penetration AND >=2500ms sustained AND >=2 ticks (`:196-198`). Price recovering past the
+  level **deletes the tracker** (`:2819`), so the breach restarts from zero.
+- **TP side has NO gate at all.** `:2882` (BUY) and `:2930` (SELL) are bare comparisons —
+  `else if (price >= signal.tp3 && targetsHit < 3)` -> `ALL_TARGETS_HIT` on a SINGLE read.
+- The banked exit is then **assumed perfect**: `exitPrice = signal.tp3` (`:2971`), not the
+  price actually read.
+
+SL needs proof beyond reasonable doubt; TP needs one glance. For the 2 mechanism-A signals
+that is exactly what happened: a brief SL wick failed to confirm, the trade stayed open, and
+the later TP was banked instantly and unconditionally.
+
+**FOR THE 5 NON-A SIGNALS THE MECHANISM IS NOT YET PROVEN.** For 341/342/345 the TP is first
+reachable on Vantage bars only at +19h to +21h, far outside the live monitor's reach (`:2773`
+forces CLOSED past 2h); for 243/342/362 the first SL touch *closed* beyond SL and should have
+confirmed. Both anomalies point the same way: **the price series the live monitor was reading
+did not match `gold_m1_bars`.** That is the venue split already documented in Phase 0 Item 4 —
+entry/live price comes from Capital.com/Swissquote spot while `gold_m1_bars` is Vantage MT5
+XAUUSDm. Not asserted as proven; named as the leading remaining candidate.
+
+**39a IMPOSSIBLE-MEASUREMENT DECLARATION (MINDSET rule 8).** The literal tick reads that
+triggered these 7 confirmations are **NOT RECOVERABLE**. `diagnosticEventStore` is local SQLite
+on a rolling 24h window (`diagnosticEventStore.ts:59`) and these signals are from 2026-07-01 to
+2026-07-22. Further, there is no `LIVE_TICK_TP_*` event type at all — the enum (`:19-49`) has
+`LIVE_TICK_SL_CANDIDATE`/`LIVE_TICK_SL_HIT` but **no TP counterpart** — so the ungated TP branch
+never logged anything even when the store was live. The exact per-tick forensic Item 39a asked
+for is impossible, not underpowered.
+
+**FORWARD EVIDENCE THAT WOULD SETTLE IT:** add `LIVE_TICK_TP_CANDIDATE`/`LIVE_TICK_TP_HIT`
+events recording the triggering price, its venue/source tag, and the concurrent `gold_m1_bars`
+value. That single addition distinguishes venue divergence from a confirmation defect on the
+next occurrence, and costs nothing at decision time (the store is fire-and-forget).
+
+### ITEM 39b — SAME BUG CLASS AS THE PATH 3 DEFECT? **NO — A SEPARATE, NEVER-HARDENED PATH.**
+
+Gate G2 asked whether the responsible branch lacks a corroboration gate. Direct comparison:
+
+- **Path 3 (catch-up fallback), ALREADY HARDENED.** Every TP branch is gated: `:1585`
+  `currentPrice >= signal.tp3 && confirmFallbackBreach('TP3', ...)`, likewise TP2 `:1594`,
+  TP1 `:1599`, SELL side `:1636/:1645/:1650`. `confirmFallbackBreach` (`:1529`) enforces the
+  same duration/penetration/tick thresholds across separate catch-up passes and logs
+  `PATH3_TP_CANDIDATE`/`PATH3_TP_CONFIRMED`. The comment at `:1523-1528` records this as the
+  Part A TP-direction-mixup fix.
+- **Path 1 (live tick monitor), NEVER HARDENED.** `:2882`/`:2930` have no gate and no event.
+
+**Verdict: the earlier fix has NO gap — it did exactly what it claimed, but only for Path 3.**
+The defect class (a single uncorroborated read banking a terminal outcome) was fixed in the
+fallback path and left untouched in the primary live path. The named path is
+**`updateAllSignalsStatus`'s TP1/TP2/TP3 branches, `TradingContext.tsx:2882` (BUY) and `:2930`
+(SELL)** — the only remaining ungated terminal-banking comparisons in the codebase.
+
+The `classifyTick` spike gate (`:2752`) is NOT a substitute. It rejects only jumps exceeding
+`8 + 6*dt` pips (capped at 10s, max 68 pips). TP3 distances here are 4-10 price units, well
+inside that budget, so the spike gate passes these ticks through by design.
+
+### ITEM 39c — IS THE FALSE-WIN MECHANISM CURRENTLY ACTIVE? **YES.**
+
+Gate G3 required the ungated branch to be present in the working tree and reachable.
+
+- Present: `:2882`/`:2930` are ungated in the current working tree. `git status` confirms
+  `TradingContext.tsx` is unmodified — this is committed, live code.
+- Reachable: `updateAllSignalsStatus` runs on every accepted live tick, behind no feature flag.
+  The only guards before it are the spike gate (`:2752`, passes normal TPs), a 5s grace period
+  (`:2769`), and the >2h CLOSED cutoff (`:2773`).
+- No TP-side telemetry exists, so recurrences are currently **invisible**.
+
+**A signal generated today can still get a false WIN recorded.** The corpus is therefore still
+actively accumulating false-WIN contamination, **independent of Item 35** and **unaffected by
+widening the audit window**. This is why the Item 37 fix sequence was incomplete: it addressed
+only the false-LOSS half.
+
+One mitigating note, for accuracy: the daily sweep runs `force:true` (`:2283`, `:3198`) with
+`fromScratch`, which CAN undo a falsely-banked TP — but only for signals whose SL event falls
+inside the 2h window it reads, and only when the app is foregrounded during the sweep. It
+corrected none of these 7.
+
+### ITEM 40 — THE LIVE WEIGHT VECTOR **IS** FITTED TO CONTAMINATED LABELS
+
+Live `model_weights_v1` provenance (export SECTION 2):
+
+```
+  Last training time:              2026-08-06T07:50:00.730Z
+  Feature count:                   6
+  Corpus size at training:         51 outcome(s)
+  Corpus-unavailable at training:  0
+```
+
+The 17 wrong rows were **re-derived independently** (not hardcoded from Item 37): all 51 corpus
+rows matched and bar-covered, resolved fromScratch over 8h, 17 disagreements — the same 17,
+confirming Item 37 reproduces.
+
+**40a — retrain enumeration is IMPOSSIBLE from durable evidence (MINDSET rule 8).**
+The corpus reached the 20-outcome retrain gate at **2026-07-31T09:13:29Z** (row #20 by ts,
+signal `3xb0vvcw8`). From that instant every `recordTradeOutcome` could trigger a retrain
+(48h-scheduled `:6552`, or confidence/drift `:6558`, deferred to 22:00-07:00 UTC `:6565`). But
+`model_weights_v1` persists **only the latest** retrain (`:6823-6827`) — no retrain-history array
+and no durable retrain-history table (`backend/migrations` holds only `shadow_signals_v1`). The
+full list of historical retrains and their exact training sets is **not recoverable**.
+Impossible, not underpowered.
+**FORWARD EVIDENCE:** append-only retrain-history record (timestamp + training-set signal_ids)
+written on every `walkForwardOptimization`.
+
+**40b — THE ANSWER, unambiguous:**
+
+```
+  Live vector trained at:                  2026-08-06T07:50:00.730Z
+  Training window (14d):                   ts >= 2026-07-23T07:50:00.730Z
+  Rows existing at training time:          51
+  Of those, inside the 14-day window:      51
+  Fallback path used (window < 10)?        NO
+  RECONSTRUCTED TRAINING SET SIZE:         51
+  PERSISTED corpusSizeAtTraining:          51   <- G3 MATCH, reconstruction is reliable
+
+  Known-wrong rows inside the training set: 17
+  CONTAMINATION FRACTION:                   33.3%
+  G1 VERDICT: live weight vector is CONTAMINATED.
+```
+
+G3 closed cleanly: persisted `corpusSizeAtTraining` (51) equals the reconstructed training-set
+size (51), so the reconstruction is cross-validated rather than assumed. The entire corpus fell
+inside the 14-day window, so the training set IS the whole corpus — every one of the 17 wrong
+rows is in it.
+
+**Decay-weighted influence.** `retrainModel` applies `weight = 0.75 ^ daysSinceOutcome`
+(`:6644-6651`), normalised. The wrong rows carry **26.5% of total decay weight** versus their
+33.3% raw count share — slightly less than headline, because most cluster on 2026-07-29/31,
+6-8 days before training. But the single most influential wrong row is the most recent one:
+
+```
+  2026-08-03  dm1mv29uv  weight=4.51%   (corpus LOSS, bars ALL_TARGETS_HIT)
+  2026-07-31  663a4rkbv  weight=1.70%
+  2026-07-31  9d4fa59b8  weight=1.70%
+  2026-07-31  adsl1y6o0  weight=1.70%
+  2026-07-31  hy4qxpd99  weight=1.70%
+```
+
+One mislabelled row (`dm1mv29uv`, a real ALL_TARGETS_HIT recorded as LOSS) carries 4.51% of the
+entire training signal on its own.
+
+**Plain answer for the retrain-halt decision:** the currently live 6-feature weight vector was
+fitted on 51 outcomes of which 17 (33.3% by count, 26.5% by decay weight) carry the wrong label.
+It is contaminated NOW — this is not a future risk. Retraining again before the corpus is
+corrected re-fits to the same wrong labels. The decision is the user's, on these numbers.
+
+### BOTH CONTAMINATION MECHANISMS, SIDE BY SIDE (for the single combined correction)
+
+```
+  mechanism      rows  origin                               fixed by widening window?
+  false LOSS       10  :1468 marks CLOSED at >2h with no     PARTIALLY - repairs existing;
+                       bar check, then records LOSS :1478    :1468 must change to stop new
+  false WIN         7  :2882/:2930 ungated TP branches       NO - untouched by window width;
+                       bank a terminal on a single read      STILL ACTIVE TODAY
+```
+
+**Item 37's proposed 5-step fix sequence covers only the false-LOSS column.** A combined
+correction must also address `:2882`/`:2930`, or the corpus re-contaminates from the false-WIN
+side immediately after the repair.
+
 ## 4. Open Finding — Drift-Veto-on-BUY (NEXT optimization candidate, deliberately deferred)
 
 **Finding (from prior session, `expo/scripts/analyzeDriftVetoOnBuy.ts`):** the Phase 2 counter-trend drift veto IS over-firing on BUYs. It dropped **4/50** counter-trend BUYs that had **positive EV (+0.2295R, 75% win rate)**. Three of the four were winners (+1.149R, +0.385R, +0.385R). The veto is costing the long book **$3.8 in net $** and **+0.0036R in EV per signal**. The veto threshold (2.0×ATR) may be too low for BUYs, or the counter-trend classification may be too broad.
