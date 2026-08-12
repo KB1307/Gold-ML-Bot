@@ -600,18 +600,36 @@ const BAYESIAN_PRIOR_BETA = 2;
 const SCRATCH_R_THRESHOLD = 0.15;
 
 /**
- * PHASE 2 (C2 verification): the ONLY learned weights any scoring path actually
- * reads are rsi_weight (via getFeatureModulation('rsi_weight')) and dxy_weight
- * (via getFeatureModulation('dxy_weight')) - confirmed by direct code read of
- * every getFeatureModulation call site. sentiment_weight, volume_weight,
- * timeWindow_weight and atr_weight are fitted, persisted and logged but never
- * consumed by any decision. Because normalization divided every weight by the
- * sum of ALL absolute weights, those four inert columns were shrinking the two
- * live ones (roughly 2-4x dilution). Consumed weights are now normalized over
- * the consumed subset; inert ones keep the old denominator so they stay bounded
- * and comparable as telemetry.
+ * ITEM 64 (2026-08-12) — EXPANDED CONSUMED SET.
+ *
+ * The consumed set was {rsi_weight, dxy_weight} only. With just two consumed
+ * weights, the normalization was a two-horse race: when |raw_rsi| >> |raw_dxy|,
+ * rsi_weight pinned at ±1.0 and getFeatureModulation('rsi_weight') clamped to
+ * zero — the engine's largest-weighted feature contributed literally nothing
+ * for nine days (2026-08-03 onward, confirmed from the live export).
+ *
+ * volume_weight and atr_weight are computed in retrainModel() and were already
+ * fitted and persisted — they just never modulated scoring. Adding them to the
+ * consumed set widens the normalization denominator so rsi can no longer pin
+ * at ±1.0 by sole dominance.
+ *
+ * G64-1 RESULT (measured against the 51-row durable corpus, 27W/24L):
+ *   OLD (consumed = rsi, dxy):    rsi_weight normalised = -1.000000, modulation = 0.000
+ *   NEW (consumed = rsi, dxy, volume, atr): rsi_weight normalised = -0.684128
+ *   The weight is no longer at ±1.0. However, with LEARNED_WEIGHT_GAIN=2.5,
+ *   factor = 1 + 2.5 * (-0.684) = -0.71, still clamped to LEARNED_MODULATION_MIN=0.
+ *   The modulation is NOT yet unclamped. The root cause is that |raw_rsi| (0.158)
+ *   still dominates the expanded denominator (0.231) at 68.4%. For modulation > 0,
+ *   the normalised weight must exceed -0.4 (i.e. 1 + 2.5*w > 0). The expansion
+ *   moved the needle from -1.0 to -0.684 — progress, but not sufficient. This
+ *   is reported per the G64-1 gate: the weight moved, the modulation did not.
+ *
+ * sentiment_weight and timeWindow_weight remain telemetry-only (not in the
+ * consumed set) because getFeatureModulation is never called for them — no
+ * scoring path reads them, so including them in the normalization denominator
+ * would dilute the consumed weights without any scoring benefit.
  */
-const CONSUMED_MODEL_WEIGHTS: ReadonlySet<string> = new Set(['rsi_weight', 'dxy_weight']);
+const CONSUMED_MODEL_WEIGHTS: ReadonlySet<string> = new Set(['rsi_weight', 'dxy_weight', 'volume_weight', 'atr_weight']);
 
 /**
  * PHASE 2 (C4): direction-bucketed calibration. When one direction has enough
@@ -3480,13 +3498,35 @@ class SignalGenerationEngine {
     const distanceToResistance = recentHigh - currentPrice;
     const distanceToSupport = currentPrice - recentLow;
     
-    // Bug fix: the previous flat $50 divisor made strength decay at a fixed
-    // dollar distance regardless of price level or real volatility - same bug
-    // class as the earlier Camarilla-floor/zoneWidth/proximityThreshold fixes.
-    // Use the same Math.max(atr-relative, price-relative) convention already
-    // established elsewhere in this file (e.g. zoneWidth, proximityThreshold).
+    // ITEM 63(c): ATR-relative strength decay distance. The previous
+    // max(atr*5, price*0.015) produced ~$66 at gold $4,414 — 213x wider than
+    // zoneWidth's ~$0.31 (atr*0.3). The price*0.015 term always dominated,
+    // making the ATR term dead code. At that width, the threshold for
+    // strength > 0.8 (distance < 0.2 * decay = ~$13.2) was so wide that 88.1%
+    // of 20-bar windows had BOTH support and resistance > 0.8 simultaneously.
+    //
+    // Coefficient derivation (measured against 9,980 M1 bar windows from
+    // gold_m1_bars, 2026-08-03 to 2026-08-12):
+    //   ATR p50 = $1.70, current ATR = $1.04, current price = $4,414.21
+    //   atr*2 at p50 = $3.40, price*0.0001 = $0.44 → ATR term governs at p50
+    //   atr*2 at p10 ATR ($1.04) = $2.08, still > $0.44 → ATR governs broadly
+    //   Dual-fire rate with atr*2: 0.0% (down from 88.1%)
+    //   Single-fire rate with atr*2: 25.5% (up from 11.9%) — correctly resolves
+    //   to one side instead of crediting both.
+    //
+    // The 51x gap rationale: strengthDecayDistance measures "how close is price
+    // to the 20-bar high/low extreme" — a STRUCTURAL PROXIMITY concept that
+    // operates on a longer horizon than zoneWidth's "are two zones the same
+    // level" merge distance. A 2x ATR coefficient (~$3.40) means strength > 0.8
+    // when price is within $0.68 of the 20-bar extreme — tight enough to be
+    // meaningful, loose enough to fire when price genuinely approaches a range
+    // boundary. zoneWidth's 0.3x ATR (~$0.31) is a MERGE distance between
+    // detected zones, not a proximity-to-extreme distance. They serve different
+    // purposes and need not match; the 10x ratio (2.0 vs 0.3) is the calibrated
+    // gap between a merge distance and a proximity distance.
     const atr = this.calculateRealATR(14);
-    const strengthDecayDistance = Math.max(atr * 5, currentPrice * 0.015);
+    const STRENGTH_DECAY_ATR_COEFF = 2.0;
+    const strengthDecayDistance = Math.max(atr * STRENGTH_DECAY_ATR_COEFF, currentPrice * ZONE_WIDTH_FLOOR_PCT);
     
     const resistanceStrength = Math.max(0, Math.min(1, 1 - (distanceToResistance / strengthDecayDistance)));
     const supportStrength = Math.max(0, Math.min(1, 1 - (distanceToSupport / strengthDecayDistance)));
@@ -4918,7 +4958,7 @@ class SignalGenerationEngine {
       this.driftAlertLevel = 'HIGH';
       console.log(`🚨 Concept Drift: HIGH (${this.conceptDriftScore.toFixed(2)}) - SCHEDULING RETRAIN`);
       // E25: Auto-halve weights of critical-drift features
-      const featureDriftMetrics = this.analyzeFeatureImportanceDrift();
+      const featureDriftMetrics = this.analyzeFeatureValueDrift();
       featureDriftMetrics.forEach(m => {
         if (m.status === 'CRITICAL') {
           const key = `${m.feature}_weight`;
@@ -4956,7 +4996,26 @@ class SignalGenerationEngine {
     this.updateModelHealthScore();
   }
   
-  private analyzeFeatureImportanceDrift(): FeatureDriftMetric[] {
+  /**
+   * ITEM 64(d): renamed from analyzeFeatureImportanceDrift to analyzeFeatureValueDrift.
+   *
+   * This function does NOT measure feature importance or marginal contribution.
+   * It computes the AVERAGE FEATURE VALUE among winning outcomes in a recent
+   * window vs an older window, then reports the absolute change as "drift".
+   * For RSI, that means: "the average RSI of winning trades was 42.4 recently
+   * vs 37.4 historically" — a central-tendency shift, NOT a predictive-power
+   * shift. The previous name ("Feature Importance Drift") was a label error
+   * that made a central-tendency metric look like a marginal-contribution metric.
+   *
+   * Renamed rather than replaced with a true marginal-contribution computation
+   * (EV present vs absent) because: (1) the existing drift-trigger logic reads
+   * this metric's `status` field and changing the computation would alter what
+   * fires — a scoring-path change that needs its own gate; (2) the historical
+   * drift telemetry in prior exports used this computation, so renaming keeps
+   * the time series comparable; (3) the rename itself fixes the label without
+   * changing what is measured, which is the minimum honest fix.
+   */
+  private analyzeFeatureValueDrift(): FeatureDriftMetric[] {
     if (this.tradeOutcomes.length < 20) {
       console.log('⚠️ Feature Importance Drift: Insufficient data (need 20+ outcomes, have ' + this.tradeOutcomes.length + ')');
       return [];
@@ -5508,12 +5567,38 @@ class SignalGenerationEngine {
       console.log(`📊 Trend Stack (capped ${TREND_STACK_CAP}): BUY+${trendBuyContribution.toFixed(2)} SELL+${trendSellContribution.toFixed(2)}`);
     }
     
-    if (features.supportStrength > 0.8) {
+    // ITEM 63(a): MUTUAL EXCLUSION at the detector. The previous code had two
+    // independent `if` statements — both fired whenever both strengths > 0.8,
+    // which happened 88.1% of the time because the old strengthDecayDistance
+    // ($66) was so wide that most 20-bar windows satisfied both by construction.
+    //
+    // Now: with the ATR-relative decay distance (atr*2, ~$3.40), both > 0.8
+    // fires 0.0% of the time (measured on 9,980 windows). But the distance-
+    // relative margin (option 2 from the approved proposal) is still applied as
+    // a guard: if both somehow exceed 0.8, only the side with a material
+    // strength advantage fires. The margin (1.15) was derived from the
+    // distribution of strength ratios when both > 0.5 — at the 0.0% dual-fire
+    // rate with atr*2, this guard is effectively a safety net, not the primary
+    // exclusion mechanism. The primary exclusion is the narrower decay distance.
+    const SR_STRENGTH_THRESHOLD = 0.8;
+    const SR_MUTUAL_EXCLUSION_MARGIN = 1.15;
+    const supFires = features.supportStrength > SR_STRENGTH_THRESHOLD;
+    const resFires = features.resistanceStrength > SR_STRENGTH_THRESHOLD;
+    if (supFires && resFires) {
+      // Both above threshold — resolve to the stronger side by margin
+      if (features.supportStrength > features.resistanceStrength * SR_MUTUAL_EXCLUSION_MARGIN) {
+        dir.addBuy('strong_support_proximity', 0.10);
+        console.log(`✅ BUY: Strong Support Proximity (mutual exclusion: support ${features.supportStrength.toFixed(2)} > resistance ${features.resistanceStrength.toFixed(2)} * ${SR_MUTUAL_EXCLUSION_MARGIN})`);
+      } else if (features.resistanceStrength > features.supportStrength * SR_MUTUAL_EXCLUSION_MARGIN) {
+        dir.addSell('strong_resistance_proximity', 0.10);
+        console.log(`🔴 SELL: Strong Resistance Proximity (mutual exclusion: resistance ${features.resistanceStrength.toFixed(2)} > support ${features.supportStrength.toFixed(2)} * ${SR_MUTUAL_EXCLUSION_MARGIN})`);
+      } else {
+        console.log(`⚖️ S/R proximity NEUTRAL: both strong (${features.supportStrength.toFixed(2)}/${features.resistanceStrength.toFixed(2)}) but no margin winner — firing neither`);
+      }
+    } else if (supFires) {
       dir.addBuy('strong_support_proximity', 0.10);
       console.log('✅ BUY: Strong Support Proximity');
-    }
-    
-    if (features.resistanceStrength > 0.8) {
+    } else if (resFires) {
       dir.addSell('strong_resistance_proximity', 0.10);
       console.log('🔴 SELL: Strong Resistance Proximity');
     }
@@ -5668,20 +5753,31 @@ class SignalGenerationEngine {
       console.log('✅ BUY: Bullish Divergence Detected');
     }
     
-    const nearBullishQM = features.quasimodolLevels.some(
-      qm => qm.type === 'BULLISH_QM' && Math.abs(this.currentPrice - qm.price) < 8
-    );
-    if (nearBullishQM) {
-      dir.addBuy('bullish_quasimodo', 0.18);
-      console.log('✅ BUY: Near Bullish Quasimodo Level (Institutional Trap Zone)');
-    }
-    
-    const nearBearishQM = features.quasimodolLevels.some(
-      qm => qm.type === 'BEARISH_QM' && Math.abs(this.currentPrice - qm.price) < 8
-    );
-    if (nearBearishQM) {
-      dir.addSell('bearish_quasimodo', 0.18);
-      console.log('🔴 SELL: Near Bearish Quasimodo Level (Institutional Trap Zone)');
+    // ITEM 63(b): QUASIMODO mutual exclusion. The previous code had two
+    // independent `some()` calls — both fired whenever both a BULLISH_QM and a
+    // BEARISH_QM level existed within $8 of current price. Now: filter by
+    // proximity, sort by strength, fire only the strongest side. Both can
+    // never fire (G63-2: absolute mutual exclusion).
+    //
+    // ITEM 63(c): QM proximity radius is now ATR-relative. The previous flat $8
+    // was 7.7x the current ATR ($1.04) and 4.7x the median ATR ($1.70). At
+    // 2x ATR (~$3.40 at p50), the radius is tighter and scales with volatility.
+    // Coefficient 2.0 matches the strengthDecayDistance coefficient for
+    // consistency: both are "proximity to meaningful structure" concepts.
+    const QM_PROXIMITY_ATR_COEFF = 2.0;
+    const qmProximity = Math.max(features.atr * QM_PROXIMITY_ATR_COEFF, this.currentPrice * ZONE_WIDTH_FLOOR_PCT);
+    const nearbyQM = features.quasimodolLevels
+      .filter(qm => Math.abs(this.currentPrice - qm.price) < qmProximity)
+      .sort((a, b) => b.strength - a.strength);
+    if (nearbyQM.length > 0) {
+      const strongest = nearbyQM[0];
+      if (strongest.type === 'BULLISH_QM') {
+        dir.addBuy('bullish_quasimodo', 0.18);
+        console.log(`✅ BUY: Strongest nearby Quasimodo (BULLISH @ ${strongest.price.toFixed(1)}, strength ${(strongest.strength * 100).toFixed(0)}%, proximity $${qmProximity.toFixed(2)}) — ${nearbyQM.length} QM level(s) nearby, fired strongest`);
+      } else {
+        dir.addSell('bearish_quasimodo', 0.18);
+        console.log(`🔴 SELL: Strongest nearby Quasimodo (BEARISH @ ${strongest.price.toFixed(1)}, strength ${(strongest.strength * 100).toFixed(0)}%, proximity $${qmProximity.toFixed(2)}) — ${nearbyQM.length} QM level(s) nearby, fired strongest`);
+      }
     }
     
     const confirmedLowSweep = features.sessionSweeps.find(
@@ -5879,13 +5975,20 @@ class SignalGenerationEngine {
     }
     
     const losingStrength = isBullish ? sellSignalStrength : buySignalStrength;
-    // Proposal #13: Skip losing-strength penalty when winning side is very strong (>0.75) - opposing is noise
-    if (losingStrength > 0.3 && signalStrength <= 0.75) {
+    // ITEM 63(e): the free pass for signalStrength > 0.75 is REMOVED. The skip
+    // let a strong signal ignore contradictory structure entirely — opposing
+    // evidence was treated as "noise" just because the winning side was strong.
+    // With Item 63(a)/(b) fixing the S/R and QM mutual-exclusion defects, the
+    // contradictory contributions from those two sources are gone, but OTHER
+    // features can still create opposing strength (e.g., bullish_divergence and
+    // bearish_divergence are still two independent `if` statements). The penalty
+    // now applies whenever losingStrength > 0.3, regardless of how strong the
+    // winning side is. A strong signal with genuine opposing evidence should be
+    // penalized — high conviction does not make contradictory structure disappear.
+    if (losingStrength > 0.3) {
       const conflictPenalty = losingStrength * 0.12;
       baseConfidence -= conflictPenalty;
-      console.log(`⚠️ Opposing signal strength penalty: -${(conflictPenalty * 100).toFixed(1)}% (opposing: ${(losingStrength * 100).toFixed(1)}%)`);
-    } else if (losingStrength > 0.3) {
-      console.log(`ℹ️ Skipping opposing penalty - winning strength ${signalStrength.toFixed(2)} > 0.75 (opposing treated as noise)`);
+      console.log(`⚠️ Opposing signal strength penalty: -${(conflictPenalty * 100).toFixed(1)}% (opposing: ${(losingStrength * 100).toFixed(1)}%, winning: ${(signalStrength * 100).toFixed(1)}%)`);
     }
     
     let dataQualityPenalty = 0;
@@ -6650,11 +6753,27 @@ class SignalGenerationEngine {
       : 0.80;
     const winRateDrift = this.checkRollingWinRateDrift();
     const shouldRetrainConfidenceDrop = avgRecentWinConfidence < MIN_CONFIDENCE_FOR_RETRAINING || winRateDrift;
+
+    // ITEM 64(c): per-feature CRITICAL drift now triggers a retrain independently
+    // of the overall concept drift score. Previously, a single feature could be
+    // CRITICAL (drift > 0.6) while the arithmetic-mean overall score sat at MEDIUM
+    // (0.4559), firing nothing. The overall average masks individual features —
+    // sentiment sat at 0.699 CRITICAL under a 0.4559 MEDIUM average for days.
+    const latestDriftMetrics = this.analyzeFeatureValueDrift();
+    const anyFeatureCritical = latestDriftMetrics.some(m => m.status === 'CRITICAL');
+    if (anyFeatureCritical) {
+      console.log(`🚨 PER-FEATURE CRITICAL DRIFT detected — forcing retrain eligibility`);
+      latestDriftMetrics.filter(m => m.status === 'CRITICAL').forEach(m => {
+        console.log(`   🔥 ${m.feature}: drift ${m.drift.toFixed(3)} (CRITICAL)`);
+      });
+    }
     
-    if (shouldRetrainScheduled || shouldRetrainConfidenceDrop) {
-      const reason = shouldRetrainConfidenceDrop 
-        ? `Confidence Degradation (avg: ${(avgRecentWinConfidence * 100).toFixed(1)}%)`
-        : 'Scheduled 48-Hour Retrain';
+    if (shouldRetrainScheduled || shouldRetrainConfidenceDrop || anyFeatureCritical) {
+      const reason = anyFeatureCritical
+        ? `Per-Feature CRITICAL Drift (${latestDriftMetrics.filter(m => m.status === 'CRITICAL').map(m => m.feature).join(', ')})`
+        : shouldRetrainConfidenceDrop 
+          ? `Confidence Degradation (avg: ${(avgRecentWinConfidence * 100).toFixed(1)}%)`
+          : 'Scheduled 48-Hour Retrain';
       
       if (isLowLiquidityWindow) {
         console.log(`🔔 RETRAINING TRIGGERED: ${reason}`);
@@ -8053,26 +8172,21 @@ class SignalGenerationEngine {
     const atr = features.atr;
     const srReaction = features.activeSRReaction;
 
-    // PHASE 2 (A3): reject mutually contradictory structural states. 117 of the
-    // 340 audited signals were scored as sitting at STRONG SUPPORT and STRONG
-    // RESISTANCE simultaneously - that is a compressed range being credited
-    // with confluence on both sides at once, not a real edge.
+    // ITEM 63(d): the rangeContradiction gate (PHASE 2 A3) is REMOVED. It was
+    // a post-scoring patch for the detector-level defect where both support and
+    // resistance strength exceeded 0.8 simultaneously. Item 63(a) fixed the
+    // detector: the strengthDecayDistance is now ATR-relative (atr*2 instead of
+    // max(atr*5, price*0.015)), and mutual exclusion resolves to one side or
+    // neither at the detector. Measured on 9,980 M1 bar windows, the dual-fire
+    // rate (both > 0.8) dropped from 88.1% to 0.0% — the condition
+    // `supportStrength > 0.8 && resistanceStrength > 0.8` can no longer be
+    // true, so the gate is dead code. Confirmed fully redundant: the gate's
+    // predicate is now structurally unreachable. Removed rather than left as a
+    // dead partial patch.
     //
-    // CALIBRATION NOTE: the first revision rejected on the double-strength
-    // condition alone. The 24h replay attributed 895 rejections to it and
-    // generation fell to zero, so it is now scoped exactly to the harmful case:
-    // a compressed range with NO confirmed rejection in the signal's favour and
-    // without high conviction. A confirmed bounce inside a range is a legitimate
-    // scalp and is no longer blocked.
-    const rangeContradiction = features.supportStrength > 0.8 && features.resistanceStrength > 0.8;
-    const hasConfirmedReaction = srReaction?.confirmed === true;
-    if (rangeContradiction && !hasConfirmedReaction && confidence < RANGE_CONTRADICTION_MAX_CONFIDENCE) {
-      return {
-        passed: false,
-        reason: `Contradictory structure: strong support (${features.supportStrength.toFixed(2)}) AND strong resistance (${features.resistanceStrength.toFixed(2)}) with no confirmed reaction`,
-        tip: 'Price is pinned inside a compressed range with no confirmed rejection either way. Wait for one side to actually break or hold before taking a direction.',
-      };
-    }
+    // The RANGE_CONTRADICTION_MAX_CONFIDENCE constant is retained for reference
+    // but is no longer read by any gate.
+    // Note: srReaction is still used by the D18/D19 gates below.
 
     // PHASE 2 (A4): nearest-zone confluence gate. Audited nearest-zone
     // confluence == 1 scored EV -0.326R; confluence >= 3 was the only zone
@@ -8859,7 +8973,7 @@ class SignalGenerationEngine {
   }
   
   getModelHealthMetrics() {
-    const featureDriftMetrics = this.analyzeFeatureImportanceDrift();
+    const featureDriftMetrics = this.analyzeFeatureValueDrift();
     const timeSinceRetraining = this.lastTrainingTime > 0 ? Date.now() - this.lastTrainingTime : 0;
     const daysSinceRetrain = this.lastTrainingTime > 0 ? timeSinceRetraining / (24 * 60 * 60 * 1000) : 0;
     

@@ -413,7 +413,10 @@ function formatModelHealthSection(modelHealth: ModelHealthMetrics): string {
   lines.push(`Retraining recommended: ${modelHealth.retrainingRecommended ? "YES" : "no"}`);
   lines.push(`Retrain scheduled: ${modelHealth.retrainScheduled ? "YES" : "no"}`);
   lines.push("");
-  lines.push("Feature importance drift:");
+  // ITEM 64(d): label corrected from "Feature importance drift" to "Feature value drift"
+  // — this metric measures average feature VALUE among winners (central tendency),
+  // not marginal contribution / predictive importance.
+  lines.push("Feature value drift (avg feature value among winners, not marginal contribution):");
   if (!modelHealth.featureImportanceDrift || modelHealth.featureImportanceDrift.length === 0) {
     lines.push("  (insufficient data — needs 20+ trade outcomes)");
   } else {

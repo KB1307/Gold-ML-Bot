@@ -1,7 +1,6 @@
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import { trpcClient } from '@/lib/trpc';
 
 /**
  * Step 3 — persisted learning memory storage.
@@ -19,9 +18,14 @@ import { trpcClient } from '@/lib/trpc';
  *   - the READ (`trade_outcomes_v1`) goes DIRECTLY to Supabase via the PUBLIC
  *     anon key (SELECT is RLS-permitted; verified all 51 rows readable), and is
  *     PAGINATED so the 1000-row PostgREST cap can never silently truncate it;
- *   - the WRITE (`pushOutcomesToRemote`) DELIBERATELY stays on the service-role
- *     backend route, so the training corpus cannot be poisoned by anyone
- *     holding the public anon key. Writes are untouched by Item 12;
+ *   - ITEM 66 (2026-08-12): the WRITE (`pushOutcomesToRemote`) now goes DIRECTLY
+ *     to Supabase via the anon key + RLS INSERT/UPDATE policy, mirroring the
+ *     already-proven shadow_signals_v1 Design-B write pattern. The Rork backend
+ *     (503/no-bundle) is removed from this path. 98 local-only rows were
+ *     stranded because the old push went through trpcClient.learning.pushOutcomes
+ *     → the Rork backend, which is permanently unavailable. The anon key is
+ *     public by design; RLS allows INSERT with WITH CHECK (true) and the
+ *     upsert is keyed by signal_id so a re-push is idempotent.
  *   - every unavailable read increments a DURABLE counter surfaced in the
  *     diagnostics export, so a silent truncation is no longer possible.
  *
@@ -76,57 +80,191 @@ let pendingRemotePush: StoredTradeOutcome[] = [];
 const MAX_PENDING_REMOTE_PUSH = 200;
 let remoteSyncEnabled = true;
 
+// ITEM 66(b): pendingRemotePush is now DURABLE via AsyncStorage, so a reload
+// does not discard the queue. Previously it was in-memory only — if the app
+// reloaded before the next successful push, the queue was lost and the rows
+// could only be re-pushed on the NEXT hydrate (which re-detects them as
+// local-only). With the backend permanently 503, that meant they would NEVER
+// reach Supabase. Durability ensures the queue survives reloads.
+const PENDING_PUSH_KEY = 'pending_remote_push_v1';
+let pendingPushHydrated = false;
+let pendingPushHydratePromise: Promise<void> | null = null;
+
+/** Rehydrate the pending push queue from AsyncStorage. Reads at most once. */
+export function hydratePendingPushQueue(): Promise<void> {
+  if (pendingPushHydratePromise) return pendingPushHydratePromise;
+  pendingPushHydratePromise = (async () => {
+    try {
+      const raw = await AsyncStorage.getItem(PENDING_PUSH_KEY);
+      if (raw) {
+        const parsed: unknown = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          // Merge: any in-memory entries (added before hydration completed)
+          // are prepended so they are not lost.
+          const stored = parsed as StoredTradeOutcome[];
+          pendingRemotePush = [...pendingRemotePush, ...stored].slice(-MAX_PENDING_REMOTE_PUSH);
+          console.log(`📦 [LearningStore] Rehydrated ${stored.length} pending push outcome(s) from AsyncStorage`);
+        }
+      }
+    } catch (error: unknown) {
+      console.warn('[LearningStore] Failed to rehydrate pending push queue:', error instanceof Error ? error.message : String(error));
+    } finally {
+      pendingPushHydrated = true;
+    }
+  })();
+  return pendingPushHydratePromise;
+}
+
+/** Persist the pending push queue to AsyncStorage (throttled internally). */
+let lastPendingPushFlush = 0;
+const PENDING_PUSH_FLUSH_INTERVAL_MS = 10_000;
+function persistPendingPushQueue(force: boolean): void {
+  if (!pendingPushHydrated && !force) return;
+  const now = Date.now();
+  if (!force && now - lastPendingPushFlush < PENDING_PUSH_FLUSH_INTERVAL_MS) return;
+  lastPendingPushFlush = now;
+  const payload = pendingRemotePush.slice(-MAX_PENDING_REMOTE_PUSH);
+  AsyncStorage.setItem(PENDING_PUSH_KEY, JSON.stringify(payload)).catch((error: unknown) => {
+    console.warn('[LearningStore] Failed to persist pending push queue:', error instanceof Error ? error.message : String(error));
+  });
+}
+
 /** Test seam: disables the remote tier so unit tests exercise the local store only. */
 export function setRemoteSyncEnabledForTest(enabled: boolean): void {
   remoteSyncEnabled = enabled;
 }
 
-function toRemotePayload(outcome: StoredTradeOutcome) {
+/**
+ * ITEM 66(a): map a StoredTradeOutcome to the snake_case columns in
+ * trade_outcomes_v1, mirroring the column mapping the backend tRPC handler
+ * used. The anon key is used for INSERT via RLS policy.
+ */
+function toRemoteRow(outcome: StoredTradeOutcome): Record<string, unknown> {
+  const ts = typeof outcome.timestamp === 'number'
+    ? new Date(outcome.timestamp).toISOString()
+    : outcome.timestamp instanceof Date
+      ? outcome.timestamp.toISOString()
+      : new Date(outcome.timestamp).toISOString();
   return {
-    signalId: outcome.signalId,
-    timestamp: typeof outcome.timestamp === 'number'
-      ? outcome.timestamp
-      : new Date(outcome.timestamp).toISOString(),
-    entryPrice: outcome.entryPrice,
-    exitPrice: outcome.exitPrice,
+    signal_id: outcome.signalId,
+    ts,
+    direction: outcome.direction ?? null,
     result: outcome.result,
+    entry_price: outcome.entryPrice,
+    exit_price: outcome.exitPrice,
     pnl: outcome.pnl,
     confidence: outcome.confidence,
-    direction: outcome.direction,
-    realizedR: outcome.realizedR,
-    isScratch: outcome.isScratch,
-    signalDuration: outcome.signalDuration,
-    features: outcome.features ?? {},
-    misleadingFeatures: outcome.misleadingFeatures ?? undefined,
-    featureSchemaVersion: outcome.featureSchemaVersion,
+    realized_r: outcome.realizedR ?? null,
+    is_scratch: outcome.isScratch ?? false,
+    signal_duration_ms: outcome.signalDuration ?? null,
+    features: outcome.features as Record<string, unknown> ?? {},
+    misleading_features: (outcome.misleadingFeatures as Record<string, unknown>) ?? null,
+    feature_schema_version: outcome.featureSchemaVersion ?? 1,
   };
 }
 
 /**
- * Best-effort push of one or more outcomes into the durable corpus. Never
- * throws: on failure the rows are queued and retried on the next push/hydrate.
+ * Dedicated anon-key Supabase client for the outcome WRITE. Same pattern as
+ * the read client and shadowSignalService: public anon key, never the service
+ * key. RLS permits INSERT (WITH CHECK true) on trade_outcomes_v1 after
+ * migration 005 is applied.
+ */
+let pushClient: SupabaseClient | null = null;
+
+function getPushClient(): SupabaseClient | null {
+  if (pushClient) return pushClient;
+  const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anonKey) return null;
+  pushClient = createClient(url, anonKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  return pushClient;
+}
+
+/** Serialize a Supabase/Postgres error readably. */
+function serializePushError(err: unknown): string {
+  if (err === null || err === undefined) return 'null';
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'object' && typeof (err as Record<string, unknown>).message === 'string') {
+    const e = err as Record<string, unknown>;
+    const parts: string[] = [`message="${String(e.message)}"`];
+    if (typeof e.code === 'string' && e.code) parts.push(`code=${e.code}`);
+    if (typeof e.details === 'string' && e.details) parts.push(`details=${e.details}`);
+    return parts.join(' ');
+  }
+  try { return JSON.stringify(err); } catch { return String(err); }
+}
+
+/**
+ * ITEM 66(a): Best-effort push of one or more outcomes into the durable corpus,
+ * DIRECTLY to Supabase via the anon key + RLS INSERT policy. Mirrors the
+ * shadow_signals_v1 Design-B write pattern already proven in production.
+ *
+ * The Rork backend (trpcClient.learning.pushOutcomes) is removed from this
+ * path — it is permanently 503/no-bundle, and 98 local-only rows were
+ * stranded because the old push went through it. The anon key is public by
+ * design; RLS allows INSERT on trade_outcomes_v1 (migration 005).
+ *
+ * Never throws: on failure the rows are queued (durable via AsyncStorage) and
+ * retried on the next push/hydrate.
  */
 export async function pushOutcomesToRemote(outcomes: StoredTradeOutcome[]): Promise<{ upserted: number; queued: number }> {
   if (!remoteSyncEnabled) return { upserted: 0, queued: 0 };
+
+  // ITEM 66(b): ensure the durable queue is hydrated before merging new outcomes
+  if (!pendingPushHydrated) await hydratePendingPushQueue();
+
   const batch = [...pendingRemotePush, ...outcomes];
   if (batch.length === 0) return { upserted: 0, queued: 0 };
 
-  try {
-    const result = await trpcClient.learning.pushOutcomes.mutate({
-      outcomes: batch.slice(-MAX_PENDING_REMOTE_PUSH).map(toRemotePayload),
-    });
-    if (result.success) {
-      pendingRemotePush = [];
-      return { upserted: result.upserted, queued: 0 };
-    }
+  const client = getPushClient();
+  if (!client) {
     pendingRemotePush = batch.slice(-MAX_PENDING_REMOTE_PUSH);
-    console.warn(`⚠️ [LearningStore] Remote push rejected (${result.reason}) - ${pendingRemotePush.length} outcome(s) queued`);
-    return { upserted: 0, queued: pendingRemotePush.length };
-  } catch (err) {
-    pendingRemotePush = batch.slice(-MAX_PENDING_REMOTE_PUSH);
-    console.warn('⚠️ [LearningStore] Remote push failed, outcomes queued for retry:', err instanceof Error ? err.message : err);
+    persistPendingPushQueue(true);
+    console.warn('[LearningStore] Supabase not configured — outcomes queued for later retry');
     return { upserted: 0, queued: pendingRemotePush.length };
   }
+
+  const rowsToPush = batch.slice(-MAX_PENDING_REMOTE_PUSH).map(toRemoteRow);
+  let upserted = 0;
+  let failed: StoredTradeOutcome[] = [];
+
+  // Push in batches of 50 to stay well under PostgREST limits
+  const BATCH_SIZE = 50;
+  for (let i = 0; i < rowsToPush.length; i += BATCH_SIZE) {
+    const chunk = rowsToPush.slice(i, i + BATCH_SIZE);
+    try {
+      // upsert keyed by signal_id — idempotent, never double-counts
+      const { error } = await client
+        .from('trade_outcomes_v1')
+        .upsert(chunk, { onConflict: 'signal_id' });
+      if (error) {
+        console.warn(`[LearningStore] OUTCOME_PUSH_FAILED: ${serializePushError(error)}`);
+        // Queue the outcomes that correspond to this chunk
+        const chunkOutcomes = batch.slice(i, i + BATCH_SIZE);
+        failed.push(...chunkOutcomes);
+      } else {
+        upserted += chunk.length;
+      }
+    } catch (err: unknown) {
+      console.warn(`[LearningStore] OUTCOME_PUSH_ERROR: ${serializePushError(err)}`);
+      const chunkOutcomes = batch.slice(i, i + BATCH_SIZE);
+      failed.push(...chunkOutcomes);
+    }
+  }
+
+  if (failed.length > 0) {
+    pendingRemotePush = failed.slice(-MAX_PENDING_REMOTE_PUSH);
+    persistPendingPushQueue(true);
+    console.warn(`⚠️ [LearningStore] ${failed.length} outcome(s) failed push — queued for retry (durable)`);
+    return { upserted, queued: pendingRemotePush.length };
+  }
+
+  pendingRemotePush = [];
+  persistPendingPushQueue(true);
+  console.log(`✅ [LearningStore] Pushed ${upserted} outcome(s) to Supabase (direct anon insert)`);
+  return { upserted, queued: 0 };
 }
 
 export function getPendingRemotePushCount(): number {
