@@ -175,7 +175,17 @@ async function main(): Promise<void> {
   }
   const client = createClient(url, anon, { auth: { autoRefreshToken: false, persistSession: false } });
 
-  const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+  // ITEM 72 — TAPE PINNING. The window used to be computed from the real clock at load
+  // time, so two runs launched 20 minutes apart loaded slightly different bar sets
+  // (13,899 vs 13,849 bars) and were therefore never strictly comparable. `--tape-end`
+  // pins the window's end to a fixed epoch ms; a before/after pair MUST pass the same
+  // value. Without it the harness still runs, but only same-minute runs are comparable.
+  const tapeEndArgIdx = process.argv.indexOf('--tape-end');
+  const tapeEndParsed = tapeEndArgIdx >= 0 ? Number(process.argv[tapeEndArgIdx + 1]) : NaN;
+  const tapeEnd = Number.isFinite(tapeEndParsed) && tapeEndParsed > 0 ? tapeEndParsed : Date.now();
+  console.log(`  tape end pinned at: ${new Date(tapeEnd).toISOString()}${tapeEndArgIdx >= 0 ? ' (--tape-end)' : ' (UNPINNED — real clock)'}`);
+
+  const since = new Date(tapeEnd - 14 * 24 * 60 * 60 * 1000).toISOString();
   const m1: Bar[] = [];
   for (let from = 0; ; from += 1000) {
     const { data, error } = await client
@@ -198,12 +208,67 @@ async function main(): Promise<void> {
     })));
     if (rows.length < 1000) break;
   }
+  // Trim to the pinned end so a later run cannot pick up bars ingested in the meantime.
+  while (m1.length > 0 && m1[m1.length - 1].timestamp > tapeEnd) m1.pop();
   console.log(`  real M1 bars loaded: ${m1.length}`);
   console.log(`  window: ${new Date(m1[0].timestamp).toISOString()} -> ${new Date(m1[m1.length - 1].timestamp).toISOString()}`);
   console.log(`  price range: $${Math.min(...m1.map((b) => b.low)).toFixed(2)} .. $${Math.max(...m1.map((b) => b.high)).toFixed(2)}`);
   console.log('  (contrast: runSignalSimulation.ts base price 3034.5 — off by ~$1,200)');
 
-  // ── 3. Load the engine ─────────────────────────────────────────────────────
+  // ── REPLAY CLOCK ──────────────────────────────────────────────────────────
+  // The engine refuses to serve a bar series older than BAR_MAX_AGE_M5_MS, judged
+  // against Date.now(). Historical bars are by definition old in wall-clock terms,
+  // so an un-clocked replay measures nothing but the staleness guard: the first run
+  // of this harness returned 2731/2733 = 99.9% "directional bar layer unavailable or
+  // stale" and 0 emissions. That is a property of the harness, not of the engine.
+  //
+  // The fix is to advance a REPLAY CLOCK with the tape: while stepping, Date.now()
+  // returns the timestamp of the most recently injected bar. The staleness guard is
+  // left fully armed and unmodified — it is simply asked "is this bar fresh AS OF the
+  // moment it was the latest bar?", which is the question it answers in production.
+  //
+  // ITEM 72 — DETERMINISM. Stubbing `Date.now()` alone is NOT sufficient, and that
+  // insufficiency is what produced the ~4pp same-code noise floor (172 vs 183 conviction
+  // rejections on byte-identical engines). Two distinct causes were found:
+  //
+  //   (1) The engine reads wall-clock time through the `new Date()` CONSTRUCTOR as well
+  //       as through `Date.now()`. Session classification, the low-liquidity window, the
+  //       hard dead-hour clock blocks and the daily market-close break all call
+  //       `new Date().getUTCHours()` — signalEngine.ts:3372, 4013, 4038, 4307, 4557,
+  //       6727, 7219, 7486, 8988 among others. Those read the REAL hour, so a replay
+  //       executed at 06:00 UTC classified the very same bar into a different session
+  //       than one executed at 12:00 UTC. Fixed by patching the Date CONSTRUCTOR so a
+  //       zero-argument `new Date()` returns the replay instant, while every explicit
+  //       `new Date(x)` is forwarded untouched.
+  //   (2) The clock must be installed BEFORE the engine module is imported. Module-level
+  //       initialisers in the engine capture time at import (fetch throttles, series
+  //       build stamps), so a clock installed after the import left those captures on the
+  //       real clock and they varied run to run.
+  //
+  // Same boundary and same spirit as `__injectBarSeriesForTestOnly`: replay-time injection
+  // only, no engine logic altered. The clock gates stay fully armed — they are simply
+  // asked about the moment the bar was current, which is what they answer in production.
+  const RealDate = Date;
+  const realDateNow = Date.now;
+  let replayNow = m1[0].timestamp;
+  class ReplayDate extends RealDate {
+    constructor(...args: unknown[]) {
+      if (args.length === 0) {
+        super(replayNow);
+        return;
+      }
+      // @ts-expect-error — forward the real Date overloads verbatim.
+      super(...args);
+    }
+    static now(): number {
+      return replayNow;
+    }
+  }
+  // eslint-disable-next-line no-global-assign
+  (globalThis as unknown as { Date: unknown }).Date = ReplayDate;
+  Date.now = (): number => replayNow;
+
+  // ── 3. Load the engine (AFTER the clock is installed — see cause (2) above) ─
   let engineModule: Record<string, unknown>;
   try {
     engineModule = (await import(`../${SANDBOX_FILE}`)) as Record<string, unknown>;
@@ -246,21 +311,7 @@ async function main(): Promise<void> {
     originalLog(...args);
   };
 
-  // ── REPLAY CLOCK ──────────────────────────────────────────────────────────
-  // The engine refuses to serve a bar series older than BAR_MAX_AGE_M5_MS, judged
-  // against Date.now(). Historical bars are by definition old in wall-clock terms,
-  // so an un-clocked replay measures nothing but the staleness guard: the first run
-  // of this harness returned 2731/2733 = 99.9% "directional bar layer unavailable or
-  // stale" and 0 emissions. That is a property of the harness, not of the engine.
-  //
-  // The fix is to advance a REPLAY CLOCK with the tape: while stepping, Date.now()
-  // returns the timestamp of the most recently injected bar. The staleness guard is
-  // left fully armed and unmodified — it is simply asked "is this bar fresh AS OF the
-  // moment it was the latest bar?", which is the question it answers in production.
-  const realDateNow = Date.now;
-  let replayNow = m1[0].timestamp;
-  // eslint-disable-next-line no-global-assign
-  Date.now = (): number => replayNow;
+  // (The replay clock is installed above, before the engine import — see cause (2).)
 
   // Sampling controls. The full tape at STEP=5 is ~2,700 generateSignal calls and
   // runs for several minutes; --step lets a caller trade resolution for wall time.
@@ -295,6 +346,7 @@ async function main(): Promise<void> {
       }
     }
   } finally {
+    (globalThis as unknown as { Date: unknown }).Date = RealDate;
     Date.now = realDateNow;
     capturing = false;
     console.log = originalLog;

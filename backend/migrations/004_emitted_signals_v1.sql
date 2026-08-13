@@ -69,6 +69,11 @@ ALTER TABLE public.emitted_signals_v1 ENABLE ROW LEVEL SECURITY;
 -- Same posture as shadow_signals_v1 after migration 003: anon may SELECT and
 -- INSERT (the live client write path uses the public anon key), but NOT UPDATE
 -- or DELETE, so a hostile client cannot alter or remove existing rows.
+-- Re-runnable: CREATE POLICY has no IF NOT EXISTS clause in any PostgreSQL version
+-- (Item 70), so idempotency comes from DROP POLICY IF EXISTS on the same names.
+DROP POLICY IF EXISTS "emitted_signals_select_all" ON public.emitted_signals_v1;
+DROP POLICY IF EXISTS "emitted_signals_insert_anon" ON public.emitted_signals_v1;
+
 CREATE POLICY "emitted_signals_select_all" ON public.emitted_signals_v1
   FOR SELECT TO anon, authenticated USING (true);
 

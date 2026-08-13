@@ -21,14 +21,25 @@
 -- The UPDATE policy allows the hydrate path to refresh labels from the
 -- durable store (Item 43b label correction flow).
 
+-- SYNTAX NOTE (Item 70). `CREATE POLICY IF NOT EXISTS` is NOT valid PostgreSQL in
+-- any version including 17 -- IF NOT EXISTS is supported for CREATE TABLE/INDEX but
+-- the CREATE POLICY grammar has no such clause, and pasting it fails with
+--   ERROR:  syntax error at or near "NOT"
+-- Idempotency is achieved instead by DROP POLICY IF EXISTS on the SAME policy names
+-- immediately before each CREATE, so this file is safely re-runnable.
+
 -- Drop any existing blocking INSERT/UPDATE policies (if they exist).
 DROP POLICY IF EXISTS "trade_outcomes_no_insert_public" ON public.trade_outcomes_v1;
 DROP POLICY IF EXISTS "trade_outcomes_no_update_public" ON public.trade_outcomes_v1;
 
+-- Re-runnable: drop the policies this migration creates before creating them.
+DROP POLICY IF EXISTS "trade_outcomes_insert_anon" ON public.trade_outcomes_v1;
+DROP POLICY IF EXISTS "trade_outcomes_update_anon" ON public.trade_outcomes_v1;
+
 -- Allow anon and authenticated to INSERT new rows.
-CREATE POLICY IF NOT EXISTS "trade_outcomes_insert_anon" ON public.trade_outcomes_v1
+CREATE POLICY "trade_outcomes_insert_anon" ON public.trade_outcomes_v1
   FOR INSERT TO anon, authenticated WITH CHECK (true);
 
 -- Allow anon and authenticated to UPDATE rows (for label correction / upsert).
-CREATE POLICY IF NOT EXISTS "trade_outcomes_update_anon" ON public.trade_outcomes_v1
+CREATE POLICY "trade_outcomes_update_anon" ON public.trade_outcomes_v1
   FOR UPDATE TO anon, authenticated USING (true) WITH CHECK (true);
