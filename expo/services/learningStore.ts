@@ -390,23 +390,42 @@ function serializePushError(err: unknown): string {
  * Never throws: on failure the rows are queued (durable via AsyncStorage) and
  * retried on the next push/hydrate.
  */
-export async function pushOutcomesToRemote(outcomes: StoredTradeOutcome[]): Promise<{ upserted: number; queued: number }> {
+export async function pushOutcomesToRemote(outcomes: StoredTradeOutcome[]): Promise<{ upserted: number; queued: number; failed: number; failureDetail: string | null }> {
   // ITEM 74(b): every early return below is now COUNTED, so a push that never
   // reached the network is distinguishable from a push that was never called.
   await hydrateOutboundPushStats();
 
   if (!remoteSyncEnabled) {
     recordPushSuppressed('REMOTE_SYNC_DISABLED');
-    return { upserted: 0, queued: 0 };
+    // ITEM 78(a): queue outcomes so they are retried when sync is re-enabled.
+    // Previously these were silently dropped — a data-loss defect.
+    const existingIds = new Set(pendingRemotePush.map(o => o.signalId));
+    for (const o of outcomes) {
+      if (!existingIds.has(o.signalId)) {
+        pendingRemotePush.push(o);
+        existingIds.add(o.signalId);
+      }
+    }
+    pendingRemotePush = pendingRemotePush.slice(-MAX_PENDING_REMOTE_PUSH);
+    persistPendingPushQueue(true);
+    return { upserted: 0, queued: pendingRemotePush.length, failed: outcomes.length, failureDetail: 'REMOTE_SYNC_DISABLED' };
   }
 
   // ITEM 66(b): ensure the durable queue is hydrated before merging new outcomes
   if (!pendingPushHydrated) await hydratePendingPushQueue();
 
-  const batch = [...pendingRemotePush, ...outcomes];
+  // ITEM 78(a): deduplicate by signalId so a row already in the queue is not duplicated.
+  const batchSeen = new Set<string>();
+  const batch: StoredTradeOutcome[] = [];
+  for (const o of [...pendingRemotePush, ...outcomes]) {
+    if (!batchSeen.has(o.signalId)) {
+      batchSeen.add(o.signalId);
+      batch.push(o);
+    }
+  }
   if (batch.length === 0) {
     recordPushSuppressed('EMPTY_BATCH');
-    return { upserted: 0, queued: 0 };
+    return { upserted: 0, queued: 0, failed: 0, failureDetail: null };
   }
 
   const client = getPushClient();
@@ -415,7 +434,7 @@ export async function pushOutcomesToRemote(outcomes: StoredTradeOutcome[]): Prom
     persistPendingPushQueue(true);
     recordPushSuppressed('SUPABASE_NOT_CONFIGURED');
     console.warn('[LearningStore] Supabase not configured — outcomes queued for later retry');
-    return { upserted: 0, queued: pendingRemotePush.length };
+    return { upserted: 0, queued: pendingRemotePush.length, failed: batch.length, failureDetail: 'SUPABASE_NOT_CONFIGURED' };
   }
 
   pushStats.pushAttempts += 1;
@@ -467,16 +486,26 @@ export async function pushOutcomesToRemote(outcomes: StoredTradeOutcome[]): Prom
   }
 
   if (failed.length > 0) {
-    pendingRemotePush = failed.slice(-MAX_PENDING_REMOTE_PUSH);
+    // ITEM 78(a): deduplicate failed rows by signalId so a row already in the queue is not duplicated.
+    const failedSeen = new Set<string>();
+    const dedupedFailed: StoredTradeOutcome[] = [];
+    for (const o of failed) {
+      if (!failedSeen.has(o.signalId)) {
+        failedSeen.add(o.signalId);
+        dedupedFailed.push(o);
+      }
+    }
+    pendingRemotePush = dedupedFailed.slice(-MAX_PENDING_REMOTE_PUSH);
     persistPendingPushQueue(true);
-    console.warn(`⚠️ [LearningStore] ${failed.length} outcome(s) failed push — queued for retry (durable)`);
-    return { upserted, queued: pendingRemotePush.length };
+    console.warn(`⚠️ [LearningStore] ${pendingRemotePush.length} outcome(s) failed push — queued for retry (durable)`);
+    return { upserted, queued: pendingRemotePush.length, failed: pendingRemotePush.length, failureDetail: pushStats.lastFailureBody };
   }
 
+  // ITEM 78(a): a row that succeeds is removed from the queue in the same operation.
   pendingRemotePush = [];
   persistPendingPushQueue(true);
   console.log(`✅ [LearningStore] Pushed ${upserted} outcome(s) to Supabase (direct anon insert)`);
-  return { upserted, queued: 0 };
+  return { upserted, queued: 0, failed: 0, failureDetail: null };
 }
 
 export function getPendingRemotePushCount(): number {
@@ -1045,6 +1074,10 @@ export async function hydrateFromRemote(options?: { limit?: number; cap?: number
   if (missingRemotely.length > 0) {
     const pushResult = await pushOutcomesToRemote(missingRemotely);
     backfilled = pushResult.upserted;
+    // ITEM 78(b): caller now sees failure detail, not just .upserted.
+    if (pushResult.failed > 0) {
+      console.warn(`⚠️ [LearningStore] Hydrate push failed for ${pushResult.failed} row(s): ${pushResult.failureDetail ?? 'unknown'}`);
+    }
   }
 
   const total = await getOutcomeCount();

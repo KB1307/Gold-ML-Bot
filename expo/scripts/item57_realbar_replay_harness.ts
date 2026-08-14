@@ -91,7 +91,7 @@ function buildSandboxEngine(): string {
     'async function getOutcomeCountFromStore(): Promise<number> { return 0; }',
     'async function pruneOutcomeStoreToCap(): Promise<void> {}',
     'async function migrateLegacyOutcomesIfEmpty(): Promise<number> { return 0; }',
-    'async function pushOutcomesToRemote(): Promise<{ upserted: number; queued: number }> { return { upserted: 0, queued: 0 }; }',
+    'async function pushOutcomesToRemote(): Promise<{ upserted: number; queued: number; failed: number; failureDetail: string | null }> { return { upserted: 0, queued: 0, failed: 0, failureDetail: null }; }',
     'async function hydrateLearningStoreFromRemote(): Promise<unknown> { return { available: false }; }',
     'function getLearningCorpusStats(): { hydrateUnavailableCount: number } { return { hydrateUnavailableCount: 0 }; }',
     'type StoredTradeOutcome = Record<string, unknown>;',
@@ -304,6 +304,8 @@ async function main(): Promise<void> {
   // Re-anchoring a threshold requires the distribution it is compared against.
   const winningStrengths: number[] = [];
   const strengthDiffs: number[] = [];
+  // ITEM 80(d) — TIER0_UNAVAILABLE counter for the DEGRADED banner.
+  let tier0Unavailable = 0;
   const WINNING_STRENGTH_RE = /Winning Strength:\s*(-?\d+\.\d+)\s*\(Min:\s*(-?\d+\.?\d*)\)/;
   const STRENGTH_DIFF_RE = /Strength Difference:\s*(-?\d+\.\d+)/;
   let observedConvictionMin: number | null = null;
@@ -324,6 +326,10 @@ async function main(): Promise<void> {
       if (msg.includes('REJECTED') || msg.includes('BLOCKED') || msg.includes('STAND DOWN')) {
         const key = templatize(msg);
         rejections.set(key, (rejections.get(key) ?? 0) + 1);
+      }
+      // ITEM 80(d) — track TIER0 zone unavailability.
+      if (msg.includes('TIER0_UNAVAILABLE') || msg.includes('TIER0_FALLBACK_TO_TIER1')) {
+        tier0Unavailable += 1;
       }
       return;
     }
@@ -377,6 +383,13 @@ async function main(): Promise<void> {
   console.log(line);
   console.log(`  generation attempts : ${attempts}`);
   console.log(`  signals emitted     : ${emissions}  (${pct(emissions, attempts)})`);
+  console.log(`  TIER0_UNAVAILABLE   : ${tier0Unavailable} of ${attempts} evaluations`);
+  if (tier0Unavailable > 0) {
+    console.log('');
+    console.log('  ⚠️  DEGRADED AND NOT COMPARABLE — TIER0 zones were unavailable');
+    console.log('  ⚠️  Cross-session comparison is INVALID when TIER0_UNAVAILABLE > 0');
+    console.log('  ⚠️  Valid comparison requires TIER0_UNAVAILABLE = 0 AND same pinned tape-end');
+  }
   console.log('\n  REJECTION REASONS (template-aggregated, top 25):');
   const sorted = [...rejections.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25);
   if (sorted.length === 0) {
@@ -415,6 +428,14 @@ async function main(): Promise<void> {
   console.log(`  WS_VECTOR_BEGIN ${sortedWS.map((v) => v.toFixed(4)).join(',')} WS_VECTOR_END`);
   const sortedSD = [...strengthDiffs].sort((a, b) => a - b);
   console.log(`  SD_VECTOR_BEGIN ${sortedSD.map((v) => v.toFixed(4)).join(',')} SD_VECTOR_END`);
+
+  // ITEM 80(c): verify the :6001 calibration penalty counter incremented
+  const penalty25Fn = engineModule.getCalibrationPenalty25Stats as (() => { count: number; thenFailed: number }) | undefined;
+  if (penalty25Fn) {
+    const p25 = penalty25Fn();
+    console.log(`  CALIBRATION_PENALTY_25: fired ${p25.count} time(s), thenFailed ${p25.thenFailed}`);
+  }
+
   console.log('');
 }
 

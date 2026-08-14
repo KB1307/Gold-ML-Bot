@@ -15,7 +15,7 @@ async function getAllOutcomesFromStore(): Promise<unknown[]> { return []; }
 async function getOutcomeCountFromStore(): Promise<number> { return 0; }
 async function pruneOutcomeStoreToCap(): Promise<void> {}
 async function migrateLegacyOutcomesIfEmpty(): Promise<number> { return 0; }
-async function pushOutcomesToRemote(): Promise<{ upserted: number; queued: number }> { return { upserted: 0, queued: 0 }; }
+async function pushOutcomesToRemote(): Promise<{ upserted: number; queued: number; failed: number; failureDetail: string | null }> { return { upserted: 0, queued: 0, failed: 0, failureDetail: null }; }
 async function hydrateLearningStoreFromRemote(): Promise<unknown> { return { available: false }; }
 function getLearningCorpusStats(): { hydrateUnavailableCount: number } { return { hydrateUnavailableCount: 0 }; }
 type StoredTradeOutcome = Record<string, unknown>;
@@ -435,6 +435,19 @@ function getMinStrengthDifferenceForRegime(regime: 'TRENDING' | 'RANGING' | 'VOL
     default: return MIN_SIGNAL_STRENGTH_DIFFERENCE_BASE;
   }
 }
+
+// ITEM 80(c) — :6001 calibration penalty instrumentation.
+// Durable counters that persist across evaluations, surfacing how many times
+// the 0.25/0.04 penalty fires and how many of those evaluations subsequently
+// fail the confidence gate. Instrumentation only — the 0.25 and 0.04 values
+// are unchanged until there is evidence to move them.
+let calibrationPenalty25Count = 0;
+let calibrationPenalty25ThenFailedCount = 0;
+
+export function getCalibrationPenalty25Stats(): { count: number; thenFailed: number } {
+  return { count: calibrationPenalty25Count, thenFailed: calibrationPenalty25ThenFailedCount };
+}
+
 // ===================== PHASE 2 (post-audit corrections) =====================
 // Derived from the 350-signal / 340-resolved forensic audit of the live export
 // (window 2026-06-29 -> 2026-07-29). Every constant below is traceable to a
@@ -2346,6 +2359,16 @@ class SignalGenerationEngine {
    * F6 criterion 4: how often the bar-based directional layer was unavailable
    * or stale at generation time. Read-only accessor for the diagnostics export.
    */
+  /**
+   * ITEM 74(a) — RUNTIME probe of Item 64's consumed-weight set. Returns the
+   * ACTUAL contents of `CONSUMED_MODEL_WEIGHTS` as the running bundle holds it,
+   * so the diagnostics export can report observed presence rather than trusting
+   * a changelog. A pre-Item-64 bundle does not export this method at all.
+   */
+  public getConsumedModelWeightKeys(): string[] {
+    return Array.from(CONSUMED_MODEL_WEIGHTS);
+  }
+
   public getDirectionalLayerStats(): { checks: number; standAsides: number; readyNow: boolean } {
     const m5 = this.getDirectionalM5();
     return {
@@ -6007,7 +6030,11 @@ class SignalGenerationEngine {
     let rawConfidence = Math.max(0.45, Math.min(MAX_CONFIDENCE_CAP, baseConfidence - dataQualityPenalty));
     let calibrationPenalty = 0;
 
-    if (strengthDifference < 0.25) calibrationPenalty += 0.04;
+    if (strengthDifference < 0.25) {
+      calibrationPenalty += 0.04;
+      calibrationPenalty25Count += 1;
+      console.log(`⚠️ CALIBRATION_PENALTY_25_FIRED: strengthDifference=${strengthDifference.toFixed(4)} < 0.25, +0.04 (total penalty=${calibrationPenalty.toFixed(4)}, count=${calibrationPenalty25Count})`);
+    }
     if (signalStrength < 0.74) calibrationPenalty += 0.02;
     if (features.marketRegime.confidence < 0.7) calibrationPenalty += 0.02;
     if (losingStrength > 0.22) calibrationPenalty += 0.02;
