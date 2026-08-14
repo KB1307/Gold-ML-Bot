@@ -103,8 +103,15 @@ export function hydratePendingPushQueue(): Promise<void> {
           // are prepended so they are not lost.
           const stored = parsed as StoredTradeOutcome[];
           pendingRemotePush = [...pendingRemotePush, ...stored].slice(-MAX_PENDING_REMOTE_PUSH);
+          // ITEM 74(b): record the depth AT INIT so a queue that was drained
+          // later in the session is still attributable after the fact.
+          pushStats.queueDepthAtInit = stored.length;
           console.log(`📦 [LearningStore] Rehydrated ${stored.length} pending push outcome(s) from AsyncStorage`);
         }
+      } else {
+        // ITEM 74(b): an ABSENT key is a real observation (queue was empty at
+        // init), deliberately distinct from "not yet measured" (null).
+        pushStats.queueDepthAtInit = 0;
       }
     } catch (error: unknown) {
       console.warn('[LearningStore] Failed to rehydrate pending push queue:', error instanceof Error ? error.message : String(error));
@@ -132,6 +139,180 @@ function persistPendingPushQueue(force: boolean): void {
 /** Test seam: disables the remote tier so unit tests exercise the local store only. */
 export function setRemoteSyncEnabledForTest(enabled: boolean): void {
   remoteSyncEnabled = enabled;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ITEM 74(b) — OUTBOUND PUSH TELEMETRY (DURABLE).
+//
+// The diagnostics export carried hydrate counters and NOTHING about the
+// outbound direction, so "was a push even attempted?" was UNOBSERVABLE and no
+// mechanism could be asserted. These counters are durable in exactly the same
+// manner as the corpus counters (AsyncStorage, rehydrated at init, ADDED not
+// assigned) because the event under investigation happens ACROSS a reload
+// boundary — a process-fresh counter cannot answer the question.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Durable outbound-push counters for `trade_outcomes_v1`. */
+export interface OutboundPushStats {
+  /** Calls to pushOutcomesToRemote that reached the network stage. */
+  pushAttempts: number;
+  /** Chunk upserts that returned no error. */
+  pushSuccesses: number;
+  /** Chunk upserts that returned an error or threw. */
+  pushFailures: number;
+  /** Cumulative ROW count accepted (not call count). */
+  rowsPushed: number;
+  /** Failure counts keyed by HTTP status / PostgREST code. */
+  failuresByStatus: Record<string, number>;
+  /** Calls that exited before any network call, keyed by reason. */
+  suppressedByReason: Record<string, number>;
+  lastAttemptAt: number | null;
+  lastSuccessAt: number | null;
+  lastFailureAt: number | null;
+  /** Verbatim failure body, truncated to 300 chars. */
+  lastFailureBody: string | null;
+  /** Queue depth rehydrated from AsyncStorage at init. */
+  queueDepthAtInit: number | null;
+  /** ITEM 74(c): reconciliation visibility, recomputed on every hydrate. */
+  lastLocalCount: number | null;
+  lastRemoteCount: number | null;
+  lastLocalOnlyCount: number | null;
+  lastRemoteOnlyCount: number | null;
+  lastReconcileAt: number | null;
+  /** True once these counters have been rehydrated from durable storage. */
+  hydrated: boolean;
+}
+
+const PUSH_STATS_KEY = 'outbound_push_stats_v1';
+const PUSH_STATS_FLUSH_INTERVAL_MS = 10_000;
+
+const pushStats: OutboundPushStats = {
+  pushAttempts: 0,
+  pushSuccesses: 0,
+  pushFailures: 0,
+  rowsPushed: 0,
+  failuresByStatus: {},
+  suppressedByReason: {},
+  lastAttemptAt: null,
+  lastSuccessAt: null,
+  lastFailureAt: null,
+  lastFailureBody: null,
+  queueDepthAtInit: null,
+  lastLocalCount: null,
+  lastRemoteCount: null,
+  lastLocalOnlyCount: null,
+  lastRemoteOnlyCount: null,
+  lastReconcileAt: null,
+  hydrated: false,
+};
+
+type PersistedPushStats = Omit<OutboundPushStats, 'hydrated'>;
+let pushStatsHydrationPromise: Promise<void> | null = null;
+let pushStatsLastFlushAt = 0;
+
+/** Rehydrates the outbound-push counters from AsyncStorage. Reads at most once. */
+export function hydrateOutboundPushStats(): Promise<void> {
+  if (pushStatsHydrationPromise) return pushStatsHydrationPromise;
+  pushStatsHydrationPromise = (async () => {
+    try {
+      const raw = await AsyncStorage.getItem(PUSH_STATS_KEY);
+      if (raw) {
+        const parsed: unknown = JSON.parse(raw);
+        if (typeof parsed === 'object' && parsed !== null) {
+          const p = parsed as Partial<PersistedPushStats>;
+          // ADD rather than assign — a push can complete before this load does.
+          pushStats.pushAttempts += p.pushAttempts ?? 0;
+          pushStats.pushSuccesses += p.pushSuccesses ?? 0;
+          pushStats.pushFailures += p.pushFailures ?? 0;
+          pushStats.rowsPushed += p.rowsPushed ?? 0;
+          for (const [k, v] of Object.entries(p.failuresByStatus ?? {})) {
+            pushStats.failuresByStatus[k] = (pushStats.failuresByStatus[k] ?? 0) + v;
+          }
+          for (const [k, v] of Object.entries(p.suppressedByReason ?? {})) {
+            pushStats.suppressedByReason[k] = (pushStats.suppressedByReason[k] ?? 0) + v;
+          }
+          pushStats.lastAttemptAt = pushStats.lastAttemptAt ?? p.lastAttemptAt ?? null;
+          pushStats.lastSuccessAt = pushStats.lastSuccessAt ?? p.lastSuccessAt ?? null;
+          pushStats.lastFailureAt = pushStats.lastFailureAt ?? p.lastFailureAt ?? null;
+          pushStats.lastFailureBody = pushStats.lastFailureBody ?? p.lastFailureBody ?? null;
+          pushStats.lastLocalCount = pushStats.lastLocalCount ?? p.lastLocalCount ?? null;
+          pushStats.lastRemoteCount = pushStats.lastRemoteCount ?? p.lastRemoteCount ?? null;
+          pushStats.lastLocalOnlyCount = pushStats.lastLocalOnlyCount ?? p.lastLocalOnlyCount ?? null;
+          pushStats.lastRemoteOnlyCount = pushStats.lastRemoteOnlyCount ?? p.lastRemoteOnlyCount ?? null;
+          pushStats.lastReconcileAt = pushStats.lastReconcileAt ?? p.lastReconcileAt ?? null;
+        }
+      }
+    } catch (error: unknown) {
+      console.warn(
+        '[LearningStore] Failed to rehydrate outbound push counters:',
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      pushStats.hydrated = true;
+    }
+  })();
+  return pushStatsHydrationPromise;
+}
+
+function persistPushStats(force: boolean): void {
+  if (!pushStats.hydrated && !force) return;
+  const now = Date.now();
+  if (!force && now - pushStatsLastFlushAt < PUSH_STATS_FLUSH_INTERVAL_MS) return;
+  pushStatsLastFlushAt = now;
+  const payload: PersistedPushStats = {
+    pushAttempts: pushStats.pushAttempts,
+    pushSuccesses: pushStats.pushSuccesses,
+    pushFailures: pushStats.pushFailures,
+    rowsPushed: pushStats.rowsPushed,
+    failuresByStatus: pushStats.failuresByStatus,
+    suppressedByReason: pushStats.suppressedByReason,
+    lastAttemptAt: pushStats.lastAttemptAt,
+    lastSuccessAt: pushStats.lastSuccessAt,
+    lastFailureAt: pushStats.lastFailureAt,
+    lastFailureBody: pushStats.lastFailureBody,
+    queueDepthAtInit: pushStats.queueDepthAtInit,
+    lastLocalCount: pushStats.lastLocalCount,
+    lastRemoteCount: pushStats.lastRemoteCount,
+    lastLocalOnlyCount: pushStats.lastLocalOnlyCount,
+    lastRemoteOnlyCount: pushStats.lastRemoteOnlyCount,
+    lastReconcileAt: pushStats.lastReconcileAt,
+  };
+  AsyncStorage.setItem(PUSH_STATS_KEY, JSON.stringify(payload)).catch((error: unknown) => {
+    console.warn(
+      '[LearningStore] Failed to persist outbound push counters:',
+      error instanceof Error ? error.message : String(error),
+    );
+  });
+}
+
+/** Records a push that exited WITHOUT attempting a network call. */
+function recordPushSuppressed(reason: string): void {
+  pushStats.suppressedByReason[reason] = (pushStats.suppressedByReason[reason] ?? 0) + 1;
+  persistPushStats(true);
+}
+
+/**
+ * Extracts an HTTP-status-like key from a Supabase/PostgREST error so failures
+ * can be bucketed. PostgREST returns `code` (e.g. 42501 RLS, 23502 NOT NULL);
+ * a transport failure has neither, so it buckets as NETWORK.
+ */
+function pushFailureStatusKey(err: unknown): string {
+  if (typeof err === 'object' && err !== null) {
+    const e = err as Record<string, unknown>;
+    if (typeof e.code === 'string' && e.code) return e.code;
+    if (typeof e.status === 'number') return String(e.status);
+  }
+  if (err instanceof Error) return 'NETWORK';
+  return 'UNKNOWN';
+}
+
+/** Snapshot of the durable outbound-push counters, for the diagnostics export. */
+export function getOutboundPushStats(): OutboundPushStats {
+  return {
+    ...pushStats,
+    failuresByStatus: { ...pushStats.failuresByStatus },
+    suppressedByReason: { ...pushStats.suppressedByReason },
+  };
 }
 
 /**
@@ -210,21 +391,36 @@ function serializePushError(err: unknown): string {
  * retried on the next push/hydrate.
  */
 export async function pushOutcomesToRemote(outcomes: StoredTradeOutcome[]): Promise<{ upserted: number; queued: number }> {
-  if (!remoteSyncEnabled) return { upserted: 0, queued: 0 };
+  // ITEM 74(b): every early return below is now COUNTED, so a push that never
+  // reached the network is distinguishable from a push that was never called.
+  await hydrateOutboundPushStats();
+
+  if (!remoteSyncEnabled) {
+    recordPushSuppressed('REMOTE_SYNC_DISABLED');
+    return { upserted: 0, queued: 0 };
+  }
 
   // ITEM 66(b): ensure the durable queue is hydrated before merging new outcomes
   if (!pendingPushHydrated) await hydratePendingPushQueue();
 
   const batch = [...pendingRemotePush, ...outcomes];
-  if (batch.length === 0) return { upserted: 0, queued: 0 };
+  if (batch.length === 0) {
+    recordPushSuppressed('EMPTY_BATCH');
+    return { upserted: 0, queued: 0 };
+  }
 
   const client = getPushClient();
   if (!client) {
     pendingRemotePush = batch.slice(-MAX_PENDING_REMOTE_PUSH);
     persistPendingPushQueue(true);
+    recordPushSuppressed('SUPABASE_NOT_CONFIGURED');
     console.warn('[LearningStore] Supabase not configured — outcomes queued for later retry');
     return { upserted: 0, queued: pendingRemotePush.length };
   }
+
+  pushStats.pushAttempts += 1;
+  pushStats.lastAttemptAt = Date.now();
+  persistPushStats(true);
 
   const rowsToPush = batch.slice(-MAX_PENDING_REMOTE_PUSH).map(toRemoteRow);
   let upserted = 0;
@@ -240,18 +436,34 @@ export async function pushOutcomesToRemote(outcomes: StoredTradeOutcome[]): Prom
         .from('trade_outcomes_v1')
         .upsert(chunk, { onConflict: 'signal_id' });
       if (error) {
-        console.warn(`[LearningStore] OUTCOME_PUSH_FAILED: ${serializePushError(error)}`);
+        const body = serializePushError(error);
+        console.warn(`[LearningStore] OUTCOME_PUSH_FAILED: ${body}`);
+        const key = pushFailureStatusKey(error);
+        pushStats.pushFailures += 1;
+        pushStats.failuresByStatus[key] = (pushStats.failuresByStatus[key] ?? 0) + 1;
+        pushStats.lastFailureAt = Date.now();
+        pushStats.lastFailureBody = body.slice(0, 300);
         // Queue the outcomes that correspond to this chunk
         const chunkOutcomes = batch.slice(i, i + BATCH_SIZE);
         failed.push(...chunkOutcomes);
       } else {
         upserted += chunk.length;
+        pushStats.pushSuccesses += 1;
+        pushStats.rowsPushed += chunk.length;
+        pushStats.lastSuccessAt = Date.now();
       }
     } catch (err: unknown) {
-      console.warn(`[LearningStore] OUTCOME_PUSH_ERROR: ${serializePushError(err)}`);
+      const body = serializePushError(err);
+      console.warn(`[LearningStore] OUTCOME_PUSH_ERROR: ${body}`);
+      const key = pushFailureStatusKey(err);
+      pushStats.pushFailures += 1;
+      pushStats.failuresByStatus[key] = (pushStats.failuresByStatus[key] ?? 0) + 1;
+      pushStats.lastFailureAt = Date.now();
+      pushStats.lastFailureBody = body.slice(0, 300);
       const chunkOutcomes = batch.slice(i, i + BATCH_SIZE);
       failed.push(...chunkOutcomes);
     }
+    persistPushStats(true);
   }
 
   if (failed.length > 0) {
@@ -269,6 +481,36 @@ export async function pushOutcomesToRemote(outcomes: StoredTradeOutcome[]): Prom
 
 export function getPendingRemotePushCount(): number {
   return pendingRemotePush.length;
+}
+
+/**
+ * ITEM 74(a) — RUNTIME probe of the push path. Every field is read from the
+ * live module state of the RUNNING bundle, not asserted from a changelog:
+ * `PENDING_PUSH_KEY` and `OUTCOMES_TABLE` are the actual constants this code
+ * uses, `clientConfigured` is the result of actually constructing the anon
+ * client, and `queueHydrated` reflects whether the durable queue was read.
+ *
+ * A bundle that predates Item 66 does not export this function at all, so its
+ * ABSENCE is as informative as its contents.
+ */
+export function getPushPathDescriptor(): {
+  venue: string;
+  table: string;
+  onConflict: string;
+  pendingPushKey: string;
+  clientConfigured: boolean;
+  queueHydrated: boolean;
+  usesDirectAnonUpsert: boolean;
+} {
+  return {
+    venue: 'SUPABASE_DIRECT_ANON',
+    table: OUTCOMES_TABLE,
+    onConflict: 'signal_id',
+    pendingPushKey: PENDING_PUSH_KEY,
+    clientConfigured: getPushClient() !== null,
+    queueHydrated: pendingPushHydrated,
+    usesDirectAnonUpsert: true,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -783,6 +1025,22 @@ export async function hydrateFromRemote(options?: { limit?: number; cap?: number
   }
 
   const missingRemotely = local.filter(o => !remoteIds.has(o.signalId));
+
+  // ITEM 74(c): RECONCILIATION VISIBILITY — measurement only, no behaviour change.
+  // The local/remote gap was previously invisible in the export, so a 149-vs-51
+  // divergence could persist across 91 hydrates with nothing recording it.
+  await hydrateOutboundPushStats();
+  pushStats.lastLocalCount = local.length;
+  pushStats.lastRemoteCount = remote.length;
+  pushStats.lastLocalOnlyCount = missingRemotely.length;
+  pushStats.lastRemoteOnlyCount = newFromRemote.length;
+  pushStats.lastReconcileAt = Date.now();
+  persistPushStats(true);
+  console.log(
+    `📐 [LearningStore] RECONCILE local=${local.length} remote=${remote.length} ` +
+      `local_only=${missingRemotely.length} remote_only=${newFromRemote.length}`,
+  );
+
   let backfilled = 0;
   if (missingRemotely.length > 0) {
     const pushResult = await pushOutcomesToRemote(missingRemotely);

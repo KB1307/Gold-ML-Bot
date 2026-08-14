@@ -103,6 +103,47 @@ export interface DiagnosticsExportInput {
    * rather than zeros, because no data and zero failures are different claims.
    */
   learningCorpusStats?: LearningCorpusStatsInput | null;
+  /**
+   * ITEM 74(b)(c): durable OUTBOUND push counters + reconciliation visibility.
+   * The export previously carried hydrate counters ONLY, so "was a push even
+   * attempted?" was UNOBSERVABLE and no mechanism could be asserted about the
+   * 149-local vs 51-remote gap. Optional: the block reports NOT INSTRUMENTED
+   * rather than zeros, because no data and zero pushes are different claims.
+   */
+  outboundPushStats?: OutboundPushStatsInput | null;
+  /** ITEM 74(a): build marker + RUNTIME-observed symbol probes. */
+  buildProvenance?: BuildProvenanceInput | null;
+}
+
+/** ITEM 74(b)(c): shape of the durable outbound-push counters for SECTION 2. */
+export interface OutboundPushStatsInput {
+  pushAttempts: number;
+  pushSuccesses: number;
+  pushFailures: number;
+  rowsPushed: number;
+  failuresByStatus: Record<string, number>;
+  suppressedByReason: Record<string, number>;
+  lastAttemptAt: number | null;
+  lastSuccessAt: number | null;
+  lastFailureAt: number | null;
+  lastFailureBody: string | null;
+  queueDepthAtInit: number | null;
+  lastLocalCount: number | null;
+  lastRemoteCount: number | null;
+  lastLocalOnlyCount: number | null;
+  lastRemoteOnlyCount: number | null;
+  lastReconcileAt: number | null;
+  hydrated: boolean;
+  /** Queue depth read at EXPORT time, not from storage. */
+  queueDepthNow: number;
+}
+
+/** ITEM 74(a): build marker plus probes whose values are read AT RUNTIME. */
+export interface BuildProvenanceInput {
+  buildSha: string;
+  markedAt: string;
+  claimedItems: readonly string[];
+  probes: { label: string; present: boolean; observed: string }[];
 }
 
 /** ITEM 12(d): shape of the durable corpus-hydration counters for SECTION 2. */
@@ -353,9 +394,85 @@ function formatLearningCorpusBlock(stats: LearningCorpusStatsInput | null | unde
   return lines;
 }
 
+/**
+ * ITEM 74(b)(c) - the OUTBOUND half of the corpus sync, rendered immediately
+ * under the hydrate counters so the two directions can never be read apart.
+ * ABSENCE of this block in an export is itself an observation: it means the
+ * running bundle predates Item 74.
+ */
+function formatOutboundPushBlock(stats: OutboundPushStatsInput | null | undefined): string[] {
+  const lines: string[] = ["", "Outbound push (trade_outcomes_v1 - DIRECT anon-key upsert, onConflict=signal_id):"];
+  if (!stats) {
+    lines.push("  NOT INSTRUMENTED - caller did not supply outboundPushStats.");
+    lines.push("  (Deliberately distinct from zero: no data was reported, not zero pushes.)");
+    return lines;
+  }
+  lines.push(`  Counters rehydrated from durable storage: ${stats.hydrated ? "yes" : "NOT YET (process-only so far)"}`);
+  lines.push(`  Push attempts: ${stats.pushAttempts}`);
+  lines.push(`  Push successes (chunks accepted): ${stats.pushSuccesses}`);
+  lines.push(`  Push failures: ${stats.pushFailures}`);
+  lines.push(`  Rows pushed (cumulative ROW count, not call count): ${stats.rowsPushed}`);
+  const statuses = Object.entries(stats.failuresByStatus).sort((a, b) => b[1] - a[1]);
+  if (statuses.length === 0) {
+    lines.push("  Failures by status: none recorded");
+  } else {
+    lines.push("  Failures by status:");
+    for (const [code, n] of statuses) lines.push(`    ${code}: ${n}`);
+  }
+  const suppressed = Object.entries(stats.suppressedByReason).sort((a, b) => b[1] - a[1]);
+  if (suppressed.length === 0) {
+    lines.push("  Exited before any network call: none recorded");
+  } else {
+    lines.push("  Exited before any network call (SUPPRESSED - no request was made):");
+    for (const [reason, n] of suppressed) lines.push(`    ${reason}: ${n}`);
+  }
+  lines.push(`  pendingRemotePush depth RIGHT NOW: ${stats.queueDepthNow}`);
+  lines.push(`  pendingRemotePush depth rehydrated at init: ${stats.queueDepthAtInit === null ? "n/a" : stats.queueDepthAtInit}`);
+  lines.push(`  Last push attempt: ${safeDate(stats.lastAttemptAt)}`);
+  lines.push(`  Last push success: ${safeDate(stats.lastSuccessAt)}`);
+  lines.push(`  Last push failure: ${safeDate(stats.lastFailureAt)}`);
+  lines.push(`  Last failure body (verbatim, 300 chars): ${stats.lastFailureBody ?? "n/a"}`);
+  lines.push("");
+  lines.push("  ITEM 74(c) RECONCILIATION (measurement only - recomputed on every hydrate):");
+  lines.push(`    Local corpus rows: ${stats.lastLocalCount === null ? "n/a" : stats.lastLocalCount}`);
+  lines.push(`    Remote rows returned by the pull: ${stats.lastRemoteCount === null ? "n/a" : stats.lastRemoteCount}`);
+  lines.push(`    LOCAL-ONLY (local IDs absent from the remote set): ${stats.lastLocalOnlyCount === null ? "n/a" : stats.lastLocalOnlyCount}`);
+  lines.push(`    REMOTE-ONLY (remote IDs absent locally): ${stats.lastRemoteOnlyCount === null ? "n/a" : stats.lastRemoteOnlyCount}`);
+  lines.push(`    Last reconcile: ${safeDate(stats.lastReconcileAt)}`);
+  lines.push("");
+  lines.push("  HOW TO READ THIS. pushAttempts==0 with a non-zero LOCAL-ONLY count means the");
+  lines.push("    push was never tried - read the SUPPRESSED reasons. pushAttempts>0 with");
+  lines.push("    failures means the path RAN and was REJECTED, and the status code is the");
+  lines.push("    answer: 42501 = the anon INSERT policy is absent; 23502 = RLS PASSED and a");
+  lines.push("    NOT NULL column is the real problem (Postgres evaluates RLS WITH CHECK");
+  lines.push("    BEFORE NOT NULL - established empirically on this project in Item 70).");
+  return lines;
+}
+
+/**
+ * ITEM 74(a) - BUILD PROVENANCE. Repo/production drift is PROVEN here (migration
+ * 003 carries invalid CREATE POLICY IF NOT EXISTS syntax in the repo while its
+ * policy is live in the database), so a repo grep is not evidence of what runs.
+ * Every probe below is a value read AT RUNTIME from the running bundle.
+ */
+function formatBuildProvenanceBlock(p: BuildProvenanceInput | null | undefined): string[] {
+  if (!p) return ["Build provenance: NOT INSTRUMENTED (caller did not supply buildProvenance)."];
+  const lines: string[] = [
+    `Build marker: ${p.buildSha} (marker set ${p.markedAt})`,
+    "Items CLAIMED present in this bundle (a claim, to be compared against the probes):",
+  ];
+  for (const item of p.claimedItems) lines.push(`  - Item ${item}`);
+  lines.push("Runtime symbol probes (read from the RUNNING bundle, never from the repo):");
+  for (const probe of p.probes) {
+    lines.push(`  [${probe.present ? "PRESENT" : "ABSENT "}] ${probe.label} -> ${probe.observed}`);
+  }
+  return lines;
+}
+
 function formatModelWeightsSection(
   modelWeights: RawModelWeights,
   learningCorpusStats?: LearningCorpusStatsInput | null,
+  outboundPushStats?: OutboundPushStatsInput | null,
 ): string {
   const lines: string[] = [RULE, "SECTION 2 — MODEL WEIGHTS (model_weights_v1)", RULE];
   if (!modelWeights) {
@@ -399,6 +516,9 @@ function formatModelWeightsSection(
   // ITEM 12(d): the corpus block renders in BOTH branches - a never-trained model
   // with a repeatedly unavailable corpus is exactly the state worth seeing.
   lines.push(...formatLearningCorpusBlock(learningCorpusStats));
+  // ITEM 74(b)(c): the OUTBOUND direction, rendered in both branches for the
+  // same reason - a corpus that cannot push is exactly the state worth seeing.
+  lines.push(...formatOutboundPushBlock(outboundPushStats));
   return lines.join("\n");
 }
 
@@ -709,9 +829,13 @@ export function buildDiagnosticsExportText(input: DiagnosticsExportInput): strin
     DRULE,
     `Generated: ${new Date().toISOString()}`,
     "",
+    // ITEM 74(a): build provenance FIRST - every number below is only
+    // interpretable once you know which bundle produced it.
+    formatBuildProvenanceBlock(input.buildProvenance).join("\n"),
+    "",
     formatSignalHistorySection(input.signalHistory),
     "",
-    formatModelWeightsSection(input.modelWeights, input.learningCorpusStats),
+    formatModelWeightsSection(input.modelWeights, input.learningCorpusStats, input.outboundPushStats),
     "",
     formatModelHealthSection(input.modelHealth),
     "",

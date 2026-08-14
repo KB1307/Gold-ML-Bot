@@ -297,11 +297,30 @@ async function main(): Promise<void> {
   // ── 4. Capture the engine's own console output ─────────────────────────────
   const rejections = new Map<string, number>();
   let emissions = 0;
+  // ITEM 73(a) — FULL winning-strength distribution, not a summary. The engine
+  // prints "Winning Strength: X (Min: Y)" on EVERY attempt that reaches the
+  // conviction gate; the capture below previously discarded that line, so the
+  // only observable was a pass/fail count and no percentile could be derived.
+  // Re-anchoring a threshold requires the distribution it is compared against.
+  const winningStrengths: number[] = [];
+  const strengthDiffs: number[] = [];
+  const WINNING_STRENGTH_RE = /Winning Strength:\s*(-?\d+\.\d+)\s*\(Min:\s*(-?\d+\.?\d*)\)/;
+  const STRENGTH_DIFF_RE = /Strength Difference:\s*(-?\d+\.\d+)/;
+  let observedConvictionMin: number | null = null;
   const originalLog = console.log;
   let capturing = false;
   console.log = (...args: unknown[]): void => {
     if (capturing) {
       const msg = args.map((a) => (typeof a === 'string' ? a : '')).join(' ');
+      const ws = WINNING_STRENGTH_RE.exec(msg);
+      if (ws) {
+        winningStrengths.push(Number(ws[1]));
+        // Read the threshold the engine ACTUALLY compared against, rather than
+        // trusting a constant quoted from the repo.
+        if (observedConvictionMin === null) observedConvictionMin = Number(ws[2]);
+      }
+      const sd = STRENGTH_DIFF_RE.exec(msg);
+      if (sd) strengthDiffs.push(Number(sd[1]));
       if (msg.includes('REJECTED') || msg.includes('BLOCKED') || msg.includes('STAND DOWN')) {
         const key = templatize(msg);
         rejections.set(key, (rejections.get(key) ?? 0) + 1);
@@ -366,6 +385,36 @@ async function main(): Promise<void> {
   for (const [reason, count] of sorted) {
     console.log(`    ${String(count).padStart(5)}  ${pct(count, attempts).padStart(6)}  ${reason}`);
   }
+
+  // ── ITEM 73(a) — winning-strength distribution ─────────────────────────────
+  const sortedWS = [...winningStrengths].sort((a, b) => a - b);
+  const quantile = (arr: number[], q: number): number => {
+    if (arr.length === 0) return NaN;
+    const pos = (arr.length - 1) * q;
+    const lo = Math.floor(pos);
+    const hi = Math.ceil(pos);
+    if (lo === hi) return arr[lo];
+    return arr[lo] + (arr[hi] - arr[lo]) * (pos - lo);
+  };
+  console.log('\n  WINNING-STRENGTH DISTRIBUTION (every value at the conviction gate):');
+  console.log(`    n                    : ${sortedWS.length}`);
+  console.log(`    conviction min OBSERVED FROM THE ENGINE: ${observedConvictionMin ?? 'n/a'}`);
+  if (sortedWS.length > 0) {
+    console.log(`    min / max            : ${sortedWS[0].toFixed(4)} / ${sortedWS[sortedWS.length - 1].toFixed(4)}`);
+    const mean = sortedWS.reduce((s, v) => s + v, 0) / sortedWS.length;
+    console.log(`    mean                 : ${mean.toFixed(4)}`);
+    for (const q of [0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]) {
+      console.log(`    q${(q * 100).toFixed(0).padStart(2)}                  : ${quantile(sortedWS, q).toFixed(4)}`);
+    }
+    if (observedConvictionMin !== null) {
+      const passes = sortedWS.filter((v) => v >= (observedConvictionMin as number)).length;
+      console.log(`    PASS RATE at ${observedConvictionMin}: ${passes}/${sortedWS.length} = ${pct(passes, sortedWS.length)}`);
+    }
+  }
+  // The FULL vector, so a percentile can be derived off-harness without rerunning.
+  console.log(`  WS_VECTOR_BEGIN ${sortedWS.map((v) => v.toFixed(4)).join(',')} WS_VECTOR_END`);
+  const sortedSD = [...strengthDiffs].sort((a, b) => a - b);
+  console.log(`  SD_VECTOR_BEGIN ${sortedSD.map((v) => v.toFixed(4)).join(',')} SD_VECTOR_END`);
   console.log('');
 }
 

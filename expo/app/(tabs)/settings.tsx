@@ -24,7 +24,16 @@ import {
   getShadowWriteSuccesses,
 } from "@/services/shadowSignalService";
 import { getTier0Counters } from "@/services/srZoneTier0Service";
-import { getLearningCorpusStats, hydrateLearningCorpusStats } from "@/services/learningStore";
+import {
+  getLearningCorpusStats,
+  hydrateLearningCorpusStats,
+  getOutboundPushStats,
+  hydrateOutboundPushStats,
+  hydratePendingPushQueue,
+  getPendingRemotePushCount,
+  getPushPathDescriptor,
+} from "@/services/learningStore";
+import { BUILD_SHA, BUILD_MARKED_AT, BUILD_CLAIMED_ITEMS } from "@/constants/buildMarker";
 
 function getProviderLabel(provider: unknown): string {
   if (provider === "google") {
@@ -303,6 +312,11 @@ export default function SettingsScreen() {
       // ITEM 12(d): load the durable corpus counters BEFORE they are read into the
       // export, so the export reports durable totals rather than this process's slice.
       await hydrateLearningCorpusStats().catch(() => undefined);
+      // ITEM 74(b): same reasoning for the OUTBOUND counters and the durable
+      // push queue - the export must report install-lifetime totals, not this
+      // process's slice, because the event under investigation spans a reload.
+      await hydrateOutboundPushStats().catch(() => undefined);
+      await hydratePendingPushQueue().catch(() => undefined);
 
       const [modelWeights, modelHealth, diagnosticEvents, shadowSellSummary, telegramOutbox] =
         await Promise.all([
@@ -331,6 +345,34 @@ export default function SettingsScreen() {
         telegramOutbox,
         // ITEM 12(d): durable corpus-hydration counters (rehydrated above).
         learningCorpusStats: getLearningCorpusStats(),
+        // ITEM 74(b)(c): the outbound half, plus reconciliation visibility.
+        outboundPushStats: {
+          ...getOutboundPushStats(),
+          queueDepthNow: getPendingRemotePushCount(),
+        },
+        // ITEM 74(a): build marker + probes read from the RUNNING bundle.
+        buildProvenance: {
+          buildSha: BUILD_SHA,
+          markedAt: BUILD_MARKED_AT,
+          claimedItems: BUILD_CLAIMED_ITEMS,
+          probes: [
+            {
+              label: "Item 64 CONSUMED_MODEL_WEIGHTS length (expect 4)",
+              present: signalEngine.getConsumedModelWeightKeys().length === 4,
+              observed: `[${signalEngine.getConsumedModelWeightKeys().join(", ")}] length=${signalEngine.getConsumedModelWeightKeys().length}`,
+            },
+            {
+              label: "Item 66 durable pendingRemotePush persistence key",
+              present: getPushPathDescriptor().pendingPushKey === "pending_remote_push_v1",
+              observed: `AsyncStorage key = "${getPushPathDescriptor().pendingPushKey}", rehydrated=${getPushPathDescriptor().queueHydrated}`,
+            },
+            {
+              label: "Item 66 direct anon-key upsert inside pushOutcomesToRemote",
+              present: getPushPathDescriptor().usesDirectAnonUpsert && getPushPathDescriptor().clientConfigured,
+              observed: `venue=${getPushPathDescriptor().venue} table=${getPushPathDescriptor().table} onConflict=${getPushPathDescriptor().onConflict} clientConfigured=${getPushPathDescriptor().clientConfigured}`,
+            },
+          ],
+        },
       });
 
       // ITEM 9: the artifact is published DIRECTLY to Supabase Storage via the

@@ -2327,6 +2327,16 @@ class SignalGenerationEngine {
    * F6 criterion 4: how often the bar-based directional layer was unavailable
    * or stale at generation time. Read-only accessor for the diagnostics export.
    */
+  /**
+   * ITEM 74(a) — RUNTIME probe of Item 64's consumed-weight set. Returns the
+   * ACTUAL contents of `CONSUMED_MODEL_WEIGHTS` as the running bundle holds it,
+   * so the diagnostics export can report observed presence rather than trusting
+   * a changelog. A pre-Item-64 bundle does not export this method at all.
+   */
+  public getConsumedModelWeightKeys(): string[] {
+    return Array.from(CONSUMED_MODEL_WEIGHTS);
+  }
+
   public getDirectionalLayerStats(): { checks: number; standAsides: number; readyNow: boolean } {
     const m5 = this.getDirectionalM5();
     return {
