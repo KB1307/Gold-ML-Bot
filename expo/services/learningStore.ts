@@ -293,14 +293,28 @@ function recordPushSuppressed(reason: string): void {
 
 /**
  * Extracts an HTTP-status-like key from a Supabase/PostgREST error so failures
- * can be bucketed. PostgREST returns `code` (e.g. 42501 RLS, 23502 NOT NULL);
- * a transport failure has neither, so it buckets as NETWORK.
+ * can be bucketed. PostgREST returns `code` (e.g. 42501 RLS, 23502 NOT NULL).
+ * Supabase auth-style errors (e.g. "Invalid API key" from a 401) carry a
+ * .message but often no .code or .status — .status is checked as number OR
+ * string, and known auth-error phrases in .message are bucketed as '401'.
+ * A transport failure (no object properties) buckets as NETWORK.
  */
 function pushFailureStatusKey(err: unknown): string {
   if (typeof err === 'object' && err !== null) {
     const e = err as Record<string, unknown>;
     if (typeof e.code === 'string' && e.code) return e.code;
     if (typeof e.status === 'number') return String(e.status);
+    if (typeof e.status === 'string' && e.status) return e.status;
+    if (typeof e.statusCode === 'number') return String(e.statusCode);
+    if (typeof e.statusCode === 'string' && e.statusCode) return e.statusCode;
+    if (typeof e.message === 'string') {
+      const prefixMatch = /^(\d{3})\b/.exec(e.message);
+      if (prefixMatch) return prefixMatch[1];
+      const msg = e.message.toLowerCase();
+      if (msg.includes('invalid api key') || msg.includes('unauthorized') || msg.includes('api_key') || msg.includes('apikey')) {
+        return '401';
+      }
+    }
   }
   if (err instanceof Error) return 'NETWORK';
   return 'UNKNOWN';
