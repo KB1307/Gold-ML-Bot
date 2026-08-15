@@ -426,6 +426,8 @@ async function main(): Promise<void> {
   }
   // The FULL vector, so a percentile can be derived off-harness without rerunning.
   console.log(`  WS_VECTOR_BEGIN ${sortedWS.map((v) => v.toFixed(4)).join(',')} WS_VECTOR_END`);
+  // CORRECTION 5 — unsorted (tape-order) vector for index-for-index diffing across runs.
+  console.log(`  WS_UNSORTED_BEGIN ${winningStrengths.map((v) => v.toFixed(4)).join(',')} WS_UNSORTED_END`);
   const sortedSD = [...strengthDiffs].sort((a, b) => a - b);
   console.log(`  SD_VECTOR_BEGIN ${sortedSD.map((v) => v.toFixed(4)).join(',')} SD_VECTOR_END`);
 
