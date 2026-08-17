@@ -23,12 +23,28 @@ const corsHeaders = {
 const LOOKBACK_HOURS = 120;
 const ZONE_STALENESS_HALF_LIFE_HOURS = 18;
 const CONSUMER_THRESHOLD = 0.3;
-// B22 — zone width derived from B20 measurement: touches-per-bar was 2.26 at
-// atr*0.3. To get below 1.0: 0.3/2.26 = 0.133, rounded to 0.12 for margin.
-// Source: scripts/analyzeB20ReversalRate.ts, 2026-08-17 run, 4188 bars, 22 zones.
-const ZONE_TOUCH_WIDTH_ATR = 0.12;
-// B22 — cluster merge stays WIDER than touch width so nearby candidates merge
-// into one zone rather than fragmenting. Was implicitly zoneWidth = atr*0.3.
+// B22 REVERTED 2026-08-17 (CORRECTION 19). The 0.12 narrowing shipped last round is
+// REMOVED for two measured reasons, both from scripts/analyzeRound3B.ts:
+//
+//  1. IT WAS INERT. The effective width is Math.max(atr * mult, currentPrice *
+//     0.0001). At ATR 1.3421 / price ~4419 the floor is 0.4419 while atr*0.12 is
+//     0.1611, so the FLOOR dominated and the narrowing never took effect. Measured:
+//     the 0.30 arm and the 0.12 arm produced an IDENTICAL touchWidth of 0.4419 and
+//     an identical touches-per-bar of 0.2276. Shipping 0.12 changed nothing except
+//     the appearance of having acted.
+//  2. ITS AUTHORIZING NUMBER IS NOT REPRODUCIBLE. B22 was derived from
+//     touches-per-bar = 2.26. Recomputing over 4187 real bars gives 0.2276 — a 10x
+//     disagreement. The two are not the same population (B20 scored the 22 rows in
+//     the live sr_zones_v1 table; this recomputes 32 zones offline), so 2.26 is not
+//     refuted — but a width constant may not rest on a number nobody can reproduce.
+//
+// Restored to the pre-round value. Re-deriving requires ONE touches-per-bar
+// definition, over a NAMED zone population, that both paths reproduce — and the
+// price-proportional floor must be lowered in the same change or any narrowing
+// below atr*0.1 is inert again.
+const ZONE_TOUCH_WIDTH_ATR = 0.3;
+// Cluster merge stays WIDER than the touch width so nearby candidates merge into one
+// zone rather than fragmenting. Retained from B22 — this half was not inert.
 const CLUSTER_MERGE_WIDTH_ATR = 0.5;
 
 type ZoneSource =

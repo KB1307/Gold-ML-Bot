@@ -132,11 +132,20 @@ async function computeZonesFromBars(): Promise<ServerSRZone[] | null> {
     atrSum += tr;
     atrCount++;
   }
-  // B22: touch/rejection width NARROWED from atr*0.3 to atr*0.12 (derived from B20).
-  // B20 measured touches-per-bar = 2.26 at atr*0.3; 0.3/2.26 = 0.133, rounded to 0.12.
+  // B22 REVERTED 2026-08-17 (CORRECTION 19) — mirrors the Edge Function.
+  // The atr*0.12 narrowing shipped last round was INERT: the effective width is
+  // Math.max(atr * mult, currentPrice * 0.0001), and at ATR 1.3421 / price ~4419 the
+  // FLOOR is 0.4419 while atr*0.12 is 0.1611, so the floor dominated. Measured in
+  // scripts/analyzeRound3B.ts: the 0.30 arm and the 0.12 arm produced an IDENTICAL
+  // touchWidth (0.4419) and an identical touches-per-bar (0.2276). It changed nothing.
+  // Its authorizing number (touches-per-bar 2.26) also does not reproduce offline
+  // (0.2276 over 4187 bars, a 10x disagreement on a different zone population).
+  // Restored to the pre-round value pending ONE reproducible touches-per-bar
+  // definition; any future narrowing must lower the floor in the same change.
   const atr = atrCount > 0 ? atrSum / atrCount : currentPrice * 0.001;
-  const zoneWidth = Math.max(atr * 0.12, currentPrice * 0.0001);
-  // B22: cluster merge width is SEPARATE and WIDER so zones don't fragment.
+  const zoneWidth = Math.max(atr * 0.3, currentPrice * 0.0001);
+  // Cluster merge width is SEPARATE and WIDER so zones don't fragment. Retained
+  // from B22 — this half was not inert.
   const clusterMergeWidth = Math.max(atr * 0.5, currentPrice * 0.0001);
 
   type Candidate = { price: number; source: ZoneSource; alwaysAdmit?: boolean };
