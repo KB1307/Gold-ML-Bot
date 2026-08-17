@@ -217,7 +217,19 @@ const PRODUCTION_SETTINGS: ReplaySettings = {
   useKellyCriterion: true,   // contexts/TradingContext.tsx:53
   useDynamicSL: false,       // contexts/TradingContext.tsx:54 (B7: Item 19 measured dynamic SL worse)
   maxSLPips: 90,             // contexts/TradingContext.tsx:55
-  allowShortSignals: false,  // contexts/TradingContext.tsx:56
+  // ITEM 86 / B-1 — was FALSE, sourced from a stale reading of
+  // contexts/TradingContext.tsx:56. The LIVE persisted default is TRUE
+  // (contexts/TradingContext.tsx:71, "A16/C21 default flipped FALSE -> TRUE").
+  // Verified this round by reading the file directly rather than inferring it
+  // (C21's three candidate routes: this is route 2, the shipped default
+  // itself, confirmed by direct read — not the device diagnostics export,
+  // which was not available this session). Running this harness with FALSE
+  // suppressed every SELL at signalEngine.ts:7965 regardless of scoring — that
+  // was Item 86's root cause, not a zone-map problem. Every prior run of this
+  // harness before this fix measured a shorts-OFF configuration against a
+  // shorts-ON production and its funnel/emission conclusions do not describe
+  // production as it actually runs.
+  allowShortSignals: true,   // contexts/TradingContext.tsx:71
 };
 
 /**

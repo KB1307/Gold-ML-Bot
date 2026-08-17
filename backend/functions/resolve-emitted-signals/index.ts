@@ -30,6 +30,21 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+/**
+ * BLOCK A / E-1 — realized_r must be NET of execution cost, not gross.
+ * Mirrors expo/constants/executionCost.ts exactly (Deno cannot import that
+ * module directly, so the constant and formula are duplicated here with the
+ * source cited). ANY change to the client constant must be mirrored here.
+ */
+const EXECUTION_COST_PER_TRADE_USD = 0.2; // expo/constants/executionCost.ts:37
+/** Assumed $/price-unit for a 0.01-lot XAUUSD position (same assumption used project-wide; not verified against a stored per-signal position-size field — PROVISIONAL). */
+const DOLLAR_PER_PRICE_UNIT = 1;
+function costInR(riskPriceUnits: number): number {
+  const riskUsd = riskPriceUnits * DOLLAR_PER_PRICE_UNIT;
+  if (!Number.isFinite(riskUsd) || riskUsd <= 0) return 0;
+  return EXECUTION_COST_PER_TRADE_USD / riskUsd;
+}
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -153,7 +168,12 @@ function resolveFromBars(signal: EmittedRow, bars: Bar[]): Resolution | null {
   const risk = Math.abs(entry - sl);
   if (risk <= 0 || bars.length === 0) return null;
 
-  const rOf = (exit: number): number => ((isBuy ? exit - entry : entry - exit) / risk);
+  const rOfGross = (exit: number): number => ((isBuy ? exit - entry : entry - exit) / risk);
+  // BLOCK A / E-1: every realized_r this function returns is NET of the closed
+  // $0.20 execution cost, expressed in R via the same risk distance. Both
+  // resolvers previously wrote GROSS R (D6 finding) — every EV figure derived
+  // from trade_outcomes_v1 was frictionless.
+  const rOf = (exit: number): number => rOfGross(exit) - costInR(risk);
 
   const touched = (bar: Bar, level: number): boolean => bar.low <= level && bar.high >= level;
 
@@ -243,6 +263,10 @@ Deno.serve(async (req: Request) => {
     let resolved = 0;
     let skippedExisting = 0;
     let unresolvable = 0;
+    // BLOCK A / E-3: the unresolvable counter previously gave no reason. Split
+    // into NO_BARS (bar fetch returned zero rows for the window) vs
+    // ENTRY_NEVER_FILLED (bars exist but price never traded through entry).
+    const unresolvableReasons: Record<string, number> = { NO_BARS: 0, ENTRY_NEVER_FILLED: 0 };
     const upserts: Record<string, unknown>[] = [];
 
     for (const row of rows) {
@@ -255,6 +279,8 @@ Deno.serve(async (req: Request) => {
       const resolution = resolveFromBars(row, bars);
       if (!resolution) {
         unresolvable += 1;
+        const reasonCode = bars.length === 0 ? "NO_BARS" : "ENTRY_NEVER_FILLED";
+        unresolvableReasons[reasonCode] = (unresolvableReasons[reasonCode] ?? 0) + 1;
         continue;
       }
       upserts.push({
@@ -289,6 +315,7 @@ Deno.serve(async (req: Request) => {
       resolved,
       skippedExisting,
       unresolvable,
+      unresolvableReasons,
       at: new Date().toISOString(),
     };
     console.log(`[resolve-emitted-signals] ${JSON.stringify(body)}`);
