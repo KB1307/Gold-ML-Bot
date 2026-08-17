@@ -1,0 +1,12 @@
+
+====================================================================================
+ITEM 57 — REAL-BAR REPLAY HARNESS  [run: RUNB]
+====================================================================================
+  sandbox engine generated: scripts/__sandbox_item57__/signalEngine.replay.ts (9276 lines)
+  tape end pinned at: 2026-08-15T06:55:30.000Z (--tape-end)
+  real M1 bars loaded: 13831
+  window: 2026-08-02T22:00:00.000Z -> 2026-08-14T20:56:00.000Z
+  price range: $4019.10 .. $4449.72
+  (contrast: runSignalSimulation.ts base price 3034.5 — off by ~$1,200)
+  engine loaded, injection hook present.
+  sampling: warmup 300 bars, step 10 bars
