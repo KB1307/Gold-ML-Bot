@@ -310,30 +310,54 @@ async function main(): Promise<void> {
   const STRENGTH_DIFF_RE = /Strength Difference:\s*(-?\d+\.\d+)/;
   let observedConvictionMin: number | null = null;
   const originalLog = console.log;
+  const originalWarn = console.warn;
   let capturing = false;
+
+  /**
+   * ITEM 82 CORRECTION — inspect one captured console line.
+   *
+   * This used to live inline inside the `console.log` override ONLY. That was a
+   * dead instrument for the TIER0 counter: the engine emits both
+   * `[SRZoneTier0] TIER0_UNAVAILABLE` (srZoneTier0Service.ts:227) and
+   * `[SRZoneTier0] TIER0_FALLBACK_TO_TIER1` (signalEngine.ts:3594,3599) via
+   * `console.warn`, which was never intercepted. `tier0Unavailable` was therefore
+   * structurally pinned at 0 no matter how degraded the run was, so the
+   * "DEGRADED AND NOT COMPARABLE" guard below could never fire — and a reported
+   * TIER0_UNAVAILABLE=0 was NOT evidence that TIER_0 zones were available.
+   */
+  const inspect = (msg: string): void => {
+    const ws = WINNING_STRENGTH_RE.exec(msg);
+    if (ws) {
+      winningStrengths.push(Number(ws[1]));
+      // Read the threshold the engine ACTUALLY compared against, rather than
+      // trusting a constant quoted from the repo.
+      if (observedConvictionMin === null) observedConvictionMin = Number(ws[2]);
+    }
+    const sd = STRENGTH_DIFF_RE.exec(msg);
+    if (sd) strengthDiffs.push(Number(sd[1]));
+    if (msg.includes('REJECTED') || msg.includes('BLOCKED') || msg.includes('STAND DOWN')) {
+      const key = templatize(msg);
+      rejections.set(key, (rejections.get(key) ?? 0) + 1);
+    }
+    // ITEM 80(d) — track TIER0 zone unavailability.
+    if (msg.includes('TIER0_UNAVAILABLE') || msg.includes('TIER0_FALLBACK_TO_TIER1')) {
+      tier0Unavailable += 1;
+    }
+  };
+
   console.log = (...args: unknown[]): void => {
     if (capturing) {
-      const msg = args.map((a) => (typeof a === 'string' ? a : '')).join(' ');
-      const ws = WINNING_STRENGTH_RE.exec(msg);
-      if (ws) {
-        winningStrengths.push(Number(ws[1]));
-        // Read the threshold the engine ACTUALLY compared against, rather than
-        // trusting a constant quoted from the repo.
-        if (observedConvictionMin === null) observedConvictionMin = Number(ws[2]);
-      }
-      const sd = STRENGTH_DIFF_RE.exec(msg);
-      if (sd) strengthDiffs.push(Number(sd[1]));
-      if (msg.includes('REJECTED') || msg.includes('BLOCKED') || msg.includes('STAND DOWN')) {
-        const key = templatize(msg);
-        rejections.set(key, (rejections.get(key) ?? 0) + 1);
-      }
-      // ITEM 80(d) — track TIER0 zone unavailability.
-      if (msg.includes('TIER0_UNAVAILABLE') || msg.includes('TIER0_FALLBACK_TO_TIER1')) {
-        tier0Unavailable += 1;
-      }
+      inspect(args.map((a) => (typeof a === 'string' ? a : '')).join(' '));
       return;
     }
     originalLog(...args);
+  };
+  console.warn = (...args: unknown[]): void => {
+    if (capturing) {
+      inspect(args.map((a) => (typeof a === 'string' ? a : '')).join(' '));
+      return;
+    }
+    originalWarn(...args);
   };
 
   // (The replay clock is installed above, before the engine import — see cause (2).)
@@ -375,6 +399,7 @@ async function main(): Promise<void> {
     Date.now = realDateNow;
     capturing = false;
     console.log = originalLog;
+    console.warn = originalWarn;
   }
 
   // ── 5. Report ──────────────────────────────────────────────────────────────
