@@ -501,7 +501,7 @@ async function main(): Promise<void> {
     }
     const sd = STRENGTH_DIFF_RE.exec(msg);
     if (sd) strengthDiffs.push(Number(sd[1]));
-    if (msg.includes('REJECTED') || msg.includes('BLOCKED') || msg.includes('STAND DOWN')) {
+    if (msg.includes('REJECTED') || msg.includes('BLOCKED') || msg.includes('STAND DOWN') || msg.includes('STAND-ASIDE') || msg.includes('STAND ASIDE') || msg.includes('EARLY COOLDOWN') || msg.includes('SELL SUPPRESSED') || msg.includes('SUPPRESSED') || msg.includes('SIGNAL_SUPPRESSED')) {
       const key = templatize(msg);
       rejections.set(key, (rejections.get(key) ?? 0) + 1);
       // A14: capture the FIRST rejection per attempt for mutually exclusive funnel.
@@ -509,7 +509,20 @@ async function main(): Promise<void> {
         currentAttemptRejection = key;
       }
     }
-    // ITEM 80(d) — track TIER0 zone unavailability.
+    // ITEM 87a — every return-null path in generateSignal now has a named keyword.
+    // Previously 'EARLY COOLDOWN', 'STAND-ASIDE', 'SELL SUPPRESSED', and
+    // 'SIGNAL_SUPPRESSED' (TIER0 degradation) returned null without any of the
+    // checked keywords, so they died silently as NO_REJECTION_LOGGED.
+    // ITEM 87b — TIER0_UNAVAILABLE counter. The fetch is throttled to
+    // TIER0_SRZONES_FETCH_INTERVAL_MS (10 min). At step=3, each attempt advances
+    // 3 min of replay clock, so the fetch fires every ~3 attempts (10/3 ≈ 3.3).
+    // That is why the dark arm shows 85/340 ≈ 25%, not 340/340: the counter
+    // tracks the FETCH EVENT, not the per-attempt zone STATE. When the throttle
+    // hasn't expired, maybeRefreshTier0SRZones() returns immediately without
+    // calling fetchTier0SRZones, so no TIER0_FALLBACK message is printed — but
+    // tier0SRZones is still null, so detectSRZones() still falls back to TIER_1.
+    // This is CORRECT behaviour: the counter measures how many times the fetch
+    // actually ran and failed, not how many attempts used stale null zones.
     if (msg.includes('TIER0_UNAVAILABLE') || msg.includes('TIER0_FALLBACK_TO_TIER1')) {
       tier0Unavailable += 1;
     }

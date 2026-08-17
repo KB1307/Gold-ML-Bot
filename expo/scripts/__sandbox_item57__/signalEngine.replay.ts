@@ -23,9 +23,6 @@ async function appendDiagnosticEvent(): Promise<void> {}
 async function pushShadowSellRecord(): Promise<void> {}
 async function pushEmittedSignalRecord(): Promise<void> {}
 type ShadowSellRecord = Record<string, unknown>;
-// ITEM 84 dark arm: TIER_0 server zones forced unavailable.
-async function fetchTier0SRZones(): Promise<null> { return null; }
-function recordTier0FallbackUse(): void {}
 
 // A11: seed production model weights so getFeatureModulation returns the LIVE
 // value (rsi_weight=-1.0 -> modulation=0) instead of the cold-start 1.0.
@@ -35,6 +32,7 @@ import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData
 import { createClient as createSupabaseClient, type SupabaseClient } from "@supabase/supabase-js";
 import { resolveSignalWithBars } from "../../services/signalResolver";
 import type { OhlcBar } from "../../services/barStore";
+import { fetchTier0SRZones, recordTier0FallbackUse } from "../../services/srZoneTier0Service";
 import { DirectionalScoreAccumulator } from "../../services/directionalScoring";
 import { EXECUTION_COST_PER_TRADE_USD, costInR } from "../../constants/executionCost";
 import {

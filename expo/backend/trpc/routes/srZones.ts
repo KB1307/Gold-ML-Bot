@@ -249,16 +249,21 @@ async function computeZonesFromBars(): Promise<ServerSRZone[] | null> {
     const confluenceBonus = Math.min(1, confluenceScore * 0.25);
     const hasEarnedEvidence = touches >= 1 || rejectionWicks >= 1;
     const effectiveConfluenceBonus = hasEarnedEvidence ? confluenceBonus : 0;
-    // B21 — reaction strength REDEFINED. B20 measured corr(stored, trueRate) =
-    // -0.31: the old formula measured PRESENCE, not REVERSAL. The new formula
-    // drops touchScore entirely and weights rejectionScore at 0.5.
-    const legacyRawReactionStrength = Math.min(
+    // B21 REVERTED 2026-08-17 (ITEM 90). Item 85 measured held-out correlations:
+    //   corr(legacy reaction_strength, W2 trueRate) = +0.3613 (POSITIVE)
+    //   corr(B21    reaction_strength, W2 trueRate) = +0.1612 (weaker)
+    // B21's only advantage was discrimination range (0.819-0.866 vs 0.945-0.999),
+    // but the engine's zoneMultiplier = Math.min(1.5, 0.8 + rs) clamps to 1.5 for
+    // BOTH formulas (0.8 + 0.819 = 1.619 > 1.5), so the discrimination is unused.
+    // Legacy has a better held-out correlation AND the same effective multiplier.
+    // Reverted to legacy as the primary reactionStrength.
+    const rawReactionStrength = Math.min(
       1,
       touchScore * 0.3 + rejectionScore * 0.3 + rejectionSizeScore * 0.2 + Math.min(1, confluenceScore / 3) * (hasEarnedEvidence ? 0.2 : 0) + effectiveConfluenceBonus,
     );
-    const rawReactionStrength = Math.min(
+    const legacyRawReactionStrength = Math.min(
       1,
-      rejectionScore * 0.5 + rejectionSizeScore * 0.3 + Math.min(1, confluenceScore / 3) * (hasEarnedEvidence ? 0.2 : 0),
+      touchScore * 0.3 + rejectionScore * 0.3 + rejectionSizeScore * 0.2 + Math.min(1, confluenceScore / 3) * (hasEarnedEvidence ? 0.2 : 0) + effectiveConfluenceBonus,
     );
 
     const ageHours = lastTouchTs > 0 ? Math.max(0, now - lastTouchTs) / (60 * 60 * 1000) : 0;
