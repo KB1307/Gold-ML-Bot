@@ -42,6 +42,8 @@ export interface ServerSRZone {
   touches: number;
   rejectionWicks: number;
   reactionStrength: number;
+  /** B21: legacy touch-frequency-based metric, preserved for audit comparability. */
+  legacyReactionStrength: number;
   source: ZoneSource;
   confluenceScore: number;
   lastTouchTs: string | null;
@@ -130,8 +132,12 @@ async function computeZonesFromBars(): Promise<ServerSRZone[] | null> {
     atrSum += tr;
     atrCount++;
   }
+  // B22: touch/rejection width NARROWED from atr*0.3 to atr*0.12 (derived from B20).
+  // B20 measured touches-per-bar = 2.26 at atr*0.3; 0.3/2.26 = 0.133, rounded to 0.12.
   const atr = atrCount > 0 ? atrSum / atrCount : currentPrice * 0.001;
-  const zoneWidth = Math.max(atr * 0.3, currentPrice * 0.0015);
+  const zoneWidth = Math.max(atr * 0.12, currentPrice * 0.0001);
+  // B22: cluster merge width is SEPARATE and WIDER so zones don't fragment.
+  const clusterMergeWidth = Math.max(atr * 0.5, currentPrice * 0.0001);
 
   type Candidate = { price: number; source: ZoneSource; alwaysAdmit?: boolean };
   const candidates: Candidate[] = [];
@@ -182,7 +188,7 @@ async function computeZonesFromBars(): Promise<ServerSRZone[] | null> {
 
   const clustered: { price: number; source: ZoneSource; sources: Set<ZoneSource>; alwaysAdmit: boolean }[] = [];
   for (const c of candidates) {
-    const existing = clustered.find((cl) => Math.abs(cl.price - c.price) < zoneWidth);
+    const existing = clustered.find((cl) => Math.abs(cl.price - c.price) < clusterMergeWidth);
     if (existing) {
       existing.price = (existing.price + c.price) / 2;
       existing.sources.add(c.source);
@@ -234,14 +240,22 @@ async function computeZonesFromBars(): Promise<ServerSRZone[] | null> {
     const confluenceBonus = Math.min(1, confluenceScore * 0.25);
     const hasEarnedEvidence = touches >= 1 || rejectionWicks >= 1;
     const effectiveConfluenceBonus = hasEarnedEvidence ? confluenceBonus : 0;
-    const rawReactionStrength = Math.min(
+    // B21 — reaction strength REDEFINED. B20 measured corr(stored, trueRate) =
+    // -0.31: the old formula measured PRESENCE, not REVERSAL. The new formula
+    // drops touchScore entirely and weights rejectionScore at 0.5.
+    const legacyRawReactionStrength = Math.min(
       1,
       touchScore * 0.3 + rejectionScore * 0.3 + rejectionSizeScore * 0.2 + Math.min(1, confluenceScore / 3) * (hasEarnedEvidence ? 0.2 : 0) + effectiveConfluenceBonus,
+    );
+    const rawReactionStrength = Math.min(
+      1,
+      rejectionScore * 0.5 + rejectionSizeScore * 0.3 + Math.min(1, confluenceScore / 3) * (hasEarnedEvidence ? 0.2 : 0),
     );
 
     const ageHours = lastTouchTs > 0 ? Math.max(0, now - lastTouchTs) / (60 * 60 * 1000) : 0;
     const recencyDecayFactor = lastTouchTs > 0 ? Math.pow(0.5, ageHours / ZONE_STALENESS_HALF_LIFE_HOURS) : 1;
     const reactionStrength = Math.min(1, rawReactionStrength * recencyDecayFactor);
+    const legacyReactionStrength = Math.min(1, legacyRawReactionStrength * recencyDecayFactor);
 
     if (cluster.alwaysAdmit || touches >= 2 || rejectionWicks >= 1) {
       zones.push({
@@ -250,6 +264,7 @@ async function computeZonesFromBars(): Promise<ServerSRZone[] | null> {
         touches,
         rejectionWicks,
         reactionStrength: parseFloat(reactionStrength.toFixed(3)),
+        legacyReactionStrength: parseFloat(legacyReactionStrength.toFixed(3)),
         source: cluster.source,
         confluenceScore,
         lastTouchTs: lastTouchTs > 0 ? new Date(lastTouchTs).toISOString() : null,
@@ -309,6 +324,7 @@ async function upsertZones(zones: ServerSRZone[]): Promise<{ inserted: number } 
     touches: z.touches,
     rejection_wicks: z.rejectionWicks,
     reaction_strength: z.reactionStrength,
+    legacy_reaction_strength: z.legacyReactionStrength,
     source: z.source,
     confluence_score: z.confluenceScore,
     last_touch_ts: z.lastTouchTs,
@@ -373,6 +389,9 @@ export const srZonesRouter = createTRPCRouter({
         touches: row.touches,
         rejectionWicks: row.rejection_wicks,
         reactionStrength: Number(row.reaction_strength),
+        // B21: legacy_reaction_strength column may not exist yet on older schema.
+        // Fall back to reaction_strength so reads never break before the migration lands.
+        legacyReactionStrength: Number((row as Record<string, unknown>).legacy_reaction_strength ?? row.reaction_strength),
         source: row.source as ZoneSource,
         confluenceScore: row.confluence_score,
         lastTouchTs: row.last_touch_ts,

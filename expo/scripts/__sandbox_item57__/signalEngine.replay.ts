@@ -24,6 +24,10 @@ async function pushShadowSellRecord(): Promise<void> {}
 async function pushEmittedSignalRecord(): Promise<void> {}
 type ShadowSellRecord = Record<string, unknown>;
 
+// A11: seed production model weights so getFeatureModulation returns the LIVE
+// value (rsi_weight=-1.0 -> modulation=0) instead of the cold-start 1.0.
+sandboxStorage.set("model_weights_v1", JSON.stringify({ weights: [["rsi_weight",-1.0],["sentiment_weight",-0.473823],["atr_weight",0.225086],["timeWindow_weight",-0.09845],["volume_weight",0.082048],["dxy_weight",0.0]], lastTrainingTime: Date.parse("2026-08-11T12:06:34Z"), corpusSizeAtTraining: 53, hydrateUnavailableAtTraining: 0 }));
+
 import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC, SignalLearningContext, DetectedSRZone } from "../../types/trading";
 import { createClient as createSupabaseClient, type SupabaseClient } from "@supabase/supabase-js";
 import { resolveSignalWithBars } from "../../services/signalResolver";
@@ -7343,6 +7347,28 @@ class SignalGenerationEngine {
       console.log(`❌ REJECTED: Daily market-close break (22:59-23:59 UTC+2 / 20:59-21:59 UTC). No signals during this hour. Current UTC ${nowDate.getUTCHours()}:${String(nowDate.getUTCMinutes()).padStart(2, '0')}`);
       console.log(`${'='.repeat(80)}\n`);
       return null;
+    }
+
+    // D5 / F-13 — RETRAIN DECOUPLING. Under Correction I the app runs 24/5, so
+    // retrain conditions 1 (>48h since training) and 3 (process running) hold
+    // continuously. The retrain was coupled to recordTradeOutcome(), which only
+    // fires after a trade resolves — so with 1 signal in 3 days, no trades
+    // resolve and the retrain NEVER fires even during 22:00-07:00 UTC when the
+    // app IS running. This check decouples it: if retrainScheduled and we are
+    // inside the low-liquidity window, fire the retrain from the generation path.
+    // Idempotent — walkForwardOptimization sets retrainScheduled=false.
+    if (this.retrainScheduled) {
+      const retrainHour = new Date().getUTCHours();
+      const retrainLowLiq = retrainHour >= 22 || retrainHour < 7;
+      if (retrainLowLiq) {
+        console.log(`🔔 D5: EXECUTING SCHEDULED RETRAIN (decoupled from trade resolution, ${retrainHour}:00 UTC)`);
+        try {
+          await this.walkForwardOptimization('Scheduled Retrain (D5 decoupled from trade resolution)');
+          this.retrainScheduled = false;
+        } catch (retrainErr) {
+          console.error('D5: Retrain failed (non-blocking, will retry next low-liquidity window):', retrainErr instanceof Error ? retrainErr.message : String(retrainErr));
+        }
+      }
     }
     
     const fullyActiveSignals = activeSignals.filter((signal) => (

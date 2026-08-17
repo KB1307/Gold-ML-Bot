@@ -59,7 +59,16 @@ const DEFAULT_SETTINGS: Settings = {
   // Still fully toggleable from Settings — this flips the DEFAULT, not the feature.
   useDynamicSL: false,
   maxSLPips: 90,
-  allowShortSignals: false,
+  // ITEM 82 R3 / A16 — allowShortSignals default flipped FALSE -> TRUE.
+  // The 17 Aug live signal WAS a SELL (4387.4), so the persisted value is
+  // evidently TRUE. The code DEFAULT contradicted the project's own reversal
+  // of SELL suppression (measured BUY 63.1% / SELL 63.2%) — same regression
+  // class as F-5's useDynamicSL. B9 showed shorts-on doubles emission volume
+  // (8 vs 4), and the project's own audit found SELL EV = -0.349R under the
+  // OLD (pre-Phase-2-gate) system; the Phase 2 counter-trend gate repair (B1)
+  // and direction-bucketed calibration (C4) are now live, so the SELL book
+  // is gated by the same structure as the BUY book.
+  allowShortSignals: true,
 };
 
 const DEFAULT_METRICS: PerformanceMetrics = {

@@ -100,6 +100,10 @@ function buildSandboxEngine(): string {
     'async function pushEmittedSignalRecord(): Promise<void> {}',
     'type ShadowSellRecord = Record<string, unknown>;',
     '',
+    '// A11: seed production model weights so getFeatureModulation returns the LIVE',
+    '// value (rsi_weight=-1.0 -> modulation=0) instead of the cold-start 1.0.',
+    'sandboxStorage.set("model_weights_v1", JSON.stringify({ weights: [["rsi_weight",-1.0],["sentiment_weight",-0.473823],["atr_weight",0.225086],["timeWindow_weight",-0.09845],["volume_weight",0.082048],["dxy_weight",0.0]], lastTrainingTime: Date.parse("2026-08-11T12:06:34Z"), corpusSizeAtTraining: 53, hydrateUnavailableAtTraining: 0 }));',
+    '',
   ];
 
   // Drop the import statements that pull in React Native / storage / network.
@@ -393,6 +397,21 @@ async function main(): Promise<void> {
   const setExternalPrice = engineModule.setExternalPrice as ((p: number, s: string) => void) | undefined;
   console.log('  engine loaded, injection hook present.');
 
+  // A11/A12/A14: harness flags must be declared BEFORE the seed-weights block below.
+  const seedWeights = process.argv.includes('--seed-weights');
+  const perAttempt = process.argv.includes('--per-attempt');
+  const windowStartIdx = process.argv.indexOf('--window-start');
+  const windowStart = windowStartIdx >= 0 ? Number(process.argv[windowStartIdx + 1]) : 0;
+
+  // A11: load the seeded production weights into the engine's in-memory map.
+  if (seedWeights) {
+    const eng = engineModule.signalEngine as { loadPersistedLearningData: () => Promise<unknown>; getModelWeightForTest: (k: string) => number | undefined; getLearnedFeatureModulationForTest: (k: string) => number };
+    await eng.loadPersistedLearningData();
+    const rsiW = eng.getModelWeightForTest('rsi_weight');
+    const rsiMod = eng.getLearnedFeatureModulationForTest('rsi_weight');
+    console.log(`  A11: weights seeded. rsi_weight=${rsiW} -> modulation=${rsiMod}`);
+  }
+
   // ── 4. Capture the engine's own console output ─────────────────────────────
   const rejections = new Map<string, number>();
   let emissions = 0;
@@ -437,6 +456,10 @@ async function main(): Promise<void> {
     if (msg.includes('REJECTED') || msg.includes('BLOCKED') || msg.includes('STAND DOWN')) {
       const key = templatize(msg);
       rejections.set(key, (rejections.get(key) ?? 0) + 1);
+      // A14: capture the FIRST rejection per attempt for mutually exclusive funnel.
+      if (currentAttemptRejection === null) {
+        currentAttemptRejection = key;
+      }
     }
     // ITEM 80(d) — track TIER0 zone unavailability.
     if (msg.includes('TIER0_UNAVAILABLE') || msg.includes('TIER0_FALLBACK_TO_TIER1')) {
@@ -482,25 +505,43 @@ async function main(): Promise<void> {
   let exceptions = 0;
   const exceptionsByType = new Map<string, number>();
   let firstExceptionStack: string | null = null;
+  // A14 — mutually exclusive funnel: first rejection per attempt.
+  const funnelCounts = new Map<string, number>();
+  let currentAttemptRejection: string | null = null;
+  // A12 — per-attempt log for the 15-hour window replay.
+  const perAttemptLog: { ts: string; price: number; outcome: string }[] = [];
   capturing = true;
   try {
     for (let i = WARMUP; i < m1.length; i += STEP) {
+      // A12: skip bars before the window start so we only step through the target window.
+      if (windowStart > 0 && m1[i].timestamp < windowStart) continue;
       const slice = m1.slice(0, i);
       // "Now" is one minute past the last completed bar — the same relationship the
       // live engine has to its most recent closed M1 bar.
       replayNow = slice[slice.length - 1].timestamp + 60_000;
+      currentAttemptRejection = null;
       try {
         engine.__injectBarSeriesForTestOnly(slice);
         setExternalPrice?.(slice[slice.length - 1].close, 'item57-replay');
         const result = await engine.generateSignal(settings, ACCOUNT_BALANCE, []);
         attempts += 1;
         if (result) emissions += 1;
+        // A14: attribute this attempt to exactly ONE terminal outcome.
+        const stage = result ? 'EMITTED' : (currentAttemptRejection ?? 'NO_REJECTION_LOGGED');
+        funnelCounts.set(stage, (funnelCounts.get(stage) ?? 0) + 1);
+        // A12: per-attempt detail for the window replay.
+        if (perAttempt || windowStart > 0) {
+          const barTs = new Date(slice[slice.length - 1].timestamp).toISOString();
+          const barPrice = slice[slice.length - 1].close;
+          perAttemptLog.push({ ts: barTs, price: barPrice, outcome: stage });
+        }
       } catch (err: unknown) {
         // B1 — a throw is a HARNESS DEFECT, not a rejection-path outcome.
         // Counting it as a plain attempt (the old bare `catch {}`) is exactly
         // what kept F-0 invisible for the entire life of this instrument.
         attempts += 1;
         exceptions += 1;
+        funnelCounts.set('EXCEPTION', (funnelCounts.get('EXCEPTION') ?? 0) + 1);
         const name = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
         const key = templatize(name);
         exceptionsByType.set(key, (exceptionsByType.get(key) ?? 0) + 1);
@@ -596,6 +637,35 @@ async function main(): Promise<void> {
   if (penalty25Fn) {
     const p25 = penalty25Fn();
     console.log(`  CALIBRATION_PENALTY_25: fired ${p25.count} time(s), thenFailed ${p25.thenFailed}`);
+  }
+
+  // A14 — MUTUALLY EXCLUSIVE FUNNEL. Each attempt is attributed to EXACTLY ONE
+  // terminal outcome (the first rejection that fired, or EMITTED, or EXCEPTION).
+  // The non-exclusive rejection map above can double-count; this cannot.
+  const funnelSum = [...funnelCounts.values()].reduce((s, v) => s + v, 0);
+  console.log('\n  MUTUALLY EXCLUSIVE FUNNEL (first terminal outcome per attempt):');
+  console.log(`    sum of stages: ${funnelSum} (must equal attempts: ${attempts})`);
+  const funnelSorted = [...funnelCounts.entries()].sort((a, b) => b[1] - a[1]);
+  for (const [stage, count] of funnelSorted) {
+    console.log(`    ${String(count).padStart(5)}  ${pct(count, attempts).padStart(6)}  ${stage}`);
+  }
+  const funnelMatch = funnelSum === attempts ? 'PASS' : 'FAIL';
+  console.log(`    funnel reconciliation: ${funnelMatch}`);
+
+  // A12 — per-attempt log for the 15-hour window replay.
+  if (perAttemptLog.length > 0) {
+    console.log('\n  PER-ATTEMPT LOG (window replay):');
+    for (const entry of perAttemptLog) {
+      console.log(`    ${entry.ts}  $${entry.price.toFixed(1)}  ${entry.outcome.slice(0, 100)}`);
+    }
+    const emitted = perAttemptLog.filter(e => e.outcome === 'EMITTED');
+    console.log(`\n  WINDOW SUMMARY: ${perAttemptLog.length} attempts, ${emitted.length} emissions`);
+    if (emitted.length > 0) {
+      console.log('  emitted signals:');
+      for (const e of emitted) {
+        console.log(`    ${e.ts}  $${e.price.toFixed(1)}`);
+      }
+    }
   }
 
   console.log('');

@@ -79,7 +79,8 @@ export type Tier0FailureReason =
   | "READ_ERROR"
   | "EMPTY_TABLE"
   | "ALL_EXPIRED"
-  | "BELOW_CONSUMER_THRESHOLD";
+  | "BELOW_CONSUMER_THRESHOLD"
+  | "NOT_YET_LOADED";
 
 export interface Tier0ReadResult {
   ok: boolean;
@@ -102,6 +103,11 @@ interface Tier0Counters {
   emptyTable: number;
   allExpired: number;
   belowThreshold: number;
+  /** D3 / F-19: cold-start race — fetch was launched but not yet resolved on
+   *  the first generation pass. NOT a read failure; the read simply hadn't
+   *  completed yet. Separated from the failure counters so the export can
+   *  distinguish "fetch failed" from "fetch not yet resolved". */
+  notYetLoaded: number;
   /** Times the engine actually ran a generation pass on TIER_1_LOCAL because
    *  TIER_0 was unusable. This is the number that matters for trust. */
   tier1FallbackUses: number;
@@ -122,6 +128,7 @@ const counters: Tier0Counters = {
   emptyTable: 0,
   allExpired: 0,
   belowThreshold: 0,
+  notYetLoaded: 0,
   tier1FallbackUses: 0,
   lastFailureReason: null,
   lastFailureDetail: null,
@@ -153,6 +160,7 @@ export function __resetTier0CountersForTest(): void {
   counters.emptyTable = 0;
   counters.allExpired = 0;
   counters.belowThreshold = 0;
+  counters.notYetLoaded = 0;
   counters.tier1FallbackUses = 0;
   counters.lastFailureReason = null;
   counters.lastFailureDetail = null;
@@ -221,6 +229,9 @@ function recordFailure(reason: Tier0FailureReason, detail: string): Tier0ReadRes
       break;
     case "BELOW_CONSUMER_THRESHOLD":
       counters.belowThreshold += 1;
+      break;
+    case "NOT_YET_LOADED":
+      counters.notYetLoaded += 1;
       break;
   }
   // Distinct, greppable warning. Tag is stable: [SRZoneTier0] TIER0_UNAVAILABLE

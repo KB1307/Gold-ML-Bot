@@ -23,6 +23,13 @@ const corsHeaders = {
 const LOOKBACK_HOURS = 120;
 const ZONE_STALENESS_HALF_LIFE_HOURS = 18;
 const CONSUMER_THRESHOLD = 0.3;
+// B22 — zone width derived from B20 measurement: touches-per-bar was 2.26 at
+// atr*0.3. To get below 1.0: 0.3/2.26 = 0.133, rounded to 0.12 for margin.
+// Source: scripts/analyzeB20ReversalRate.ts, 2026-08-17 run, 4188 bars, 22 zones.
+const ZONE_TOUCH_WIDTH_ATR = 0.12;
+// B22 — cluster merge stays WIDER than touch width so nearby candidates merge
+// into one zone rather than fragmenting. Was implicitly zoneWidth = atr*0.3.
+const CLUSTER_MERGE_WIDTH_ATR = 0.5;
 
 type ZoneSource =
   | "PRICE_ACTION"
@@ -116,7 +123,10 @@ function computeZones(bars: Bar[], now: number): ServerSRZone[] {
     atrCount++;
   }
   const atr = atrCount > 0 ? atrSum / atrCount : currentPrice * 0.001;
-  const zoneWidth = Math.max(atr * 0.3, currentPrice * 0.0015);
+  // B22: touch/rejection width NARROWED from atr*0.3 to atr*0.12 (derived from B20).
+  const zoneWidth = Math.max(atr * ZONE_TOUCH_WIDTH_ATR, currentPrice * 0.0001);
+  // B22: cluster merge width is SEPARATE and WIDER so zones don't fragment.
+  const clusterMergeWidth = Math.max(atr * CLUSTER_MERGE_WIDTH_ATR, currentPrice * 0.0001);
 
   type Candidate = { price: number; source: ZoneSource; alwaysAdmit?: boolean };
   const candidates: Candidate[] = [];
@@ -193,7 +203,7 @@ function computeZones(bars: Bar[], now: number): ServerSRZone[] {
     alwaysAdmit: boolean;
   }[] = [];
   for (const c of candidates) {
-    const existing = clustered.find((cl) => Math.abs(cl.price - c.price) < zoneWidth);
+    const existing = clustered.find((cl) => Math.abs(cl.price - c.price) < clusterMergeWidth);
     if (existing) {
       existing.price = (existing.price + c.price) / 2;
       existing.sources.add(c.source);
@@ -250,7 +260,13 @@ function computeZones(bars: Bar[], now: number): ServerSRZone[] {
     const confluenceBonus = Math.min(1, confluenceScore * 0.25);
     const hasEarnedEvidence = touches >= 1 || rejectionWicks >= 1;
     const effectiveConfluenceBonus = hasEarnedEvidence ? confluenceBonus : 0;
-    const rawReactionStrength = Math.min(
+    // B21 — reaction strength REDEFINED. B20 measured corr(stored, trueRate) =
+    // -0.31: the old formula (touchScore*0.3 + rejectionScore*0.3 + ...) measured
+    // PRESENCE, not REVERSAL. Zones stored at 0.999 had true reversal rates of
+    // 0.27-0.56. The new formula drops touchScore (presence) entirely and weights
+    // rejectionScore (actual wick reversals) at 0.5, rejectionSizeScore at 0.3,
+    // confluence at 0.2. Source: B20 measurement, 2026-08-17.
+    const legacyRawReactionStrength = Math.min(
       1,
       touchScore * 0.3 +
         rejectionScore * 0.3 +
@@ -258,12 +274,19 @@ function computeZones(bars: Bar[], now: number): ServerSRZone[] {
         Math.min(1, confluenceScore / 3) * (hasEarnedEvidence ? 0.2 : 0) +
         effectiveConfluenceBonus,
     );
+    const rawReactionStrength = Math.min(
+      1,
+      rejectionScore * 0.5 +
+        rejectionSizeScore * 0.3 +
+        Math.min(1, confluenceScore / 3) * (hasEarnedEvidence ? 0.2 : 0),
+    );
 
     const ageHours = lastTouchTs > 0 ? Math.max(0, now - lastTouchTs) / (60 * 60 * 1000) : 0;
     const recencyDecayFactor = lastTouchTs > 0
       ? Math.pow(0.5, ageHours / ZONE_STALENESS_HALF_LIFE_HOURS)
       : 1;
     const reactionStrength = Math.min(1, rawReactionStrength * recencyDecayFactor);
+    const legacyReactionStrength = Math.min(1, legacyRawReactionStrength * recencyDecayFactor);
 
     if (cluster.alwaysAdmit || touches >= 2 || rejectionWicks >= 1) {
       zones.push({
@@ -272,6 +295,7 @@ function computeZones(bars: Bar[], now: number): ServerSRZone[] {
         touches,
         rejectionWicks,
         reactionStrength: parseFloat(reactionStrength.toFixed(3)),
+        legacyReactionStrength: parseFloat(legacyReactionStrength.toFixed(3)),
         source: cluster.source,
         confluenceScore,
         lastTouchTs: lastTouchTs > 0 ? new Date(lastTouchTs).toISOString() : null,
@@ -315,6 +339,7 @@ async function upsertThenPrune(
     touches: z.touches,
     rejection_wicks: z.rejectionWicks,
     reaction_strength: z.reactionStrength,
+    legacy_reaction_strength: z.legacyReactionStrength,
     source: z.source,
     confluence_score: z.confluenceScore,
     last_touch_ts: z.lastTouchTs,

@@ -1132,10 +1132,15 @@ export async function hydrateFromRemote(options?: { limit?: number; cap?: number
     );
   }
 
-  const localIds = new Set(local.map(o => o.signalId));
-  const remoteById = new Map(remote.map(o => [o.signalId, o]));
+  // D2 / F-16 FIX: normalize ALL signalIds to String for set operations so the
+  // membership checks are symmetric. The prior code could report local_only=0
+  // while remote_only=338 with shared=100 one way and shared=63 the other —
+  // an arithmetic impossibility caused by type-coerced signalIds comparing
+  // asymmetrically (a number 123 in localIds vs string "123" in remote).
+  const localIds = new Set(local.map(o => String(o.signalId)));
+  const remoteById = new Map(remote.map(o => [String(o.signalId), o]));
   const remoteIds = new Set(remoteById.keys());
-  const newFromRemote = remote.filter(o => !localIds.has(o.signalId));
+  const newFromRemote = remote.filter(o => !localIds.has(String(o.signalId)));
 
   // ── ITEM 43(b) — THE DURABLE STORE IS AUTHORITATIVE ON A LABEL CONFLICT ────
   // This used to be a pure union: a signalId already present locally was left
@@ -1181,21 +1186,27 @@ export async function hydrateFromRemote(options?: { limit?: number; cap?: number
     );
   }
 
-  const missingRemotely = local.filter(o => !remoteIds.has(o.signalId));
+  // D2: same String() normalization on the missing-remotely check.
+  const missingRemotely = local.filter(o => !remoteIds.has(String(o.signalId)));
 
-  // ITEM 74(c): RECONCILIATION VISIBILITY — measurement only, no behaviour change.
-  // The local/remote gap was previously invisible in the export, so a 149-vs-51
-  // divergence could persist across 91 hydrates with nothing recording it.
+  // ITEM 74(c) / D2: RECONCILIATION VISIBILITY — all four counters computed from
+  // the SAME pre-merge snapshot (local captured at :1096, remote at :1122), so
+  // shared must be identical both ways: local - local_only === remote - remote_only.
+  // If it does not, the normalization above was wrong and the export will show it.
   await hydrateOutboundPushStats();
+  const sharedFromLocal = local.length - missingRemotely.length;
+  const sharedFromRemote = remote.length - newFromRemote.length;
   pushStats.lastLocalCount = local.length;
   pushStats.lastRemoteCount = remote.length;
   pushStats.lastLocalOnlyCount = missingRemotely.length;
   pushStats.lastRemoteOnlyCount = newFromRemote.length;
   pushStats.lastReconcileAt = Date.now();
   persistPushStats(true);
+  const sharedMatch = sharedFromLocal === sharedFromRemote ? 'OK' : `MISMATCH (${sharedFromLocal} vs ${sharedFromRemote})`;
   console.log(
     `📐 [LearningStore] RECONCILE local=${local.length} remote=${remote.length} ` +
-      `local_only=${missingRemotely.length} remote_only=${newFromRemote.length}`,
+      `local_only=${missingRemotely.length} remote_only=${newFromRemote.length} ` +
+      `shared=${sharedFromLocal} (${sharedMatch})`,
   );
 
   let backfilled = 0;

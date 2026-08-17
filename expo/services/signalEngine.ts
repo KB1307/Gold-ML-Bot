@@ -7325,6 +7325,28 @@ class SignalGenerationEngine {
       console.log(`${'='.repeat(80)}\n`);
       return null;
     }
+
+    // D5 / F-13 — RETRAIN DECOUPLING. Under Correction I the app runs 24/5, so
+    // retrain conditions 1 (>48h since training) and 3 (process running) hold
+    // continuously. The retrain was coupled to recordTradeOutcome(), which only
+    // fires after a trade resolves — so with 1 signal in 3 days, no trades
+    // resolve and the retrain NEVER fires even during 22:00-07:00 UTC when the
+    // app IS running. This check decouples it: if retrainScheduled and we are
+    // inside the low-liquidity window, fire the retrain from the generation path.
+    // Idempotent — walkForwardOptimization sets retrainScheduled=false.
+    if (this.retrainScheduled) {
+      const retrainHour = new Date().getUTCHours();
+      const retrainLowLiq = retrainHour >= 22 || retrainHour < 7;
+      if (retrainLowLiq) {
+        console.log(`🔔 D5: EXECUTING SCHEDULED RETRAIN (decoupled from trade resolution, ${retrainHour}:00 UTC)`);
+        try {
+          await this.walkForwardOptimization('Scheduled Retrain (D5 decoupled from trade resolution)');
+          this.retrainScheduled = false;
+        } catch (retrainErr) {
+          console.error('D5: Retrain failed (non-blocking, will retry next low-liquidity window):', retrainErr instanceof Error ? retrainErr.message : String(retrainErr));
+        }
+      }
+    }
     
     const fullyActiveSignals = activeSignals.filter((signal) => (
       signal.status === "ACTIVE" && signal.confidence >= ENFORCED_MIN_SIGNAL_CONFIDENCE
