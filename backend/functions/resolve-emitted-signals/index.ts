@@ -42,8 +42,32 @@ const SCRATCH_R_THRESHOLD = 0.15;
 /** Bars are open-stamped (Phase 0 item 1), so skip the in-progress bar. */
 const SAFE_BAR_OFFSET_MS = 60_000;
 
-/** Give a signal at most this long to reach a terminal event before calling it flat. */
-const MAX_RESOLUTION_WINDOW_MS = 24 * 60 * 60 * 1000;
+/**
+ * Give a signal at most this long to reach a terminal event before calling it flat.
+ *
+ * ITEM 82 / B5 - F-3 FIX. This was 24h while the CLIENT resolver uses 8h
+ * (RESOLUTION_WINDOW_MS, contexts/TradingContext.tsx:265). Two resolvers write one
+ * corpus, so the same signal could be labelled differently depending on which one
+ * landed first - and the upsert below uses ignoreDuplicates:true, so whichever
+ * arrived FIRST won permanently. A measurement is only as good as its labels.
+ *
+ * ALIGNED TO 8h - the client's value. Direction justified on evidence:
+ *   - 8h is the only one of the two with a pre-registered gate behind it. Item 41a
+ *     (contexts/TradingContext.tsx:244-265) swept 2h/4h/8h/12h/24h across all 382
+ *     resolvable corpus signals and closed three gates: G1 correction curve
+ *     flattens (8h->12h adds 0 corrections), G2 EV stable (|EV(12h)-EV(8h)| =
+ *     0.0000R), G3 bar cost (480 bars/signal vs the 5000 ceiling).
+ *   - The 24h had no gate, no sweep and no comment. It was a default, not a finding.
+ *   - Item 41a's reasoning applies here unchanged: this resolver answers the
+ *     identical question against the identical bar table and the identical ladder.
+ *     Running server-side does not change the question.
+ *   - Widening the client to 24h instead would loosen a measured constant to match
+ *     an unmeasured one - the post-hoc loosening MINDSET rule 1 forbids.
+ * On the Item 41a sweep 8h/12h/24h were IDENTICAL (382 signals, +0.0800R, 63.6%),
+ * so this is expected to change few or no labels. That is the point: it removes a
+ * divergence that could bite later, at no measured cost now.
+ */
+const MAX_RESOLUTION_WINDOW_MS = 8 * 60 * 60 * 1000;
 
 interface Bar {
   timestamp: number;

@@ -334,17 +334,79 @@ export function getOutboundPushStats(): OutboundPushStats {
  * trade_outcomes_v1, mirroring the column mapping the backend tRPC handler
  * used. The anon key is used for INSERT via RLS policy.
  */
+/**
+ * ITEM 82 / B8 — THE ONE PLACE A WIN/LOSS LABEL IS DECIDED.
+ *
+ * ROOT CAUSE, measured before fixing (scripts/auditItem82RoundTwo.ts against the
+ * live corpus, 2026-08-17):
+ *   stored result = WIN            160
+ *   realized_r > 0                136
+ *   stored WIN but realized_r <= 0 or null : 24   <- ALL 24 have realized_r = NULL
+ *   stored LOSS but realized_r > 0         :  0
+ * So F-8 and F-9 are ONE defect, not two: the 24 disagreeing rows are a subset of
+ * the 61 rows that carry `direction = NULL` AND `realized_r = NULL` (ts range
+ * 2026-07-01..2026-07-06, all 61 present in emitted_signals_v1). SL_AFTER_BE is
+ * REFUTED as the cause — there is not a single row where a positive R was labelled
+ * LOSS, which is the signature that hypothesis predicts.
+ *
+ * The write path allowed it because `result` and `realized_r` were independent
+ * fields: `result: outcome.result` was asserted while `realized_r:
+ * outcome.realizedR ?? null` silently wrote NULL. Nothing checked that the two
+ * agreed, so a row could claim WIN while carrying no evidence for it.
+ *
+ * From here the label is DERIVED from R whenever an R exists, so the two can never
+ * disagree again. When there is no R the stored label is preserved (deleting a
+ * historical label would destroy information) but the disagreement is logged, so a
+ * label with no evidence behind it is visible rather than silent.
+ */
+export function canonicalResult(
+  storedResult: 'WIN' | 'LOSS',
+  realizedR: number | null | undefined,
+): { result: 'WIN' | 'LOSS'; corrected: boolean; evidence: 'R_SIGN' | 'NO_R' } {
+  if (realizedR === null || realizedR === undefined || !Number.isFinite(realizedR)) {
+    return { result: storedResult, corrected: false, evidence: 'NO_R' };
+  }
+  const fromR: 'WIN' | 'LOSS' = realizedR > 0 ? 'WIN' : 'LOSS';
+  return { result: fromR, corrected: fromR !== storedResult, evidence: 'R_SIGN' };
+}
+
+/** Counts label corrections so the export can show the write path is holding. */
+let labelCorrectionsOnWrite = 0;
+let labelsWithoutEvidenceOnWrite = 0;
+
+/** ITEM 82 / B8 — read-only accessor for the diagnostics export. */
+export function getLabelIntegrityCounters(): { correctedOnWrite: number; withoutEvidenceOnWrite: number } {
+  return { correctedOnWrite: labelCorrectionsOnWrite, withoutEvidenceOnWrite: labelsWithoutEvidenceOnWrite };
+}
+
 function toRemoteRow(outcome: StoredTradeOutcome): Record<string, unknown> {
   const ts = typeof outcome.timestamp === 'number'
     ? new Date(outcome.timestamp).toISOString()
     : outcome.timestamp instanceof Date
       ? outcome.timestamp.toISOString()
       : new Date(outcome.timestamp).toISOString();
+  // ITEM 82 / B8: label and R sign can no longer diverge on the way out.
+  const label = canonicalResult(outcome.result, outcome.realizedR);
+  if (label.corrected) {
+    labelCorrectionsOnWrite += 1;
+    console.warn(
+      `[LearningStore] LABEL_CORRECTED_ON_WRITE ${String(outcome.signalId).slice(-8)}: ` +
+        `stored=${outcome.result} but realized_r=${outcome.realizedR} -> writing ${label.result}. ` +
+        'R sign is authoritative (F-8).',
+    );
+  }
+  if (label.evidence === 'NO_R') {
+    labelsWithoutEvidenceOnWrite += 1;
+    console.warn(
+      `[LearningStore] LABEL_WITHOUT_EVIDENCE ${String(outcome.signalId).slice(-8)}: ` +
+        `result=${outcome.result} with realized_r=null. The label is preserved but has no R behind it (F-8/F-9).`,
+    );
+  }
   return {
     signal_id: outcome.signalId,
     ts,
     direction: outcome.direction ?? null,
-    result: outcome.result,
+    result: label.result,
     entry_price: outcome.entryPrice,
     exit_price: outcome.exitPrice,
     pnl: outcome.pnl,
@@ -455,7 +517,49 @@ export async function pushOutcomesToRemote(outcomes: StoredTradeOutcome[]): Prom
   pushStats.lastAttemptAt = Date.now();
   persistPushStats(true);
 
-  const rowsToPush = batch.slice(-MAX_PENDING_REMOTE_PUSH).map(toRemoteRow);
+  // ── ITEM 82 / B3 — F-15 FIX: DEDUPE AT THE NETWORK BOUNDARY ───────────────
+  // Every one of the 40 recorded push failures was the same Postgres error:
+  //   21000  "ON CONFLICT DO UPDATE command cannot affect row a second time"
+  // That error has exactly one cause: the same conflict-target value (signal_id)
+  // appearing twice in ONE upsert payload. Postgres refuses the whole statement,
+  // so a single duplicated id fails the entire 50-row chunk — which is why the
+  // failures came in chunk-sized clumps rather than as isolated rows.
+  //
+  // A dedupe already existed at :431-439, keyed on `o.signalId` over
+  // [...pendingRemotePush, ...outcomes]. It was not sufficient, for two reasons:
+  //   1. It ran on the StoredTradeOutcome objects, NOT on the rows actually sent.
+  //      The conflict target is the ROW's `signal_id` as produced by
+  //      toRemoteRow(). Any id that normalises differently between the two (a
+  //      non-string signalId, a stringified number, whitespace) passes the object
+  //      dedupe and still collides in Postgres. Deduping the payload itself is the
+  //      only placement that cannot be bypassed by an upstream caller.
+  //   2. It kept the FIRST occurrence, which comes from `pendingRemotePush` —
+  //      the STALE queued copy — so a corrected label arriving in `outcomes`
+  //      lost to the older row it was meant to replace.
+  // Both are fixed here: dedupe the rows, keep the LAST occurrence per id.
+  const orderedRows = batch.slice(-MAX_PENDING_REMOTE_PUSH).map(toRemoteRow);
+  const rowById = new Map<string, Record<string, unknown>>();
+  for (const row of orderedRows) {
+    // Key on the exact value Postgres will conflict on, coerced the same way the
+    // wire format will coerce it.
+    rowById.set(String(row.signal_id), row);
+  }
+  const rowsToPush = [...rowById.values()];
+  const duplicatesDropped = orderedRows.length - rowsToPush.length;
+  if (duplicatesDropped > 0) {
+    // Visible, not silent: a duplicate reaching this point means an upstream
+    // caller produced one, and that is worth seeing in the logs.
+    console.warn(
+      `[LearningStore] BATCH_DEDUPE dropped ${duplicatesDropped} duplicate signal_id row(s) before upsert ` +
+        `(${orderedRows.length} -> ${rowsToPush.length}); kept the most recent row per id. ` +
+        'Without this the whole chunk fails with Postgres 21000.',
+    );
+  }
+  // The retry queue is keyed off `batch`, so keep a parallel lookup that maps a
+  // pushed row back to its outcome. Queueing/retry semantics are UNCHANGED: a
+  // failed chunk still queues its outcomes, deduped, capped, and persisted.
+  const outcomeBySignalId = new Map<string, StoredTradeOutcome>();
+  for (const o of batch) outcomeBySignalId.set(String(o.signalId), o);
   let upserted = 0;
   let failed: StoredTradeOutcome[] = [];
 
@@ -476,8 +580,12 @@ export async function pushOutcomesToRemote(outcomes: StoredTradeOutcome[]): Prom
         pushStats.failuresByStatus[key] = (pushStats.failuresByStatus[key] ?? 0) + 1;
         pushStats.lastFailureAt = Date.now();
         pushStats.lastFailureBody = body.slice(0, 300);
-        // Queue the outcomes that correspond to this chunk
-        const chunkOutcomes = batch.slice(i, i + BATCH_SIZE);
+        // Queue the outcomes that correspond to this chunk. B3: resolved by
+        // signal_id rather than by positional slice, because rowsToPush is now
+        // deduped and its indices no longer line up with `batch`.
+        const chunkOutcomes = chunk
+          .map((r) => outcomeBySignalId.get(String(r.signal_id)))
+          .filter((o): o is StoredTradeOutcome => o !== undefined);
         failed.push(...chunkOutcomes);
       } else {
         upserted += chunk.length;
@@ -493,7 +601,9 @@ export async function pushOutcomesToRemote(outcomes: StoredTradeOutcome[]): Prom
       pushStats.failuresByStatus[key] = (pushStats.failuresByStatus[key] ?? 0) + 1;
       pushStats.lastFailureAt = Date.now();
       pushStats.lastFailureBody = body.slice(0, 300);
-      const chunkOutcomes = batch.slice(i, i + BATCH_SIZE);
+      const chunkOutcomes = chunk
+        .map((r) => outcomeBySignalId.get(String(r.signal_id)))
+        .filter((o): o is StoredTradeOutcome => o !== undefined);
       failed.push(...chunkOutcomes);
     }
     persistPushStats(true);
@@ -624,7 +734,11 @@ function mapRemoteRow(row: RemoteOutcomeRow): StoredTradeOutcome {
     timestamp: row.ts,
     entryPrice: Number(row.entry_price),
     exitPrice: Number(row.exit_price),
-    result: row.result === 'WIN' ? 'WIN' : 'LOSS',
+    // ITEM 82 / B8: apply the SAME derivation on the way IN, so the 24 legacy
+    // divergent rows already in the corpus cannot train the model on a
+    // contradiction. The durable row is left untouched; only the in-memory copy
+    // the learner sees is made self-consistent.
+    result: canonicalResult(row.result === 'WIN' ? 'WIN' : 'LOSS', row.realized_r === null ? null : Number(row.realized_r)).result,
     pnl: Number(row.pnl),
     confidence: row.confidence === null ? 0.72 : Number(row.confidence),
     direction: row.direction === 'BUY' || row.direction === 'SELL' ? row.direction : undefined,

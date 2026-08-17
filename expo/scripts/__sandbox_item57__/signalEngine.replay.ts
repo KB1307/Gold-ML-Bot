@@ -30,6 +30,7 @@ import { resolveSignalWithBars } from "../../services/signalResolver";
 import type { OhlcBar } from "../../services/barStore";
 import { fetchTier0SRZones, recordTier0FallbackUse } from "../../services/srZoneTier0Service";
 import { DirectionalScoreAccumulator } from "../../services/directionalScoring";
+import { EXECUTION_COST_PER_TRADE_USD, costInR } from "../../constants/executionCost";
 import {
   attentionOpposesSignal,
   attentionSideForKey,
@@ -322,7 +323,27 @@ const DIRECTIONAL_LAYER_COUNTERS_KEY = 'directional_layer_counters_v1';
  * later with a one-line constant change now that storage is SQLite-backed
  * (no in-memory array copy cost to worry about).
  */
-const MAX_STORED_OUTCOMES = 300;
+const MAX_STORED_OUTCOMES = 2000;
+
+/**
+ * ITEM 82 / B2 — F-12 FIX. Ceiling for the durable-corpus pull, deliberately far
+ * above the corpus so it acts as a runaway guard and NOT as a window.
+ *
+ * ROOT CAUSE OF F-12, stated before the fix: the 300-row truncation was NOT a
+ * PostgREST cap. `fetchRemoteOutcomesDirect` pages at `OUTCOMES_PAGE_SIZE = 500`
+ * (learningStore.ts:567) and PostgREST caps a response at 1000, so neither limit
+ * was reached. The cap was this module's own CALLER ARGUMENT: `{ limit: 300 }` at
+ * the hydrate call site below, plus the same 300 as the parameter default at
+ * learningStore.ts:996. Because 300 < 500 the loop exited after ONE page — which
+ * is exactly what the export reported ("300 row(s) across 1 page(s)"). The
+ * pagination was working correctly; it was never asked for more than 300 rows.
+ *
+ * `MAX_STORED_OUTCOMES` was the second, independent truncation: at 300 it sliced
+ * the merged corpus back down to 300 rows even when more had been pulled, so the
+ * learner, the drift computation and every corpus-size claim were all capped at
+ * 300 regardless of how many resolved outcomes existed. Both are lifted here.
+ */
+const CORPUS_PULL_LIMIT = 5000;
 
 const TRAINING_WINDOW_DAYS = 14;
 const MIN_CONFIDENCE_FOR_RETRAINING = 0.68;
@@ -470,10 +491,16 @@ export function getCalibrationPenalty25Stats(): { count: number; thenFailed: num
 //    (present +0.029R vs absent +0.128R, decaying monotonically with size).
 
 /**
- * Round-trip execution cost in USD per trade (broker-confirmed XAU spread).
- * Used for cost-aware expectancy so audited R stops being frictionless.
+ * ITEM 82 / B6 — F-4 FIX. Was a local `const ... = 0.05` here, commented
+ * "broker-confirmed XAU spread". Two things were wrong with it:
+ *   1. The value contradicted the project's closed $0.20 round-trip figure, and
+ *      no $0.20 constant existed anywhere in the tree.
+ *   2. It had exactly ONE consumer — the console.log at :7795 below — so it never
+ *      entered a single EV, R-multiple or PnL computation. `realized_r`, which
+ *      every book in this project is computed from, is produced FRICTIONLESS by
+ *      both resolvers.
+ * Now sourced from the one shared definition. See constants/executionCost.ts.
  */
-const EXECUTION_COST_PER_TRADE_USD = 0.05;
 /** Formal system scope: a 1.4R scalper. TP ladder is a pure multiple of realised risk. */
 const SCALPER_TP_R_MULTIPLES = { tp1: 0.7, tp2: 1.05, tp3: 1.4 } as const;
 const SCALPER_TP3_STRETCH_R = 1.5;
@@ -5084,14 +5111,52 @@ class SignalGenerationEngine {
       const historicalImportance = Math.abs(olderAvg);
       const currentImportance = Math.abs(recentAvg);
       const drift = Math.abs(currentImportance - historicalImportance) / (historicalImportance + 0.01);
-      
-      let status: 'STABLE' | 'DEGRADING' | 'CRITICAL';
-      if (drift < 0.3) {
+
+      // ── ITEM 82 / B4 — F-14 FIX: NaN IS NOT CRITICAL ─────────────────────────
+      // ROOT CAUSE, measured before fixing (scripts/auditItem82RoundTwo.ts against
+      // the live corpus, 2026-08-17): 287 of 401 trade_outcomes_v1 rows carry a
+      // COMPLETELY EMPTY `features` object. Only 114 rows have rsi/atr/volumeRatio/
+      // dxyChange at all. `o.features.rsi` on such a row is `undefined`, and
+      // `sum + undefined === NaN`, so recentAvg/olderAvg/drift all become NaN.
+      //
+      // It is NOT division by zero: the denominator is `historicalImportance + 0.01`
+      // and is therefore always >= 0.01. Proof from the same audit: `sentiment` is
+      // the ONE feature that produced real numbers, and it is the ONE feature read
+      // through a nullish guard (`o.features.sentiment?.score ?? 0`, :5058-5059).
+      // Same arithmetic, guarded input, finite result.
+      //
+      // The classification bug: `NaN < 0.3` is false and `NaN < 0.6` is false, so a
+      // NaN fell through to the else-branch and was reported CRITICAL. Because
+      // Item 64(c) treats ANY CRITICAL feature as a retrain trigger, an empty corpus
+      // permanently pinned "Retraining recommended: YES" and the trigger could never
+      // discriminate real drift from missing data.
+      //
+      // A non-finite drift is now INSUFFICIENT_DATA — a corpus-completeness state,
+      // never actionable as degradation.
+      const driftIsMeasurable = Number.isFinite(drift) && Number.isFinite(currentImportance) && Number.isFinite(historicalImportance);
+
+      let status: 'STABLE' | 'DEGRADING' | 'CRITICAL' | 'INSUFFICIENT_DATA';
+      if (!driftIsMeasurable) {
+        status = 'INSUFFICIENT_DATA';
+      } else if (drift < 0.3) {
         status = 'STABLE';
       } else if (drift < 0.6) {
         status = 'DEGRADING';
       } else {
         status = 'CRITICAL';
+      }
+
+      if (status === 'INSUFFICIENT_DATA') {
+        const presentRecent = recentWinFeatures.filter(o => Object.keys((o.features ?? {}) as unknown as Record<string, unknown>).length > 0).length;
+        console.log(`   ℹ️ ${featureName}: INSUFFICIENT_DATA — drift is not computable (feature absent from the compared rows; ${presentRecent}/${recentWinFeatures.length} recent winners carry any features at all). NOT counted as CRITICAL.`);
+        metrics.push({
+          feature: featureName,
+          currentImportance: 0,
+          historicalImportance: 0,
+          drift: 0,
+          status,
+        });
+        continue;
       }
       
       metrics.push({
@@ -6787,7 +6852,16 @@ class SignalGenerationEngine {
     // (0.4559), firing nothing. The overall average masks individual features —
     // sentiment sat at 0.699 CRITICAL under a 0.4559 MEDIUM average for days.
     const latestDriftMetrics = this.analyzeFeatureValueDrift();
+    // ITEM 82 / B4 — F-14: only a MEASURED CRITICAL may force retrain eligibility.
+    // An INSUFFICIENT_DATA metric is explicitly excluded: it means the feature was
+    // absent from the compared corpus rows, which is a completeness problem, not
+    // drift. Before this fix a NaN was classified CRITICAL and pinned this trigger
+    // permanently ON, so it could never discriminate.
     const anyFeatureCritical = latestDriftMetrics.some(m => m.status === 'CRITICAL');
+    const insufficientDataFeatures = latestDriftMetrics.filter(m => m.status === 'INSUFFICIENT_DATA').map(m => m.feature);
+    if (insufficientDataFeatures.length > 0) {
+      console.log(`ℹ️ DRIFT NOT MEASURABLE for ${insufficientDataFeatures.length} feature(s): ${insufficientDataFeatures.join(', ')} — excluded from the retrain trigger (F-14).`);
+    }
     if (anyFeatureCritical) {
       console.log(`🚨 PER-FEATURE CRITICAL DRIFT detected — forcing retrain eligibility`);
       latestDriftMetrics.filter(m => m.status === 'CRITICAL').forEach(m => {
@@ -7096,7 +7170,10 @@ class SignalGenerationEngine {
         // local store, so a reloaded web session / fresh device starts with the
         // full shared history instead of an empty (or install-local) one.
         try {
-          const hydration = await hydrateLearningStoreFromRemote({ limit: 300, cap: MAX_STORED_OUTCOMES });
+          // ITEM 82 / B2: was `{ limit: 300, ... }`. That 300 — not a PostgREST cap
+          // — is what held the corpus pull to one page and starved the learner of
+          // ~100 resolved outcomes. See CORPUS_PULL_LIMIT above.
+          const hydration = await hydrateLearningStoreFromRemote({ limit: CORPUS_PULL_LIMIT, cap: MAX_STORED_OUTCOMES });
           if (hydration.available) {
             console.log(`✓ Durable learning corpus: pulled ${hydration.pulled}, merged ${hydration.merged} new, backfilled ${hydration.backfilled}`);
           }
@@ -7811,7 +7888,12 @@ class SignalGenerationEngine {
     const grossTp3Dollars = tp3Distance * pipValue;
     console.log(`🎯 1.4R SCALPER LADDER: TP1 ${tp1Distance.toFixed(1)}p (${SCALPER_TP_R_MULTIPLES.tp1}R) | TP2 ${tp2Distance.toFixed(1)}p (${SCALPER_TP_R_MULTIPLES.tp2}R) | TP3 ${tp3Distance.toFixed(1)}p (${tp3R}R) | SL ${dynamicSlPips.toFixed(1)}p`);
     console.log(`   room-to-SR ${roomToSR.toFixed(0)}p / ATR ${atrUnits.toFixed(1)}u → TP3 stretch ${tp3R}R`);
-    console.log(`💵 Cost-adjusted TP3: gross $${grossTp3Dollars.toFixed(2)} − $${EXECUTION_COST_PER_TRADE_USD.toFixed(2)} spread = net $${(grossTp3Dollars - EXECUTION_COST_PER_TRADE_USD).toFixed(2)} (${((grossTp3Dollars - EXECUTION_COST_PER_TRADE_USD) / Math.max(dynamicSlPips * pipValue, 0.01)).toFixed(2)}R net)`);
+    // ITEM 82 / B6: the R conversion now goes through the shared costInR() helper
+    // rather than re-deriving the division inline, so this print and any book
+    // computation can never disagree about what a $0.20 round trip costs in R.
+    const riskUsdForCost = Math.max(dynamicSlPips * pipValue, 0.01);
+    const costR = costInR(riskUsdForCost);
+    console.log(`💵 Cost-adjusted TP3: gross $${grossTp3Dollars.toFixed(2)} − $${EXECUTION_COST_PER_TRADE_USD.toFixed(2)} spread = net $${(grossTp3Dollars - EXECUTION_COST_PER_TRADE_USD).toFixed(2)} (${((grossTp3Dollars - EXECUTION_COST_PER_TRADE_USD) / riskUsdForCost).toFixed(2)}R net) | cost burden ${costR.toFixed(4)}R per trade at $${EXECUTION_COST_PER_TRADE_USD.toFixed(2)}`);
     
     const tp1 = entryPriceWithSlippage + (analysis.signalType === "BUY" ? 1 : -1) * tp1Distance * pipValue;
     const tp2 = entryPriceWithSlippage + (analysis.signalType === "BUY" ? 1 : -1) * tp2Distance * pipValue;

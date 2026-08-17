@@ -51,7 +51,13 @@ const DEFAULT_SETTINGS: Settings = {
   basePositionSize: 0.01,
   maxRiskPercentage: 2.0,
   useKellyCriterion: true,
-  useDynamicSL: true,
+  // ITEM 82 / B7 — F-5 REGRESSION FIX. Item 19 measured dynamic SL and found it
+  // WORSE in both directions and did NOT adopt it; only the settings label was
+  // changed at the time, so the default silently stayed TRUE and the live path at
+  // signalEngine.ts:7748 (`settings.useDynamicSL !== false`) kept the measured-worse
+  // branch active in production. Default is now FALSE, matching what was measured.
+  // Still fully toggleable from Settings — this flips the DEFAULT, not the feature.
+  useDynamicSL: false,
   maxSLPips: 90,
   allowShortSignals: false,
 };

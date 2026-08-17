@@ -1,0 +1,4 @@
+ZONE_STAMP_CHECK at 2026-08-17T09:06:20.692Z
+  rows=22 distinct_updated_at=1
+  batch stamp(s): 2026-08-17T08:26:46.289+00:00
+  max reaction_strength=0.9990  >=0.30 count=9

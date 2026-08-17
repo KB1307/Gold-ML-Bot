@@ -349,7 +349,18 @@ export interface FeatureDriftMetric {
   currentImportance: number;
   historicalImportance: number;
   drift: number;
-  status: 'STABLE' | 'DEGRADING' | 'CRITICAL';
+  /**
+   * ITEM 82 / B4 - F-14 FIX. `INSUFFICIENT_DATA` exists because a NaN drift was
+   * previously classified CRITICAL: `NaN < 0.3` is false and `NaN < 0.6` is false,
+   * so the else-branch caught it. That permanently pinned "Retraining recommended:
+   * YES" and made Item 64(c)'s per-feature CRITICAL trigger unable to discriminate -
+   * it was firing on ABSENT DATA, not on drift.
+   *
+   * A NaN means the feature was not present on the corpus rows being compared. That
+   * is a corpus-completeness fact, not a model-degradation signal, and it must never
+   * be actionable as CRITICAL.
+   */
+  status: 'STABLE' | 'DEGRADING' | 'CRITICAL' | 'INSUFFICIENT_DATA';
 }
 
 export interface DailyOHLC {

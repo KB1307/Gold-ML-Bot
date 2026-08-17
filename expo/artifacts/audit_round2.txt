@@ -1,0 +1,236 @@
+
+====================================================================================
+ITEM 82 ROUND TWO — LIVE EVIDENCE (read-only, anon key, DIRECT)
+====================================================================================
+  run at: 2026-08-17T08:52:20.618Z
+  supabase: https://tcbnqmnzsnjhqkyuhrch.supabase.co (anon)
+  trade_outcomes_v1 rows fetched : 401
+  emitted_signals_v1 rows fetched: 416
+
+------------------------------------------------------------------------------------
+A3 / B6 — EXECUTION-COST IMPACT ON THE BOOK
+------------------------------------------------------------------------------------
+  rows with realized_r    : 340 of 401
+  rows with a real |entry-sl| risk distance: 339
+  risk distance $ : min 3.90 median 5.10 max 9.00
+
+  cost$    n      WR%      EV(R)      PF       mean cost(R)   EV delta vs $0
+  $0.00    339    39.82     0.0714    1.211        0.0000      0.0000
+  $0.05    339    39.82     0.0618    1.180        0.0096     -0.0096
+  $0.20    339    39.82     0.0331    1.092        0.0382     -0.0382
+  breakeven round-trip cost (EV -> 0): $0.373
+
+------------------------------------------------------------------------------------
+B4 — NaN FEATURE DRIFT: ROOT CAUSE
+------------------------------------------------------------------------------------
+  rows with a COMPLETELY EMPTY features object: 287 of 401
+
+  the 5 features analyzeFeatureValueDrift() reads (signalEngine.ts:5037):
+    rsi          present  114  finite-number  114  MISSING  287
+    atr          present  114  finite-number  114  MISSING  287
+    volumeRatio  present  114  finite-number  114  MISSING  287
+    dxyChange    present  114  finite-number  114  MISSING  287
+    sentiment    present  114  finite-number    0  MISSING  287
+
+  every key actually observed on corpus rows (count):
+     114  atr
+     114  rsi
+     114  dxyChange
+     114  sentiment
+     114  volumeRatio
+     114  timeWindowFactor
+      53  schemaVersion
+      22  adx
+      22  hourUtc
+      22  htfTrend
+      22  pocDelta
+      22  plannedRR
+      22  vixChange
+      22  vwapDelta
+      22  entryPrice
+      22  regimeType
+      22  slDistance
+      22  sweepCount
+      22  sessionName
+      22  srZoneCount
+      22  tp1Distance
+      22  us10yChange
+      22  dayOfWeekUtc
+      22  emaCrossover
+      22  macdHistogram
+      22  liquidityScore
+      22  minuteOfDayUtc
+      22  quasimodoCount
+      22  regimeStrength
+      22  orderBlockCount
+      22  supportStrength
+      22  bollingerSqueeze
+      22  regimeConfidence
+      22  timeToSessionEnd
+      22  atrPercentOfPrice
+      22  confidenceAtEntry
+      22  bollingerBandwidth
+      22  bollingerExpansion
+      22  candlestickPattern
+      22  confirmedSweepType
+      22  goldDxyCorrelation
+      22  orderFlowImbalance
+      22  priceActionPattern
+      22  resistanceStrength
+      22  largeOrdersDetected
+      22  activeSRReactionType
+      22  goldYieldCorrelation
+      22  confirmedSweepSession
+      22  institutionalFootprint
+      22  nearestZoneDistanceAtr
+      22  sessionVolatilityIndex
+      17  activeSRReactionStrength
+      17  activeSRReactionConfirmed
+       2  recentDrift
+       2  driftAgainst
+       2  htfTrendAtGate
+       2  ltfTrendAtGate
+       2  spreadPipsAtEntry
+       2  driftVetoThreshold
+       2  counterTrendClassified
+       2  driftVetoPredicateTrue
+       2  driftVetoOverrideApplied
+       2  sweepReclaimConfirmedAtGate
+
+  DIVISION-BY-ZERO CHECK: drift denominator is (historicalImportance + 0.01)
+  at signalEngine.ts:5067, so it is >= 0.01 and can never be zero.
+  A NaN therefore cannot come from the arithmetic; it can only come from
+  a NaN input. sum + undefined === NaN.
+
+------------------------------------------------------------------------------------
+B5 — RESOLVER WINDOW DIVERGENCE: 8h vs 24h OVER THE EXISTING CORPUS
+------------------------------------------------------------------------------------
+  Method: for each resolved outcome that has emitted geometry, read the real
+  gold_m1_bars in [emitted+60s, emitted+W] for W in {8h, 24h} and ask whether a
+  terminal event (SL or TP3 touch) first occurs INSIDE 8h or only between 8h
+  and 24h. A signal whose first terminal event lands in the 8h..24h band is
+  labelled differently by the two windows. Read-only: nothing is re-resolved.
+  candidates (outcome + full emitted geometry + a direction): 400
+  probing the 120 most recent (cap 120) — POWER: this is a
+  SUBSAMPLE, so the divergence count below is a rate applied to the candidate
+  set, not an exhaustive census. Stated before the result per MINDSET rule 7.
+
+  first terminal event INSIDE 8h            : 118
+  first terminal event in the 8h..24h band  : 0  <-- LABELLED DIFFERENTLY by the two windows
+  no terminal event within 24h              : 2
+  no bars available in the window           : 0
+  divergence rate: 0/120 = 0.00%
+  extrapolated to all 400 candidates: ~0 row(s) (PROVISIONAL — extrapolation, not a census)
+
+------------------------------------------------------------------------------------
+B8 — THE LABEL LAYER: F-8, F-9, F-18
+------------------------------------------------------------------------------------
+  total rows                     : 401
+  stored result = WIN            : 160
+  realized_r > 0                 : 136
+  realized_r IS NULL             : 61
+
+  F-8 DISAGREEMENT
+    stored WIN but realized_r <= 0 or null : 24
+    stored LOSS but realized_r > 0         : 0
+    net label-vs-R gap                     : 24
+
+    stored WIN with non-positive R (up to 30 shown) — R, scratch, direction:
+      xb493jv1  R=NULL  scratch=false  dir=NULL  entry=4037.50 exit=4039.00
+      vgjwfytv  R=NULL  scratch=false  dir=NULL  entry=4043.50 exit=4053.90
+      59qfzlnx  R=NULL  scratch=false  dir=NULL  entry=4061.70 exit=4063.20
+      tsws0hic  R=NULL  scratch=false  dir=NULL  entry=4064.00 exit=4074.40
+      4hiu5s7g  R=NULL  scratch=false  dir=NULL  entry=4061.30 exit=4064.60
+      55vvqohz  R=NULL  scratch=false  dir=NULL  entry=4066.70 exit=4068.20
+      ftbtai5y  R=NULL  scratch=false  dir=NULL  entry=4066.90 exit=4069.60
+      wkjp8gn1  R=NULL  scratch=false  dir=NULL  entry=4066.40 exit=4067.90
+      hochw3tr  R=NULL  scratch=false  dir=NULL  entry=4070.70 exit=4072.20
+      gqmlp3o0  R=NULL  scratch=false  dir=NULL  entry=4069.70 exit=4071.20
+      88vd4h1m  R=NULL  scratch=false  dir=NULL  entry=4135.40 exit=4136.90
+      wdlzdr1f  R=NULL  scratch=false  dir=NULL  entry=4125.60 exit=4127.10
+      5aw1sn73  R=NULL  scratch=false  dir=NULL  entry=4126.70 exit=4128.20
+      um4413af  R=NULL  scratch=false  dir=NULL  entry=4129.20 exit=4136.20
+      5ghfyvyj  R=NULL  scratch=false  dir=NULL  entry=4108.90 exit=4107.40
+      dh69ofk1  R=NULL  scratch=false  dir=NULL  entry=4120.60 exit=4127.50
+      9exxc8gm  R=NULL  scratch=false  dir=NULL  entry=4113.80 exit=4115.30
+      smllhskb  R=NULL  scratch=false  dir=NULL  entry=4121.10 exit=4122.60
+      494e8wyv  R=NULL  scratch=false  dir=NULL  entry=4127.80 exit=4133.20
+      xi9wvwkm  R=NULL  scratch=false  dir=NULL  entry=4126.10 exit=4127.60
+      td2us6bs  R=NULL  scratch=false  dir=NULL  entry=4132.40 exit=4133.90
+      d5iuwygb  R=NULL  scratch=false  dir=NULL  entry=4174.30 exit=4180.90
+      p3cgmgj4  R=NULL  scratch=false  dir=NULL  entry=4169.90 exit=4171.40
+      ix2awcyl  R=NULL  scratch=false  dir=NULL  entry=4185.30 exit=4183.80
+
+    stored LOSS with positive R (up to 30 shown):
+
+  F-9 NULL DIRECTION
+    rows with direction IS NULL : 61
+    of those, realized_r NULL   : 61
+    of those, realized_r = 0    : 0
+    of those, realized_r != 0   : 0
+    stored result WIN / LOSS    : 24 / 37
+    present in emitted_signals_v1: 61 of 61
+    ts range                    : 2026-07-01T22:42:30.658+00:00 .. 2026-07-06T03:40:43.155+00:00
+    pnl exactly 0               : 0
+    entry_price == exit_price   : 0
+
+  F-18 THE TWO BOOKS
+    BOOK 1 — server query, realized_r sign, ALL rows with an R:
+      n=340  WR=40.00%  EV=0.0741R  PF=1.220
+    BOOK 2 — stored result label over ALL 401 rows:
+      WR=39.90%  (this is the definition the app's own summary uses)
+
+    candidate explanations, each tested:
+      (a) exclude the 61 null-direction rows:
+          n=340  WR=40.00%  EV=0.0741R  PF=1.220
+      (b) exclude is_scratch rows (89):
+          n=251  WR=54.18%  EV=0.1009R  PF=1.222
+      (c) exclude BOTH null-direction and scratch:
+          n=251  WR=54.18%  EV=0.1009R  PF=1.222
+      (d) stored LABEL WR excluding null-direction rows:
+          n=340  WR=40.00%   <-- compare to the app's reported figure
+
+    per-direction, both definitions:
+      BUY     n= 148  R-sign WR= 41.89%  label WR= 41.89%  EV=0.1026R  PF=1.274
+      SELL    n= 192  R-sign WR= 38.54%  label WR= 38.54%  EV=0.0521R  PF=1.170
+      (null)  n=  61  R-sign WR=   NaN%  label WR= 39.34%  EV=NaNR  PF=NaN
+
+------------------------------------------------------------------------------------
+C5 — EMISSION vs PERSISTENCE
+------------------------------------------------------------------------------------
+  emitted_signals_v1 by source:
+     413  BACKFILL
+       3  LIVE
+  emitted_at range: 2026-06-29T08:25:44.894+00:00 .. 2026-08-14T13:08:24.047+00:00
+
+  per-source emitted_at range (does the LIVE source have a recent stamp?):
+    BACKFILL                 2026-06-29T08:25:44.894+00:00 .. 2026-08-13T06:30:03.583+00:00  (n=413)
+    LIVE                     2026-08-13T15:49:35.293+00:00 .. 2026-08-14T13:08:24.047+00:00  (n=3)
+
+  emitted rows with NO trade_outcomes_v1 row: 16
+  characterising them (this is the "unresolvable 16" the Edge Function reports):
+    7r4rdpz5  emitted=2026-07-01T10:50:04.498+00:00  age=1126.1h  dir=BUY  entry=3991.3 sl=3983.5 tp3=3999.3  bars_in_8h=479  src=BACKFILL
+    dsng6rw5  emitted=2026-07-01T11:01:07.608+00:00  age=1125.9h  dir=BUY  entry=4003 sl=3996.9 tp3=4013.4  bars_in_8h=479  src=BACKFILL
+    wet582f2  emitted=2026-07-03T17:48:32.378+00:00  age=1071.1h  dir=BUY  entry=4173 sl=4167.5 tp3=4180  bars_in_8h=0  src=BACKFILL
+    xe7wqeib  emitted=2026-07-03T18:05:32.514+00:00  age=1070.8h  dir=BUY  entry=4173 sl=4167.5 tp3=4180  bars_in_8h=0  src=BACKFILL
+    0qflfvl4  emitted=2026-07-03T18:36:56.255+00:00  age=1070.3h  dir=BUY  entry=4174.9 sl=4169.4 tp3=4181.9  bars_in_8h=0  src=BACKFILL
+    7v3pcifc  emitted=2026-07-03T18:48:29.69+00:00  age=1070.1h  dir=BUY  entry=4173 sl=4167.5 tp3=4180  bars_in_8h=0  src=BACKFILL
+    q9k478el  emitted=2026-07-03T19:06:09.846+00:00  age=1069.8h  dir=BUY  entry=4173 sl=4167.5 tp3=4180  bars_in_8h=0  src=BACKFILL
+    23u70e1f  emitted=2026-07-07T13:52:57.317+00:00  age=979.0h  dir=SELL  entry=4169.5 sl=4175.5 tp3=4163.3  bars_in_8h=424  src=BACKFILL
+    x81jrelh  emitted=2026-07-10T15:15:05.914+00:00  age=905.6h  dir=SELL  entry=4097.6 sl=4103 tp3=4090.7  bars_in_8h=340  src=BACKFILL
+    esgs3rkm  emitted=2026-07-10T20:46:31.865+00:00  age=900.1h  dir=BUY  entry=4112.1 sl=4108 tp3=4117.5  bars_in_8h=9  src=BACKFILL
+    r4zwjzxs  emitted=2026-07-17T13:36:18.462+00:00  age=739.3h  dir=BUY  entry=3977.3 sl=3972.3 tp3=3982.7  bars_in_8h=479  src=BACKFILL
+    r831hnex  emitted=2026-07-17T13:56:11.772+00:00  age=738.9h  dir=SELL  entry=3989 sl=3993.7 tp3=3982.1  bars_in_8h=479  src=BACKFILL
+    x2ajqxv9  emitted=2026-07-17T16:24:14.74+00:00  age=736.5h  dir=BUY  entry=4020.8 sl=4016.4 tp3=4026.8  bars_in_8h=376  src=BACKFILL
+    4ib1z61m  emitted=2026-07-21T00:08:22.338+00:00  age=656.7h  dir=SELL  entry=4005.3 sl=4009.2 tp3=3998.3  bars_in_8h=479  src=BACKFILL
+    dxeqeuox  emitted=2026-07-22T16:09:30.726+00:00  age=616.7h  dir=SELL  entry=4157.2 sl=4161.1 tp3=4150.3  bars_in_8h=479  src=BACKFILL
+    prkcrukv  emitted=2026-08-05T02:48:03.831+00:00  age=294.1h  dir=BUY  entry=4122 sl=4114.1 tp3=4133.3  bars_in_8h=479  src=BACKFILL
+
+    missing geometry (entry/sl/tp3 null): 0
+    missing/invalid direction           : 0
+    younger than the 8h window          : 0
+    ZERO bars available in their window  : 5   <-- permanent if the bar gap is permanent
+
+====================================================================================
+END — every number above was derived from rows fetched in this run.
+====================================================================================

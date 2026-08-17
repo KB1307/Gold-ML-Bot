@@ -149,6 +149,105 @@ const templatize = (msg: string): string =>
     .trim()
     .slice(0, 120);
 
+/**
+ * ITEM 82 / B1 — THE SETTINGS ARGUMENT.
+ *
+ * F-0. This harness used to call `engine.generateSignal()` with NO arguments.
+ * `settings` has no default in the engine signature (signalEngine.ts:7230-7233),
+ * so the first dereference — `settings.allowShortSignals` at signalEngine.ts:7387
+ * (the PHASE B2 stand-aside gate) — threw a TypeError on EVERY evaluation. The
+ * bare `catch {}` in the replay loop swallowed it and counted it as an attempt,
+ * so every run this instrument ever produced measured the engine only as far as
+ * the conviction gate, and reported `emissions: 0` as though that were a finding.
+ * It was an artifact of the harness, not a property of the engine.
+ *
+ * Every value below is sourced field-by-field from the PRODUCTION defaults so a
+ * replay measures what production runs, not a harness-invented configuration.
+ */
+interface ReplaySettings {
+  tp1Pips: number;
+  tp2Pips: number;
+  tp3Pips: number;
+  slPips: number;
+  numberOfTPs: number;
+  minConfidence: number;
+  enableNotifications: boolean;
+  enableTelegramNotifier: boolean;
+  basePositionSize: number;
+  maxRiskPercentage: number;
+  useKellyCriterion: boolean;
+  useDynamicSL: boolean;
+  maxSLPips: number;
+  allowShortSignals: boolean;
+}
+
+/** Sourced from contexts/TradingContext.tsx DEFAULT_SETTINGS, field by field. */
+const PRODUCTION_SETTINGS: ReplaySettings = {
+  tp1Pips: 49,               // contexts/TradingContext.tsx:43
+  tp2Pips: 74,               // contexts/TradingContext.tsx:44
+  tp3Pips: 98,               // contexts/TradingContext.tsx:45
+  slPips: 70,                // contexts/TradingContext.tsx:46
+  numberOfTPs: 3,            // contexts/TradingContext.tsx:47
+  minConfidence: 0.68,       // contexts/TradingContext.tsx:48
+  enableNotifications: true, // contexts/TradingContext.tsx:49
+  enableTelegramNotifier: true, // contexts/TradingContext.tsx:50
+  basePositionSize: 0.01,    // contexts/TradingContext.tsx:51
+  maxRiskPercentage: 2.0,    // contexts/TradingContext.tsx:52
+  useKellyCriterion: true,   // contexts/TradingContext.tsx:53
+  useDynamicSL: false,       // contexts/TradingContext.tsx:54 (B7: Item 19 measured dynamic SL worse)
+  maxSLPips: 90,             // contexts/TradingContext.tsx:55
+  allowShortSignals: false,  // contexts/TradingContext.tsx:56
+};
+
+/**
+ * `--settings-override key=value,key=value` — lets a single toggle vary between
+ * the arms of an A/B pair without editing the harness (editing it would make the
+ * arms non-comparable by construction). An unknown key is a HARD STOP, not a
+ * silent no-op: a typo'd override that quietly did nothing would produce two
+ * byte-identical arms and they would be reported as a measured difference.
+ */
+function buildReplaySettings(): ReplaySettings {
+  const settings: ReplaySettings = { ...PRODUCTION_SETTINGS };
+  const idx = process.argv.indexOf('--settings-override');
+  const raw = idx >= 0 ? (process.argv[idx + 1] ?? '') : '';
+  const applied: string[] = [];
+  if (raw) {
+    for (const pair of raw.split(',')) {
+      const eq = pair.indexOf('=');
+      if (eq < 0) {
+        console.error(`BLOCKER: malformed --settings-override entry "${pair}" (expected key=value)`);
+        process.exit(2);
+      }
+      const key = pair.slice(0, eq).trim();
+      const value = pair.slice(eq + 1).trim();
+      if (!(key in settings)) {
+        console.error(`BLOCKER: --settings-override key "${key}" is not a Settings field. Refusing to run.`);
+        process.exit(2);
+      }
+      const record = settings as unknown as Record<string, unknown>;
+      if (typeof record[key] === 'boolean') {
+        if (value !== 'true' && value !== 'false') {
+          console.error(`BLOCKER: --settings-override ${key} expects true|false, got "${value}"`);
+          process.exit(2);
+        }
+        record[key] = value === 'true';
+      } else {
+        const n = Number(value);
+        if (!Number.isFinite(n)) {
+          console.error(`BLOCKER: --settings-override ${key} expects a number, got "${value}"`);
+          process.exit(2);
+        }
+        record[key] = n;
+      }
+      applied.push(`${key}=${value}`);
+    }
+  }
+  console.log('  settings: PRODUCTION defaults from contexts/TradingContext.tsx:43-56');
+  console.log(`    ${JSON.stringify(settings)}`);
+  console.log(`  settings overrides applied: ${applied.length === 0 ? '(none)' : applied.join(', ')}`);
+  return settings;
+}
+
 async function main(): Promise<void> {
   const label = process.argv.includes('--label')
     ? process.argv[process.argv.indexOf('--label') + 1]
@@ -375,7 +474,14 @@ async function main(): Promise<void> {
   const WARMUP = 300;
   const STEP = argNum('--step', 25);
   console.log(`  sampling: warmup ${WARMUP} bars, step ${STEP} bars`);
+  const settings: ReplaySettings = buildReplaySettings();
+  const ACCOUNT_BALANCE = 10_000;
+
   let attempts = 0;
+  // B1 — exceptions are COUNTED BY TYPE, never swallowed.
+  let exceptions = 0;
+  const exceptionsByType = new Map<string, number>();
+  let firstExceptionStack: string | null = null;
   capturing = true;
   try {
     for (let i = WARMUP; i < m1.length; i += STEP) {
@@ -386,12 +492,21 @@ async function main(): Promise<void> {
       try {
         engine.__injectBarSeriesForTestOnly(slice);
         setExternalPrice?.(slice[slice.length - 1].close, 'item57-replay');
-        const result = await engine.generateSignal();
+        const result = await engine.generateSignal(settings, ACCOUNT_BALANCE, []);
         attempts += 1;
         if (result) emissions += 1;
-      } catch {
-        // A throw is itself a rejection-path outcome; counted as an attempt.
+      } catch (err: unknown) {
+        // B1 — a throw is a HARNESS DEFECT, not a rejection-path outcome.
+        // Counting it as a plain attempt (the old bare `catch {}`) is exactly
+        // what kept F-0 invisible for the entire life of this instrument.
         attempts += 1;
+        exceptions += 1;
+        const name = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+        const key = templatize(name);
+        exceptionsByType.set(key, (exceptionsByType.get(key) ?? 0) + 1);
+        if (firstExceptionStack === null && err instanceof Error) {
+          firstExceptionStack = (err.stack ?? err.message).split('\n').slice(0, 6).join('\n');
+        }
       }
     }
   } finally {
@@ -408,6 +523,26 @@ async function main(): Promise<void> {
   console.log(line);
   console.log(`  generation attempts : ${attempts}`);
   console.log(`  signals emitted     : ${emissions}  (${pct(emissions, attempts)})`);
+  // B1 — EXCEPTIONS is a first-class header field. An exception is a harness
+  // defect: the run measured the harness, not the engine.
+  console.log(`  EXCEPTIONS          : ${exceptions} of ${attempts} evaluations`);
+  if (exceptions > 0) {
+    console.log('');
+    console.log(`  ${'!'.repeat(74)}`);
+    console.log('  !!  HARNESS DEFECT — THIS RUN IS NOT A MEASUREMENT OF THE ENGINE');
+    console.log(`  !!  ${exceptions} of ${attempts} evaluations threw before completing.`);
+    console.log('  !!  Every post-conviction number below is VOID. Fix the harness, re-run.');
+    console.log(`  ${'!'.repeat(74)}`);
+    console.log('  exceptions by type:');
+    for (const [type, n] of [...exceptionsByType.entries()].sort((a, b) => b[1] - a[1])) {
+      console.log(`    ${String(n).padStart(5)}  ${type}`);
+    }
+    if (firstExceptionStack) {
+      console.log('  first exception stack (6 frames):');
+      for (const frame of firstExceptionStack.split('\n')) console.log(`    ${frame}`);
+    }
+    console.log('');
+  }
   console.log(`  TIER0_UNAVAILABLE   : ${tier0Unavailable} of ${attempts} evaluations`);
   if (tier0Unavailable > 0) {
     console.log('');
