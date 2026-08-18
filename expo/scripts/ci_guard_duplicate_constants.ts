@@ -1,5 +1,6 @@
 /**
- * CI GUARD — DUPLICATE ENGINE CONSTANT DETECTOR (Item 124d)
+ * CI GUARD — DUPLICATE / DIVERGENT ENGINE CONSTANT DETECTOR
+ * (Item 124d, WIDENED by Item 130)
  *
  * WHY THIS EXISTS
  * ---------------
@@ -7,39 +8,91 @@
  * copies against 16,838 lines of live services (6:1). Those copies held
  * constants that CONTRADICTED live code:
  *
- *   TRAINING_WINDOW_DAYS  = 0    (live, 1 file)  vs = 14   (stale, 12 files)
+ *   TRAINING_WINDOW_DAYS  = 0    (live, 1 file)  vs = 14   (stale)
  *   tp1Distance = settings.tp1Pips (live, 1 file) vs
- *                 dynamicSlPips * SCALPER_TP_R_MULTIPLES (stale, 10 files)
- *   LOOKBACK_HOURS        = 24   (live, 2 files) vs = 120  (stale, 3 files)
+ *                 dynamicSlPips * SCALPER_TP_R_MULTIPLES (stale)
  *
  * A grep for the TP ladder returned the OLD implementation ten times and the
  * new one once. This is the most likely mechanism behind (a) gates shipping
  * against a construct that was never measured, and (b) prior sessions citing
  * line numbers that did not match live code.
  *
- * Deleting the sandboxes fixed the symptom. THIS GUARD IS THE PERMANENT FIX:
- * cleanup alone does not prevent recurrence.
+ * ITEM 130 — THE ORIGINAL SCOPE WAS TOO NARROW.
+ * ---------------------------------------------
+ * v1 scanned only `expo/services` + `expo/contexts` and reported "zero
+ * duplicates". That was TRUE WITHIN SCOPE but INCOMPLETE: `LOOKBACK_HOURS` is
+ * defined TWICE in LIVE code and v1 saw neither definition, because both live
+ * outside the two scanned roots:
  *
- * WHAT IT DOES
- * ------------
- * Scans the LIVE source roots (expo/services, expo/contexts) and FAILS with a
- * non-zero exit code if any tracked engine constant is DEFINED more than once
- * in the working tree. Definitions only — references/reads are ignored.
+ *   backend/functions/refresh-sr-zones/index.ts:23   (Supabase Edge Function)
+ *   expo/backend/trpc/routes/srZones.ts:32           (tRPC route)
+ *
+ * They agree at 24 today with NOTHING enforcing it — the same
+ * dual-implementation pattern that produced F-3's divergent resolver windows.
+ *
+ * THREE TIERS
+ * -----------
+ *  1. LIVE_ROOTS  — a second definition of a tracked constant is a FAILURE,
+ *     unless the constant is listed in PARITY_ALLOWED.
+ *  2. PARITY_ALLOWED — constants that legitimately exist in more than one live
+ *     location because a DEPLOYMENT BOUNDARY prevents sharing. Duplication is
+ *     tolerated; DIVERGENCE IS A FAILURE. Values are parsed and compared.
+ *  3. WARN_ROOTS  — scripts. They legitimately pin their own values for
+ *     historical replay, so divergence is reported as a WARNING and does not
+ *     fail the build. A stale value there is still a trap, so it is never
+ *     silent.
+ *
+ * WHY LOOKBACK_HOURS IS PARITY-ASSERTED RATHER THAN EXTRACTED
+ * ----------------------------------------------------------
+ * `backend/functions/refresh-sr-zones/index.ts` is a Deno Supabase Edge
+ * Function: it imports via `https://esm.sh/@supabase/supabase-js@2` and reads
+ * `Deno.env`, and it is deployed as a standalone bundle from
+ * `backend/functions/`. It cannot import from `expo/` — different runtime,
+ * different module resolution, different deployment artifact. A shared module
+ * would either break the Expo/Metro bundle or break the edge deploy. The
+ * deployment boundary genuinely prevents sharing, so the correct fix is the
+ * loud parity assertion below.
  *
  * Run: bun expo/scripts/ci_guard_duplicate_constants.ts
- * Exit 0 = zero duplicates. Exit 1 = duplicate found, printed with file:line.
+ * Exit 0 = clean (warnings allowed). Exit 1 = duplicate or divergence.
  */
 
 import { readdirSync, readFileSync, statSync } from 'fs';
 import { join, relative } from 'path';
 
-/** Source roots that contain LIVE engine code. Sandboxes/scripts are excluded by design. */
-const SCAN_ROOTS: readonly string[] = ['expo/services', 'expo/contexts'];
+/** Roots that contain LIVE code. Item 130 added the two backend roots. */
+const LIVE_ROOTS: readonly string[] = [
+  'expo/services',
+  'expo/contexts',
+  'expo/backend',
+  'backend/functions',
+];
+
+/** Roots whose divergence WARNS but does not fail (Item 130c). */
+const WARN_ROOTS: readonly string[] = ['expo/scripts'];
+
+/**
+ * Constants legitimately defined in more than one LIVE location because a
+ * deployment boundary prevents a shared import. Duplication is allowed;
+ * DIVERGENCE FAILS. This is the Item 130(a) parity assertion.
+ */
+const PARITY_ALLOWED: readonly string[] = [
+  'LOOKBACK_HOURS',
+  'ZONE_STALENESS_HALF_LIFE_HOURS',
+  'CONSUMER_THRESHOLD',
+  'ZONE_TOUCH_WIDTH_ATR',
+  'CLUSTER_MERGE_WIDTH_ATR',
+];
 
 /**
  * Engine constants whose value materially changes signal geometry, scoring,
- * emission, dedup, or learning. A second definition of any of these in the
- * live tree means two sources of truth.
+ * NOTE: LOCAL_ZONE_STALENESS_HALF_LIFE_HOURS (signalEngine, 6h) is tracked
+ * SEPARATELY from ZONE_STALENESS_HALF_LIFE_HOURS (server zone paths, 18h). The
+ * first run of the widened guard flagged these as a parity violation; they are
+ * in fact two INTENTIONALLY different tiers that shared one name. Item 130
+ * renamed the local one rather than reconciling the values, because the values
+ * are correct and the NAME was the trap.
+ * emission, dedup, learning, or the zone map.
  */
 const TRACKED_CONSTANTS: readonly string[] = [
   'SCALPER_TP_R_MULTIPLES',
@@ -47,19 +100,25 @@ const TRACKED_CONSTANTS: readonly string[] = [
   'SCALPER_TP3_STRETCH_MAX_R',
   'TRAINING_WINDOW_DAYS',
   'LOOKBACK_HOURS',
+  'ZONE_STALENESS_HALF_LIFE_HOURS',
+  'CONSUMER_THRESHOLD',
+  'ZONE_TOUCH_WIDTH_ATR',
+  'CLUSTER_MERGE_WIDTH_ATR',
   'DEDUP_TIME_WINDOW_MS',
   'DEDUP_PRICE_BAND_ATR',
+  'DEDUP_CLUSTER_BAND_ATR',
   'MODULATION_ENABLED',
   'LEARNED_MODULATION_MIN',
   'LEARNED_MODULATION_MAX',
+  'LOCAL_ZONE_STALENESS_HALF_LIFE_HOURS',
   'ZONE_MERGE_THRESHOLD_ATR',
   'BLOCKED_UTC_HOURS',
   'OB_FILTER_ENABLED',
   'OB_PROXIMITY_ATR',
-  'MIN_CONFIDENCE_THRESHOLD',
-  'ATR_NOISE_FLOOR_MULTIPLIER',
+  'OB_FILTER_MIN_BARS',
+  'MIN_SL_ATR_MULTIPLE',
   'PATH_TO_TARGET_VETO_ENABLED',
-  'AWAIT_ZONE_TTL_MS',
+  'EXECUTION_COST_PER_TRADE_USD',
 ];
 
 interface Definition {
@@ -67,6 +126,8 @@ interface Definition {
   readonly file: string;
   readonly line: number;
   readonly text: string;
+  readonly value: string;
+  readonly tier: 'LIVE' | 'WARN';
 }
 
 function walk(dir: string, out: string[]): string[] {
@@ -95,74 +156,136 @@ function walk(dir: string, out: string[]): string[] {
 }
 
 /**
- * Matches a top-level or module-scope DEFINITION of a constant.
- * Deliberately excludes object-property reads (`X.Y =`), imports, and
- * comparisons so that only real declarations count.
+ * Matches a module-scope DEFINITION of a constant. Deliberately excludes
+ * object-property assignment, imports, and comparisons.
  */
 function definitionRegex(name: string): RegExp {
   return new RegExp(`^\\s*(?:export\\s+)?(?:const|let|var)\\s+${name}\\s*(?::[^=]+)?=`);
 }
 
-function main(): void {
-  const files: string[] = [];
-  for (const root of SCAN_ROOTS) walk(root, files);
+/**
+ * Extracts the assigned value as a normalised string so two definitions can be
+ * compared for PARITY. Trailing comments and semicolons are stripped; a
+ * trailing arithmetic expression is preserved verbatim (e.g. `225 * 60 * 1000`)
+ * because a change to any factor is a real divergence.
+ */
+function extractValue(line: string, name: string): string {
+  const re = new RegExp(`^\\s*(?:export\\s+)?(?:const|let|var)\\s+${name}\\s*(?::[^=]+)?=\\s*(.*)$`);
+  const m = re.exec(line);
+  const raw = m?.[1] ?? '';
+  return raw
+    .replace(/\/\/.*$/, '')
+    .replace(/\/\*.*$/, '')
+    .replace(/;\s*$/, '')
+    .trim();
+}
 
-  console.log('='.repeat(72));
-  console.log('CI GUARD — DUPLICATE ENGINE CONSTANT DETECTOR (Item 124d)');
-  console.log('='.repeat(72));
-  console.log(`Scan roots      : ${SCAN_ROOTS.join(', ')}`);
-  console.log(`Files scanned   : ${files.length}`);
+function main(): void {
+  const liveFiles: string[] = [];
+  for (const root of LIVE_ROOTS) walk(root, liveFiles);
+  const warnFiles: string[] = [];
+  for (const root of WARN_ROOTS) walk(root, warnFiles);
+
+  console.log('='.repeat(74));
+  console.log('CI GUARD — DUPLICATE / DIVERGENT ENGINE CONSTANTS (Item 124d + 130)');
+  console.log('='.repeat(74));
+  console.log(`LIVE roots      : ${LIVE_ROOTS.join(', ')}`);
+  console.log(`WARN roots      : ${WARN_ROOTS.join(', ')}`);
+  console.log(`Live files      : ${liveFiles.length}`);
+  console.log(`Script files    : ${warnFiles.length}`);
   console.log(`Constants tracked: ${TRACKED_CONSTANTS.length}`);
+  console.log(`Parity-allowed  : ${PARITY_ALLOWED.join(', ')}`);
   console.log('');
 
   const found = new Map<string, Definition[]>();
 
-  for (const file of files) {
-    let lines: string[];
-    try {
-      lines = readFileSync(file, 'utf8').split('\n');
-    } catch {
-      continue;
-    }
-    for (const name of TRACKED_CONSTANTS) {
-      const re = definitionRegex(name);
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i] ?? '';
-        if (re.test(line)) {
+  const scan = (files: string[], tier: 'LIVE' | 'WARN'): void => {
+    for (const file of files) {
+      let lines: string[];
+      try {
+        lines = readFileSync(file, 'utf8').split('\n');
+      } catch {
+        continue;
+      }
+      for (const name of TRACKED_CONSTANTS) {
+        const re = definitionRegex(name);
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i] ?? '';
+          if (!re.test(line)) continue;
           const list = found.get(name) ?? [];
           list.push({
             constant: name,
             file: relative(process.cwd(), file),
             line: i + 1,
             text: line.trim().slice(0, 96),
+            value: extractValue(line, name),
+            tier,
           });
           found.set(name, list);
         }
       }
     }
-  }
+  };
 
-  const duplicates: Definition[][] = [];
-  const singles: Definition[] = [];
+  scan(liveFiles, 'LIVE');
+  scan(warnFiles, 'WARN');
+
+  const failures: string[] = [];
+  const warnings: string[] = [];
+  const healthy: Definition[] = [];
+  const parityOk: { name: string; value: string; defs: Definition[] }[] = [];
   const absent: string[] = [];
 
   for (const name of TRACKED_CONSTANTS) {
-    const defs = found.get(name);
-    if (!defs || defs.length === 0) {
+    const all = found.get(name) ?? [];
+    const live = all.filter((d) => d.tier === 'LIVE');
+    const scripts = all.filter((d) => d.tier === 'WARN');
+
+    if (live.length === 0) {
       absent.push(name);
-    } else if (defs.length === 1) {
-      const only = defs[0];
-      if (only) singles.push(only);
+    } else if (live.length === 1) {
+      const only = live[0];
+      if (only) healthy.push(only);
+    } else if (PARITY_ALLOWED.includes(name)) {
+      const values = new Set(live.map((d) => d.value));
+      if (values.size === 1) {
+        parityOk.push({ name, value: live[0]?.value ?? '', defs: live });
+      } else {
+        failures.push(
+          `PARITY VIOLATION: ${name} has ${values.size} DIFFERENT live values across the deployment boundary:\n` +
+            live.map((d) => `      ${d.file}:${d.line}  = ${d.value}`).join('\n'),
+        );
+      }
     } else {
-      duplicates.push(defs);
+      failures.push(
+        `DUPLICATE DEFINITION: ${name} defined ${live.length}x in LIVE code:\n` +
+          live.map((d) => `      ${d.file}:${d.line}  ${d.text}`).join('\n'),
+      );
+    }
+
+    // Item 130c — script divergence WARNS, never fails.
+    if (live.length > 0 && scripts.length > 0) {
+      const liveValue = live[0]?.value ?? '';
+      for (const s of scripts) {
+        if (s.value !== liveValue) {
+          warnings.push(`${name}: script ${s.file}:${s.line} = ${s.value}  (live = ${liveValue})`);
+        }
+      }
     }
   }
 
-  console.log('--- SINGLE DEFINITION (healthy) ---');
-  for (const d of singles) {
-    console.log(`  OK   ${d.constant.padEnd(30)} ${d.file}:${d.line}`);
-  }
+  console.log('--- SINGLE LIVE DEFINITION (healthy) ---');
+  for (const d of healthy) console.log(`  OK     ${d.constant.padEnd(30)} ${d.file}:${d.line}  = ${d.value}`);
   console.log('');
+
+  if (parityOk.length > 0) {
+    console.log('--- PARITY-ASSERTED ACROSS DEPLOYMENT BOUNDARY (values AGREE) ---');
+    for (const p of parityOk) {
+      console.log(`  PARITY ${p.name.padEnd(30)} = ${p.value}  (${p.defs.length} live definitions)`);
+      for (const d of p.defs) console.log(`           ${d.file}:${d.line}`);
+    }
+    console.log('');
+  }
 
   if (absent.length > 0) {
     console.log('--- NOT PRESENT IN LIVE TREE (informational, not a failure) ---');
@@ -170,25 +293,28 @@ function main(): void {
     console.log('');
   }
 
-  if (duplicates.length > 0) {
-    console.log('--- !!! DUPLICATE DEFINITIONS — GUARD FAILS !!! ---');
-    for (const defs of duplicates) {
-      const first = defs[0];
-      if (!first) continue;
-      console.log(`  DUPLICATE: ${first.constant} defined ${defs.length}x`);
-      for (const d of defs) {
-        console.log(`      ${d.file}:${d.line}  ${d.text}`);
-      }
-    }
+  if (warnings.length > 0) {
+    console.log('--- WARN: SCRIPT VALUES DIVERGE FROM LIVE (does NOT fail the build) ---');
+    console.log('  Scripts legitimately pin values for historical replay. Listed so a');
+    console.log('  stale script value is never silent.');
+    for (const w of warnings) console.log(`  WARN   ${w}`);
     console.log('');
-    console.log(`RESULT: FAIL — ${duplicates.length} constant(s) with more than one definition.`);
+  }
+
+  if (failures.length > 0) {
+    console.log('--- !!! GUARD FAILS !!! ---');
+    for (const f of failures) console.log(`  ${f}`);
+    console.log('');
+    console.log(`RESULT: FAIL — ${failures.length} problem(s) in LIVE code.`);
     console.log('Two sources of truth means a grep can return the wrong answer and a');
     console.log('gate can ship against a construct that was never measured.');
     process.exit(1);
   }
 
-  console.log(`RESULT: PASS — zero duplicate definitions across ${files.length} live files.`);
-  console.log(`Single-source-of-truth confirmed for ${singles.length} tracked constant(s).`);
+  console.log(
+    `RESULT: PASS — ${healthy.length} single-source constant(s), ${parityOk.length} parity-asserted, ` +
+      `${warnings.length} script warning(s), across ${liveFiles.length} live files.`,
+  );
   process.exit(0);
 }
 

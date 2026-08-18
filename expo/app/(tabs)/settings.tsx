@@ -573,12 +573,12 @@ export default function SettingsScreen() {
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
                 <Target size={20} color="#22c55e" />
-                <Text style={styles.sectionTitle}>Take Profit Levels (Engine-Derived)</Text>
+                <Text style={styles.sectionTitle}>Take Profit Levels (Pips — Used By The Engine)</Text>
               </View>
               
               <View style={styles.inputRow}>
                 <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>TP1 (0.70R)</Text>
+                  <Text style={styles.inputLabel}>TP1 (pips)</Text>
                   <TextInput
                     style={styles.input}
                     value={tp1Pips}
@@ -589,7 +589,7 @@ export default function SettingsScreen() {
                   />
                 </View>
                 <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>TP2 (1.05R)</Text>
+                  <Text style={styles.inputLabel}>TP2 (pips)</Text>
                   <TextInput
                     style={styles.input}
                     value={tp2Pips}
@@ -600,7 +600,7 @@ export default function SettingsScreen() {
                   />
                 </View>
                 <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>TP3 (1.40R)</Text>
+                  <Text style={styles.inputLabel}>TP3 (pips)</Text>
                   <TextInput
                     style={styles.input}
                     value={tp3Pips}
@@ -613,17 +613,32 @@ export default function SettingsScreen() {
               </View>
 
               {/*
-                ITEM 22 — the settings tab used to claim these pip values set the
-                targets. They do not. The engine derives every TP from the
-                REALISED stop distance at 0.70R / 1.05R / 1.40R, so the numbers
-                typed here have no effect on emitted geometry. The fields are
-                kept (not deleted) because a future MEASURED manual-geometry
-                toggle will need them — but the label now tells the truth.
+                ITEM 134 — EVERY SENTENCE OF THE PREVIOUS HELP TEXT WAS FALSE.
+
+                The old copy (written for Item 22) said these fields were "Not used
+                by the engine" and that TP distances were derived from the realised
+                stop at 0.70R / 1.05R / 1.40R. That was true when it was written,
+                but ITEM 109 made these fields AUTHORITATIVE: signalEngine.ts now
+                reads `const tp1Distance = settings.tp1Pips` directly (verified live
+                at signalEngine.ts:8278), so these numbers set real emitted geometry.
+                The R-multiples are now DERIVED OUTPUTS, not inputs — hence the
+                read-only ratio readout below rather than R-labelled column headers.
+
+                This is COPY ONLY. No behaviour changed in Item 134.
               */}
               <Text style={styles.helperText}>
-                Not used by the engine. TP distances are derived from the realised stop:
-                TP1 = 0.70R, TP2 = 1.05R, TP3 = 1.40R. These values are stored for a
-                future manual-geometry mode and do not affect signals today.
+                These pip distances ARE the take-profit levels the engine uses. Each TP is
+                placed this many pips from the entry price. The resulting reward-to-risk
+                ratio is derived from whatever stop the engine actually places, which
+                varies with volatility — so the ratios below are a readout, not an input.
+              </Text>
+              <Text style={styles.helperText}>
+                Derived at your current base stop of {slPips || "0"} pips:{" "}
+                TP1 {Number(slPips) > 0 ? (Number(tp1Pips) / Number(slPips)).toFixed(2) : "—"}R{" "}
+                · TP2 {Number(slPips) > 0 ? (Number(tp2Pips) / Number(slPips)).toFixed(2) : "—"}R{" "}
+                · TP3 {Number(slPips) > 0 ? (Number(tp3Pips) / Number(slPips)).toFixed(2) : "—"}R.{" "}
+                The live ratio will differ when ATR widens the stop or the Max SL Cap
+                truncates it.
               </Text>
             </View>
 
@@ -674,8 +689,19 @@ export default function SettingsScreen() {
                 />
               </View>
 
+              {/*
+                ITEM 134 — corrected. The old string said "default 70 pips" (the
+                default is 90) and "TP zones default 30 pips apart" (they are not —
+                the defaults are 25/50/80, which are 25 and 30 apart). Copy only.
+              */}
               <Text style={styles.helperText}>
-                Max SL cap enforces a hard draw-down ceiling (default 70 pips). TP zones default 30 pips apart.
+                Base SL is the starting stop distance; the engine widens it to clear a
+                1.2 x ATR noise floor when volatility demands it. Max SL Cap (default 90
+                pips) is a hard draw-down ceiling — if the noise floor needs more room
+                than the cap allows, the stop is CLAMPED to the cap and the signal still
+                emits, which means the realised stop can sit inside the noise floor and
+                carries a higher chance of being stopped out by noise. Raise the cap to
+                give those setups full clearance.
               </Text>
             </View>
 
@@ -841,7 +867,11 @@ export default function SettingsScreen() {
                 <View style={styles.switchInfo}>
                   <Text style={styles.switchLabel}>Allow Short (SELL) Signals</Text>
                   <Text style={styles.switchHelper}>
-                    Default OFF. Six counterfactuals confirmed SELLs are structurally marginal on 1-min gold. When off, qualifying SELLs are fully scored but not emitted — a shadow record is logged for forward monitoring.
+                    Default ON. The earlier "SELLs are structurally marginal" finding was
+                    REVERSED — it was a labelling artifact; corrected canonical figures are
+                    BUY 63.1% vs SELL 63.2%, i.e. no directional edge either way. When off,
+                    qualifying SELLs are fully scored but not emitted — a shadow record is
+                    logged for forward monitoring.
                   </Text>
                 </View>
                 <Switch

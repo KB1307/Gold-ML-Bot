@@ -381,7 +381,17 @@ const BAYESIAN_BLEND_ALPHA = 0.4;
 // structural-gating threshold well within a single trading day (0.5^(24/6) =
 // ~6% of original strength at 24h), instead of retaining near-maximum
 // strength indefinitely once earned during one early, low-volatility window.
-const ZONE_STALENESS_HALF_LIFE_HOURS = 6;
+// ITEM 130: RENAMED from ZONE_STALENESS_HALF_LIFE_HOURS. That name collided with a
+// DIFFERENT constant of the same name in the two server zone paths
+// (expo/backend/trpc/routes/srZones.ts:37 and
+// backend/functions/refresh-sr-zones/index.ts:27), both = 18. The two values are
+// INTENTIONALLY different — this LOCAL in-memory tier decays faster than the
+// server tier, which represents a multi-day evidence base — but a shared name
+// across live files means a grep for the constant returns two contradictory
+// answers and neither caller can tell which tier it is reading. The LOCAL_ prefix
+// makes the tier explicit so the CI guard can parity-assert the server pair
+// without a false positive on this one. VALUE UNCHANGED at 6.
+const LOCAL_ZONE_STALENESS_HALF_LIFE_HOURS = 6;
 /**
  * PHASE 2 (B4): sweep redefinition.
  *
@@ -1512,6 +1522,12 @@ class SignalGenerationEngine {
   private obFilterRejectionCount: number = 0;
   /** ITEM 116(c) — live count of times the OB filter was evaluated (rejections + passes + abstains). */
   private obFilterEvaluationCount: number = 0;
+  /** ITEM 131(b) — live count of times the maxSLPips ceiling truncated the stop below the 1.2 x ATR noise floor. */
+  private slCeilingBindCount: number = 0;
+  /** ITEM 131(b) — live count of times the SL ceiling was evaluated. */
+  private slCeilingEvaluationCount: number = 0;
+  /** ITEM 131(b) — the most recent ceiling bind, so the condition is identifiable rather than inferred. */
+  private lastSLCeilingBind: { atr: number; atrFloorSlPips: number; maxSLPips: number; at: number } | null = null;
   private fiveMinCandles: { timestamp: number; open: number; high: number; low: number; close: number }[] = [];
   private lastFiveMinCandleClose: number = 0;
 
@@ -3445,6 +3461,31 @@ class SignalGenerationEngine {
     };
   }
 
+  /**
+   * ITEM 131(b) — SL CEILING TELEMETRY.
+   *
+   * The user's requirement is that the system can IDENTIFY when the ceiling binds,
+   * not that it drops trades at it. Before Item 131 a binding ceiling produced a
+   * silent `return null`; it now clamps and increments these counters.
+   *
+   * Counters are IN-MEMORY and reset when the engine is re-created, so they
+   * describe the current session only.
+   */
+  public getSLCeilingStats(): {
+    binds: number;
+    evaluations: number;
+    bindRate: number;
+    lastBind: { atr: number; atrFloorSlPips: number; maxSLPips: number; at: number } | null;
+  } {
+    const evaluations = this.slCeilingEvaluationCount;
+    return {
+      binds: this.slCeilingBindCount,
+      evaluations,
+      bindRate: evaluations > 0 ? this.slCeilingBindCount / evaluations : 0,
+      lastBind: this.lastSLCeilingBind,
+    };
+  }
+
   private detectQuasimodolLevels(): QuasimodolLevel[] {
     if (this.priceHistory.length < 30 || this.highHistory.length < 30 || this.lowHistory.length < 30) {
       console.log('⚠️ Insufficient data for Quasimodo detection');
@@ -4178,7 +4219,7 @@ class SignalGenerationEngine {
       // price could travel far away and hours could pass with zero fresh
       // touches, yet the zone still dominated structural gating for the rest
       // of the session. Apply an exponential recency decay keyed off lastTouch
-      // (halving every ZONE_STALENESS_HALF_LIFE_HOURS with no fresh touch) so a
+      // (halving every LOCAL_ZONE_STALENESS_HALF_LIFE_HOURS with no fresh touch) so a
       // genuinely stale, untested-recently zone naturally fades toward
       // irrelevance instead of retaining full strength forever. Zones with no
       // touch at all in the current scan window (lastTouch === 0, e.g. an
@@ -4189,7 +4230,7 @@ class SignalGenerationEngine {
       const ageMs = lastTouch > 0 ? Math.max(0, now - lastTouch) : 0;
       const ageHours = ageMs / (60 * 60 * 1000);
       const recencyDecayFactor = lastTouch > 0
-        ? Math.pow(0.5, ageHours / ZONE_STALENESS_HALF_LIFE_HOURS)
+        ? Math.pow(0.5, ageHours / LOCAL_ZONE_STALENESS_HALF_LIFE_HOURS)
         : 1;
       const reactionStrength = Math.min(1, rawReactionStrength * recencyDecayFactor);
 
@@ -8245,18 +8286,46 @@ class SignalGenerationEngine {
     // ATR is in PRICE units (calculateRealATR averages high-low true ranges on
     // raw bars), so the pip-denominated noise floor is atr * multiple / pipValue.
     const atrFloorSlPips = (features.atr * MIN_SL_ATR_MULTIPLE) / pipValue;
-    if (atrFloorSlPips > maxSLPips) {
-      console.log(`❌ REJECTED: noise floor unreachable — a ${MIN_SL_ATR_MULTIPLE} x ATR stop needs ${atrFloorSlPips.toFixed(0)} pips but maxSLPips is ${maxSLPips} (ATR ${features.atr.toFixed(1)})`);
-      console.log(`   💡 TIP: Volatility is too high to place a stop outside the noise floor within the risk cap. High-ATR conditions measured EV -0.030R / PF 0.94 in the audit.`);
-      console.log(`${'='.repeat(80)}\n`);
-      this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'ATR noise floor exceeds SL cap', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
-      return null;
+    // ITEM 131(b): THE CEILING NOW CLAMPS INSTEAD OF REJECTING.
+    //
+    // This block previously did `return null` whenever a 1.2 x ATR stop would not
+    // fit inside maxSLPips — an uncounted emission suppressor. The user's stated
+    // requirement is that the system IDENTIFY the ceiling, not that it drop the
+    // trade at it: "SL range can be anywhere, it just needs a ceiling, and it's
+    // also changeable in settings — but the system needs to be able to identify
+    // it." The widen-and-cap below (rawSlPips -> Math.min(rawSlPips, maxSLPips))
+    // already produced the correct clamped stop; the reject simply pre-empted it.
+    //
+    // MEASURED before shipping (expo/scripts/item131_133_measure.ts, 59,556 bar
+    // ATR samples over the 2026-06-18 -> 2026-08-18 tape, engine's own
+    // calculateRealATR(14) construct):
+    //   cap  70 -> ATR > 5.83 -> 377/59556 =  0.63% of tape minutes
+    //   cap  90 -> ATR > 7.50 -> 107/59556 =  0.18% of tape minutes  <-- live cap
+    //   cap 110 -> ATR > 9.17 ->  38/59556 =  0.06%
+    // On the 13 LIVE-sourced signals the stored ATR maxes at 2.60 (atrFloor 31
+    // pips), so this gate has never bound on a live signal. It is a RARE
+    // suppressor, not a major one — but a rare uncounted drop is still a drop,
+    // and clamping is strictly safer than discarding a qualified setup.
+    //
+    // CEILING-BIND TELEMETRY: counted below and surfaced via getSLCeilingStats()
+    // so the bind is identifiable in telemetry rather than inferred.
+    const slCeilingBinds = atrFloorSlPips > maxSLPips;
+    if (slCeilingBinds) {
+      this.slCeilingBindCount += 1;
+      this.lastSLCeilingBind = { atr: features.atr, atrFloorSlPips, maxSLPips, at: Date.now() };
+      console.log(`🔒 SL CEILING BINDS: a ${MIN_SL_ATR_MULTIPLE} x ATR stop needs ${atrFloorSlPips.toFixed(0)} pips but maxSLPips is ${maxSLPips} (ATR ${features.atr.toFixed(1)}). CLAMPING to ${maxSLPips} and PROCEEDING (Item 131 — was a hard reject).`);
+      console.log(`   ⚠️ The realised stop is now TIGHTER than the ${MIN_SL_ATR_MULTIPLE} x ATR noise floor, so this signal carries a higher noise-stop-out risk. Raise Max SL Cap in Settings to give it the full noise-floor clearance.`);
     }
+    this.slCeilingEvaluationCount += 1;
     const configuredSlPips = settings.slPips * atrMultiplier;
     const rawSlPips = Math.max(configuredSlPips, atrFloorSlPips);
     if (atrFloorSlPips > configuredSlPips) {
       console.log(`🛡️ SL widened to the ${MIN_SL_ATR_MULTIPLE} x ATR noise floor: ${atrFloorSlPips.toFixed(1)} pips (configured would have been ${configuredSlPips.toFixed(1)})`);
     }
+    // ITEM 131(b): this IS the clamp — dynamicSlPips = min(max(configured, atrFloor), maxSLPips).
+    // NOT neutralised: maxSLPips is read straight from settings (default 90) and
+    // Math.min is the only operation applied, so the ceiling always binds when it
+    // should. There is no second floor downstream that could re-widen the stop.
     const dynamicSlPips = Math.min(rawSlPips, maxSLPips);
     if (rawSlPips > maxSLPips) {
       console.log(`🛡️ SL capped at maxSLPips ${maxSLPips} (would have been ${rawSlPips.toFixed(1)})`);
