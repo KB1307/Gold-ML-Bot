@@ -319,9 +319,10 @@ function formatSignal(signal: TradingSignal, index: number): string {
   // has to INFER which code produced a signal's ladder. The 19a measurement had
   // to reconstruct this from the rationale string's format and could only trust
   // 39 of 392 rows as a result. This line is the provenance that was missing.
-  // It states what the engine actually does today, which is NOT what the
-  // settings tab used to imply: slPips is honoured, tp1/tp2/tp3Pips are ignored.
-  lines.push(`    geometry mode: SL: manual slPips · TPs: R-derived 0.70/1.05/1.40`);
+  // ITEM 109: the engine now uses the user's tp1Pips/tp2Pips/tp3Pips directly.
+  // Prior to Item 109, TPs were R-derived (0.70/1.05/1.40R of dynamic SL) and the
+  // user's settings were ignored.
+  lines.push(`    geometry mode: SL: manual slPips · TPs: user-configured pips (${signal.tp1Distance ?? '?'}p/${signal.tp2Distance ?? '?'}p/${signal.tp3Distance ?? '?'}p)`);
   if (signal.topFeatures?.length) {
     const features = signal.topFeatures.map((f) => renderFeature(f, signal.type)).join(", ");
     lines.push(`    top features: ${features}`);

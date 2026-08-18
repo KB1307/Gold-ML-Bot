@@ -492,7 +492,30 @@ export function getCalibrationPenalty25Stats(): { count: number; thenFailed: num
  *      both resolvers.
  * Now sourced from the one shared definition. See constants/executionCost.ts.
  */
-/** Formal system scope: a 1.4R scalper. TP ladder is a pure multiple of realised risk. */
+/**
+ * ITEM 111 — MODULATION_ENABLED.
+ *
+ * The learned modulation layer has NO measurable predictive power: held-out
+ * accuracy is 49.2-50.0% across all training windows (CI [41%, 59%]), which is
+ * chance. C-2 ten-feature validation (Item 111(d)) found ZERO features with CIs
+ * excluding zero on the full population. With rsi_weight=-0.171 (post-NET-
+ * backfill), the LEARNED_MODULATION_MIN=0 clamp would ZERO the RSI family
+ * contribution entirely — removing 0.25-0.40 of scoring input per signal with no
+ * evidence it improves outcomes.
+ *
+ * RE-ENABLING CRITERION: held-out accuracy beats chance with p<0.05 (binomial
+ * test, n>=200, accuracy >= 55%). Until then, modulation returns 1.0 (no-op).
+ */
+const MODULATION_ENABLED = false;
+
+/**
+ * ITEM 109 — TP ladder now uses the USER'S configured pip settings directly.
+ * Prior: R-derived 0.7/1.05/1.4R of dynamicSlPips, which ignored settings.tp1Pips/
+ * tp2Pips/tp3Pips entirely. Canonical re-resolution (n=412) showed user pips win:
+ * EV_net +0.0371R vs +0.0198R, TP1 hit 65.0% vs 61.2%, await-the-zone conversions
+ * 16/20 (80%) vs 13/20 (65%). The R-multiple constants below are retained for
+ * the near-miss snapshot fallback only (recordNearMiss uses settings pips now).
+ */
 const SCALPER_TP_R_MULTIPLES = { tp1: 0.7, tp2: 1.05, tp3: 1.4 } as const;
 const SCALPER_TP3_STRETCH_R = 1.5;
 const SCALPER_TP3_STRETCH_MAX_R = 1.6;
@@ -599,7 +622,14 @@ const ZONE_MERGE_THRESHOLD_ATR = 1.5;
  * 73.8% within 60 min, 90.5% within 2.0 ATR. The cluster-scoped guard is
  * strictly more conservative than the time window because it does not expire. */
 const DEDUP_PRICE_BAND_ATR = 4.0;
-const DEDUP_TIME_WINDOW_MS = 210 * 60 * 1000;
+/**
+ * ITEM 113(b) — re-derived from the DISTRIBUTION, not the max observation.
+ * Prior: ceil(max gap in the 15-signal cluster) = 210 min. Any future cluster
+ * spanning 4h would break it. Re-derivation on n=3813 same-direction pairs:
+ * p95 = 1387 min. The p95 captures 95% of pairs while allowing genuine
+ * outliers through — the cluster-scoped guard (PRIMARY) catches those.
+ */
+const DEDUP_TIME_WINDOW_MS = 1390 * 60 * 1000;
 /** ITEM 105 — Zone cluster proximity for dedup. Same as ZONE_MERGE_THRESHOLD_ATR:
  * if two signals' entries are within 1.5 ATR, they are in the same zone cluster. */
 const DEDUP_CLUSTER_BAND_ATR = 1.5;
@@ -5331,6 +5361,13 @@ class SignalGenerationEngine {
    * auto-halving) shrinks or reverses it.
    */
   private getFeatureModulation(featureKey: string): number {
+    // ITEM 111: modulation disabled — learner is at chance (50.0% held-out
+    // accuracy, CIs [41%, 59%]). C-2 ten-feature validation found ZERO features
+    // with CIs excluding zero. Returning 1.0 makes modulation a no-op until
+    // held-out accuracy beats chance with p<0.05 (n>=200, accuracy >= 55%).
+    if (!MODULATION_ENABLED) {
+      return 1;
+    }
     const w = this.modelWeights.get(featureKey);
     if (w === undefined || !Number.isFinite(w)) {
       return 1;
@@ -7921,6 +7958,24 @@ class SignalGenerationEngine {
       console.log(`${'='.repeat(80)}\n`);
       return null;
     }
+
+    // ITEM 114 — OB PRESENCE FILTER.
+    // Canonical measurement (n=409): OB-present WR=63.3% EV=+0.0470R vs OB-absent
+    // WR=45.5% EV=-0.1951R. z=2.295, p=0.0217. The OB-absent arm (n=44) is
+    // adequately powered (>= 30). A signal with no nearby unmitigated order block
+    // within 3 ATR is rejected — the structural support that makes the setup
+    // viable is absent.
+    const obProximity = Math.max(features.atr, 0.01) * 3;
+    const hasNearbyOB = features.orderBlocks.some(ob =>
+      Math.abs(ob.price - this.currentPrice) <= obProximity,
+    );
+    if (!hasNearbyOB) {
+      console.log(`❌ REJECTED [OBFilter]: No unmitigated order block within 3 ATR of ${this.currentPrice.toFixed(1)} — structural support absent`);
+      console.log(`   [OBFilter] OB count: ${features.orderBlocks.length}, proximity: ${obProximity.toFixed(1)}`);
+      console.log(`${'='.repeat(80)}\n`);
+      this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'OB filter: no nearby unmitigated order block', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
+      return null;
+    }
     console.log(`✅ QUALITY GATE PASSED: ${qualityGate.summary}`);
 
     const structuralValidation = this.validateStructuralConditions(analysis.signalType, features, settings);
@@ -8045,22 +8100,22 @@ class SignalGenerationEngine {
       ? "High Volatility"
       : features.atr < VOL_REGIME_ATR_LOW_MAX ? "Low Volatility" : "Normal Volatility";
     const slAtrMultiple = (dynamicSlPips * pipValue) / Math.max(features.atr, 0.01);
-    const riskJustification = `SL ${dynamicSlPips.toFixed(0)}p (${slAtrMultiple.toFixed(2)}x ATR) | Multiplier: ${atrMultiplier.toFixed(2)}x (${volatilityLabel} | ATR: ${features.atr.toFixed(1)}) | 1.4R scalper scope`;
+    const riskJustification = `SL ${dynamicSlPips.toFixed(0)}p (${slAtrMultiple.toFixed(2)}x ATR) | Multiplier: ${atrMultiplier.toFixed(2)}x (${volatilityLabel} | ATR: ${features.atr.toFixed(1)}) | user-pips TP ladder (${settings.tp1Pips}/${settings.tp2Pips}/${settings.tp3Pips}p)`;
 
-    // TP ladder as pure R-multiples of the FINAL risk distance. TP3 may stretch
-    // to 1.5R/1.6R only when conviction is high AND there is measured room to
-    // the next real barrier - it can never shrink below the 1.4R scope.
+    // ITEM 109: TP ladder uses the USER'S configured pip settings directly.
+    // settings.tp1Pips/tp2Pips/tp3Pips are now the actual TP distances, not
+    // R-multiples of the SL. The R-multiples are computed for display only.
     const roomToSR = this.computeRoomToSR(analysis.signalType, features);
     const atrUnits = roomToSR / Math.max(features.atr, 1);
-    let tp3R: number = SCALPER_TP_R_MULTIPLES.tp3;
-    if (analysis.confidence >= 0.89 && atrUnits >= 3) tp3R = SCALPER_TP3_STRETCH_MAX_R;
-    else if (analysis.confidence >= 0.82 && atrUnits >= 2.5) tp3R = SCALPER_TP3_STRETCH_R;
-    const tp1Distance = dynamicSlPips * SCALPER_TP_R_MULTIPLES.tp1;
-    const tp2Distance = dynamicSlPips * SCALPER_TP_R_MULTIPLES.tp2;
-    const tp3Distance = dynamicSlPips * tp3R;
+    const tp1Distance = settings.tp1Pips;
+    const tp2Distance = settings.tp2Pips;
+    const tp3Distance = settings.tp3Pips;
+    const tp1R = tp1Distance / dynamicSlPips;
+    const tp2R = tp2Distance / dynamicSlPips;
+    const tp3R = tp3Distance / dynamicSlPips;
     const grossTp3Dollars = tp3Distance * pipValue;
-    console.log(`🎯 1.4R SCALPER LADDER: TP1 ${tp1Distance.toFixed(1)}p (${SCALPER_TP_R_MULTIPLES.tp1}R) | TP2 ${tp2Distance.toFixed(1)}p (${SCALPER_TP_R_MULTIPLES.tp2}R) | TP3 ${tp3Distance.toFixed(1)}p (${tp3R}R) | SL ${dynamicSlPips.toFixed(1)}p`);
-    console.log(`   room-to-SR ${roomToSR.toFixed(0)}p / ATR ${atrUnits.toFixed(1)}u → TP3 stretch ${tp3R}R`);
+    console.log(`🎯 USER-PIPS LADDER: TP1 ${tp1Distance}p (${tp1R.toFixed(2)}R) | TP2 ${tp2Distance}p (${tp2R.toFixed(2)}R) | TP3 ${tp3Distance}p (${tp3R.toFixed(2)}R) | SL ${dynamicSlPips.toFixed(1)}p`);
+    console.log(`   room-to-SR ${roomToSR.toFixed(0)}p / ATR ${atrUnits.toFixed(1)}u`);
     // ITEM 82 / B6: the R conversion now goes through the shared costInR() helper
     // rather than re-deriving the division inline, so this print and any book
     // computation can never disagree about what a $0.20 round trip costs in R.
@@ -8361,6 +8416,7 @@ class SignalGenerationEngine {
                 signalParams: {
                   confidence: tier0AdjustedConfidence,
                   tp1, tp2, tp3, sl,
+                  originalEntry: entryPriceWithSlippage,
                   slMultiplier: atrMultiplier,
                   atr: features.atr,
                   regime: features.marketRegime.type,
@@ -8416,17 +8472,17 @@ class SignalGenerationEngine {
         // Use the pending signal's parameters with the moved entry
         entryPrice = movedEntryPrice;
         entryPriceWithSlippage = movedEntryPrice;
-        // Recompute tp1/tp2/tp3/sl from the moved entry using the same ladder
-        // The ladder is R-based, so TPs and SL shift with the entry
+        // ITEM 109: Under user-pips ladder, TPs are ABSOLUTE pip distances from
+        // the moved entry (not shifted by delta as under the old R-derived ladder).
+        // SL distance is preserved from the original entry (risk-based).
         const p = pending.signalParams as any;
-        const tp1Dist = Math.abs(Number(p.tp1) - entryPrice);
-        const tp2Dist = Math.abs(Number(p.tp2) - entryPrice);
-        const tp3Dist = Math.abs(Number(p.tp3) - entryPrice);
-        const slDist = Math.abs(Number(p.sl) - entryPrice);
-        tp1 = analysis.signalType === 'BUY' ? movedEntryPrice + tp1Dist : movedEntryPrice - tp1Dist;
-        tp2 = analysis.signalType === 'BUY' ? movedEntryPrice + tp2Dist : movedEntryPrice - tp2Dist;
-        tp3 = analysis.signalType === 'BUY' ? movedEntryPrice + tp3Dist : movedEntryPrice - tp3Dist;
-        sl = analysis.signalType === 'BUY' ? movedEntryPrice - slDist : movedEntryPrice + slDist;
+        const originalEntry = Number(p.originalEntry ?? entryPrice);
+        const slDist = Math.abs(Number(p.sl) - originalEntry);
+        const dirMult = analysis.signalType === 'BUY' ? 1 : -1;
+        tp1 = movedEntryPrice + dirMult * settings.tp1Pips * pipValue;
+        tp2 = movedEntryPrice + dirMult * settings.tp2Pips * pipValue;
+        tp3 = movedEntryPrice + dirMult * settings.tp3Pips * pipValue;
+        sl = movedEntryPrice - dirMult * slDist;
         // Break out — emit the signal at the moved entry
         break;
       }
@@ -9200,9 +9256,9 @@ class SignalGenerationEngine {
       const slPips = Math.max(snapshot.slPips * atrMultiplier, atrFloorSlPips);
       const dir = signalType === 'BUY' ? 1 : -1;
       entry.entryPrice = snapshot.entryPrice;
-      entry.tp1 = snapshot.entryPrice + dir * slPips * SCALPER_TP_R_MULTIPLES.tp1 * pipValue;
-      entry.tp2 = snapshot.entryPrice + dir * slPips * SCALPER_TP_R_MULTIPLES.tp2 * pipValue;
-      entry.tp3 = snapshot.entryPrice + dir * slPips * SCALPER_TP_R_MULTIPLES.tp3 * pipValue;
+      entry.tp1 = snapshot.entryPrice + dir * snapshot.tp1Pips * pipValue;
+      entry.tp2 = snapshot.entryPrice + dir * snapshot.tp2Pips * pipValue;
+      entry.tp3 = snapshot.entryPrice + dir * snapshot.tp3Pips * pipValue;
       entry.sl = snapshot.entryPrice - dir * slPips * pipValue;
     }
 
