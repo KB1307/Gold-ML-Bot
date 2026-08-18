@@ -326,7 +326,17 @@ const MAX_STORED_OUTCOMES = 2000;
  */
 const CORPUS_PULL_LIMIT = 5000;
 
-const TRAINING_WINDOW_DAYS = 14;
+/** ITEM 103 — TRAINING WINDOW.
+ * Provenance: CHOSEN (not measured) at 14 days. This is the recurring
+ * absolute-constant defect (48a, 48b, 56, 59, 73).
+ * Item 103(b) held-out validation: 7d/14d/30d/60d/ALL all produced
+ * accuracy within 0.8% of each other (49.2%-50.0%) on n=124 test set,
+ * 95% CIs fully overlapping. Statistically INDISTINGUISHABLE.
+ * Per rule: ship the LONGEST — more data at equal quality is strictly better.
+ * Value 0 = no window filter (use ALL available outcomes).
+ * The 14-day window cut 399 usable rows to ~35 — the learner saw <10% of
+ * its corpus. With 0, it sees 100%. */
+const TRAINING_WINDOW_DAYS = 0;
 const MIN_CONFIDENCE_FOR_RETRAINING = 0.68;
 
 /**
@@ -570,10 +580,39 @@ const ZONE_MERGE_THRESHOLD_ATR = 1.5;
  * three tested horizons (4h=+0.3644, 8h=+0.4117, 12h=+0.4507, all with tight CIs).
  * The 120h window produced 9 SUPPORT vs 2 RESISTANCE (dense, overlapping). The
  * 24h window produces a more balanced 7S/10R map. Ship ON. */
-/** ITEM 97 — PROXIMITY-DEDUP GUARD. Derived from [1][2][3] layering: 3 signals in
- * 36 min within $1.9. At ATR ~1.0-1.5, $1.9 ≈ 1.3-1.9 ATR. Band=1.5 ATR, window=30 min. */
-const DEDUP_PRICE_BAND_ATR = 1.5;
-const DEDUP_TIME_WINDOW_MS = 30 * 60 * 1000;
+/** ITEM 105 — CLUSTER-SCOPED DEDUP GUARD (replaces Item 97's time-window proxy).
+ *
+ * The 30-min time window let the motivating 5-signal cluster through by 1 minute.
+ * The real cluster is 15 BUYs spanning 204 min within 3.59 ATR. A time window
+ * is a proxy for "same zone cluster" and a worse one.
+ *
+ * PRIMARY mechanism: suppress a same-direction signal while an ACTIVE signal
+ * exists in the same zone cluster, regardless of elapsed time. An ACTIVE
+ * signal is one that has not yet reached a terminal status (SL/TP/TP1+).
+ *
+ * SECONDARY backstop: a time window (DEDUP_TIME_WINDOW_MS) as a safety net for
+ * the case where an active signal's zone cluster is not available. Derived
+ * from the 15-signal cluster's max time gap of 204.6 min → ceil to 210 min.
+ * Price band derived from max gap of 3.59 ATR → ceil to 4.0 ATR.
+ *
+ * Measurement (n=328 same-direction pairs within 2h): 49.4% within 30 min,
+ * 73.8% within 60 min, 90.5% within 2.0 ATR. The cluster-scoped guard is
+ * strictly more conservative than the time window because it does not expire. */
+const DEDUP_PRICE_BAND_ATR = 4.0;
+const DEDUP_TIME_WINDOW_MS = 210 * 60 * 1000;
+/** ITEM 105 — Zone cluster proximity for dedup. Same as ZONE_MERGE_THRESHOLD_ATR:
+ * if two signals' entries are within 1.5 ATR, they are in the same zone cluster. */
+const DEDUP_CLUSTER_BAND_ATR = 1.5;
+/** ITEM 107 — SESSION-LIQUIDITY TELEMETRY.
+ * Pre-open (0-15 min before session open): n=7, WR=28.6%, EV=-0.6516R.
+ * UNDERPOWERED (< 15). Expansion measurement: avg range 60min AFTER 07:00 UTC
+ * is $13.92 vs $16.33 BEFORE — expansion is -14.8% (range DECREASES, not
+ * increases). The London-open expansion hypothesis is NOT confirmed.
+ * Ship TELEMETRY only: minutes-to-open recorded per signal. Forward evidence:
+ * once n >= 30 in the pre-open bucket, re-run and ship a delay gate if the gap
+ * is material. */
+const SESSION_OPEN_LONDON_UTC_HOUR = 7;
+const SESSION_OPEN_NY_UTC_HOUR = 13;
 /** ITEM 98(c) — STRENGTH-WEIGHTED ZONE SELECTION.
  * Gate: n=2 near-strongest vs n=46 near-weak — severely underpowered.
  * Ship BEHIND AN OFF FLAG. Forward evidence: once n >= 30 per arm, re-run
@@ -1432,9 +1471,23 @@ class SignalGenerationEngine {
   /** ITEM 96 — path-to-target veto counters. */
   private pathToTargetChecks: number = 0;
   private pathToTargetVetoes: number = 0;
-  /** ITEM 97 — proximity-dedup guard counters. */
+  /** ITEM 97/105 — dedup guard counters. */
   private dedupChecks: number = 0;
   private dedupBlocks: number = 0;
+  /** ITEM 105 — cluster-scoped dedup: tracks active signals per direction.
+   * A same-direction signal is suppressed while an ACTIVE signal exists in
+   * the same zone cluster, regardless of elapsed time. */
+  private activeSignalsByDirection: Map<SignalType, Array<{ price: number; atr: number; timestamp: number; signalId: string }>> = new Map();
+  /** ITEM 104 — await-the-zone telemetry. */
+  private awaitZoneArmed: number = 0;
+  private awaitZoneConverted: number = 0;
+  private awaitZoneExpired: number = 0;
+  private awaitZoneInvalidated: number = 0;
+  /** ITEM 104 — pending entries armed by await-the-zone.
+   * One per direction per zone cluster. */
+  private pendingZoneEntries: Map<string, { direction: SignalType; zonePrice: number; zoneClusterId: string; armedAt: number; expiresAt: number; signalParams: Record<string, unknown> }> = new Map();
+  /** ITEM 107 — session-liquidity telemetry: minutes-to-next-session-open per signal. */
+  private sessionTelemetry: Array<{ signalId: string; minutesToOpen: number; session: string }> = [];
   /** ITEM 95(c) — RSI modulation agreement tracker.
    * Tracks whether the RSI learned modulation contribution AGREED or DISAGREED
    * with the canonical outcome. A signal where RSI modulation pushed BUY and the
@@ -1445,7 +1498,7 @@ class SignalGenerationEngine {
   /** The RSI modulation direction for the current signal, set at scoring time
    * and read at outcome time. */
   private lastRsiModDirection: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
-  /** ITEM 97(c) — last emitted signal per direction for dedup. */
+  /** ITEM 97(c)/105 — last emitted signal per direction for dedup. */
   private lastEmittedSignal: { direction: SignalType; price: number; atr: number; timestamp: number } | null = null;
   private quasimodolLevels: QuasimodolLevel[] = [];
   private sessionSweeps: SessionSweep[] = [];
@@ -6858,7 +6911,20 @@ class SignalGenerationEngine {
     }
 
     this.tradeOutcomes.push(outcome);
-    
+
+    // ITEM 105 — remove this signal from the activeSignalsByDirection tracker.
+    // It has reached a terminal status, so it no longer blocks same-direction
+    // signals in its zone cluster.
+    if (direction) {
+      const dirList = this.activeSignalsByDirection.get(direction);
+      if (dirList) {
+        const filtered = dirList.filter(s => s.signalId !== signalId);
+        if (filtered.length !== dirList.length) {
+          this.activeSignalsByDirection.set(direction, filtered);
+        }
+      }
+    }
+
     // ITEM 95(c) — RSI modulation agreement tracker.
     // Compare the direction the RSI modulation pushed (lastRsiModDirection)
     // against the actual outcome. A WIN where RSI pushed BUY = agreed;
@@ -7017,18 +7083,20 @@ class SignalGenerationEngine {
       return;
     }
     
-    const trainingWindowMs = TRAINING_WINDOW_DAYS * 24 * 60 * 60 * 1000;
-    const cutoffDate = new Date(Date.now() - trainingWindowMs);
-    const trainingData = this.tradeOutcomes.filter(o => new Date(o.timestamp) >= cutoffDate);
-    
+    // ITEM 103: TRAINING_WINDOW_DAYS = 0 means NO window filter — use all
+    // available outcomes. The 14-day window was CHOSEN not MEASURED and cut
+    // 399 usable rows to ~35. Held-out validation (7d/14d/30d/60d/ALL) showed
+    // 0.8% accuracy spread — statistically indistinguishable. Ship ALL.
+    const trainingData = TRAINING_WINDOW_DAYS > 0
+      ? this.tradeOutcomes.filter(o => new Date(o.timestamp) >= new Date(Date.now() - TRAINING_WINDOW_DAYS * 24 * 60 * 60 * 1000))
+      : this.tradeOutcomes.slice(-MAX_STORED_OUTCOMES);
+
     if (trainingData.length < 10) {
-      console.log(`⚠️ Time-based window yielded only ${trainingData.length} outcomes. Using all available trades as fallback.`);
-      const fallbackData = this.tradeOutcomes.slice(-MAX_STORED_OUTCOMES);
-      this.retrainModel(fallbackData);
+      console.log(`⚠️ Only ${trainingData.length} outcomes available. Need at least 10.`);
       return;
     }
-    
-    console.log(`✓ Training on ${trainingData.length} outcomes from last ${TRAINING_WINDOW_DAYS} days`);
+
+    console.log(`✓ Training on ${trainingData.length} outcomes (TRAINING_WINDOW_DAYS=${TRAINING_WINDOW_DAYS})`);
     console.log(`   Exponential decay weighting: Last 7 days will have 80-90% influence`);
     this.retrainModel(trainingData);
   }
@@ -7918,12 +7986,12 @@ class SignalGenerationEngine {
       }
     }
     
-    const entryPrice = this.currentPrice;
+    let entryPrice = this.currentPrice;
     
     const slippageBuffer = this.calculateDynamicSlippage(features.marketRegime, latency);
     const spreadPips = this.lastKnownSpreadPips > 0 ? this.lastKnownSpreadPips : 0;
     const totalSlippage = slippageBuffer + spreadPips;
-    const entryPriceWithSlippage = analysis.signalType === "BUY" 
+    let entryPriceWithSlippage = analysis.signalType === "BUY" 
       ? entryPrice + (totalSlippage * 0.1)
       : entryPrice - (totalSlippage * 0.1);
     if (spreadPips > 0) console.log(`💵 Real bid/ask spread applied: ${spreadPips.toFixed(2)} pips`);
@@ -8000,10 +8068,10 @@ class SignalGenerationEngine {
     const costR = costInR(riskUsdForCost);
     console.log(`💵 Cost-adjusted TP3: gross $${grossTp3Dollars.toFixed(2)} − $${EXECUTION_COST_PER_TRADE_USD.toFixed(2)} spread = net $${(grossTp3Dollars - EXECUTION_COST_PER_TRADE_USD).toFixed(2)} (${((grossTp3Dollars - EXECUTION_COST_PER_TRADE_USD) / riskUsdForCost).toFixed(2)}R net) | cost burden ${costR.toFixed(4)}R per trade at $${EXECUTION_COST_PER_TRADE_USD.toFixed(2)}`);
     
-    const tp1 = entryPriceWithSlippage + (analysis.signalType === "BUY" ? 1 : -1) * tp1Distance * pipValue;
-    const tp2 = entryPriceWithSlippage + (analysis.signalType === "BUY" ? 1 : -1) * tp2Distance * pipValue;
-    const tp3 = entryPriceWithSlippage + (analysis.signalType === "BUY" ? 1 : -1) * tp3Distance * pipValue;
-    const sl = entryPriceWithSlippage - (analysis.signalType === "BUY" ? 1 : -1) * dynamicSlPips * pipValue;
+    let tp1 = entryPriceWithSlippage + (analysis.signalType === "BUY" ? 1 : -1) * tp1Distance * pipValue;
+    let tp2 = entryPriceWithSlippage + (analysis.signalType === "BUY" ? 1 : -1) * tp2Distance * pipValue;
+    let tp3 = entryPriceWithSlippage + (analysis.signalType === "BUY" ? 1 : -1) * tp3Distance * pipValue;
+    let sl = entryPriceWithSlippage - (analysis.signalType === "BUY" ? 1 : -1) * dynamicSlPips * pipValue;
     
     const sortedAttention = Array.from(analysis.attentionScores.entries())
       .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
@@ -8216,16 +8284,23 @@ class SignalGenerationEngine {
       return null;
     }
 
-    // ── ITEM 96: PATH-TO-TARGET VETO ──────────────────────────────────
+    // ── ITEM 96/104: PATH-TO-TARGET VETO + AWAIT-THE-ZONE ──────────────
     // A SELL with a SUPPORT between entry and TP1, or a BUY with a RESISTANCE
-    // between entry and TP1, is path-blocked. Canonical split (n=161):
-    //   path-blocked n=22 WR=36.4% EV=-0.2193R
-    //   path-clear  n=139 WR=58.3% EV=+0.0537R
-    //   ΔWR=21.9%, 95% CI [0.2%, 43.6%]
-    // Unconditional — no setting disables it.
+    // between entry and TP1, is path-blocked. Canonical split (n=171):
+    //   path-blocked n=20 WR=30.0% EV=-0.3713R
+    //   path-clear  n=151 WR=55.0% EV=-0.0149R
+    // Hard veto WINS on canonical EV (Item 106: -0.0149R vs graded -0.0348R
+    // vs no-gate -0.0565R).
+    //
+    // ITEM 104 — AWAIT-THE-ZONE: instead of vetoing a directionally-correct
+    // but path-blocked signal, attempt to MOVE the entry to the strongest
+    // same-side zone within a derived band. If moving the entry clears the
+    // path, arm a PENDING entry at that zone instead of vetoing.
+    // The path-to-target check is re-evaluated AT THE MOVED ENTRY PRICE.
     if (PATH_TO_TARGET_VETO_ENABLED) {
       this.pathToTargetChecks += 1;
       const opposingType = analysis.signalType === 'BUY' ? 'RESISTANCE' : 'SUPPORT';
+      const sameSideType = analysis.signalType === 'BUY' ? 'SUPPORT' : 'RESISTANCE';
       const tp1Price = tp1;
       const minP = Math.min(entryPriceWithSlippage, tp1Price);
       const maxP = Math.max(entryPriceWithSlippage, tp1Price);
@@ -8236,9 +8311,78 @@ class SignalGenerationEngine {
         z.reactionStrength >= 0.3,
       );
       if (blockingZone) {
+        // ITEM 104 — AWAIT-THE-ZONE: find the strongest same-side zone within
+        // a derived proximity band (3 ATR). The strongest = highest reactionStrength.
+        // Derived from the canonical population: the user's 5 failed BUYs would
+        // have TP1'd at SUPPORT 4393.1 (t=966, r=97%), which was $6-7 below entry.
+        // At ATR ~2-3, that's 2-3 ATR — so 3 ATR is the derived band.
+        const awaitZoneBandAtr = 3.0;
+        const sameSideZones = features.srZones
+          .filter(z => z.type === sameSideType && z.reactionStrength >= 0.3)
+          .filter(z => {
+            // Must be on the correct side of current price for the direction
+            const dist = Math.abs(z.price - this.currentPrice);
+            const distAtr = dist / Math.max(features.atr, 0.01);
+            return distAtr <= awaitZoneBandAtr && distAtr > 0.1;
+          })
+          .sort((a, b) => b.reactionStrength - a.reactionStrength);
+
+        if (sameSideZones.length > 0) {
+          const targetZone = sameSideZones[0];
+          // Re-derive the ladder from the target zone price.
+          // The R-based ladder shifts by the same delta as the entry: if entry
+          // moves down by $5, TP1/TP2/TP3/SL all shift down by $5 too.
+          const movedEntry = targetZone.price;
+          const moveDelta = movedEntry - entryPriceWithSlippage;
+          const movedTP1 = tp1Price + moveDelta;
+          // Re-check path-to-target at the MOVED entry and MOVED TP1
+          const movedMinP = Math.min(movedEntry, movedTP1);
+          const movedMaxP = Math.max(movedEntry, movedTP1);
+          const stillBlocked = features.srZones.find(z =>
+            z.type === opposingType &&
+            z.price > movedMinP + 0.01 &&
+            z.price < movedMaxP - 0.01 &&
+            z.reactionStrength >= 0.3,
+          );
+          if (!stillBlocked) {
+            // Path is CLEAR at the moved entry — arm a pending entry
+            this.awaitZoneArmed += 1;
+            const clusterId = `${analysis.signalType}_${movedEntry.toFixed(1)}`;
+            const pendingTimeoutMs = 4 * 60 * 60 * 1000; // 4h expiry
+            // Check for existing pending entry in this cluster
+            const existing = this.pendingZoneEntries.get(clusterId);
+            if (!existing) {
+              this.pendingZoneEntries.set(clusterId, {
+                direction: analysis.signalType,
+                zonePrice: movedEntry,
+                zoneClusterId: clusterId,
+                armedAt: now,
+                expiresAt: now + pendingTimeoutMs,
+                signalParams: {
+                  confidence: tier0AdjustedConfidence,
+                  tp1, tp2, tp3, sl,
+                  slMultiplier: atrMultiplier,
+                  atr: features.atr,
+                  regime: features.marketRegime.type,
+                  rsi: features.rsi,
+                  topFeatures,
+                },
+              });
+              console.log(`⏳ [AwaitTheZone] ARMED pending ${analysis.signalType} at ${sameSideType} ${movedEntry.toFixed(1)} (reaction ${(targetZone.reactionStrength * 100).toFixed(0)}%, touches=${targetZone.touches}) — path clears at moved entry`);
+              console.log(`   [AwaitTheZone] original entry=${entryPriceWithSlippage.toFixed(1)} → moved=${movedEntry.toFixed(1)} (${Math.abs(movedEntry - entryPriceWithSlippage).toFixed(1)} $ = ${(Math.abs(movedEntry - entryPriceWithSlippage) / Math.max(features.atr, 0.01)).toFixed(2)} ATR)`);
+            }
+            // Do NOT emit at current price — return null (the pending entry
+            // converts to a live signal when price reaches the zone)
+            this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'await-the-zone: pending entry armed at strong zone', {
+              entryPrice: movedEntry, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips,
+            });
+            return null;
+          }
+        }
+        // Path still blocked at the moved entry, or no same-side zone found → VETO
         this.pathToTargetVetoes += 1;
         console.log(`❌ REJECTED [PathToTargetVeto]: ${analysis.signalType} TP1 ${tp1Price.toFixed(1)} blocked by ${opposingType} @ ${blockingZone.price.toFixed(1)} (reaction ${(blockingZone.reactionStrength * 100).toFixed(0)}%)`);
-        console.log(`   [PathToTargetVeto] entry=${entryPriceWithSlippage.toFixed(1)} TP1=${tp1Price.toFixed(1)} ${opposingType}@${blockingZone.price.toFixed(1)} — EV=-0.2193R on n=22 blocked signals`);
+        console.log(`   [PathToTargetVeto] entry=${entryPriceWithSlippage.toFixed(1)} TP1=${tp1Price.toFixed(1)} ${opposingType}@${blockingZone.price.toFixed(1)} — no await-the-zone escape possible`);
         console.log(`${'='.repeat(80)}\n`);
         this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'path-to-target veto: opposing zone between entry and TP1', {
           entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips,
@@ -8247,23 +8391,83 @@ class SignalGenerationEngine {
       }
     }
 
-    // ── ITEM 97(c): PROXIMITY-DEDUP GUARD ──────────────────────────────
-    // No second signal in the same direction within 1.5 ATR and 30 min of an
-    // existing ACTIVE signal. Derived from the [1][2][3] layering: 3 BUYs in
-    // 36 min within $1.9 at ATR ~1.0-1.5. The guard prevents the zone-density
-    // layering mechanism from producing redundant entries.
+    // ── ITEM 104: CHECK PENDING ZONE ENTRIES FOR CONVERSION ───────────
+    // If current price has reached a pending entry's zone price, convert it
+    // to a live signal. This runs BEFORE the dedup guard so the converted
+    // signal is not blocked by its own pending entry.
+    for (const [clusterId, pending] of this.pendingZoneEntries.entries()) {
+      if (now > pending.expiresAt) {
+        this.awaitZoneExpired += 1;
+        this.pendingZoneEntries.delete(clusterId);
+        console.log(`⏰ [AwaitTheZone] EXPIRED pending ${pending.direction} at ${pending.zonePrice.toFixed(1)} (4h timeout)`);
+        continue;
+      }
+      const distToZone = Math.abs(this.currentPrice - pending.zonePrice);
+      const atrForPending = Math.max(Number(pending.signalParams.atr ?? 1), 0.01);
+      if (distToZone < atrForPending * 0.3) {
+        // Price reached the zone — convert to live signal
+        this.awaitZoneConverted += 1;
+        this.pendingZoneEntries.delete(clusterId);
+        console.log(`✅ [AwaitTheZone] CONVERTED pending ${pending.direction} at ${pending.zonePrice.toFixed(1)} — price reached zone`);
+        // Re-derive the ladder from the zone price as the new entry
+        const movedEntryPrice = pending.zonePrice;
+        const movedRisk = Math.abs(movedEntryPrice - Number(pending.signalParams.sl));
+        if (movedRisk <= 0) continue;
+        // Use the pending signal's parameters with the moved entry
+        entryPrice = movedEntryPrice;
+        entryPriceWithSlippage = movedEntryPrice;
+        // Recompute tp1/tp2/tp3/sl from the moved entry using the same ladder
+        // The ladder is R-based, so TPs and SL shift with the entry
+        const p = pending.signalParams as any;
+        const tp1Dist = Math.abs(Number(p.tp1) - entryPrice);
+        const tp2Dist = Math.abs(Number(p.tp2) - entryPrice);
+        const tp3Dist = Math.abs(Number(p.tp3) - entryPrice);
+        const slDist = Math.abs(Number(p.sl) - entryPrice);
+        tp1 = analysis.signalType === 'BUY' ? movedEntryPrice + tp1Dist : movedEntryPrice - tp1Dist;
+        tp2 = analysis.signalType === 'BUY' ? movedEntryPrice + tp2Dist : movedEntryPrice - tp2Dist;
+        tp3 = analysis.signalType === 'BUY' ? movedEntryPrice + tp3Dist : movedEntryPrice - tp3Dist;
+        sl = analysis.signalType === 'BUY' ? movedEntryPrice - slDist : movedEntryPrice + slDist;
+        // Break out — emit the signal at the moved entry
+        break;
+      }
+    }
+
+    // ── ITEM 105: CLUSTER-SCOPED DEDUP GUARD (replaces Item 97 time-window) ──
+    // PRIMARY: suppress a same-direction signal while an ACTIVE signal exists
+    // in the same zone cluster, regardless of elapsed time. A time window is
+    // a proxy for "same zone cluster" and a worse one — the 30-min window let
+    // the motivating 5-signal cluster through by 1 minute.
+    // SECONDARY: time window as backstop (DEDUP_TIME_WINDOW_MS=210 min,
+    // DEDUP_PRICE_BAND_ATR=4.0, both derived from the 15-signal cluster's
+    // max gaps of 204.6 min / 3.59 ATR).
     this.dedupChecks += 1;
+    const atrForDedup = Math.max(features.atr, 0.01);
+    // Check active signals in the same direction
+    const activeSameDir = this.activeSignalsByDirection.get(analysis.signalType) ?? [];
+    for (const active of activeSameDir) {
+      const priceDist = Math.abs(this.currentPrice - active.price);
+      const priceBandAtr = priceDist / Math.max(active.atr, atrForDedup);
+      if (priceBandAtr < DEDUP_CLUSTER_BAND_ATR) {
+        this.dedupBlocks += 1;
+        console.log(`❌ REJECTED [ClusterDedup]: ${analysis.signalType} @ ${this.currentPrice.toFixed(1)} within ${priceBandAtr.toFixed(2)} ATR of active ${active.signalId.slice(-9)} @ ${active.price.toFixed(1)}`);
+        console.log(`   [ClusterDedup] cluster_band=${DEDUP_CLUSTER_BAND_ATR} ATR — active signal in same zone cluster`);
+        console.log(`${'='.repeat(80)}\n`);
+        this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'cluster-dedup: active signal in same zone cluster', {
+          entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips,
+        });
+        return null;
+      }
+    }
+    // Secondary: time window backstop
     if (this.lastEmittedSignal && this.lastEmittedSignal.direction === analysis.signalType) {
       const timeSinceLast = now - this.lastEmittedSignal.timestamp;
       const priceDist = Math.abs(this.currentPrice - this.lastEmittedSignal.price);
-      const atrForDedup = Math.max(features.atr, 0.01);
       const priceBandAtr = priceDist / atrForDedup;
       if (timeSinceLast < DEDUP_TIME_WINDOW_MS && priceBandAtr < DEDUP_PRICE_BAND_ATR) {
         this.dedupBlocks += 1;
-        console.log(`❌ REJECTED [ProximityDedup]: ${analysis.signalType} @ ${this.currentPrice.toFixed(1)} within ${priceBandAtr.toFixed(2)} ATR / ${((timeSinceLast) / 60000).toFixed(1)} min of last ${this.lastEmittedSignal.direction} @ ${this.lastEmittedSignal.price.toFixed(1)}`);
-        console.log(`   [ProximityDedup] band=${DEDUP_PRICE_BAND_ATR} ATR, window=${DEDUP_TIME_WINDOW_MS / 60000} min — prevents zone-density layering`);
+        console.log(`❌ REJECTED [TimeWindowDedup]: ${analysis.signalType} @ ${this.currentPrice.toFixed(1)} within ${priceBandAtr.toFixed(2)} ATR / ${(timeSinceLast / 60000).toFixed(1)} min of last ${this.lastEmittedSignal.direction}`);
         console.log(`${'='.repeat(80)}\n`);
-        this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'proximity-dedup: too close to recent same-direction signal', {
+        this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'time-window-dedup: secondary backstop', {
           entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips,
         });
         return null;
@@ -8281,13 +8485,31 @@ class SignalGenerationEngine {
     // This is the prerequisite for durable resolution. Capture was 12.9% because
     // emission was never persisted server-side at all, so a replay resolver had
     // no population to replay.
-    // ITEM 97(c) — track the last emitted signal for the proximity-dedup guard.
+    // ITEM 97(c)/105 — track the last emitted signal for the dedup guard.
     this.lastEmittedSignal = {
       direction: analysis.signalType,
       price: entryPriceWithSlippage,
       atr: features.atr,
       timestamp: now,
     };
+    // ITEM 105 — track active signals per direction for cluster-scoped dedup.
+    // Removed when the signal reaches a terminal status (in recordTradeOutcome).
+    const dirList = this.activeSignalsByDirection.get(analysis.signalType) ?? [];
+    dirList.push({ price: entryPriceWithSlippage, atr: features.atr, timestamp: now, signalId: emittedSignalId });
+    this.activeSignalsByDirection.set(analysis.signalType, dirList);
+    // ITEM 107 — session-liquidity telemetry: minutes to next session open.
+    {
+      const d = new Date(now);
+      const currentMin = d.getUTCHours() * 60 + d.getUTCMinutes();
+      const londonMin = SESSION_OPEN_LONDON_UTC_HOUR * 60;
+      const nyMin = SESSION_OPEN_NY_UTC_HOUR * 60;
+      let londonGap = londonMin - currentMin; if (londonGap < 0) londonGap += 24 * 60;
+      let nyGap = nyMin - currentMin; if (nyGap < 0) nyGap += 24 * 60;
+      const minToOpen = Math.min(londonGap, nyGap);
+      const session = londonGap <= nyGap ? 'London' : 'NY';
+      this.sessionTelemetry.push({ signalId: emittedSignalId, minutesToOpen: minToOpen, session });
+      if (this.sessionTelemetry.length > 500) this.sessionTelemetry.shift();
+    }
 
     pushEmittedSignalRecord({
       signalId: emittedSignalId,
