@@ -51,6 +51,8 @@ export interface EmittedSignalRecord {
   htfTrend?: string | null;
   ltfTrend?: string | null;
   rsi?: number | null;
+  /** ITEM 136(g): minutes between the zone map's last successful fetch and signal emission. NULL if TIER_0 was not used. */
+  zoneMapAgeMinutes?: number | null;
   srZonesSnapshot?: unknown;
   attentionScores?: unknown;
   source: EmittedSignalSource;
@@ -125,6 +127,7 @@ const toRow = (r: EmittedSignalRecord): Record<string, unknown> => ({
   htf_trend: r.htfTrend ?? null,
   ltf_trend: r.ltfTrend ?? null,
   rsi: r.rsi ?? null,
+  zone_map_age_minutes: r.zoneMapAgeMinutes ?? null,
   sr_zones_snapshot: (r.srZonesSnapshot ?? null) as Record<string, unknown> | null,
   attention_scores: (r.attentionScores ?? null) as Record<string, unknown> | null,
   source: r.source,
@@ -141,11 +144,22 @@ export function pushEmittedSignalRecord(record: EmittedSignalRecord): void {
   const client = getEmittedClient();
   if (!client) return;
 
+  // ITEM 139(c): ATR range guard. The backfill atr column held values up to
+  // 124.20 (impossible for 1-min gold at ~$4,400). The migration adds a CHECK
+  // constraint at the DB level; this client-side guard prevents a write failure
+  // from blocking the fire-and-forget path by clamping before send.
+  const safeRecord: EmittedSignalRecord = {
+    ...record,
+    atr: record.atr !== null && record.atr !== undefined
+      ? (Math.max(0, Math.min(20, record.atr)))
+      : null,
+  };
+
   void (async () => {
     try {
       const { error } = await client
         .from('emitted_signals_v1')
-        .upsert(toRow(record), { onConflict: 'signal_id' });
+        .upsert(toRow(safeRecord), { onConflict: 'signal_id' });
       if (error) {
         emittedWriteFailures += 1;
         console.warn(`[EmittedSignal] EMISSION_WRITE_FAILED (fire-and-forget): ${serializeError(error)}`);

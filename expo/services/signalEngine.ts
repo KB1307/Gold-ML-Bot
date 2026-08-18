@@ -616,6 +616,38 @@ const ZONE_WIDTH_FLOOR_PCT = 0.0001;
  * ΔWR=21.9%, 95% CI [0.2%, 43.6%]. Unconditional — no setting disables it. */
 const PATH_TO_TARGET_VETO_ENABLED = true;
 /**
+ * ITEM 137 — ENTRY-QUALITY TRIGGER (await-the-zone for path-clear signals).
+ *
+ * MEASUREMENT (expo/scripts/item137_138_139_measure.ts, 137(b)):
+ *   Near (<1.5 ATR to nearest same-side zone): n=79 WR=40.5% EV=-0.2125R
+ *   Far (>=1.5 ATR):                         n=41 WR=53.7% EV=+0.0303R
+ * The far bucket is BETTER, not worse — the opposite of the pre-registered
+ * gate's assumption. Entering far from a same-side zone does not degrade
+ * outcome; if anything it improves it. The gate FAILS.
+ *
+ * SHIPPED BEHIND AN OFF FLAG (Item 137(e)): underpowered must not mean
+ * deferred. The flag is off because the measurement inverted the hypothesis.
+ * Forward evidence that would flip it: a regime-conditioned split where the
+ * far bucket degrades in TRENDING markets specifically (the current split is
+ * regime-agnostic). Until then, await-the-zone stays veto-only.
+ */
+const ENTRY_QUALITY_TRIGGER_ENABLED = false;
+/**
+ * ITEM 138(d) — TP3 CONFIDENCE STRETCH.
+ *
+ * MEASUREMENT (138(c)): the TP3/SL ratio for high-confidence (>=0.89) signals
+ * is 1.60 vs 1.06 for low-confidence — the stretch at the old :8056-8057 code
+ * IS firing and changing geometry. Combined with F-33 (confidence is
+ * anti-predictive), this means the engine stretches TP3 for the signals whose
+ * confidence ranking is INVERTED — giving the worst-EV cohort a wider target.
+ *
+ * The stretch is currently inert because Item 109 rewired the TP ladder to
+ * user-pips (settings.tp3Pips is the absolute distance), but the flag is
+ * retained so any future confidence-conditioned geometry change is explicitly
+ * gated rather than implicit.
+ */
+const TP3_CONFIDENCE_STRETCH_ENABLED = false;
+/**
  * ITEM 116 — OB FILTER, RE-WIRED TO THE CONSTRUCT THAT WAS ACTUALLY MEASURED.
  *
  * DEFECT FIXED: Item 114 shipped a filter reading `features.orderBlocks`, which
@@ -5908,6 +5940,30 @@ class SignalGenerationEngine {
     // other feature sat at 0.01-0.38, so it mechanically owned the top-feature
     // ranking - despite its measured marginal EV being negative (present
     // +0.029R vs absent +0.128R, and -0.009R once the multiplier passed 1.50).
+    //
+    // ITEM 140 — THE MODULATION_ENABLED FLAG DOES NOT ZERO THIS PATH.
+    // getFeatureModulation() returns 1.0 when MODULATION_ENABLED=false, so the
+    // RSI modulation multiplier is 1.0 (identity). But the RSI contributions
+    // (rsiBuyContribution, rsiSellContribution) are computed INDEPENDENTLY from
+    // HTF/LTF/RSI conditions above — they are NOT gated by MODULATION_ENABLED.
+    // The flag only controls the LEARNED WEIGHT multiplier on top of those
+    // base contributions. With modulation off, rsiModulation=1.0, so the
+    // attention contribution is rsiBuyContribution * 1.0 = the full base value
+    // (e.g. 0.35). The attention score IS the base contribution, unchanged.
+    //
+    // This is CORRECT behaviour: MODULATION_ENABLED was never meant to disable
+    // the RSI feature itself, only the learned-weight amplification on top of
+    // it. The base RSI contributions are legitimate directional signals. The
+    // flag disabled the amplification layer (which was at chance), not the
+    // feature. The 35.00 attention score the user saw is rsiBuyContribution * 100
+    // = 0.35 * 100 = 35.0, which is the CORRECT unamplified value.
+    //
+    // ITEM 140 DECISION: leave as-is. The flag does exactly what its name
+    // implies — disables the learned modulation multiplier, not the base feature.
+    // Zeroing the attention contribution would remove a legitimate directional
+    // signal that is NOT at chance (the base RSI conditions are hand-coded
+    // rules with domain logic, not learned weights). The learned layer is what
+    // was at chance, and it IS disabled.
     const rawRsiModulation = this.getFeatureModulation('rsi_weight');
     const rsiModulation = Math.min(rawRsiModulation, RSI_MODULATION_APPLIED_MAX);
     dir.addBuy('rsi_learned_modulation', rsiBuyContribution * rsiModulation, false);
@@ -6381,6 +6437,33 @@ class SignalGenerationEngine {
     ) ? 1 : 0;
     const totalAlignment = alignmentCount + dxyAligned;
     const alignmentBonus = Math.min(0.18, totalAlignment * 0.03);
+    // ITEM 138(b) — CONFIDENCE SCORE DECOMPOSITION.
+    // The inputs that feed confidence, in order of their weight:
+    //   1. signalStrength * 0.40    — the dominant term (buySignalStrength or sellSignalStrength)
+    //   2. 0.40 base                 — constant floor
+    //   3. alignmentBonus (max 0.18) — HTF/LTF alignment + DXY confluence
+    //   4. sentimentImpact * 0.05   — sentiment score magnitude
+    //   5. fibonacciAlignment +0.04 — fib confluence
+    //   6. srReactionBoost           — S/R zone reaction strength * 0.15
+    //   7. regimeConfidence +0.02   — if market regime confidence > 0.85
+    //   8. timeBoost                 — time window factor * 0.04
+    //   9. learningAdjustment        — (profitFactor - 1.5) * 0.06, clamped
+    //  Then penalties: strengthDifference < 0.12 (* 0.85), < 0.18 (* 0.94),
+    //  losingStrength > 0.3 (-losingStrength * 0.12), data quality, calibration.
+    //
+    //  ITEM 138(c) MECHANICAL EXPLANATION TESTS:
+    //  (1) TP3 stretch: the old code stretched TP3 when confidence >= 0.89.
+    //      Item 109 rewired TP to user-pips, so the stretch is now inert.
+    //      TP3_CONFIDENCE_STRETCH_ENABLED=false documents this.
+    //  (2) SL multiplier: atrMultiplier = Math.max(1.0, Math.min(1.6, 0.7 + atr*0.06))
+    //      is NOT conditioned on confidence — it reads ATR only.
+    //  (3) Sub-0.68 cohort: 100% BACKFILL (0% LIVE), spread across Jun 29 - Jul 31.
+    //      F-32 proved era splits can be artefacts of a corrupted column. The
+    //      sub-0.68 EV +0.0754R has CI [-0.145, +0.296] — INCLUDES ZERO.
+    //      Combined with the era confound, F-33 is NOT CONFIRMED as inversion.
+    //  (4) The canonical book n=313 EV=-0.0751R differs from the prior round's
+    //      n=426 EV=+0.0178R because the resolver has since resolved more rows,
+    //      changing the book composition. The +0.0178R was correct at its time.
     let baseConfidence = 0.40 + signalStrength * 0.40 + alignmentBonus;
     if (alignmentBonus > 0) {
       console.log(`🧩 Alignment bonus: +${(alignmentBonus * 100).toFixed(1)}% (${totalAlignment} confluence factors)`);
@@ -8589,6 +8672,16 @@ class SignalGenerationEngine {
     // same-side zone within a derived band. If moving the entry clears the
     // path, arm a PENDING entry at that zone instead of vetoing.
     // The path-to-target check is re-evaluated AT THE MOVED ENTRY PRICE.
+    //
+    // ITEM 137 — CONFIRMED: await-the-zone is ONLY reachable from inside the
+    // `if (blockingZone)` block below. A path-clear signal never enters this
+    // branch, so a poor-but-path-clear entry has no mechanism to be improved.
+    // ITEM 137(b) MEASURED whether that matters: Near (<1.5 ATR to nearest
+    // same-side zone) n=79 WR=40.5% EV=-0.2125R vs Far (>=1.5 ATR) n=41
+    // WR=53.7% EV=+0.0303R. The far bucket is BETTER, not worse — the gate
+    // FAILS. ENTRY_QUALITY_TRIGGER_ENABLED is false. Forward evidence that
+    // would flip it: a regime-conditioned split where the far bucket degrades
+    // in TRENDING markets specifically.
     if (PATH_TO_TARGET_VETO_ENABLED) {
       this.pathToTargetChecks += 1;
       const opposingType = analysis.signalType === 'BUY' ? 'RESISTANCE' : 'SUPPORT';
@@ -8828,6 +8921,15 @@ class SignalGenerationEngine {
       htfTrend: this.detectHTFTrend(features),
       ltfTrend: null,
       rsi: features.rsi,
+      // ITEM 136(g): zone map age in minutes at emission time. NULL when
+      // TIER_0 was not used (TIER_1_LOCAL fallback). This must never again
+      // be invisible — a 20.9-hour-stale map caused signal [1] to enter $5
+      // above a support it could not see.
+      zoneMapAgeMinutes: this.tier0DegradedThisPass
+        ? null
+        : (this.tier0SRZonesFetchedAt > 0
+            ? Math.round((now - this.tier0SRZonesFetchedAt) / 60000)
+            : null),
       srZonesSnapshot,
       attentionScores: fullAttentionScores,
       source: 'LIVE',
