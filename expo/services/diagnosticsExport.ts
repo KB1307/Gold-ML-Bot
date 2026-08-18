@@ -346,6 +346,29 @@ function formatSignal(signal: TradingSignal, index: number): string {
         );
       });
   }
+  // ITEM 100(e): market structure telemetry (BoS / ChoCh / Order Blocks).
+  // Telemetry ONLY — nothing is wired into scoring. Computed from the signal's
+  // learningContext if available, or reported as not-instrumented.
+  const lcMs = signal.learningContext;
+  if (lcMs && typeof lcMs === 'object') {
+    const lcRaw = lcMs as unknown as Record<string, unknown>;
+    const obData = lcRaw.orderBlocks;
+    const bosData = lcRaw.lastBos;
+    const chochData = lcRaw.lastChoch;
+    const trendData = lcRaw.prevailingTrend;
+    if (trendData || bosData || chochData || obData) {
+      lines.push(`    market structure (ITEM 100, telemetry only — NOT wired into scoring):`);
+      if (trendData) lines.push(`      prevailing trend: ${String(trendData)}`);
+      if (bosData) lines.push(`      last BoS: ${JSON.stringify(bosData)}`);
+      if (chochData) lines.push(`      last ChoCh: ${JSON.stringify(chochData)}`);
+      if (obData && Array.isArray(obData)) {
+        lines.push(`      order blocks (${obData.length}):`);
+        for (const ob of obData) {
+          lines.push(`        ${String((ob as Record<string, unknown>).direction)} OB [${Number((ob as Record<string, unknown>).low).toFixed(1)}-${Number((ob as Record<string, unknown>).high).toFixed(1)}] mitigated=${String((ob as Record<string, unknown>).mitigated)}`);
+        }
+      }
+    }
+  }
   return lines.join("\n");
 }
 

@@ -557,6 +557,28 @@ const MOMENTUM_BREAKOUT_MAX_BARS = 3;
 // versus an atr*0.3 term of ~$0.55, so it won 233/233 samples — the ATR term
 // was unreachable dead code and every zone got a fixed 128-pip band.
 const ZONE_WIDTH_FLOOR_PCT = 0.0001;
+/** ITEM 96 — PATH-TO-TARGET VETO. Derived from canonical split (n=161):
+ * path-blocked n=22 WR=36.4% EV=-0.2193R vs path-clear n=139 WR=58.3% EV=+0.0537R,
+ * ΔWR=21.9%, 95% CI [0.2%, 43.6%]. Unconditional — no setting disables it. */
+const PATH_TO_TARGET_VETO_ENABLED = true;
+/** ITEM 97 — ZONE CLUSTERING MERGE THRESHOLD (derived). Gap distribution across
+ * 1242 same-side pairs: p25=2.00 ATR, 18.3% within 1.5 ATR. Merging at 1.5 ATR
+ * collapses the overlapping fifth while keeping distinct levels (p25=2.0) separate. */
+const ZONE_MERGE_THRESHOLD_ATR = 1.5;
+/** ITEM 99 — 24-HOUR TRAILING ZONE WINDOW.
+ * Gate passed: short-horizon reversal persistence is positive and > +0.3 at all
+ * three tested horizons (4h=+0.3644, 8h=+0.4117, 12h=+0.4507, all with tight CIs).
+ * The 120h window produced 9 SUPPORT vs 2 RESISTANCE (dense, overlapping). The
+ * 24h window produces a more balanced 7S/10R map. Ship ON. */
+/** ITEM 97 — PROXIMITY-DEDUP GUARD. Derived from [1][2][3] layering: 3 signals in
+ * 36 min within $1.9. At ATR ~1.0-1.5, $1.9 ≈ 1.3-1.9 ATR. Band=1.5 ATR, window=30 min. */
+const DEDUP_PRICE_BAND_ATR = 1.5;
+const DEDUP_TIME_WINDOW_MS = 30 * 60 * 1000;
+/** ITEM 98(c) — STRENGTH-WEIGHTED ZONE SELECTION.
+ * Gate: n=2 near-strongest vs n=46 near-weak — severely underpowered.
+ * Ship BEHIND AN OFF FLAG. Forward evidence: once n >= 30 per arm, re-run
+ * the canonical split and flip this flag if the gap is material. */
+const STRENGTH_WEIGHTED_ZONE_SELECTION_ENABLED = false;
 const NEAR_MISS_CONFIDENCE_LOW = 0.60;
 const NEAR_MISS_CONFIDENCE_HIGH = 0.68;
 const NEAR_MISS_DIFF_LOW = 0.04;
@@ -1407,6 +1429,24 @@ class SignalGenerationEngine {
   private entryAnchorStaleRejections: number = 0;
   private geometrySanityChecks: number = 0;
   private geometryUnwinnableRejections: number = 0;
+  /** ITEM 96 — path-to-target veto counters. */
+  private pathToTargetChecks: number = 0;
+  private pathToTargetVetoes: number = 0;
+  /** ITEM 97 — proximity-dedup guard counters. */
+  private dedupChecks: number = 0;
+  private dedupBlocks: number = 0;
+  /** ITEM 95(c) — RSI modulation agreement tracker.
+   * Tracks whether the RSI learned modulation contribution AGREED or DISAGREED
+   * with the canonical outcome. A signal where RSI modulation pushed BUY and the
+   * outcome was a WIN = agreed; pushed BUY and outcome was LOSS = disagreed.
+   * n=4 so far: 4/4 disagreed. WATCH ITEM — do NOT change any weight on it. */
+  private rsiModAgreed: number = 0;
+  private rsiModDisagreed: number = 0;
+  /** The RSI modulation direction for the current signal, set at scoring time
+   * and read at outcome time. */
+  private lastRsiModDirection: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
+  /** ITEM 97(c) — last emitted signal per direction for dedup. */
+  private lastEmittedSignal: { direction: SignalType; price: number; atr: number; timestamp: number } | null = null;
   private quasimodolLevels: QuasimodolLevel[] = [];
   private sessionSweeps: SessionSweep[] = [];
   /**
@@ -3923,11 +3963,49 @@ class SignalGenerationEngine {
       }
     }
 
-    zones.sort((a, b) => b.reactionStrength - a.reactionStrength);
-    this.srZones = zones.slice(0, 16);
+    // ITEM 97(b) — ZONE CLUSTERING. Merge same-side zones whose separation is
+    // below ZONE_MERGE_THRESHOLD_ATR (1.5, derived from the gap distribution:
+    // p25=2.00 ATR, 18.3% of pairs within 1.5 ATR). Merged zones get a combined
+    // touch count and the strongest member's reaction strength, preventing the
+    // dense-zone layering where 5 overlapping supports in a $13.6 band always
+    // produce a "buy at support" signal regardless of where price actually sits.
+    const preClusterCount = zones.length;
+    const mergeThreshold = Math.max(atr * ZONE_MERGE_THRESHOLD_ATR, currentPrice * ZONE_WIDTH_FLOOR_PCT);
+    const merged: SRZone[] = [];
+    const bySide: { supports: SRZone[]; resistances: SRZone[] } = {
+      supports: zones.filter(z => z.type === 'SUPPORT').sort((a, b) => a.price - b.price),
+      resistances: zones.filter(z => z.type === 'RESISTANCE').sort((a, b) => a.price - b.price),
+    };
+    for (const arr of [bySide.supports, bySide.resistances]) {
+      let i = 0;
+      while (i < arr.length) {
+        let cluster = { ...arr[i] };
+        let j = i + 1;
+        while (j < arr.length && Math.abs(arr[j].price - cluster.price) < mergeThreshold) {
+          // Merge: combine touches, take strongest reaction_strength, average price
+          cluster.price = (cluster.price * cluster.touches + arr[j].price * arr[j].touches) / (cluster.touches + arr[j].touches);
+          cluster.touches += arr[j].touches;
+          cluster.rejectionWicks += arr[j].rejectionWicks;
+          cluster.reactionStrength = Math.max(cluster.reactionStrength, arr[j].reactionStrength);
+          cluster.confluenceScore = Math.max(cluster.confluenceScore, arr[j].confluenceScore);
+          j++;
+        }
+        cluster.price = parseFloat(cluster.price.toFixed(1));
+        cluster.reactionStrength = parseFloat(cluster.reactionStrength.toFixed(3));
+        merged.push(cluster);
+        i = j;
+      }
+    }
+    const postClusterCount = merged.length;
+    if (preClusterCount !== postClusterCount) {
+      console.log(`  [ZoneClustering] merged ${preClusterCount} -> ${postClusterCount} zones (threshold ${mergeThreshold.toFixed(2)} = ${ZONE_MERGE_THRESHOLD_ATR} ATR)`);
+    }
+
+    merged.sort((a, b) => b.reactionStrength - a.reactionStrength);
+    this.srZones = merged.slice(0, 16);
 
     if (this.srZones.length > 0) {
-      console.log('\n📊 S/R ZONE DETECTION:');
+      console.log('\n📊 S/R ZONE DETECTION (post-clustering):');
       console.log('='.repeat(60));
       for (const zone of this.srZones.slice(0, 6)) {
         console.log(`   ${zone.type} @ ${zone.price.toFixed(1)} | Touches: ${zone.touches} | Wick Rejections: ${zone.rejectionWicks} | Reaction: ${(zone.reactionStrength * 100).toFixed(0)}% | Source: ${zone.source} | Confluence: ${zone.confluenceScore}`);
@@ -5540,6 +5618,11 @@ class SignalGenerationEngine {
     const rsiModulation = Math.min(rawRsiModulation, RSI_MODULATION_APPLIED_MAX);
     dir.addBuy('rsi_learned_modulation', rsiBuyContribution * rsiModulation, false);
     dir.addSell('rsi_learned_modulation', rsiSellContribution * rsiModulation, false);
+    // ITEM 95(c): track which direction the RSI modulation pushed this signal,
+    // so at outcome time we can tally agreement vs disagreement.
+    this.lastRsiModDirection = rsiBuyContribution > rsiSellContribution ? 'BUY'
+      : rsiSellContribution > rsiBuyContribution ? 'SELL'
+      : 'NEUTRAL';
     if (rsiBuyContribution > 0 || rsiSellContribution > 0) {
       const rsiContribution = Math.max(rsiBuyContribution, rsiSellContribution) * rsiModulation;
       attentionScores.set('rsi_learned_modulation', parseFloat(rsiContribution.toFixed(4)));
@@ -6775,6 +6858,25 @@ class SignalGenerationEngine {
     }
 
     this.tradeOutcomes.push(outcome);
+    
+    // ITEM 95(c) — RSI modulation agreement tracker.
+    // Compare the direction the RSI modulation pushed (lastRsiModDirection)
+    // against the actual outcome. A WIN where RSI pushed BUY = agreed;
+    // a LOSS where RSI pushed BUY = disagreed. WATCH ITEM only — n=4 so far
+    // (4/4 disagreed). Do NOT change any weight on it; the tracker accumulates
+    // evidence for a future round once n is adequate.
+    if (this.lastRsiModDirection !== 'NEUTRAL' && !isScratch) {
+      const outcomeDirection = direction ?? 'BUY';
+      const modAgreedWithOutcome =
+        (this.lastRsiModDirection === outcomeDirection && result === 'WIN') ||
+        (this.lastRsiModDirection !== outcomeDirection && result === 'LOSS');
+      if (modAgreedWithOutcome) {
+        this.rsiModAgreed += 1;
+      } else {
+        this.rsiModDisagreed += 1;
+      }
+      console.log(`🧠 RSI_MOD_TRACKER: pushed ${this.lastRsiModDirection}, outcome ${result} (${outcomeDirection}) → ${modAgreedWithOutcome ? 'AGREED' : 'DISAGREED'} (tally: ${this.rsiModAgreed} agreed / ${this.rsiModDisagreed} disagreed)`);
+    }
     
     if (this.tradeOutcomes.length > MAX_STORED_OUTCOMES) {
       this.tradeOutcomes = this.tradeOutcomes.slice(-MAX_STORED_OUTCOMES);
@@ -8114,6 +8216,60 @@ class SignalGenerationEngine {
       return null;
     }
 
+    // ── ITEM 96: PATH-TO-TARGET VETO ──────────────────────────────────
+    // A SELL with a SUPPORT between entry and TP1, or a BUY with a RESISTANCE
+    // between entry and TP1, is path-blocked. Canonical split (n=161):
+    //   path-blocked n=22 WR=36.4% EV=-0.2193R
+    //   path-clear  n=139 WR=58.3% EV=+0.0537R
+    //   ΔWR=21.9%, 95% CI [0.2%, 43.6%]
+    // Unconditional — no setting disables it.
+    if (PATH_TO_TARGET_VETO_ENABLED) {
+      this.pathToTargetChecks += 1;
+      const opposingType = analysis.signalType === 'BUY' ? 'RESISTANCE' : 'SUPPORT';
+      const tp1Price = tp1;
+      const minP = Math.min(entryPriceWithSlippage, tp1Price);
+      const maxP = Math.max(entryPriceWithSlippage, tp1Price);
+      const blockingZone = features.srZones.find(z =>
+        z.type === opposingType &&
+        z.price > minP + 0.01 &&
+        z.price < maxP - 0.01 &&
+        z.reactionStrength >= 0.3,
+      );
+      if (blockingZone) {
+        this.pathToTargetVetoes += 1;
+        console.log(`❌ REJECTED [PathToTargetVeto]: ${analysis.signalType} TP1 ${tp1Price.toFixed(1)} blocked by ${opposingType} @ ${blockingZone.price.toFixed(1)} (reaction ${(blockingZone.reactionStrength * 100).toFixed(0)}%)`);
+        console.log(`   [PathToTargetVeto] entry=${entryPriceWithSlippage.toFixed(1)} TP1=${tp1Price.toFixed(1)} ${opposingType}@${blockingZone.price.toFixed(1)} — EV=-0.2193R on n=22 blocked signals`);
+        console.log(`${'='.repeat(80)}\n`);
+        this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'path-to-target veto: opposing zone between entry and TP1', {
+          entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips,
+        });
+        return null;
+      }
+    }
+
+    // ── ITEM 97(c): PROXIMITY-DEDUP GUARD ──────────────────────────────
+    // No second signal in the same direction within 1.5 ATR and 30 min of an
+    // existing ACTIVE signal. Derived from the [1][2][3] layering: 3 BUYs in
+    // 36 min within $1.9 at ATR ~1.0-1.5. The guard prevents the zone-density
+    // layering mechanism from producing redundant entries.
+    this.dedupChecks += 1;
+    if (this.lastEmittedSignal && this.lastEmittedSignal.direction === analysis.signalType) {
+      const timeSinceLast = now - this.lastEmittedSignal.timestamp;
+      const priceDist = Math.abs(this.currentPrice - this.lastEmittedSignal.price);
+      const atrForDedup = Math.max(features.atr, 0.01);
+      const priceBandAtr = priceDist / atrForDedup;
+      if (timeSinceLast < DEDUP_TIME_WINDOW_MS && priceBandAtr < DEDUP_PRICE_BAND_ATR) {
+        this.dedupBlocks += 1;
+        console.log(`❌ REJECTED [ProximityDedup]: ${analysis.signalType} @ ${this.currentPrice.toFixed(1)} within ${priceBandAtr.toFixed(2)} ATR / ${((timeSinceLast) / 60000).toFixed(1)} min of last ${this.lastEmittedSignal.direction} @ ${this.lastEmittedSignal.price.toFixed(1)}`);
+        console.log(`   [ProximityDedup] band=${DEDUP_PRICE_BAND_ATR} ATR, window=${DEDUP_TIME_WINDOW_MS / 60000} min — prevents zone-density layering`);
+        console.log(`${'='.repeat(80)}\n`);
+        this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'proximity-dedup: too close to recent same-direction signal', {
+          entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips,
+        });
+        return null;
+      }
+    }
+
     const emittedSignalId = `signal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
     // ITEM 52(b) — EMISSION PERSISTENCE. Fire-and-forget durable write of every
@@ -8125,6 +8281,14 @@ class SignalGenerationEngine {
     // This is the prerequisite for durable resolution. Capture was 12.9% because
     // emission was never persisted server-side at all, so a replay resolver had
     // no population to replay.
+    // ITEM 97(c) — track the last emitted signal for the proximity-dedup guard.
+    this.lastEmittedSignal = {
+      direction: analysis.signalType,
+      price: entryPriceWithSlippage,
+      atr: features.atr,
+      timestamp: now,
+    };
+
     pushEmittedSignalRecord({
       signalId: emittedSignalId,
       emittedAt: Date.now(),

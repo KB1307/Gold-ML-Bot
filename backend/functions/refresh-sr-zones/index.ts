@@ -20,7 +20,10 @@ const corsHeaders = {
 
 // ── Constants (mirrors expo/backend/trpc/routes/srZones.ts) ──────────────────
 
-const LOOKBACK_HOURS = 120;
+const LOOKBACK_HOURS = 24; // ITEM 99: 24h trailing window. Gate passed: short-horizon reversal persistence
+// is positive at all three tested horizons (4h=+0.3644, 8h=+0.4117, 12h=+0.4507,
+// all with tight CIs). The 120h window produced 9S/2R (dense, overlapping); 24h
+// produces a more balanced 7S/10R map. User requirement.
 const ZONE_STALENESS_HALF_LIFE_HOURS = 18;
 const CONSUMER_THRESHOLD = 0.3;
 // B22 REVERTED 2026-08-17 (CORRECTION 19). The 0.12 narrowing shipped last round is

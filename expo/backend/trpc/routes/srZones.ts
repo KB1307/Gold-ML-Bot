@@ -29,7 +29,10 @@ import type { Database } from "@/src/integrations/supabase/types";
  * never stale by construction.
  */
 
-const LOOKBACK_HOURS = 120; // 5 days of durable M1 bars
+const LOOKBACK_HOURS = 24; // ITEM 99: 24h trailing window (was 120h). Gate passed:
+// short-horizon reversal persistence positive at all 3 tested horizons
+// (4h=+0.3644, 8h=+0.4117, 12h=+0.4507). 24h map is more balanced (7S/10R)
+// vs 120h (9S/2R). User requirement.
 const EXPIRY_HOURS = 96; // untouched PRICE_ACTION zones older than this are dropped at read time
 const ZONE_STALENESS_HALF_LIFE_HOURS = 18; // longer half-life than the local (6h) tier - server zones represent a multi-day evidence base, so a single quiet day shouldn't halve them the way a single quiet in-memory session does locally
 
