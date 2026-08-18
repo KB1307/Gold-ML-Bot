@@ -40,9 +40,22 @@ export const EXECUTION_COST_PRICE_UNITS = 0.05;
  * because structural runway + opposing-zone veto sizing still read them.
  */
 const DEFAULT_SETTINGS: Settings = {
-  tp1Pips: 49,
-  tp2Pips: 74,
-  tp3Pips: 98,
+  // ITEM 121 — defaults moved to the MEASURED-BETTER ladder.
+  // Item 109(b) canonical A/B on the identical population (n=412, 8h window,
+  // shared evCompute cost model) measured 25/50/80 as superior to the prior
+  // 49/74/98 on every metric: WR 65.05% vs 61.17%, EV_net +0.0371R vs +0.0198R,
+  // PF 1.104 vs 1.050, TP1 hit 65.0% vs 61.2%. A fresh install was getting the
+  // ladder that measurably loses. Since Item 109 the engine reads these pips
+  // DIRECTLY as the TP distances (signalEngine.ts ~:8110), so this default now
+  // determines real emitted geometry, not just a display heuristic.
+  // NOT NEUTRALISED: sanitizeSettings() applies no clamp/floor/Math.max to any
+  // tp*Pips field — it only clamps minConfidence and type-checks booleans.
+  tp1Pips: 25,
+  tp2Pips: 50,
+  tp3Pips: 80,
+  // ITEM 121(d) — slPips DELIBERATELY UNCHANGED at 70. Item 109(b) held SL fixed
+  // and varied only the TP ladder, so nothing in that measurement authorises an
+  // slPips change. Changing it here would be opportunistic, not derived.
   slPips: 70,
   numberOfTPs: 3,
   minConfidence: 0.68,

@@ -11,6 +11,7 @@ import type { OhlcBar } from "@/services/barStore";
 import { appendDiagnosticEvent } from "@/services/diagnosticEventStore";
 import { fetchTier0SRZones, recordTier0FallbackUse } from "@/services/srZoneTier0Service";
 import { DirectionalScoreAccumulator } from "@/services/directionalScoring";
+import { computeMarketStructure, findNearbyUnmitigatedOBs } from "@/services/marketStructure";
 import { EXECUTION_COST_PER_TRADE_USD, costInR } from "@/constants/executionCost";
 import {
   attentionOpposesSignal,
@@ -498,10 +499,20 @@ export function getCalibrationPenalty25Stats(): { count: number; thenFailed: num
  * The learned modulation layer has NO measurable predictive power: held-out
  * accuracy is 49.2-50.0% across all training windows (CI [41%, 59%]), which is
  * chance. C-2 ten-feature validation (Item 111(d)) found ZERO features with CIs
- * excluding zero on the full population. With rsi_weight=-0.171 (post-NET-
- * backfill), the LEARNED_MODULATION_MIN=0 clamp would ZERO the RSI family
- * contribution entirely — removing 0.25-0.40 of scoring input per signal with no
- * evidence it improves outcomes.
+ * excluding zero on the full population.
+ *
+ * ITEM 117(a) CORRECTION — the prior justification here was ARITHMETICALLY WRONG.
+ * It claimed that with rsi_weight=-0.171 the LEARNED_MODULATION_MIN=0 clamp
+ * "would ZERO the RSI family contribution entirely". That is false:
+ *     1 + 2.5 * (-0.171) = +0.5725
+ * which is ABOVE MIN=0 and is therefore NOT clamped. The true effect is a
+ * REDUCTION to 0.57x of the RSI family contribution, not elimination.
+ *
+ * The MODULATION_ENABLED=false decision STANDS — it rests on the chance-level
+ * held-out evidence above (49.2-50.0% accuracy, CI [41%, 59%]), which is
+ * untouched by this correction. Only the justifying arithmetic was wrong.
+ * (Contrast: the -0.684 weight documented further down DOES clamp, because
+ * 1 + 2.5 * (-0.684) = -0.71 < 0. That comment is correct and unchanged.)
  *
  * RE-ENABLING CRITERION: held-out accuracy beats chance with p<0.05 (binomial
  * test, n>=200, accuracy >= 55%). Until then, modulation returns 1.0 (no-op).
@@ -594,6 +605,34 @@ const ZONE_WIDTH_FLOOR_PCT = 0.0001;
  * path-blocked n=22 WR=36.4% EV=-0.2193R vs path-clear n=139 WR=58.3% EV=+0.0537R,
  * ΔWR=21.9%, 95% CI [0.2%, 43.6%]. Unconditional — no setting disables it. */
 const PATH_TO_TARGET_VETO_ENABLED = true;
+/**
+ * ITEM 116 — OB FILTER, RE-WIRED TO THE CONSTRUCT THAT WAS ACTUALLY MEASURED.
+ *
+ * DEFECT FIXED: Item 114 shipped a filter reading `features.orderBlocks`, which
+ * comes from the CLASS-LOCAL `this.detectOrderBlocks()` built off
+ * `this.priceHistory` — the Capital.com/Swissquote TICK stream — filtered to the
+ * last 4 hours, kept as TOP 10 BY STRENGTH, with NO mitigation tracking.
+ * Item 108's authorising measurement used `computeMarketStructure()` over 24h of
+ * BARS with real mitigation tracking. Two different constructs; the measurement
+ * did not authorise the filter that shipped (same defect class as B22's zone
+ * width being neutralised by a price floor).
+ *
+ * It also violated the DATA-SOURCE RULE: priceHistory feeds entry TIMING only
+ * and must never gate emission.
+ *
+ * NOW: the filter reads `findNearbyUnmitigatedOBs(computeMarketStructure(bars))`
+ * over the engine's BAR arrays (highHistory/lowHistory/barCloseHistory), with
+ * mitigation honoured and NO top-10-by-strength truncation — the measured
+ * construct. See `buildStructureBars()` and `hasNearbyUnmitigatedOB()`.
+ */
+const OB_FILTER_ENABLED = true;
+/** ITEM 116 — proximity threshold in ATR. Matches the authorising measurement's
+ * `findNearbyUnmitigatedOBs(structure, price, atr, 3)` default exactly. */
+const OB_PROXIMITY_ATR = 3;
+/** ITEM 116 — minimum bars required before the OB filter may reject. Below this
+ * the structure is not computable and the filter ABSTAINS (passes) rather than
+ * rejecting on absent data — a filter must never reject for lack of input. */
+const OB_FILTER_MIN_BARS = 21;
 /** ITEM 97 — ZONE CLUSTERING MERGE THRESHOLD (derived). Gap distribution across
  * 1242 same-side pairs: p25=2.00 ATR, 18.3% within 1.5 ATR. Merging at 1.5 ATR
  * collapses the overlapping fifth while keeping distinct levels (p25=2.0) separate. */
@@ -623,13 +662,39 @@ const ZONE_MERGE_THRESHOLD_ATR = 1.5;
  * strictly more conservative than the time window because it does not expire. */
 const DEDUP_PRICE_BAND_ATR = 4.0;
 /**
- * ITEM 113(b) — re-derived from the DISTRIBUTION, not the max observation.
- * Prior: ceil(max gap in the 15-signal cluster) = 210 min. Any future cluster
- * spanning 4h would break it. Re-derivation on n=3813 same-direction pairs:
- * p95 = 1387 min. The p95 captures 95% of pairs while allowing genuine
- * outliers through — the cluster-scoped guard (PRIMARY) catches those.
+ * ITEM 118 — RE-DERIVED FROM DUPLICATE CLUSTERS, superseding Item 113(b).
+ *
+ * Item 113(b) took p95 of ALL same-direction pair gaps (n=3813) = 1387 min and
+ * shipped 1390 min. That was the WRONG DISTRIBUTION. The window's job is to catch
+ * DUPLICATES, so it must come from the gaps observed INSIDE genuine duplicate
+ * clusters — not from every same-direction pair in the book, most of which are
+ * legitimately distinct setups hours apart at different price levels. p95 of all
+ * pairs suppresses 95% of LEGITIMATE setups; at 1390 min (23.2 hours) combined
+ * with DEDUP_PRICE_BAND_ATR=4.0 that approaches one signal per direction per day.
+ *
+ * DUPLICATE CLUSTER DEFINITION (Item 118a): a maximal set of >= 2 signals sharing
+ * ALL of (1) same direction, (2) entries within DEDUP_CLUSTER_BAND_ATR=1.5 ATR,
+ * (3) overlapping [entry, tp3] ladder intervals; chained transitively in emission
+ * order. Measured on n=426 resolved signals: 15 duplicate clusters, 396 internal
+ * consecutive gaps, distribution p25=10.2 / p50=54.8 / p75=224.6 / p90=637.4 min.
+ *
+ * SHIPPED VALUE = p75 of cluster-internal gaps = 224.6 -> 225 min.
+ *
+ * WHY p75 AND NOT p95: p95 of the cluster-internal distribution is 1866.8 min,
+ * WIDER than the 1390 it replaces, because single-linkage chaining merges some
+ * clusters that span weeks (largest chained cluster = 180 signals), inflating the
+ * upper tail. That tail is a chaining artefact, not a real duplicate gap. p75 is
+ * taken from the dense, well-populated part of the distribution and is robust to
+ * it. This window is the SECONDARY backstop only — it exists for the case where a
+ * signal's zone cluster is unavailable. The PRIMARY cluster-scoped guard catches
+ * the rest, and measurement confirms it: cluster-guard-alone survives 39 signals
+ * vs 40 with the 1390-min window over a 50.1-day book — the wide time window adds
+ * essentially NOTHING (1 signal in 50 days) while costing enormous emission.
+ *
+ * NOT NEUTRALISED: this value is compared directly against elapsed ms in the
+ * dedup check; there is no floor, clamp or Math.max applied to it anywhere.
  */
-const DEDUP_TIME_WINDOW_MS = 1390 * 60 * 1000;
+const DEDUP_TIME_WINDOW_MS = 225 * 60 * 1000;
 /** ITEM 105 — Zone cluster proximity for dedup. Same as ZONE_MERGE_THRESHOLD_ATR:
  * if two signals' entries are within 1.5 ATR, they are in the same zone cluster. */
 const DEDUP_CLUSTER_BAND_ATR = 1.5;
@@ -1443,6 +1508,10 @@ class SignalGenerationEngine {
   private currentDayOHLC: { open: number; high: number; low: number; close: number; date: string } | null = null;
   private lastNYCloseCheck: number = 0;
   private orderBlocks: OrderBlock[] = [];
+  /** ITEM 116(c) — live count of emissions rejected by the bar-based OB filter. */
+  private obFilterRejectionCount: number = 0;
+  /** ITEM 116(c) — live count of times the OB filter was evaluated (rejections + passes + abstains). */
+  private obFilterEvaluationCount: number = 0;
   private fiveMinCandles: { timestamp: number; open: number; high: number; low: number; close: number }[] = [];
   private lastFiveMinCandleClose: number = 0;
 
@@ -3280,6 +3349,100 @@ class SignalGenerationEngine {
     }
 
     return this.orderBlocks;
+  }
+
+  /**
+   * ITEM 116 — build a BAR series for marketStructure.ts from the engine's
+   * bar-aligned arrays.
+   *
+   * DATA SOURCE: highHistory / lowHistory / barCloseHistory. These are BAR
+   * arrays (1-min OHLC), set in lockstep by fetchAndUpdateOHLCHistory(). They are
+   * NOT this.priceHistory (the Capital.com/Swissquote TICK stream), which the
+   * DATA-SOURCE RULE forbids from gating emission.
+   *
+   * `open` is approximated by the previous bar's close, which is standard for a
+   * continuous series and is NOT used by detectSwings/detectOrderBlocks
+   * mitigation logic (those read high/low/close only). Timestamps are synthesized
+   * as minute-spaced from now, which preserves ORDER — the only property the
+   * structure/mitigation logic depends on.
+   */
+  private buildStructureBars(): { timestamp: number; open: number; high: number; low: number; close: number }[] {
+    const n = Math.min(this.highHistory.length, this.lowHistory.length, this.barCloseHistory.length);
+    if (n === 0) return [];
+    const highs = this.highHistory.slice(-n);
+    const lows = this.lowHistory.slice(-n);
+    const closes = this.barCloseHistory.slice(-n);
+    const now = Date.now();
+    const bars: { timestamp: number; open: number; high: number; low: number; close: number }[] = [];
+    for (let i = 0; i < n; i++) {
+      const high = highs[i];
+      const low = lows[i];
+      const close = closes[i];
+      if (high === undefined || low === undefined || close === undefined) continue;
+      const prevClose = i > 0 ? closes[i - 1] : close;
+      bars.push({
+        timestamp: now - (n - 1 - i) * 60000,
+        open: prevClose ?? close,
+        high,
+        low,
+        close,
+      });
+    }
+    return bars;
+  }
+
+  /**
+   * ITEM 116 — the OB filter's actual predicate, on the MEASURED construct.
+   *
+   * FUNCTION: marketStructure.computeMarketStructure() + findNearbyUnmitigatedOBs()
+   * DATA SOURCE: BAR arrays via buildStructureBars() — with mitigation tracking,
+   * no 4h cutoff, no top-10-by-strength truncation.
+   *
+   * This is the same function and construct Item 108's authorising measurement
+   * used. The prior implementation used this.detectOrderBlocks()/priceHistory
+   * (ticks, 4h, top-10, no mitigation) — a different construct.
+   *
+   * ABSTAINS (returns hasOB=true) when there are too few bars to compute
+   * structure. A filter must never reject for lack of input data.
+   */
+  private hasNearbyUnmitigatedOB(atr: number): {
+    hasOB: boolean;
+    abstained: boolean;
+    barCount: number;
+    totalOBs: number;
+    unmitigatedOBs: number;
+    nearbyOBs: number;
+    threshold: number;
+  } {
+    this.obFilterEvaluationCount += 1;
+    const bars = this.buildStructureBars();
+    const safeAtr = Math.max(atr, 0.01);
+    const threshold = safeAtr * OB_PROXIMITY_ATR;
+    if (bars.length < OB_FILTER_MIN_BARS) {
+      return { hasOB: true, abstained: true, barCount: bars.length, totalOBs: 0, unmitigatedOBs: 0, nearbyOBs: 0, threshold };
+    }
+    const structure = computeMarketStructure(bars);
+    const unmitigated = structure.orderBlocks.filter(ob => !ob.mitigated);
+    const nearby = findNearbyUnmitigatedOBs(structure, this.currentPrice, safeAtr, OB_PROXIMITY_ATR);
+    return {
+      hasOB: nearby.length > 0,
+      abstained: false,
+      barCount: bars.length,
+      totalOBs: structure.orderBlocks.length,
+      unmitigatedOBs: unmitigated.length,
+      nearbyOBs: nearby.length,
+      threshold,
+    };
+  }
+
+  /** ITEM 116(c) — live OB filter counters for emission-rate reporting. */
+  public getOBFilterStats(): { rejections: number; evaluations: number; rejectionRate: number } {
+    const evaluations = this.obFilterEvaluationCount;
+    return {
+      rejections: this.obFilterRejectionCount,
+      evaluations,
+      rejectionRate: evaluations > 0 ? this.obFilterRejectionCount / evaluations : 0,
+    };
   }
 
   private detectQuasimodolLevels(): QuasimodolLevel[] {
@@ -7959,22 +8122,27 @@ class SignalGenerationEngine {
       return null;
     }
 
-    // ITEM 114 — OB PRESENCE FILTER.
+    // ITEM 114/116 — OB PRESENCE FILTER, on the BAR-DERIVED construct.
     // Canonical measurement (n=409): OB-present WR=63.3% EV=+0.0470R vs OB-absent
     // WR=45.5% EV=-0.1951R. z=2.295, p=0.0217. The OB-absent arm (n=44) is
-    // adequately powered (>= 30). A signal with no nearby unmitigated order block
-    // within 3 ATR is rejected — the structural support that makes the setup
-    // viable is absent.
-    const obProximity = Math.max(features.atr, 0.01) * 3;
-    const hasNearbyOB = features.orderBlocks.some(ob =>
-      Math.abs(ob.price - this.currentPrice) <= obProximity,
-    );
-    if (!hasNearbyOB) {
-      console.log(`❌ REJECTED [OBFilter]: No unmitigated order block within 3 ATR of ${this.currentPrice.toFixed(1)} — structural support absent`);
-      console.log(`   [OBFilter] OB count: ${features.orderBlocks.length}, proximity: ${obProximity.toFixed(1)}`);
-      console.log(`${'='.repeat(80)}\n`);
-      this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'OB filter: no nearby unmitigated order block', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
-      return null;
+    // adequately powered (>= 30).
+    // DATA SOURCE: marketStructure.computeMarketStructure() over the engine's BAR
+    // arrays with mitigation tracking — the same FUNCTION and CONSTRUCT the
+    // measurement used. NOT this.detectOrderBlocks()/priceHistory (ticks).
+    if (OB_FILTER_ENABLED) {
+      const obCheck = this.hasNearbyUnmitigatedOB(features.atr);
+      if (obCheck.abstained) {
+        console.log(`⚪ [OBFilter] ABSTAIN: only ${obCheck.barCount} bars (< ${OB_FILTER_MIN_BARS}) — structure not computable, filter passes rather than rejecting on absent data`);
+      } else if (!obCheck.hasOB) {
+        console.log(`❌ REJECTED [OBFilter]: No UNMITIGATED order block within ${OB_PROXIMITY_ATR} ATR of ${this.currentPrice.toFixed(1)} — structural support absent`);
+        console.log(`   [OBFilter] source=BARS(n=${obCheck.barCount}) totalOBs=${obCheck.totalOBs} unmitigated=${obCheck.unmitigatedOBs} nearby=0 threshold=${obCheck.threshold.toFixed(2)}`);
+        console.log(`${'='.repeat(80)}\n`);
+        this.obFilterRejectionCount += 1;
+        this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'OB filter: no nearby unmitigated order block (bars)', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
+        return null;
+      } else {
+        console.log(`✅ [OBFilter] PASS: ${obCheck.nearbyOBs} unmitigated OB(s) within ${OB_PROXIMITY_ATR} ATR (source=BARS n=${obCheck.barCount}, total=${obCheck.totalOBs}, unmitigated=${obCheck.unmitigatedOBs})`);
+      }
     }
     console.log(`✅ QUALITY GATE PASSED: ${qualityGate.summary}`);
 
@@ -8493,9 +8661,13 @@ class SignalGenerationEngine {
     // in the same zone cluster, regardless of elapsed time. A time window is
     // a proxy for "same zone cluster" and a worse one — the 30-min window let
     // the motivating 5-signal cluster through by 1 minute.
-    // SECONDARY: time window as backstop (DEDUP_TIME_WINDOW_MS=210 min,
-    // DEDUP_PRICE_BAND_ATR=4.0, both derived from the 15-signal cluster's
-    // max gaps of 204.6 min / 3.59 ATR).
+    // SECONDARY: time window as backstop (DEDUP_TIME_WINDOW_MS, currently 225 min
+    // — see the constant's JSDoc; DEDUP_PRICE_BAND_ATR=4.0). ITEM 117(b): this
+    // comment previously cited "210 min ... derived from the 15-signal cluster's
+    // max gaps of 204.6 min / 3.59 ATR", which stopped matching the live constant
+    // after Item 113(b) changed it to 1390 min. It is now derived from the
+    // cluster-internal gap distribution (Item 118) — do not cite a bare number
+    // here; read the constant.
     this.dedupChecks += 1;
     const atrForDedup = Math.max(features.atr, 0.01);
     // Check active signals in the same direction

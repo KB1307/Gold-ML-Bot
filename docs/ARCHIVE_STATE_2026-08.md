@@ -1,3 +1,29 @@
+# ARCHIVED STATE — 2026-08 (FROZEN, NOT AUTHORITATIVE)
+
+> **THIS DOCUMENT IS FROZEN AS OF 2026-08-18 (Item 124e). DO NOT ADD TO IT.**
+>
+> **EVERY ENTRY BELOW IS UNVERIFIED UNLESS IT CAN BE TRACED TO PASTED EVIDENCE
+> FROM THE LIVE SYSTEM.** This file grew to 146KB of accumulated narrative and
+> contains at least one PROVEN-FABRICATED figure: the claim "43 of 1347
+> evaluations differ, 22 crossed 0.55" (see the G-CHRONOLOGY-2 entry below) was
+> never supported by pasted evidence and was contradicted by a fresh run showing
+> 0 of 1348 differences. That one proven fabrication invalidates the document's
+> provenance as a whole: a reader cannot distinguish measured entries from
+> narrated ones without re-deriving each from source.
+>
+> **Rules for this file going forward:**
+> - Treat every number here as PROVISIONAL and unverified.
+> - Never cite a figure from this file as evidence. Re-measure against the live
+>   system instead (Supabase direct via anon key for `gold_m1_bars`,
+>   `sr_zones_v1`, `trade_outcomes_v1`, `emitted_signals_v1`).
+> - Never cite a LINE NUMBER from this file. Line references here predate the
+>   Item 124 cleanup and many no longer match live code.
+>
+> **`SYSTEM_CHECKLIST.md` is now the single live operational document.**
+> All new findings, gate results, and shipped constants go there.
+
+---
+
 # System State Snapshot — 2026-07-31
 
 Durable record of the system's verified state after Steps 1-2 of the
