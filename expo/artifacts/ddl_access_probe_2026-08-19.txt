@@ -1,0 +1,41 @@
+DDL ACCESS PROBE — 2026-08-19 (probe_ddl_access.ts + full-region pooler sweep)
+Project: tcbnqmnzsnjhqkyuhrch (https://tcbnqmnzsnjhqkyuhrch.supabase.co)
+Question: can migration DDL be applied with the SUPABASE_SERVICE_ROLE_KEY?
+
+=== 1. exec-style RPCs via service key (PostgREST /rest/v1/rpc) ===
+  exec_sql:          PGRST202 Could not find the function public.exec_sql(query)
+  exec_sql_readonly: PGRST202 Could not find the function public.exec_sql_readonly(query)
+  run_sql:           PGRST202
+  pgrst_exec:        PGRST202
+  exec:              PGRST202
+  sql:               PGRST202
+  → No SQL-execution RPC exists in the exposed schema.
+
+=== 2. PostgREST on internal schemas via service key ===
+  cron.job:            PGRST205 table not found (not exposed)
+  net._http_response:  PGRST205 table not found (not exposed)
+  pipeline_health_v1:  PGRST205 table not found (migration 007 not yet applied)
+  → The service key bypasses RLS but cannot reach cron.*/net.* — PostgREST
+    only exposes `public`. This is exactly why the health check had to be a
+    server-side SECURITY DEFINER function in the first place.
+
+=== 3. Direct Postgres connection db.<ref>.supabase.co:5432 ===
+  connect ECONNREFUSED [IPv6 2a05:d016:dd0:9401:...]:5432
+  DNS: no A record; AAAA only.
+
+=== 4. Supavisor pooler — full region sweep (38 regions × aws-0/aws-1 × 6543/5432) ===
+  Every endpoint except one region: "tenant/user postgres.tcbnqmnzsnjhqkyuhrch not found"
+  The project's real pooler region (found by the sweep):
+    aws-0-eu-north-1.pooler.supabase.com:6543 → password authentication failed for user "postgres"
+    aws-0-eu-north-1.pooler.supabase.com:5432 → password authentication failed for user "postgres"
+  → Endpoint located; the SUPABASE_SERVICE_ROLE_KEY is NOT the database password.
+
+=== CONCLUSION ===
+The service role key is an API JWT (REST + Edge Functions + RLS bypass), not a
+database credential. Applying DDL requires one of:
+  (a) Supabase SQL Editor session (how migrations 001-006 were applied), or
+  (b) the DATABASE PASSWORD via the located pooler endpoint
+      (aws-0-eu-north-1.pooler.supabase.com:5432, user postgres.tcbnqmnzsnjhqkyuhrch), or
+  (c) a Supabase personal access token (Management API) — not present here.
+The database password is not in this environment (expo/.env carries URL, anon
+key, service key, and API keys only — verified by key-name listing).
