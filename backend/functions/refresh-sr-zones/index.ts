@@ -215,11 +215,14 @@ function computeZones(bars: Bar[], now: number): ServerSRZone[] {
   }
 
   // Cluster candidates
+  // ITEM 150: count tracks how many candidate levels merged — needed for
+  // clusterScore in the corrected reactionStrength formula.
   const clustered: {
     price: number;
     source: ZoneSource;
     sources: Set<ZoneSource>;
     alwaysAdmit: boolean;
+    count: number;
   }[] = [];
   for (const c of candidates) {
     const existing = clustered.find((cl) => Math.abs(cl.price - c.price) < clusterMergeWidth);
@@ -227,6 +230,7 @@ function computeZones(bars: Bar[], now: number): ServerSRZone[] {
       existing.price = (existing.price + c.price) / 2;
       existing.sources.add(c.source);
       existing.alwaysAdmit = existing.alwaysAdmit || !!c.alwaysAdmit;
+      existing.count += 1;
       if (c.source === "PRICE_ACTION") existing.source = c.source;
     } else {
       clustered.push({
@@ -234,6 +238,7 @@ function computeZones(bars: Bar[], now: number): ServerSRZone[] {
         source: c.source,
         sources: new Set([c.source]),
         alwaysAdmit: !!c.alwaysAdmit,
+        count: 1,
       });
     }
   }
@@ -271,46 +276,52 @@ function computeZones(bars: Bar[], now: number): ServerSRZone[] {
       }
     }
 
+    // ITEM 150 FIX (2026-08-19): confluence was DOUBLE-COUNTED in the old
+    // formula. It appeared as BOTH `Math.min(1, confluenceScore / 3) * 0.2`
+    // AND `effectiveConfluenceBonus` (up to 0.75 for 3 sources). Total
+    // confluence contribution could reach 0.95, allowing a zero-touch zone
+    // with 2 wicks and confluence=3 to score RS=1.0 — maximum strength with
+    // zero touch evidence. Census of the live map found 3 such zones.
+    //
+    // FIX: ported the local engine's weighted formula (signalEngine.ts:4241-4246)
+    // which has confluence contributing ONCE (0.12 weight) and weights summing
+    // to exactly 1.00. Added clusterScore (0.16 weight) which the backend was
+    // missing entirely. Zero-touch zones now score at most ~0.47 (wicks +
+    // confluence) instead of 1.0.
     const touchScore = Math.min(1, touches / 6);
     const rejectionScore = Math.min(1, rejectionWicks / 4);
     const avgRejectionSize = rejectionWicks > 0 ? totalRejectionSize / rejectionWicks : 0;
     const rejectionSizeScore = Math.min(1, avgRejectionSize / (atr * 0.5));
+    const clusterScore = Math.min(1, cluster.count / 3);
     const confluenceScore = cluster.sources.size;
     const confluenceBonus = Math.min(1, confluenceScore * 0.25);
     const hasEarnedEvidence = touches >= 1 || rejectionWicks >= 1;
+    const effectiveClusterScore = hasEarnedEvidence ? clusterScore : 0;
     const effectiveConfluenceBonus = hasEarnedEvidence ? confluenceBonus : 0;
-    // B21 REVERTED 2026-08-17 (ITEM 90). Item 85 measured held-out correlations:
-    //   corr(legacy reaction_strength, W2 trueRate) = +0.3613 (POSITIVE)
-    //   corr(B21    reaction_strength, W2 trueRate) = +0.1612 (weaker)
-    // B21's only advantage was discrimination range (0.819-0.866 vs 0.945-0.999),
-    // but the engine's zoneMultiplier = Math.min(1.5, 0.8 + rs) clamps to 1.5 for
-    // BOTH formulas (0.8 + 0.819 = 1.619 > 1.5), so the discrimination is unused.
-    // Legacy has a better held-out correlation AND the same effective multiplier.
-    // Reverted to legacy as the primary reactionStrength. legacy_reaction_strength
-    // column retained for audit comparability.
-    const rawReactionStrength = Math.min(
-      1,
-      touchScore * 0.3 +
-        rejectionScore * 0.3 +
-        rejectionSizeScore * 0.2 +
-        Math.min(1, confluenceScore / 3) * (hasEarnedEvidence ? 0.2 : 0) +
-        effectiveConfluenceBonus,
-    );
-    const rawLegacyReactionStrength = Math.min(
-      1,
-      touchScore * 0.3 +
-        rejectionScore * 0.3 +
-        rejectionSizeScore * 0.2 +
-        Math.min(1, confluenceScore / 3) * (hasEarnedEvidence ? 0.2 : 0) +
-        effectiveConfluenceBonus,
-    );
+    // Weights sum to exactly 1.00: 0.28 + 0.28 + 0.16 + 0.16 + 0.12
+    const rawReactionStrength =
+      (touchScore * 0.28) +
+      (rejectionScore * 0.28) +
+      (rejectionSizeScore * 0.16) +
+      (effectiveClusterScore * 0.16) +
+      (effectiveConfluenceBonus * 0.12);
+    const rawLegacyReactionStrength =
+      (touchScore * 0.28) +
+      (rejectionScore * 0.28) +
+      (rejectionSizeScore * 0.16) +
+      (effectiveClusterScore * 0.16) +
+      (effectiveConfluenceBonus * 0.12);
 
     const ageHours = lastTouchTs > 0 ? Math.max(0, now - lastTouchTs) / (60 * 60 * 1000) : 0;
     const recencyDecayFactor = lastTouchTs > 0
       ? Math.pow(0.5, ageHours / ZONE_STALENESS_HALF_LIFE_HOURS)
       : 1;
-    const reactionStrength = Math.min(1, rawReactionStrength * recencyDecayFactor);
-    const legacyReactionStrength = Math.min(1, rawLegacyReactionStrength * recencyDecayFactor);
+    // ITEM 150 FIX (2026-08-19): zero-touch zones capped below 0.3 threshold.
+    // See signalEngine.ts:4267 for the same fix on the local engine path.
+    const uncappedRS = Math.min(1, rawReactionStrength * recencyDecayFactor);
+    const uncappedLegacyRS = Math.min(1, rawLegacyReactionStrength * recencyDecayFactor);
+    const reactionStrength = touches === 0 ? Math.min(uncappedRS, 0.29) : uncappedRS;
+    const legacyReactionStrength = touches === 0 ? Math.min(uncappedLegacyRS, 0.29) : uncappedLegacyRS;
 
     if (cluster.alwaysAdmit || touches >= 2 || rejectionWicks >= 1) {
       zones.push({

@@ -4264,7 +4264,18 @@ class SignalGenerationEngine {
       const recencyDecayFactor = lastTouch > 0
         ? Math.pow(0.5, ageHours / LOCAL_ZONE_STALENESS_HALF_LIFE_HOURS)
         : 1;
-      const reactionStrength = Math.min(1, rawReactionStrength * recencyDecayFactor);
+      // ITEM 150 FIX (2026-08-19): zero-touch zones must not score above the
+      // 0.3 consumer threshold, regardless of wicks or confluence. A rejection
+      // wick without a touch means price spiked into the zone but never actually
+      // traded there — that is weaker evidence than a genuine touch. Census of
+      // the live map found 3 zero-touch zones scoring RS=1.0 (backend) or ~0.40
+      // (local), all above 0.3 and dominating structural gating. The minimum
+      // touch count is derived from the distribution: 29/32 zones have touches
+      // >= 4; the 3 outliers all have touches=0. Capping at 0.29 (below the 0.3
+      // consumer threshold) ensures zero-touch zones are visible in the map but
+      // cannot influence scoring, gating, or the path-to-target veto.
+      const uncappedRS = Math.min(1, rawReactionStrength * recencyDecayFactor);
+      const reactionStrength = touches === 0 ? Math.min(uncappedRS, 0.29) : uncappedRS;
 
       if (cluster.alwaysAdmit || touches >= 2 || rejectionWicks >= 1 || cluster.count >= 2) {
         zones.push({
