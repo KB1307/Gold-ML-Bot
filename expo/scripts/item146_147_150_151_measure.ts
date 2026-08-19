@@ -454,16 +454,33 @@ async function main() {
   // For each signal with a snapshot, compute the price move over the preceding N hours
   // We'd need gold_m1_bars for this — fetch a recent window
   console.log('  Fetching gold_m1_bars for preceding-move analysis...');
-  const barsResult = await supabase
-    .from('gold_m1_bars')
-    .select('timestamp, close')
-    .order('timestamp', { ascending: true })
-    .limit(5000);
-  if (barsResult.error) {
-    console.log('  ERROR fetching bars:', barsResult.error.message);
-  } else {
-    const bars = barsResult.data ?? [];
-    console.log(`  Fetched ${bars.length} bars`);
+  // FIX: fetch bars covering the actual signal date range, not the oldest bars.
+  // Signal date range: June 29 - Aug 19, 2026. Fetch from 4h before earliest signal
+  // to ensure we have 240 bars (4h) of history for the earliest signal.
+  const earliestSigTs = signals.length > 0
+    ? signals.reduce((min, s) => s.emitted_at < min ? s.emitted_at : min, signals[0].emitted_at)
+    : new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+  const fetchFromTs = new Date(new Date(earliestSigTs).getTime() - 6 * 3600 * 1000).toISOString();
+  console.log(`  Fetching bars from ${fetchFromTs} (4h before earliest signal ${earliestSigTs})`);
+  const barsForCorr: { timestamp: string; close: number }[] = [];
+  let barOffset = 0;
+  for (;;) {
+    const { data: barPage, error: barErr } = await supabase
+      .from('gold_m1_bars')
+      .select('timestamp, close')
+      .gte('timestamp', fetchFromTs)
+      .order('timestamp', { ascending: true })
+      .range(barOffset, barOffset + 999);
+    if (barErr) { console.log('  ERROR fetching bars:', barErr.message); break; }
+    const rows = (barPage ?? []) as { timestamp: string; close: number }[];
+    barsForCorr.push(...rows);
+    if (rows.length < 1000) break;
+    barOffset += 1000;
+    if (barOffset > 60000) break; // safety cap
+  }
+  {
+    const bars = barsForCorr;
+    console.log(`  Fetched ${bars.length} bars covering signal date range`);
     if (bars.length > 60 && ratioData.length > 0) {
       // For each signal, find the bar at emission time and compute preceding 4h move
       let correlations: { direction: string; ratio: number; precedingMove: number }[] = [];
@@ -489,7 +506,7 @@ async function main() {
         // Find the bar at or before emission time
         const sigTs = new Date(sig.emitted_at).getTime();
         const barIdx = bars.findIndex(b => new Date(b.timestamp).getTime() > sigTs);
-        if (barIdx < 240) continue; // need 4h (240 M1 bars) of history
+        if (barIdx < 0 || barIdx < 240) continue; // need 4h (240 M1 bars) of history
         const currentBarClose = Number(bars[barIdx - 1].close);
         const pastBarClose = Number(bars[barIdx - 240].close);
         const precedingMove = currentBarClose - pastBarClose; // positive = uptrend
