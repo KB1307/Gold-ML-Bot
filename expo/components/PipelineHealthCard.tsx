@@ -167,30 +167,56 @@ export default function PipelineHealthCard() {
   };
 
   return (
-    <Pressable
-      onPress={toggleExpanded}
-      style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
-      testID="pipeline-health-card"
-      accessibilityRole="button"
-      accessibilityLabel={`Pipeline health ${config.label}`}
-    >
-      <View style={styles.headerRow}>
-        <Animated.View
-          style={[styles.statusDot, { backgroundColor: config.color, opacity: pulse }]}
-          testID="pipeline-health-dot"
-        />
-        <View style={styles.titleWrap}>
-          <Text style={styles.cardTitle}>PIPELINE HEALTH</Text>
-          <Text style={[styles.statusText, { color: config.color }]} testID="pipeline-health-status">
-            {isLoading ? "CHECKING…" : config.label}
-          </Text>
+    <View style={styles.card} testID="pipeline-health-card">
+      <Pressable
+        onPress={toggleExpanded}
+        style={({ pressed }) => [styles.cardBody, pressed && styles.cardPressed]}
+        accessibilityRole="button"
+        accessibilityLabel={`Pipeline health ${config.label}`}
+      >
+        <View style={styles.headerRow}>
+          <Animated.View
+            style={[styles.statusDot, { backgroundColor: config.color, opacity: pulse }]}
+            testID="pipeline-health-dot"
+          />
+          <View style={styles.titleWrap}>
+            <Text style={styles.cardTitle}>PIPELINE HEALTH</Text>
+            <Text style={[styles.statusText, { color: config.color }]} testID="pipeline-health-status">
+              {isLoading ? "CHECKING…" : config.label}
+            </Text>
+          </View>
+          {/* Spacer reserves room for the overlay refresh + chevron controls. */}
+          <View style={styles.headerSpacer} />
         </View>
+
+        <Text style={styles.summaryText} testID="pipeline-health-summary">
+          {summary}
+        </Text>
+
+        {isStale && data && (
+          <Text style={styles.staleNote}>
+            Last server check {timeAgo(data.checked_at)} — expected every 15 min. The checker itself may have stopped.
+          </Text>
+        )}
+
+        {!isError && !data && !isLoading && (
+          <Text style={styles.hintNote}>
+            First server-side check runs within 15 minutes of applying the migration (or force one:{" "}
+            {"select public.get_pipeline_health(24);"}).
+          </Text>
+        )}
+      </Pressable>
+
+      {/* Refresh + chevron sit in an absolute overlay SIBLING to the toggle
+          Pressable: on web each Pressable renders a <button>, and a <button>
+          nested inside another <button> is invalid HTML (hydration error). */}
+      <View style={styles.actionsOverlay} pointerEvents="box-none">
         <Pressable
           onPress={() => {
             void refetch();
           }}
           hitSlop={8}
-          style={styles.refreshButton}
+          style={({ pressed }) => [styles.refreshButton, pressed && styles.refreshPressed]}
           accessibilityRole="button"
           accessibilityLabel="Refresh pipeline health"
         >
@@ -206,23 +232,6 @@ export default function PipelineHealthCard() {
           )
         ) : null}
       </View>
-
-      <Text style={styles.summaryText} testID="pipeline-health-summary">
-        {summary}
-      </Text>
-
-      {isStale && data && (
-        <Text style={styles.staleNote}>
-          Last server check {timeAgo(data.checked_at)} — expected every 15 min. The checker itself may have stopped.
-        </Text>
-      )}
-
-      {!isError && !data && !isLoading && (
-        <Text style={styles.hintNote}>
-          First server-side check runs within 15 minutes of applying the migration (or force one:{" "}
-          {"select public.get_pipeline_health(24);"}).
-        </Text>
-      )}
 
       {expanded && (
         <View style={styles.detailSection} testID="pipeline-health-detail">
@@ -257,7 +266,7 @@ export default function PipelineHealthCard() {
           )}
         </View>
       )}
-    </Pressable>
+    </View>
   );
 }
 
@@ -267,11 +276,29 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: "rgba(255, 255, 255, 0.08)",
-    padding: 14,
     marginBottom: 20,
+  },
+  cardBody: {
+    padding: 14,
+    borderRadius: 15,
   },
   cardPressed: {
     backgroundColor: "rgba(255, 255, 255, 0.07)",
+  },
+  actionsOverlay: {
+    position: "absolute",
+    top: 12,
+    right: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    zIndex: 1,
+  },
+  headerSpacer: {
+    width: 60,
+  },
+  refreshPressed: {
+    opacity: 0.6,
   },
   headerRow: {
     flexDirection: "row",
