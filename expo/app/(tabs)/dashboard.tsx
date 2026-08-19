@@ -5,6 +5,7 @@ import { TrendingUp, TrendingDown, Target, Shield, Clock, Zap, BarChart3, Percen
 import { useTrading } from "@/contexts/TradingContext";
 import { Stack } from "expo-router";
 import DashboardChart from "@/components/DashboardChart";
+import PipelineHealthCard from "@/components/PipelineHealthCard";
 
 
 function formatFeatureName(feature: string): string {
@@ -353,6 +354,8 @@ export default function DashboardScreen() {
             <View key="static-chart-section" style={styles.staticChartSection}>
               {chartSection}
             </View>
+
+            <PipelineHealthCard />
 
             {isDataLoading && (
               <View style={styles.dataLoadingBanner}>
