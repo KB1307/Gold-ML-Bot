@@ -16,6 +16,7 @@ import { View, Text, StyleSheet, Pressable, Animated, Easing, Platform } from "r
 import { RefreshCw, ChevronDown, ChevronUp } from "lucide-react-native";
 import {
   usePipelineHealth,
+  usePipelineHealthRollup,
   CHECK_STALE_MINUTES,
   type PipelineHealthFailure,
   type PipelineHealthRow,
@@ -102,6 +103,7 @@ const FailureRowMemo = React.memo(FailureRow);
 
 export default function PipelineHealthCard() {
   const { data, isLoading, isError, isFetching, refetch } = usePipelineHealth();
+  const rollup = usePipelineHealthRollup();
   const [expanded, setExpanded] = useState(false);
 
   const pulse = useRef(new Animated.Value(1)).current;
@@ -192,6 +194,19 @@ export default function PipelineHealthCard() {
         <Text style={styles.summaryText} testID="pipeline-health-summary">
           {summary}
         </Text>
+
+        {rollup.data && (
+          <Text style={styles.rollupText} testID="pipeline-health-rollup">
+            7-day: worst {rollup.data.worstStatus} · {rollup.data.degradedChecks} DEGRADED /{" "}
+            {rollup.data.downChecks} DOWN · max zone lag{" "}
+            {rollup.data.maxZoneLagMinutes !== null
+              ? `${Math.round(rollup.data.maxZoneLagMinutes)}m`
+              : "—"}
+            {rollup.data.retentionWarning && rollup.data.httpVisibilityHours !== null
+              ? ` · ⚠ HTTP visibility ${rollup.data.httpVisibilityHours}h < 24h window — failures older than that are invisible`
+              : ""}
+          </Text>
+        )}
 
         {isStale && data && (
           <Text style={styles.staleNote}>
@@ -333,6 +348,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: "#c8c8d0",
     lineHeight: 18,
+  },
+  rollupText: {
+    fontSize: 11,
+    color: "#8b8b95",
+    marginTop: 6,
+    lineHeight: 15,
   },
   staleNote: {
     fontSize: 11,

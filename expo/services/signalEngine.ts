@@ -668,6 +668,21 @@ const TP3_CONFIDENCE_STRETCH_ENABLED = false;
  * construct. See `buildStructureBars()` and `hasNearbyUnmitigatedOB()`.
  */
 const OB_FILTER_ENABLED = true;
+/** ITEM 160(c) — RELAXATION (pre-registered gate triggered 2026-08-19).
+ * Re-measured on the CURRENT construct over the canonical book
+ * (scripts/item159_160_161_round.ts): OB-present n=291 EV_net=+0.0036R vs
+ * OB-absent n=115 EV_net=+0.0213R, Welch t=-0.177 p≈0.86 — the original
+ * authorising split (Item 108: z=2.295, p=0.0217) does NOT reproduce and the
+ * split no longer excludes zero at 95%. Per the pre-registered 160(c) gate the
+ * filter relaxes from hard reject to a confidence penalty.
+ * RE-ENABLE criterion: a held-out re-measurement with n≥100 per arm whose
+ * OB-present vs OB-absent EV difference excludes zero at 95%, favouring the
+ * filter — then set OB_FILTER_MODE back to 'reject'. */
+const OB_FILTER_MODE: 'reject' | 'penalty' = 'penalty';
+/** ITEM 160(c) — confidence penalty (percentage points) applied when no
+ * nearby unmitigated OB exists. A candidate whose penalised confidence falls
+ * below the engine floor is still rejected; everything above still emits. */
+const OB_ABSENT_CONFIDENCE_PENALTY = 0.05;
 /** ITEM 116 — proximity threshold in ATR. Matches the authorising measurement's
  * `findNearbyUnmitigatedOBs(structure, price, atr, 3)` default exactly. */
 const OB_PROXIMITY_ATR = 3;
@@ -8269,12 +8284,25 @@ class SignalGenerationEngine {
       if (obCheck.abstained) {
         console.log(`⚪ [OBFilter] ABSTAIN: only ${obCheck.barCount} bars (< ${OB_FILTER_MIN_BARS}) — structure not computable, filter passes rather than rejecting on absent data`);
       } else if (!obCheck.hasOB) {
-        console.log(`❌ REJECTED [OBFilter]: No UNMITIGATED order block within ${OB_PROXIMITY_ATR} ATR of ${this.currentPrice.toFixed(1)} — structural support absent`);
-        console.log(`   [OBFilter] source=BARS(n=${obCheck.barCount}) totalOBs=${obCheck.totalOBs} unmitigated=${obCheck.unmitigatedOBs} nearby=0 threshold=${obCheck.threshold.toFixed(2)}`);
-        console.log(`${'='.repeat(80)}\n`);
-        this.obFilterRejectionCount += 1;
-        this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'OB filter: no nearby unmitigated order block (bars)', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
-        return null;
+        if (OB_FILTER_MODE === 'reject') {
+          console.log(`❌ REJECTED [OBFilter]: No UNMITIGATED order block within ${OB_PROXIMITY_ATR} ATR of ${this.currentPrice.toFixed(1)} — structural support absent`);
+          console.log(`   [OBFilter] source=BARS(n=${obCheck.barCount}) totalOBs=${obCheck.totalOBs} unmitigated=${obCheck.unmitigatedOBs} nearby=0 threshold=${obCheck.threshold.toFixed(2)}`);
+          console.log(`${'='.repeat(80)}\n`);
+          this.obFilterRejectionCount += 1;
+          this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'OB filter: no nearby unmitigated order block (bars)', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
+          return null;
+        }
+        // ITEM 160(c): relaxed — confidence penalty instead of hard reject.
+        const penalizedConfidence = analysis.confidence - OB_ABSENT_CONFIDENCE_PENALTY;
+        if (penalizedConfidence < absoluteConfidenceFloor) {
+          console.log(`❌ REJECTED [OBFilter penalty]: confidence ${(analysis.confidence * 100).toFixed(1)}% − ${OB_ABSENT_CONFIDENCE_PENALTY * 100}pt OB-absent penalty = ${(penalizedConfidence * 100).toFixed(1)}% below floor ${(absoluteConfidenceFloor * 100).toFixed(0)}%`);
+          console.log(`${'='.repeat(80)}\n`);
+          this.obFilterRejectionCount += 1;
+          this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'OB filter penalty: below confidence floor after 5pt penalty', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
+          return null;
+        }
+        analysis.confidence = penalizedConfidence;
+        console.log(`⚠️ [OBFilter] PENALTY (Item 160 relaxation): no nearby unmitigated OB within ${OB_PROXIMITY_ATR} ATR — confidence reduced ${(OB_ABSENT_CONFIDENCE_PENALTY * 100).toFixed(0)}pt to ${(analysis.confidence * 100).toFixed(1)}%; signal still emits`);
       } else {
         console.log(`✅ [OBFilter] PASS: ${obCheck.nearbyOBs} unmitigated OB(s) within ${OB_PROXIMITY_ATR} ATR (source=BARS n=${obCheck.barCount}, total=${obCheck.totalOBs}, unmitigated=${obCheck.unmitigatedOBs})`);
       }
