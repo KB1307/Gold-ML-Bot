@@ -238,29 +238,59 @@ async function main() {
   console.log('  net._http_response is not queryable via anon key (internal Postgres table).');
   console.log('  Shipping a SQL snippet the user can run in the Supabase SQL Editor:\n');
   console.log('  --- BEGIN SQL ---');
-  console.log(`  -- ITEM 149(c): Find non-200 responses from pg_net calls (cron → edge functions)
+  console.log(`  -- ITEM 149(c) REVISED: Find non-200 responses from pg_net calls (cron → edge functions)
   -- Run in Supabase SQL Editor. Checks the last 24 hours.
+  -- Column names verified against the pg_net schema (net._http_response: id,
+  -- status_code, content_type, headers, content, timed_out, error_msg, created)
+  -- and pg_cron (cron.job_run_details: jobid, runid, status, return_message,
+  -- start_time, end_time). The original snippet used j.id and r.request_started_at,
+  -- neither of which exists — fixed.
+
+  -- Query 1: All non-200 pg_net responses in the last 24h (no join — always works).
   SELECT
     r.id,
     r.status_code,
-    r.content::text AS response_body,
-    j.jobname AS cron_job,
-    r.request_started_at
+    r.error_msg,
+    r.created,
+    left(r.content::text, 300) AS response_body
   FROM net._http_response r
-  LEFT JOIN cron.job_run_details j ON j.id = r.id
   WHERE r.status_code >= 400
-    AND r.request_started_at > NOW() - INTERVAL '24 hours'
-  ORDER BY r.request_started_at DESC
+    AND r.created > NOW() - INTERVAL '24 hours'
+  ORDER BY r.created DESC
   LIMIT 20;
 
-  -- Also check: did the refresh-sr-zones cron actually fire and succeed?
+  -- Query 2: Correlate each non-200 with the cron job that fired it.
+  -- pg_net and pg_cron share no foreign key, so join on the time window:
+  -- the HTTP response is created while the cron run is executing.
   SELECT
-    jobname,
-    schedule,
-    active,
-    (SELECT MAX(run_id) FROM cron.job_run_details j2 WHERE j2.jobid = cron.job.jobid) AS last_run_id
-  FROM cron.job
-  WHERE jobname = 'refresh-sr-zones';`);
+    cj.jobname AS cron_job,
+    j.runid,
+    j.status AS cron_status,
+    j.start_time,
+    r.status_code,
+    left(r.content::text, 300) AS response_body
+  FROM net._http_response r
+  JOIN cron.job_run_details j
+    ON r.created BETWEEN j.start_time - INTERVAL '2 seconds'
+                     AND j.end_time + INTERVAL '10 seconds'
+  JOIN cron.job cj ON cj.jobid = j.jobid
+  WHERE r.status_code >= 400
+    AND r.created > NOW() - INTERVAL '24 hours'
+  ORDER BY r.created DESC
+  LIMIT 20;
+
+  -- Query 3: Did refresh-sr-zones actually fire and succeed? (last 10 runs)
+  SELECT
+    j.runid,
+    j.status,
+    j.start_time,
+    j.end_time,
+    left(j.return_message, 200) AS return_message
+  FROM cron.job_run_details j
+  JOIN cron.job cj ON cj.jobid = j.jobid
+  WHERE cj.jobname = 'refresh-sr-zones'
+  ORDER BY j.start_time DESC
+  LIMIT 10;`);
   console.log('  --- END SQL ---\n');
   console.log('  This probe makes finding the legacy_reaction_strength class of failure one command.');
 }
