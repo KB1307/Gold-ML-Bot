@@ -33,7 +33,7 @@ import {
   getPendingRemotePushCount,
   getPushPathDescriptor,
 } from "@/services/learningStore";
-import { BUILD_SHA, BUILD_MARKED_AT, BUILD_CLAIMED_ITEMS } from "@/constants/buildMarker";
+import { BUILD_SHA, BUILD_MARKED_AT } from "@/constants/buildMarker";
 
 function getProviderLabel(provider: unknown): string {
   if (provider === "google") {
@@ -340,7 +340,10 @@ export default function SettingsScreen() {
           ...getTier0Counters(),
           ...signalEngine.getTier0DegradationStats(),
         },
-        directionalLayerStats: signalEngine.getDirectionalLayerStats(),
+        directionalLayerStats: {
+          ...signalEngine.getDirectionalLayerStats(),
+          ...signalEngine.getStandAsideTelemetry(),
+        },
         telegramDeliveryStats: getTelegramDeliveryStats(),
         telegramOutbox,
         // ITEM 12(d): durable corpus-hydration counters (rehydrated above).
@@ -350,11 +353,13 @@ export default function SettingsScreen() {
           ...getOutboundPushStats(),
           queueDepthNow: getPendingRemotePushCount(),
         },
-        // ITEM 74(a): build marker + probes read from the RUNNING bundle.
+        // ITEM 74(a) + ITEM 168: build marker (BUILD-DERIVED since 168a) +
+        // probes read from the RUNNING bundle. The claimed-items list is
+        // DELETED (168c) — the runtime probes are the only evidence.
         buildProvenance: {
           buildSha: BUILD_SHA,
           markedAt: BUILD_MARKED_AT,
-          claimedItems: BUILD_CLAIMED_ITEMS,
+          runtimeConfig: signalEngine.getRuntimeConfigProbe(),
           probes: [
             {
               label: "Item 64 CONSUMED_MODEL_WEIGHTS length (expect 4)",

@@ -1645,6 +1645,11 @@ class SignalGenerationEngine {
   private awaitZoneConverted: number = 0;
   private awaitZoneExpired: number = 0;
   private awaitZoneInvalidated: number = 0;
+  /** ITEM 167(d): ring buffer of recent stand-aside REASONS (persisted with the counters). */
+  private standAsideReasons: Array<{ ts: number; reason: string; m5Bars: number; newestM5AgeMin: number | null }> = [];
+  /** ITEM 167(c): hourly counter snapshots → computable 24h rate (the lifetime counter hid degradation). */
+  private standAsideSnapshots: Array<{ ts: number; checks: number; standAsides: number }> = [];
+  private standAsideSnapshotAt: number = 0;
   /** ITEM 104 — pending entries armed by await-the-zone.
    * One per direction per zone cluster. */
   private pendingZoneEntries: Map<string, { direction: SignalType; zonePrice: number; zoneClusterId: string; armedAt: number; expiresAt: number; signalParams: Record<string, unknown> }> = new Map();
@@ -2568,9 +2573,55 @@ class SignalGenerationEngine {
     const m5 = this.getDirectionalM5();
     const ready = m5 !== null && barRSI(m5, 14) !== null;
     this.directionalStandAsideChecks += 1;
-    if (!ready) this.directionalStandAsideCount += 1;
+    if (!ready) {
+      this.directionalStandAsideCount += 1;
+      this.recordStandAsideReason();
+    }
+    // ITEM 167(c): hourly counter snapshots so a RECENT (24h) rate is
+    // computable. The durable lifetime counter averaged a degrading layer
+    // into a cumulative number; a snapshot per hour makes the last-day rate a
+    // difference of two integers instead of an investigation.
+    const nowMs = Date.now();
+    if (nowMs - this.standAsideSnapshotAt > 3_600_000) {
+      this.standAsideSnapshotAt = nowMs;
+      this.standAsideSnapshots.push({
+        ts: nowMs,
+        checks: this.directionalStandAsideChecks,
+        standAsides: this.directionalStandAsideCount,
+      });
+      if (this.standAsideSnapshots.length > 48) this.standAsideSnapshots.shift();
+    }
     this.persistDirectionalLayerCounters();
     return ready;
+  }
+
+  /**
+   * ITEM 167(d) — record WHY the layer stood aside: bar count, newest bar age
+   * and the failing threshold, with a timestamp. A gate that silently
+   * suppressed 100% of emission for a day left no reason anywhere; this ring
+   * buffer (last 50, persisted with the counters) makes a stalled bar feed one
+   * query away instead of one investigation away.
+   */
+  private recordStandAsideReason(): void {
+    const series = this.barSeriesM5;
+    const newestAgeMin =
+      series && series.length > 0 ? (Date.now() - series[series.length - 1].timestamp) / 60_000 : null;
+    const stalenessThresholdMin = SignalGenerationEngine.BAR_MAX_AGE_M5_MS / 60_000;
+    const reason =
+      !series || series.length === 0
+        ? 'M5 series ABSENT — gold_m1_bars not ingested (sync stalled or cold start)'
+        : series.length < 60
+          ? `M5 series TOO SHORT: ${series.length} bars (< 60 required)`
+          : newestAgeMin !== null && newestAgeMin > stalenessThresholdMin
+            ? `M5 series STALE: newest bar ${newestAgeMin.toFixed(1)} min old (> ${stalenessThresholdMin.toFixed(0)} min threshold) — bar sync stalled`
+            : 'RSI(14) not computable on M5 series';
+    this.standAsideReasons.push({
+      ts: Date.now(),
+      reason,
+      m5Bars: series ? series.length : 0,
+      newestM5AgeMin: newestAgeMin !== null ? Number(newestAgeMin.toFixed(1)) : null,
+    });
+    if (this.standAsideReasons.length > 50) this.standAsideReasons.shift();
   }
 
   /**
@@ -2587,11 +2638,25 @@ class SignalGenerationEngine {
         console.log('ℹ️ [DirectionalCounters] no persisted counters yet — starting from 0');
         return;
       }
-      const parsed = JSON.parse(raw) as { checks?: unknown; standAsides?: unknown };
+      const parsed = JSON.parse(raw) as { checks?: unknown; standAsides?: unknown; recent?: unknown; snapshots?: unknown };
       const checks = typeof parsed.checks === 'number' && Number.isFinite(parsed.checks) ? parsed.checks : 0;
       const standAsides = typeof parsed.standAsides === 'number' && Number.isFinite(parsed.standAsides) ? parsed.standAsides : 0;
       this.directionalStandAsideChecks = Math.max(this.directionalStandAsideChecks, Math.floor(checks));
       this.directionalStandAsideCount = Math.max(this.directionalStandAsideCount, Math.floor(standAsides));
+      if (Array.isArray(parsed.recent) && this.standAsideReasons.length === 0) {
+        this.standAsideReasons = parsed.recent.filter(
+          (r): r is { ts: number; reason: string; m5Bars: number; newestM5AgeMin: number | null } =>
+            typeof r === 'object' && r !== null && typeof (r as { ts?: unknown }).ts === 'number' && typeof (r as { reason?: unknown }).reason === 'string',
+        );
+      }
+      if (Array.isArray(parsed.snapshots) && this.standAsideSnapshots.length === 0) {
+        this.standAsideSnapshots = parsed.snapshots.filter(
+          (s): s is { ts: number; checks: number; standAsides: number } =>
+            typeof s === 'object' && s !== null && typeof (s as { ts?: unknown }).ts === 'number',
+        );
+        const lastSnapshot = this.standAsideSnapshots[this.standAsideSnapshots.length - 1];
+        if (lastSnapshot) this.standAsideSnapshotAt = lastSnapshot.ts;
+      }
       console.log(`✓ [DirectionalCounters] restored checks=${this.directionalStandAsideChecks} standAsides=${this.directionalStandAsideCount}`);
     } catch (error: unknown) {
       console.warn('⚠️ [DirectionalCounters] load failed (non-blocking):', error instanceof Error ? error.message : String(error));
@@ -2611,6 +2676,10 @@ class SignalGenerationEngine {
     const payload = JSON.stringify({
       checks: this.directionalStandAsideChecks,
       standAsides: this.directionalStandAsideCount,
+      // ITEM 167(d): stand-aside REASONS + hourly snapshots ride the same
+      // throttled flush — one AsyncStorage key, no extra write pressure.
+      recent: this.standAsideReasons.slice(-10),
+      snapshots: this.standAsideSnapshots,
       updatedAt: now,
     });
     AsyncStorage.setItem(DIRECTIONAL_LAYER_COUNTERS_KEY, payload).catch((error: unknown) => {
@@ -2638,6 +2707,64 @@ class SignalGenerationEngine {
       checks: this.directionalStandAsideChecks,
       standAsides: this.directionalStandAsideCount,
       readyNow: m5 !== null && barRSI(m5, 14) !== null,
+    };
+  }
+
+  /**
+   * ITEM 167(c)/(d) — stand-aside observability for the diagnostics export.
+   * rate24h is the RECENT-window rate computed from hourly snapshots; it is
+   * null until 24h of snapshots have accumulated (snapshots began at Item
+   * 167(d)). recent[] carries the last stand-aside REASONS.
+   */
+  public getStandAsideTelemetry(): {
+    checks: number;
+    standAsides: number;
+    lifetimeRate: number;
+    checks24h: number | null;
+    standAsides24h: number | null;
+    rate24h: number | null;
+    recent: Array<{ ts: number; reason: string; m5Bars: number; newestM5AgeMin: number | null }>;
+  } {
+    const dayAgo = Date.now() - 24 * 3_600_000;
+    let base: { ts: number; checks: number; standAsides: number } | null = null;
+    for (const s of this.standAsideSnapshots) {
+      if (s.ts <= dayAgo) base = s;
+    }
+    const checks24h = base !== null ? this.directionalStandAsideChecks - base.checks : null;
+    const standAsides24h = base !== null ? this.directionalStandAsideCount - base.standAsides : null;
+    return {
+      checks: this.directionalStandAsideChecks,
+      standAsides: this.directionalStandAsideCount,
+      lifetimeRate:
+        this.directionalStandAsideChecks > 0 ? this.directionalStandAsideCount / this.directionalStandAsideChecks : 0,
+      checks24h,
+      standAsides24h,
+      rate24h: checks24h !== null && checks24h > 0 && standAsides24h !== null ? standAsides24h / checks24h : null,
+      recent: this.standAsideReasons.slice(-10),
+    };
+  }
+
+  /**
+   * ITEM 168(b) — runtime configuration probe. Answers "which bundle is
+   * running" from the RUNNING code: the recent gate constants and modes, the
+   * await-the-zone counters, and the current zone-map age. Read by the
+   * diagnostics export next to the build marker.
+   */
+  public getRuntimeConfigProbe(): Record<string, string | number | boolean | null> {
+    return {
+      OB_FILTER_ENABLED,
+      OB_FILTER_MODE,
+      OB_ABSENT_CONFIDENCE_PENALTY,
+      ENTRY_QUALITY_TRIGGER_ENABLED,
+      MODULATION_ENABLED,
+      PATH_TO_TARGET_VETO_ENABLED,
+      DEDUP_TIME_WINDOW_MS,
+      awaitZoneArmed: this.awaitZoneArmed,
+      awaitZoneConverted: this.awaitZoneConverted,
+      awaitZoneExpired: this.awaitZoneExpired,
+      awaitZoneInvalidated: this.awaitZoneInvalidated,
+      zoneMapAgeMinutes:
+        this.tier0SRZonesFetchedAt > 0 ? Math.round((Date.now() - this.tier0SRZonesFetchedAt) / 60_000) : null,
     };
   }
 
@@ -7210,6 +7337,14 @@ class SignalGenerationEngine {
       sentiment: features?.sentiment ?? defaultContext.sentiment,
       schemaVersion: features?.schemaVersion ?? 1,
     };
+    // ITEM 169(c) — write-time capture assertion. An outcome whose incoming
+    // learning context was dropped silently falls back to defaults for all six
+    // scalars, which is precisely the uniform-1/6 mechanism (identical winner
+    // and loser centroids). The fallback now announces itself instead of
+    // pretending to be data.
+    if (features === undefined || Object.keys(features).length === 0) {
+      console.warn(`⚠️ [Item169] outcome ${signalId.slice(-6)} recorded with DEFAULT features — the caller dropped the learning context (capture defect, not a modelling one)`);
+    }
     
     // PHASE 2 (C4): infer direction from realised geometry so no call site has
     // to be changed. A WIN that exited ABOVE entry can only have been a BUY; a
@@ -8240,6 +8375,17 @@ class SignalGenerationEngine {
     if (evReliefEligible) {
       console.log(`💰 EV RELIEF: confidence ${(analysis.confidence * 100).toFixed(1)}% with EV ${evScore.toFixed(2)}R (>= ${EV_RELIEF_THRESHOLD}R) allows below ${(effectiveMinConfidence * 100).toFixed(0)}% floor`);
       effectiveMinConfidence = EV_RELIEF_CONFIDENCE_FLOOR;
+    }
+
+    // ITEM 172(b) — the user-configured minConfidence GOVERNS when raised
+    // above the enforced default: no starvation relief and no EV relief may
+    // drop below an explicitly raised bar (the 69% emission cleared a 90%
+    // setting through exactly these reliefs). When the setting is at or below
+    // the enforced minimum (the default 0.68), every pre-existing relief path
+    // is untouched, bit-for-bit.
+    if (settings.minConfidence > ENFORCED_MIN_SIGNAL_CONFIDENCE && effectiveMinConfidence < settings.minConfidence) {
+      console.log(`🛡️ USER THRESHOLD GOVERNS (Item 172b): relief floor ${(effectiveMinConfidence * 100).toFixed(0)}% raised back to the configured ${(settings.minConfidence * 100).toFixed(0)}%`);
+      effectiveMinConfidence = settings.minConfidence;
     }
     
     if (analysis.confidence < effectiveMinConfidence) {

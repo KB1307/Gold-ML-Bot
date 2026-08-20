@@ -202,6 +202,71 @@ async function fetchBars(
 }
 
 /**
+ * ITEM 169(c) — capture fix. Resolver-written outcomes historically landed in
+ * trade_outcomes_v1 with an EMPTY features object (287 of 417 corpus rows),
+ * which is the mechanism behind the uniform 1/6 weight vector: the fallback
+ * defaults make every winner and loser centroid identical. This reconstructs
+ * the bar-derivable features (RSI-14 and ATR-14 on the M1 bars immediately
+ * BEFORE emission — the engine computes its own values on M5 aggregates, so
+ * these are labeled reconstructions, not engine-identical values).
+ * volumeRatio/timeWindowFactor/sentiment/dxyChange are NOT reconstructable
+ * here (no volume column on gold_m1_bars, no session/DXY feed in the
+ * resolver) and are written with the engine's documented default values
+ * (1/1/{score:0}/0) rather than invented numbers. schemaVersion stays 1.
+ */
+async function computeLearningFeatures(
+  client: ReturnType<typeof getAdminClient>,
+  emittedMs: number,
+): Promise<Record<string, unknown> | null> {
+  try {
+    const bars = await fetchBars(client, emittedMs - 60 * 60_000, emittedMs - 1_000);
+    if (bars.length < 15) return null;
+    const closes = bars.map((b) => b.close);
+    // RSI-14, Wilder smoothing, on M1 closes.
+    let avgGain = 0;
+    let avgLoss = 0;
+    for (let i = 1; i <= 14; i += 1) {
+      const d = closes[i] - closes[i - 1];
+      if (d >= 0) avgGain += d;
+      else avgLoss -= d;
+    }
+    avgGain /= 14;
+    avgLoss /= 14;
+    for (let i = 15; i < closes.length; i += 1) {
+      const d = closes[i] - closes[i - 1];
+      avgGain = (avgGain * 13 + Math.max(d, 0)) / 14;
+      avgLoss = (avgLoss * 13 + Math.max(-d, 0)) / 14;
+    }
+    const rsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+    // ATR-14: mean true range over the same pre-emission window.
+    let trSum = 0;
+    let trN = 0;
+    for (let i = 1; i < bars.length; i += 1) {
+      const prevClose = bars[i - 1].close;
+      trSum += Math.max(
+        bars[i].high - bars[i].low,
+        Math.abs(bars[i].high - prevClose),
+        Math.abs(bars[i].low - prevClose),
+      );
+      trN += 1;
+    }
+    const atr = trN > 0 ? trSum / trN : null;
+    if (!Number.isFinite(rsi) || atr === null || !Number.isFinite(atr)) return null;
+    return {
+      rsi: Number(rsi.toFixed(2)),
+      atr: Number(atr.toFixed(2)),
+      volumeRatio: 1, // engine default — no volume column on gold_m1_bars
+      timeWindowFactor: 1, // engine default — session formula not reproducible here
+      dxyChange: 0, // engine default — no DXY feed in the resolver
+      sentiment: { score: 0, confidence: 0, source: "resolver-bar-reconstruction" },
+      schemaVersion: 1,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Canonical bar replay. Mirrors resolveSignalWithBars under fromScratch: no
  * stored status is consulted, and every level must be CONTAINED by a completed
  * bar's range to count as touched.
@@ -364,6 +429,14 @@ Deno.serve(async (req: Request) => {
         unresolvableReasons[reasonCode] = (unresolvableReasons[reasonCode] ?? 0) + 1;
         continue;
       }
+      // ITEM 169(c): reconstruct bar-derivable learning features so the row
+      // never lands with an empty features object. When reconstruction is
+      // impossible (insufficient pre-emission bars) the row carries an
+      // EXPLICIT incomplete marker instead of a silently empty {}.
+      const features = await computeLearningFeatures(client, emittedMs);
+      if (features === null) {
+        console.warn(`[Item169] features incomplete for ${row.signal_id.slice(-6)} — insufficient pre-emission bars; writing explicit marker`);
+      }
       upserts.push({
         signal_id: row.signal_id,
         ts: new Date(resolution.resolvedAtBarTs).toISOString(),
@@ -376,6 +449,7 @@ Deno.serve(async (req: Request) => {
         realized_r: resolution.realizedR,
         is_scratch: resolution.isScratch,
         signal_duration_ms: resolution.resolvedAtBarTs - emittedMs,
+        features: features ?? { featuresIncomplete: true, reason: "insufficient pre-emission bars", schemaVersion: 1 },
         feature_schema_version: 1,
       });
       resolved += 1;

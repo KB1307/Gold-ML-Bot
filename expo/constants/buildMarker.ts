@@ -1,37 +1,26 @@
 /**
- * ITEM 74(a) — BUILD PROVENANCE.
+ * ITEM 168(a) — BUILD PROVENANCE, DERIVED AT BUILD TIME.
  *
- * WHY THIS EXISTS. Repo/production drift is PROVEN on this project: migration
- * 003 carries invalid `CREATE POLICY IF NOT EXISTS` syntax in the repo while the
- * corresponding policy is demonstrably live in the database (Item 70). The repo
- * is therefore NOT evidence of what runs. Every prior "is the fix deployed?"
- * argument on this project was made by grepping the repo, which is exactly the
- * mistake this constant removes.
+ * The Item 74 marker was a hand-edited constant and sat six days stale
+ * ("43bf752, set 2026-08-14") while the running bundle contained Item 109+.
+ * These two exports are PLACEHOLDER string literals that babel.config.js
+ * replaces at TRANSFORM time with the git SHA of the working tree and the
+ * build timestamp. The marker now changes whenever the bundle is rebuilt from
+ * a different tree, with nobody remembering to edit anything.
  *
- * The SHA below is a BUILD-TIME CONSTANT set by hand at commit time, because the
- * Expo runtime has no access to git. It is only trustworthy in one direction: if
- * the export prints it, the bundle was built from a tree at or after that commit.
- * A stale bundle prints an OLDER marker, or — for any bundle predating Item 74 —
- * prints no build-provenance block at all, which is itself the discriminating
- * observation.
+ * Caveat, stated honestly: Metro's transform cache keys on file content, so
+ * the first build after a new commit should clear the cache (`expo start -c`)
+ * or the previously injected value can be served from cache. The stamped
+ * timestamp tells you instantly whether the injection ran fresh.
+ *
+ * ITEM 168(c): the claimed-items list is DELETED. A stale list of claims is
+ * worse than none — it invited exactly the false confidence that cost a day
+ * on the zone freeze. The runtime symbol probes + runtime configuration probe
+ * in the diagnostics export are the ONLY evidence of what the bundle contains.
  */
 
-/** Git SHA of the tree this bundle was built from. Update on every ship. */
-export const BUILD_SHA = '43bf752';
+/** Git SHA of the tree this bundle was built from (babel-injected at build). */
+export const BUILD_SHA = '__BUILD_SHA__';
 
-/** ISO date the marker was last set. */
-export const BUILD_MARKED_AT = '2026-08-14';
-
-/**
- * Item numbers whose code is expected in this bundle. This list is a CLAIM, not
- * evidence — it is printed next to the runtime symbol probes so the two can be
- * compared. A mismatch between this list and the probes is the finding.
- */
-export const BUILD_CLAIMED_ITEMS: readonly string[] = [
-  '63 (S/R + QM mutual exclusion)',
-  '64 (CONSUMED_MODEL_WEIGHTS 4-feature drift)',
-  '66 (direct anon-key outcome push + durable queue)',
-  '70 (migration SQL syntax fix)',
-  '72 (deterministic replay harness)',
-  '74 (build marker + outbound push telemetry)',
-];
+/** ISO timestamp of the build (babel-injected at build). */
+export const BUILD_MARKED_AT = '__BUILD_STAMP__';

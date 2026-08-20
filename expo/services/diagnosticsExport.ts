@@ -74,7 +74,16 @@ export interface DiagnosticsExportInput {
    * compile; the section then reports NOT INSTRUMENTED rather than 0/0, because
    * "no data" and "zero stand-asides" are not the same claim.
    */
-  directionalLayerStats?: { checks: number; standAsides: number; readyNow: boolean } | null;
+  directionalLayerStats?: {
+    checks: number;
+    standAsides: number;
+    readyNow: boolean;
+    /** ITEM 167(c)/(d): recent-window rate + reasons. */
+    rate24h?: number | null;
+    checks24h?: number | null;
+    standAsides24h?: number | null;
+    recent?: Array<{ ts: number; reason: string; m5Bars: number; newestM5AgeMin: number | null }> | null;
+  } | null;
   /**
    * ITEM 5(d): durable Telegram alert-delivery counters from
    * `telegramNotifier.getTelegramDeliveryStats()`. The alert dispatch is
@@ -142,7 +151,8 @@ export interface OutboundPushStatsInput {
 export interface BuildProvenanceInput {
   buildSha: string;
   markedAt: string;
-  claimedItems: readonly string[];
+  /** ITEM 168(b): runtime-observed gate configuration (which bundle is running). */
+  runtimeConfig?: Record<string, string | number | boolean | null> | null;
   probes: { label: string; present: boolean; observed: string }[];
 }
 
@@ -482,13 +492,21 @@ function formatOutboundPushBlock(stats: OutboundPushStatsInput | null | undefine
 function formatBuildProvenanceBlock(p: BuildProvenanceInput | null | undefined): string[] {
   if (!p) return ["Build provenance: NOT INSTRUMENTED (caller did not supply buildProvenance)."];
   const lines: string[] = [
-    `Build marker: ${p.buildSha} (marker set ${p.markedAt})`,
-    "Items CLAIMED present in this bundle (a claim, to be compared against the probes):",
+    `Build marker: ${p.buildSha} (BUILD-DERIVED, babel-injected at transform time — Item 168a)`,
+    `Build stamp: ${p.markedAt}`,
   ];
-  for (const item of p.claimedItems) lines.push(`  - Item ${item}`);
   lines.push("Runtime symbol probes (read from the RUNNING bundle, never from the repo):");
   for (const probe of p.probes) {
     lines.push(`  [${probe.present ? "PRESENT" : "ABSENT "}] ${probe.label} -> ${probe.observed}`);
+  }
+  // ITEM 168(b): the claimed-items list is DELETED (Item 168c) — a stale list
+  // of claims is worse than none. These RUNTIME-OBSERVED values answer
+  // "which bundle is running" from the running code instead.
+  if (p.runtimeConfig) {
+    lines.push("Runtime configuration probe (gates/modes/counters from the RUNNING code):");
+    for (const [key, value] of Object.entries(p.runtimeConfig)) {
+      lines.push(`  ${key} = ${String(value)}`);
+    }
   }
   return lines;
 }
@@ -734,7 +752,15 @@ function formatTier0ZoneSection(h: Tier0ZoneHealth | null | undefined): string {
  * and the denominator have to be exported; a bare count cannot be evaluated.
  */
 function formatDirectionalLayerSection(
-  stats: { checks: number; standAsides: number; readyNow: boolean } | null | undefined,
+  stats: {
+    checks: number;
+    standAsides: number;
+    readyNow: boolean;
+    rate24h?: number | null;
+    checks24h?: number | null;
+    standAsides24h?: number | null;
+    recent?: Array<{ ts: number; reason: string; m5Bars: number; newestM5AgeMin: number | null }> | null;
+  } | null | undefined,
 ): string {
   const lines: string[] = [RULE, "SECTION 8 — DIRECTIONAL BAR LAYER (F6 criterion 4)", RULE];
   if (!stats) {
@@ -746,6 +772,20 @@ function formatDirectionalLayerSection(
   lines.push(`Readiness checks this process: ${stats.checks}`);
   lines.push(`Stand-asides (bar layer unavailable or stale): ${stats.standAsides}`);
   lines.push(`Stand-aside rate: ${stats.checks > 0 ? pct.toFixed(2) + "%" : "n/a (no checks yet)"}`);
+  // ITEM 167(c): the rate above is a LIFETIME cumulative; it hides a degrading
+  // layer behind a historical average. The 24h rate is reported separately.
+  if (stats.rate24h !== undefined && stats.rate24h !== null && stats.rate24h !== undefined) {
+    lines.push(`LAST 24H (separate from lifetime): checks=${stats.checks24h ?? "n/a"} stand-asides=${stats.standAsides24h ?? "n/a"} rate=${(stats.rate24h * 100).toFixed(2)}%`);
+  } else {
+    lines.push("LAST 24H rate: NOT YET MEASURABLE — hourly snapshots began accumulating at Item 167(d); a 24h rate exists after 24h of runtime.");
+  }
+  // ITEM 167(d): the WHY. A silent day-long suppressor must be one query away.
+  if (stats.recent && stats.recent.length > 0) {
+    lines.push("Most recent stand-aside REASONS (why, not just how often):" );
+    for (const r of stats.recent.slice(-5)) {
+      lines.push(`  ${new Date(r.ts).toISOString()} — ${r.reason} (m5Bars=${r.m5Bars}${r.newestM5AgeMin !== null ? `, newestBarAge=${r.newestM5AgeMin}min` : ""})`);
+    }
+  }
   lines.push(`Directional layer ready right now: ${stats.readyNow ? "YES" : "NO"}`);
   lines.push("");
   lines.push("ITEM 4: these counters are DURABLE. They are persisted to AsyncStorage under");
