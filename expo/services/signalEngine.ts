@@ -191,6 +191,16 @@ interface SRZone {
    * this decision" pattern. Defaults to TIER_1_LOCAL for any zone built by
    * the local computation path below.
    */
+  /**
+   * ITEM 191 — the legacy spot-relative type (cluster.price > currentPrice at
+   * compute time). ALWAYS stored alongside the live type so both typings stay
+   * comparable forever; snapshot consumers use it to audit the directed typing.
+   */
+  legacyType: 'SUPPORT' | 'RESISTANCE';
+  /** ITEM 191 — approaches from BELOW rejected back down (true resistance behaviour), counted over the engine's in-memory price-history window. */
+  rejectionsFromBelow: number;
+  /** ITEM 191 — approaches from ABOVE rejected back up (true support behaviour). */
+  rejectionsFromAbove: number;
   tier: 'TIER_0_SERVER' | 'TIER_1_LOCAL';
 }
 
@@ -632,6 +642,83 @@ const PATH_TO_TARGET_VETO_ENABLED = true;
  * regime-agnostic). Until then, await-the-zone stays veto-only.
  */
 const ENTRY_QUALITY_TRIGGER_ENABLED = false;
+/**
+ * ITEM 191(f) — REJECTION-DIRECTED ZONE TYPING.
+ *
+ * Zone type was assigned by a bare spot comparison (cluster.price > currentPrice
+ * at compute time, detectSRZones): the moment price pokes above a band that
+ * has rejected it from below all session, that band flips to "SUPPORT" and the
+ * engine buys straight into it (the 4601, 4565 and 4438.6 top-buys all share
+ * this one mechanism).
+ *
+ * MEASUREMENT (expo/scripts/item191_192_193_round.ts, 2026-08-21, canonical
+ * n=147, re-typing from gold_m1_bars over the 24h before emission): 27 of 147
+ * signals would flip emit->veto under directed typing. Changed set WR=37.0%
+ * [21.5, 55.8] EV_net=-0.2794R [-0.652, 0.124] vs unchanged WR=50.0%
+ * EV_net=-0.1028R. Direction favours the fix, but at MDE ±29.7pp the
+ * changed-set EV CI SPANS ZERO — UNDERPOWERED.
+ *
+ * SHIPPED BEHIND AN OFF FLAG per the Item 191(f) gate: underpowered must not
+ * mean deferred. The typing, the directional counts and legacyType ship NOW
+ * and are recorded on every zone of every sr_zones_snapshot, so forward
+ * evidence accumulates on the LIVE system. Flip condition (pre-registered):
+ * re-run the 191(e) measurement at n>=100/arm (~6 weeks at the current
+ * accrual) and ship ON only if the changed set's EV_net advantage holds with
+ * the CI excluding zero. NOT neutralised by any floor/clamp: the flag gates
+ * only the type assignment; reactionStrength, touches and rejectionWicks are
+ * untouched by this flag.
+ */
+const REJECTION_DIRECTED_ZONES_ENABLED = false;
+/**
+ * ITEM 192(d) — NO-STRUCTURE ROUTE (an empty opposing set is NOT a clear path).
+ *
+ * MEASUREMENT (192(b), canonical n=147, LEGACY typing as the shipped veto
+ * actually saw): zero-opposing n=8 WR=50.0% [21.5, 78.5] EV_net=-0.1876R
+ * [-0.766, 0.404] vs >=1-opposing n=139 WR=47.5% EV_net=-0.1322R. MDE
+ * ±50.7pp — the zero arm holds 8 of the 30 rows the pre-registered gate
+ * (n>=30/arm) requires, and both CIs are uninformative.
+ *
+ * SHIPPED BEHIND AN OFF FLAG per Item 192(d). At the current emission rate
+ * (~2 zero-opposing signals/week) the zero arm reaches n=30 around 2026-11-20.
+ * Flip condition (pre-registered, unchanged from 180(e)/192(c)): the
+ * zero-opposing arm is materially worse with the EV CI excluding zero at
+ * n>=30/arm.
+ *
+ * When ON, this routes zero-opposing signals to await-the-zone at the
+ * strongest same-side shelf within the Item 104 band (3 ATR) instead of
+ * emitting at market — and vetoes outright when no same-side shelf exists in
+ * the band either. It ALSO makes await-the-zone reachable independently of
+ * the veto branch (Item 193(b)): the 4601/4565/4438.6 top-buys were all
+ * zero-opposing maps the veto branch could never reach.
+ */
+const NO_STRUCTURE_VETO_ENABLED = false;
+/**
+ * ITEM 196(d) — ASYMMETRIC ENTRY BUFFER (the user's own design request).
+ *
+ * BUY 4500 -> fill band 4495-4500 (enter DEEPER); SELL 4500 -> 4500-4505.
+ * The whole TP/SL ladder derives from entryPriceWithSlippage
+ * (signalEngine.ts:8882-8885), so shifting the entry shifts the ladder by the
+ * same delta. If price never reaches the band the trade is missed
+ * (EXPIRED_MISSED_ENTRY) — a miss forgoes EV, it never books a loss.
+ *
+ * MEASUREMENT (expo/scripts/item196d_entry_buffer.ts, 2026-08-21, canonical
+ * n=328, retrace rates split by WIN/LOSS, canonical re-resolution from the
+ * deeper entry with the ladder shifted, miss cost NETTED):
+ *   retrace >=20p: WIN 92.8% / LOSS 100.0%   >=30p: 87.8% / 100.0%
+ *   >=50p: WIN 79.0% / LOSS 98.6%            >=80p: 64.1% / 90.5%
+ *   netEV: actual -0.0697R | 20p -0.0415R | 30p -0.0012R | 50p +0.0809R |
+ *   80p +0.0318R. DERIVED WIDTH = 50 pips ($5): best net EV, +0.151R vs
+ *   at-market, at a 79.0% WIN / 98.6% LOSS fill rate (missed 40/328).
+ *
+ * SHIPPED BEHIND AN OFF FLAG: the +0.151R improvement sits right at the
+ * stated paired MDE (~±0.15R at this n) — favourable direction, marginal
+ * power. NOT neutralised: when ON the buffer shifts entryPriceWithSlippage
+ * directly with no clamp or floor downstream of it; when OFF the entry is
+ * bit-for-bit unchanged. Forward evidence to flip: paired re-measure at
+ * n>=500 (~10 weeks) with the CI excluding zero.
+ */
+const ENTRY_BUFFER_ENABLED = false;
+const ENTRY_BUFFER_PIPS = 50; // DERIVED (196d): best net-EV width from the canonical re-resolution
 /**
  * ITEM 138(d) — TP3 CONFIDENCE STRETCH.
  *
@@ -1640,6 +1727,9 @@ class SignalGenerationEngine {
    * A same-direction signal is suppressed while an ACTIVE signal exists in
    * the same zone cluster, regardless of elapsed time. */
   private activeSignalsByDirection: Map<SignalType, Array<{ price: number; atr: number; timestamp: number; signalId: string }>> = new Map();
+  /** ITEM 192 — no-structure route counters (zero-opposing maps). */
+  private noStructureRoutes: number = 0;
+  private noStructureVetoes: number = 0;
   /** ITEM 104 — await-the-zone telemetry. */
   private awaitZoneArmed: number = 0;
   private awaitZoneConverted: number = 0;
@@ -2763,6 +2853,10 @@ class SignalGenerationEngine {
       awaitZoneConverted: this.awaitZoneConverted,
       awaitZoneExpired: this.awaitZoneExpired,
       awaitZoneInvalidated: this.awaitZoneInvalidated,
+      noStructureRoutes: this.noStructureRoutes,
+      noStructureVetoes: this.noStructureVetoes,
+      rejectionDirectedZonesEnabled: REJECTION_DIRECTED_ZONES_ENABLED,
+      noStructureVetoEnabled: NO_STRUCTURE_VETO_ENABLED,
       zoneMapAgeMinutes:
         this.tier0SRZonesFetchedAt > 0 ? Math.round((Date.now() - this.tier0SRZonesFetchedAt) / 60_000) : null,
     };
@@ -4111,6 +4205,11 @@ class SignalGenerationEngine {
             source: z.source,
             confluenceScore: z.confluenceScore,
             tier: 'TIER_0_SERVER',
+            // ITEM 191: legacy spot-relative type from the server's computeZones;
+            // the directed counts are filled by applyRejectionDirectedTyping().
+            legacyType: z.type,
+            rejectionsFromBelow: 0,
+            rejectionsFromAbove: 0,
           }));
           this.tier0SRZonesFetchedAt = Date.now();
           console.log(`✅ SR-ZONES: TIER 0 loaded DIRECT from Supabase (${this.tier0SRZones.length} usable zone(s), ${result.weakZoneCount} below the ${0.3} consumer threshold)`);
@@ -4148,6 +4247,69 @@ class SignalGenerationEngine {
     }
   }
 
+  /**
+   * ITEM 191(c) — REJECTION-DIRECTED TYPING POST-PASS.
+   *
+   * For EVERY zone in the final map (TIER_0 and TIER_1 alike), count how many
+   * approaches came from BELOW and were rejected back down (true resistance
+   * behaviour) versus from ABOVE and rejected back up (true support behaviour),
+   * over the same in-memory price/high/low history the touch and wick counting
+   * already uses. ALWAYS records the counts plus legacyType on the zone (so
+   * every sr_zones_snapshot accumulates forward evidence); re-types the zone
+   * by dominant rejection direction ONLY when REJECTION_DIRECTED_ZONES_ENABLED
+   * is on (tie -> legacy spot-relative type).
+   *
+   * LABEL (rule 5): the shipped counts are computed over the engine's
+   * in-memory window (~100 M1 samples); the 191(e) measurement used 24h of
+   * gold_m1_bars. Both count approach->reject events with the same wick test;
+   * the windows differ and the snapshot stores the counts so the shipped
+   * construct is auditable per-signal.
+   *
+   * Did NOT change: reactionStrength, touches, rejectionWicks, cluster
+   * merging (still on legacy typing), or anything downstream of zone.type
+   * while the flag is off. Returns CLONES — this.tier0SRZones cache entries
+   * are never mutated.
+   */
+  private applyRejectionDirectedTyping(zones: SRZone[]): SRZone[] {
+    const atr = this.calculateRealATR(14);
+    return zones.map(zone => {
+      const legacyType = zone.legacyType ?? zone.type;
+      const band = Math.max(atr * 0.3, zone.price * ZONE_WIDTH_FLOOR_PCT);
+      if (this.priceHistory.length < 20 || this.highHistory.length < 20 || this.lowHistory.length < 20) {
+        return { ...zone, legacyType, rejectionsFromBelow: 0, rejectionsFromAbove: 0 };
+      }
+      let below = 0;
+      let above = 0;
+      for (let i = 0; i < this.priceHistory.length; i++) {
+        const price = this.priceHistory[i];
+        const high = this.highHistory[i] ?? price;
+        const low = this.lowHistory[i] ?? price;
+        // Approach from below probed into the band and was pushed back below
+        // the level: RESISTANCE behaviour (mirrors the :4321 wick test,
+        // direction-agnostic — the legacy test only counts this when the zone
+        // already sits above spot, which is exactly the discarded evidence).
+        if (high >= zone.price - band && price < zone.price) {
+          const wickSize = high - Math.max(price, this.priceHistory[Math.max(0, i - 1)] ?? price);
+          if (wickSize > band * 0.3) below++;
+        }
+        // Approach from above probed into the band and was pushed back above
+        // the level: SUPPORT behaviour (mirrors the :4329 wick test).
+        if (low <= zone.price + band && price > zone.price) {
+          const wickSize = Math.min(price, this.priceHistory[Math.max(0, i - 1)] ?? price) - low;
+          if (wickSize > band * 0.3) above++;
+        }
+      }
+      const directedType: 'SUPPORT' | 'RESISTANCE' = below > above ? 'RESISTANCE' : above > below ? 'SUPPORT' : legacyType;
+      return {
+        ...zone,
+        legacyType,
+        rejectionsFromBelow: below,
+        rejectionsFromAbove: above,
+        type: REJECTION_DIRECTED_ZONES_ENABLED ? directedType : zone.type,
+      };
+    });
+  }
+
   private detectSRZones(): SRZone[] {
     const now = Date.now();
     const currentPrice = this.currentPrice;
@@ -4167,7 +4329,7 @@ class SignalGenerationEngine {
       && (now - this.tier0SRZonesFetchedAt) < SignalGenerationEngine.TIER0_SRZONES_TTL_MS;
     if (tier0Fresh) {
       this.tier0DegradedThisPass = false;
-      this.srZones = this.tier0SRZones!.slice(0, 16);
+      this.srZones = this.applyRejectionDirectedTyping(this.tier0SRZones!.slice(0, 16));
       return this.srZones;
     }
 
@@ -4431,6 +4593,11 @@ class SignalGenerationEngine {
           source: cluster.source,
           confluenceScore,
           tier: 'TIER_1_LOCAL',
+          // ITEM 191: legacy spot-relative type; directed counts are filled by
+          // applyRejectionDirectedTyping() over the final merged map.
+          legacyType: isResistance ? 'RESISTANCE' : 'SUPPORT',
+          rejectionsFromBelow: 0,
+          rejectionsFromAbove: 0,
         });
       }
     }
@@ -4474,7 +4641,7 @@ class SignalGenerationEngine {
     }
 
     merged.sort((a, b) => b.reactionStrength - a.reactionStrength);
-    this.srZones = merged.slice(0, 16);
+    this.srZones = this.applyRejectionDirectedTyping(merged.slice(0, 16));
 
     if (this.srZones.length > 0) {
       console.log('\n📊 S/R ZONE DETECTION (post-clustering):');
@@ -7362,22 +7529,39 @@ class SignalGenerationEngine {
         avgLoss = (avgLoss * 13 + Math.max(-d, 0)) / 14;
       }
       const rsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
-      let trSum = 0;
-      let trN = 0;
-      for (let i = 1; i < bars.length; i += 1) {
-        const prevClose = Number(bars[i - 1].close);
-        trSum += Math.max(
-          Number(bars[i].high) - Number(bars[i].low),
-          Math.abs(Number(bars[i].high) - prevClose),
-          Math.abs(Number(bars[i].low) - prevClose),
-        );
-        trN += 1;
+      // ITEM 195(c) — ATR-14: genuine Wilder ATR-14 over the LAST 15 M1 bars.
+      // The previous construct averaged true range across the whole ~59-bar
+      // pre-emission window while labelling itself "ATR-14" — the F-32
+      // collision class (one atr column, two incompatible constructs). Now:
+      // bars.slice(-15) -> 14 true ranges -> Wilder seed (mean of the first
+      // 14) -> Wilder smoothing over any remainder (no-op at exactly 15 bars),
+      // plus construct-provenance fields so the value self-describes.
+      const atrWindow = bars.slice(-15);
+      const trs: number[] = [];
+      for (let i = 1; i < atrWindow.length; i += 1) {
+        const prevClose = Number(atrWindow[i - 1].close);
+        trs.push(Math.max(
+          Number(atrWindow[i].high) - Number(atrWindow[i].low),
+          Math.abs(Number(atrWindow[i].high) - prevClose),
+          Math.abs(Number(atrWindow[i].low) - prevClose),
+        ));
       }
-      const atr = trN > 0 ? trSum / trN : null;
+      let atr: number | null = null;
+      if (trs.length >= 14) {
+        let wilder = trs.slice(0, 14).reduce((a, b) => a + b, 0) / 14;
+        for (let i = 14; i < trs.length; i += 1) {
+          wilder = (wilder * 13 + trs[i]) / 14;
+        }
+        atr = wilder;
+      }
       if (!Number.isFinite(rsi) || atr === null || !Number.isFinite(atr)) return null;
       return {
         rsi: Number(rsi.toFixed(2)),
         atr: Number(atr.toFixed(2)),
+        // ITEM 195(c): construct provenance — the atr column now self-describes.
+        atrPeriod: 14,
+        atrTimeframe: 'M1',
+        atrMethod: 'wilder',
         volumeRatio: 1,
         timeWindowFactor: 1,
         dxyChange: 0,
@@ -8621,6 +8805,20 @@ class SignalGenerationEngine {
       ? entryPrice + (totalSlippage * 0.1)
       : entryPrice - (totalSlippage * 0.1);
     if (spreadPips > 0) console.log(`💵 Real bid/ask spread applied: ${spreadPips.toFixed(2)} pips`);
+
+    // ITEM 196(d) — asymmetric entry buffer. Applied to entryPriceWithSlippage
+    // BEFORE the ladder is derived from it (signalEngine.ts:8882-8885), so TP1/
+    // TP2/TP3/SL all shift by the same delta and the R-geometry is unchanged.
+    // OFF (default) = bit-for-bit identical entry. The status monitor marks a
+    // never-filled band entry EXPIRED_MISSED_ENTRY — a miss forgoes EV, never
+    // books a loss.
+    if (ENTRY_BUFFER_ENABLED) {
+      const bufferPrice = ENTRY_BUFFER_PIPS * 0.1;
+      entryPriceWithSlippage = analysis.signalType === 'BUY'
+        ? entryPriceWithSlippage - bufferPrice
+        : entryPriceWithSlippage + bufferPrice;
+      console.log(`🎯 [Item196d] Entry buffer ${ENTRY_BUFFER_PIPS}p applied: entry now ${entryPriceWithSlippage.toFixed(1)} (band entry — ladder shifts with it; unfilled = EXPIRED_MISSED_ENTRY)`);
+    }
     
     console.log(`💰 Dynamic Slippage Buffer: ${slippageBuffer.toFixed(2)} pips (Regime: ${features.marketRegime.type}, Latency: ${latency.toFixed(0)}ms)`);
     
@@ -8774,6 +8972,12 @@ class SignalGenerationEngine {
       source: zone.source,
       confluenceScore: zone.confluenceScore,
       tier: zone.tier ?? 'TIER_1_LOCAL',
+      // ITEM 191: directed-typing evidence on every snapshot — legacyType plus
+      // both directional rejection counts — so forward evidence accumulates
+      // on the LIVE system while the flag is OFF.
+      legacyType: zone.legacyType ?? zone.type,
+      rejectionsFromBelow: zone.rejectionsFromBelow ?? 0,
+      rejectionsFromAbove: zone.rejectionsFromAbove ?? 0,
     }));
     
     // ── SELL SUPPRESSION CHECK ──────────────────────────────────────────────
@@ -9053,6 +9257,78 @@ class SignalGenerationEngine {
           entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips,
         });
         return null;
+      }
+      // ITEM 192 — AN EMPTY OPPOSING SET IS NOT A CLEAR PATH. The blocking-zone
+      // search above found nothing: EITHER the path is genuinely clear, OR the
+      // map simply contains no opposing zones at all — opposite epistemic
+      // states that the shipped code treated identically. All three documented
+      // top-buys (4601, 4565, 4438.6) were zero-opposing maps: the veto branch
+      // was unreachable and await-the-zone could never arm. Behind the flag
+      // until the 192(d) gate closes (n>=30/arm on the zero-opposing arm).
+      else if (NO_STRUCTURE_VETO_ENABLED) {
+        const opposingZones = features.srZones.filter(z => z.type === opposingType);
+        if (opposingZones.length === 0) {
+          const awaitZoneBandAtr = 3.0;
+          const sameSideZones = features.srZones
+            .filter(z => z.type === sameSideType && z.reactionStrength >= 0.3)
+            .filter(z => {
+              const dist = Math.abs(z.price - this.currentPrice);
+              const distAtr = dist / Math.max(features.atr, 0.01);
+              return distAtr <= awaitZoneBandAtr && distAtr > 0.1;
+            })
+            .sort((a, b) => b.reactionStrength - a.reactionStrength);
+          if (sameSideZones.length > 0) {
+            const targetZone = sameSideZones[0];
+            const movedEntry = targetZone.price;
+            const moveDelta = movedEntry - entryPriceWithSlippage;
+            // ITEM 193(b): await-the-zone ARMED from the no-structure branch,
+            // independently of the veto branch. No moved-entry path re-check is
+            // needed: the opposing set is empty by this branch's condition, so
+            // nothing can block the moved path.
+            this.awaitZoneArmed += 1;
+            this.noStructureRoutes += 1;
+            const clusterId = `${analysis.signalType}_${movedEntry.toFixed(1)}`;
+            const pendingTimeoutMs = 4 * 60 * 60 * 1000; // 4h expiry
+            const existing = this.pendingZoneEntries.get(clusterId);
+            if (!existing) {
+              this.pendingZoneEntries.set(clusterId, {
+                direction: analysis.signalType,
+                zonePrice: movedEntry,
+                zoneClusterId: clusterId,
+                armedAt: now,
+                expiresAt: now + pendingTimeoutMs,
+                signalParams: {
+                  confidence: tier0AdjustedConfidence,
+                  tp1, tp2, tp3, sl,
+                  originalEntry: entryPriceWithSlippage,
+                  slMultiplier: atrMultiplier,
+                  atr: features.atr,
+                  regime: features.marketRegime.type,
+                  rsi: features.rsi,
+                  topFeatures,
+                },
+              });
+              console.log(`⏳ [AwaitTheZone/192] ARMED pending ${analysis.signalType} at ${sameSideType} ${movedEntry.toFixed(1)} (reaction ${(targetZone.reactionStrength * 100).toFixed(0)}%, touches=${targetZone.touches}) — ZERO ${opposingType} zones in the map; routed to the shelf instead of emitting at market`);
+              console.log(`   [AwaitTheZone/192] original entry=${entryPriceWithSlippage.toFixed(1)} → moved=${movedEntry.toFixed(1)} (${Math.abs(movedEntry - entryPriceWithSlippage).toFixed(1)} $ = ${(Math.abs(movedEntry - entryPriceWithSlippage) / Math.max(features.atr, 0.01)).toFixed(2)} ATR)`);
+            }
+            // Do NOT emit at current price — the pending entry converts to a
+            // live signal when price reaches the zone (Item 104 conversion loop).
+            this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'no-structure route: zero opposing zones -> await-the-zone at nearest same-side shelf', {
+              entryPrice: movedEntry, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips,
+            });
+            return null;
+          }
+          // No same-side shelf within the 3 ATR band either: NO structure
+          // anywhere near price. Veto outright — do not emit into an
+          // information vacuum.
+          this.noStructureVetoes += 1;
+          console.log(`❌ REJECTED [NoStructureVeto]: ${analysis.signalType} at ${entryPriceWithSlippage.toFixed(1)} — ZERO ${opposingType} zones in the map and no ${sameSideType} shelf within 3 ATR. An empty opposing set is absence of information, not a clear path.`);
+          console.log(`${'='.repeat(80)}\n`);
+          this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'no-structure veto: zero opposing zones and no same-side shelf within 3 ATR', {
+            entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips,
+          });
+          return null;
+        }
       }
     }
 

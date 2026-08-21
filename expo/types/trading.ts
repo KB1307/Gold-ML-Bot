@@ -110,6 +110,12 @@ export interface TradingSignal {
    * could be checked against the rule that let it through.
    */
   counterTrendTelemetry?: CounterTrendGateTelemetry;
+  /**
+   * ITEM 194 — provenance marker for signals backfilled into local history by
+   * reconcileHistoryFromServer() (startup reconciliation against
+   * emitted_signals_v1). Absent on every normally-generated signal.
+   */
+  reconciledFrom?: "emitted_signals_v1";
 }
 
 export interface MarketSession {
@@ -135,6 +141,15 @@ export interface DetectedSRZone {
    * type-check.
    */
   tier?: "TIER_0_SERVER" | "TIER_1_LOCAL";
+  /**
+   * ITEM 191 — the legacy spot-relative type (price > currentPrice at compute
+   * time). Present on snapshots written after 2026-08-21; absent on older ones.
+   */
+  legacyType?: "SUPPORT" | "RESISTANCE";
+  /** ITEM 191 — approaches from BELOW rejected back down (resistance behaviour), counted over the engine's in-memory window. */
+  rejectionsFromBelow?: number;
+  /** ITEM 191 — approaches from ABOVE rejected back up (support behaviour). */
+  rejectionsFromAbove?: number;
 }
 
 export interface MarketOutlook {
@@ -215,6 +230,15 @@ export interface SignalLearningContext {
    * Absent on every engine-generated record.
    */
   featuresSource?: string;
+
+  /**
+   * ITEM 195(c) — ATR construct provenance. Present on every bar-reconstructed
+   * record written after 2026-08-21 (Wilder ATR-14 on M1). The engine's own
+   * records do not carry these (their construct is the engine's M5 ATR-14).
+   */
+  atrPeriod?: number;
+  atrTimeframe?: string;
+  atrMethod?: string;
 
   // momentum / trend
   macdHistogram?: number;

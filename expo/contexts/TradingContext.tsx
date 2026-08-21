@@ -805,6 +805,84 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     return () => subscription.remove();
   }, [reconcileBackgroundSignals]);
 
+  /**
+   * ITEM 194(c) — STARTUP RECONCILIATION AGAINST emitted_signals_v1.
+   *
+   * The case: signal_1787319747885_ytk3ifkwf (SELL @ 4587.3, emitted
+   * 2026-08-21T13:42:27Z) was generated, alerted to Telegram, and persisted
+   * server-side — then the app process restarted and the signal was ABSENT
+   * from the client's own history (SECTION 9: "Counters rehydrated from
+   * durable storage: NO (process-fresh)"). The local write is a DEBOUNCED
+   * AsyncStorage flush (persistSignalHistory, 400ms) that is fire-and-forget:
+   * nothing awaits it before the process can be torn down, so a restart
+   * inside the debounce window loses the signal locally forever.
+   * reconcileBackgroundSignals() only merges rows the BACKGROUND TASK wrote
+   * to storage — it never asks the server. The server row is authoritative:
+   * it is written by emitSignal() before the alert fires. This pass backfills
+   * any emitted signal the server holds that local history is missing —
+   * exactly as hydrateFromRemote() does for outcomes. Idempotent: unions by
+   * id, never touches existing local records, persists IMMEDIATELY (not
+   * debounced).
+   */
+  const reconcileHistoryFromServer = useCallback(async (): Promise<void> => {
+    try {
+      if (!supabase) {
+        console.warn('⚠️ [Item194] server-history reconciliation skipped — Supabase not configured');
+        return;
+      }
+      // Anon-key read, Supabase DIRECT (DATA-SOURCE RULE).
+      const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const { data, error } = await supabase
+        .from('emitted_signals_v1')
+        .select('signal_id, emitted_at, direction, entry, sl, tp1, tp2, tp3, confidence')
+        .gte('emitted_at', since)
+        .order('emitted_at', { ascending: false })
+        .limit(200);
+      if (error) {
+        console.warn('⚠️ [Item194] server-history reconciliation read failed:', error.message);
+        return;
+      }
+      const rows = (data ?? []) as Array<{
+        signal_id: string; emitted_at: string; direction: string;
+        entry: number; sl: number; tp1: number; tp2: number; tp3: number; confidence: number | null;
+      }>;
+      if (rows.length === 0) return;
+      const knownIds = new Set(signalHistoryRef.current.map(s => s.id));
+      const missing = rows.filter(r => !knownIds.has(r.signal_id));
+      if (missing.length === 0) return;
+      const additions: TradingSignal[] = missing.map(r => ({
+        id: r.signal_id,
+        timestamp: new Date(r.emitted_at),
+        type: r.direction === 'SELL' ? 'SELL' : 'BUY',
+        entryPrice: Number(r.entry),
+        entryPriceWithSlippage: Number(r.entry),
+        tp1: Number(r.tp1),
+        tp2: Number(r.tp2),
+        tp3: Number(r.tp3),
+        sl: Number(r.sl),
+        slMultiplier: 1,
+        confidence: Number.isFinite(Number(r.confidence)) ? Number(r.confidence) : 0.7,
+        // ACTIVE so the status monitor / boot catch-up evaluation re-derives
+        // the terminal state from bars — the server row carries no status.
+        status: 'ACTIVE',
+        targetsHit: 0,
+        entryTime: r.emitted_at,
+        topFeatures: [],
+        riskJustification: 'reconciled from emitted_signals_v1 (Item 194) — server row is authoritative',
+        reconciledFrom: 'emitted_signals_v1',
+      }));
+      const merged = [...signalHistoryRef.current, ...additions].sort(
+        (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      );
+      signalHistoryRef.current = merged;
+      setSignalHistory(sanitizeHistoryForRender(merged));
+      persistSignalHistory(merged, { immediate: true });
+      console.log(`🔁 [Item194] Reconciled ${additions.length} server-held signal(s) into local history — a restart can no longer lose a signal the server already holds`);
+    } catch (err) {
+      console.warn('⚠️ [Item194] server-history reconciliation failed:', err instanceof Error ? err.message : 'Unknown');
+    }
+  }, [persistSignalHistory]);
+
   useEffect(() => {
     const init = async () => {
       console.log('🚀 Initializing Trading Context...');
@@ -2472,6 +2550,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         console.log('⚠️ No saved history found in AsyncStorage');
         setSignalHistory([]);
       }
+
+      // ITEM 194(c): backfill any server-held signal local history is missing
+      // (fire-and-forget — never blocks the loading screen). Runs in BOTH
+      // branches: an empty local history is exactly the restart-loss case.
+      void reconcileHistoryFromServer();
 
       if (loginStatus) {
         const parsedLoginStatus = JSON.parse(loginStatus);

@@ -221,13 +221,24 @@ async function fetchBars(
  * trade_outcomes_v1 with an EMPTY features object (287 of 417 corpus rows),
  * which is the mechanism behind the uniform 1/6 weight vector: the fallback
  * defaults make every winner and loser centroid identical. This reconstructs
- * the bar-derivable features (RSI-14 and ATR-14 on the M1 bars immediately
- * BEFORE emission — the engine computes its own values on M5 aggregates, so
- * these are labeled reconstructions, not engine-identical values).
+ * the bar-derivable features (RSI-14 Wilder over the whole pre-emission M1
+ * window; ATR-14 as a genuine WILDER ATR-14 over the LAST 15 M1 bars — ITEM
+ * 195(c): the engine computes its own values on M5 aggregates, so these are
+ * labeled reconstructions, not engine-identical values).
  * volumeRatio/timeWindowFactor/sentiment/dxyChange are NOT reconstructable
  * here (no volume column on gold_m1_bars, no session/DXY feed in the
  * resolver) and are written with the engine's documented default values
  * (1/1/{score:0}/0) rather than invented numbers. schemaVersion stays 1.
+ *
+ * ITEM 195 — ATR CONSTRUCT, STATED EXPLICITLY. The previous version averaged
+ * true range across the WHOLE fetched window (~59 bars) while labelling it
+ * "ATR-14" — a ~60-period mean true range written into the same `atr` column
+ * the engine fills with its own M5 ATR-14. That is the F-32 collision class:
+ * one column silently holding two incompatible constructs. Now a true
+ * Wilder ATR-14 over the last 15 M1 bars (14 true ranges, seed = mean of the
+ * first 14, Wilder smoothing over any remainder), WITH provenance fields
+ * (atrPeriod/atrTimeframe/atrMethod) so the construct can never again be
+ * inferred from the value alone.
  */
 async function computeLearningFeatures(
   client: ReturnType<typeof getAdminClient>,
@@ -253,23 +264,37 @@ async function computeLearningFeatures(
       avgLoss = (avgLoss * 13 + Math.max(-d, 0)) / 14;
     }
     const rsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
-    // ATR-14: mean true range over the same pre-emission window.
-    let trSum = 0;
-    let trN = 0;
-    for (let i = 1; i < bars.length; i += 1) {
-      const prevClose = bars[i - 1].close;
-      trSum += Math.max(
-        bars[i].high - bars[i].low,
-        Math.abs(bars[i].high - prevClose),
-        Math.abs(bars[i].low - prevClose),
-      );
-      trN += 1;
+    // ITEM 195(c) — ATR-14: genuine Wilder ATR-14 over the LAST 15 M1 bars.
+    // The previous construct averaged true range across the whole ~59-bar
+    // window while calling itself ATR-14. bars.slice(-15) -> 14 true ranges
+    // -> Wilder seed (mean of the first 14) -> Wilder smoothing over any
+    // remainder (a no-op at exactly 15 bars, correct if more arrive).
+    const atrWindow = bars.slice(-15);
+    const trs: number[] = [];
+    for (let i = 1; i < atrWindow.length; i += 1) {
+      const prevClose = atrWindow[i - 1].close;
+      trs.push(Math.max(
+        atrWindow[i].high - atrWindow[i].low,
+        Math.abs(atrWindow[i].high - prevClose),
+        Math.abs(atrWindow[i].low - prevClose),
+      ));
     }
-    const atr = trN > 0 ? trSum / trN : null;
+    let atr: number | null = null;
+    if (trs.length >= 14) {
+      let wilder = trs.slice(0, 14).reduce((a, b) => a + b, 0) / 14;
+      for (let i = 14; i < trs.length; i += 1) {
+        wilder = (wilder * 13 + trs[i]) / 14;
+      }
+      atr = wilder;
+    }
     if (!Number.isFinite(rsi) || atr === null || !Number.isFinite(atr)) return null;
     return {
       rsi: Number(rsi.toFixed(2)),
       atr: Number(atr.toFixed(2)),
+      // ITEM 195(c): construct provenance — the atr column now self-describes.
+      atrPeriod: 14,
+      atrTimeframe: "M1",
+      atrMethod: "wilder",
       volumeRatio: 1, // engine default — no volume column on gold_m1_bars
       timeWindowFactor: 1, // engine default — session formula not reproducible here
       dxyChange: 0, // engine default — no DXY feed in the resolver
