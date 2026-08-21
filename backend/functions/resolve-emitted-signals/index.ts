@@ -330,8 +330,8 @@ async function computeLearningFeatures(
  *   3. Reconstructed features carry their own provenance marker
  *      (sentiment.source = "resolver-bar-reconstruction"), so a repaired row
  *      is distinguishable from an engine-features row forever.
- *   4. Bounded per invocation (BACKFILL_BATCH rows) so the */15 cron stays
- *      fast; at 40 rows/run the 287-row backlog clears in ~2 hours.
+ *   4. Bounded per invocation (BACKFILL_BATCH rows) so the 15-minute cron
+ *      stays fast; at 40 rows/run the 287-row backlog clears in ~2 hours.
  *   5. Rows whose pre-emission bars are insufficient for reconstruction are
  *      counted and left untouched — no invented numbers.
  */
