@@ -35,6 +35,40 @@ import {
 } from "@/services/learningStore";
 import { BUILD_SHA, BUILD_MARKED_AT } from "@/constants/buildMarker";
 
+/** ITEM 182 — `xauusd-diagnostics-2026-08-21T09-18Z.txt` (UTC, URL-safe). */
+function buildDiagnosticsFilename(now: number = Date.now()): string {
+  const d = new Date(now);
+  const p = (n: number): string => String(n).padStart(2, "0");
+  return `xauusd-diagnostics-${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}-${p(d.getUTCMinutes())}Z.txt`;
+}
+
+/**
+ * ITEM 182 — force a FILE DOWNLOAD instead of a rendered page. Supabase
+ * Storage honours ?download=<name> with Content-Disposition: attachment, so
+ * opening this URL saves the object under the dated filename on every
+ * platform (web browser, mobile browser, curl).
+ */
+function withDownloadParam(url: string, filename: string): string {
+  return `${url}${url.includes("?") ? "&" : "?"}download=${encodeURIComponent(filename)}`;
+}
+
+/**
+ * ITEM 182 — web auto-download. Writes the EXACT `content` string that was
+ * published to a local plain-text file; no re-encoding, so the local file and
+ * the storage object are byte-identical by construction.
+ */
+function triggerWebDownload(content: string, filename: string): void {
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
 function getProviderLabel(provider: unknown): string {
   if (provider === "google") {
     return "Google";
@@ -123,6 +157,7 @@ export default function SettingsScreen() {
   const [exportUrl, setExportUrl] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [isUrlCopied, setIsUrlCopied] = useState<boolean>(false);
+  const [downloadedFilename, setDownloadedFilename] = useState<string | null>(null);
 
   useEffect(() => {
     async function checkBackgroundTask() {
@@ -303,6 +338,7 @@ export default function SettingsScreen() {
     setExportError(null);
     setExportUrl(null);
     setIsUrlCopied(false);
+    setDownloadedFilename(null);
 
     try {
       // ITEM 7: the shadow summary is now read DIRECTLY from Supabase via the
@@ -386,7 +422,23 @@ export default function SettingsScreen() {
       // evidence base. The URL returned is the IMMUTABLE per-export object, so it
       // can never serve a previous export from a cache.
       const published = await publishDiagnosticsExport(content);
-      setExportUrl(published.url);
+      // ITEM 182 — the export is a FILE DOWNLOAD, not a rendered page. The URL
+      // carries Supabase Storage's ?download= param (Content-Disposition:
+      // attachment) with a dated filename, and on web the file is saved
+      // locally from the EXACT same `content` string that was published — the
+      // local download and the storage object are byte-identical by
+      // construction (same variable, same TextEncoder bytes, no re-encoding).
+      // PLAIN TEXT ONLY: there is no PDF path anywhere in the export pipeline.
+      const filename = buildDiagnosticsFilename();
+      setExportUrl(withDownloadParam(published.url, filename));
+      setDownloadedFilename(filename);
+      if (Platform.OS === 'web') {
+        try {
+          triggerWebDownload(content, filename);
+        } catch (downloadError) {
+          console.error('[Settings] Direct file download failed (download URL still available):', downloadError);
+        }
+      }
       if (!published.latestPointerUpdated) {
         setExportError('Export published, but the latest.txt pointer could not be updated.');
       }
@@ -1077,8 +1129,8 @@ export default function SettingsScreen() {
 
               <Text style={styles.helperText}>
                 Bundle your full signal history, model weights, model health/drift metrics, and
-                performance metrics into a readable text file, hosted at a stable URL you can
-                revisit anytime from any device.
+                performance metrics into a plain-text file. The file downloads automatically
+                (web) and is also hosted at a stable URL that downloads on any device.
               </Text>
 
               <TouchableOpacity
@@ -1103,7 +1155,9 @@ export default function SettingsScreen() {
 
               {exportUrl && (
                 <View style={styles.exportResultBox} testID="settings-export-diagnostics-url">
-                  <Text style={styles.exportResultLabel}>Download anytime at:</Text>
+                  <Text style={styles.exportResultLabel}>
+                    {downloadedFilename ? `Downloaded ${downloadedFilename}. Re-download anytime:` : "Download anytime:"}
+                  </Text>
                   <Text selectable style={styles.exportResultUrl}>{exportUrl}</Text>
                   <TouchableOpacity
                     style={styles.copyUrlButton}

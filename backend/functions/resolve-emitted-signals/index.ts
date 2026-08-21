@@ -14,6 +14,18 @@
 // 0.0098 = 5.3% of Item 44's shift); the binding constraint is sample size. A
 // cron-driven resolver removes the uptime dependency entirely.
 //
+// ITEM 179 — THE RESOLVER'S ROLE, STATED. Live evidence (2026-08-21): the app
+// resolves the same signal within minutes (emitted_at→ts gap < 60 min on 14 of
+// the 20 newest rows), and this resolver only considers signals emitted more
+// than an hour ago, and its upsert uses ignoreDuplicates — the FIRST writer
+// wins permanently. Invoking the deployed function returned resolved:0,
+// skippedExisting:418: with the app running 24/5 the app wins every race it
+// can win. So this function is now a BACKSTOP for app downtime, PLUS the
+// ITEM 179(d) features-only backfill below, which is the one thing it can do
+// that the app cannot: repair the 287 historical rows whose features column is
+// exactly '{}' (written before the app attached learningContext, and by the
+// pre-169(c) resolver).
+//
 // RESOLUTION SEMANTICS — deliberately identical to the CANONICAL basis that Item
 // 43e validated, because that basis agreed 51/51 with the durable bar-verified
 // labels:
@@ -128,6 +140,9 @@ function computeProtectedExitPrice(signal: EmittedRow, targetsHit: number): numb
  * divergence that could bite later, at no measured cost now.
  */
 const MAX_RESOLUTION_WINDOW_MS = 8 * 60 * 60 * 1000;
+
+/** ITEM 179(d) — rows repaired per invocation (bounded so the cron stays fast). */
+const BACKFILL_BATCH = 40;
 
 interface Bar {
   timestamp: number;
@@ -264,6 +279,81 @@ async function computeLearningFeatures(
   } catch {
     return null;
   }
+}
+
+/**
+ * ITEM 179(d) — NARROW FEATURES-ONLY BACKFILL.
+ *
+ * The resolver's main loop can never win the write race against the app (Item
+ * 179), so the 287 corpus rows whose features column is exactly '{}' — written
+ * before the app attached learningContext, and by the pre-169(c) resolver —
+ * would stay empty forever. This pass repairs ONLY the features column of
+ * those rows.
+ *
+ * PRE-REGISTERED GATE:
+ *   1. Only rows whose features column is EXACTLY '{}' — enforced by Postgres
+ *      itself, atomically, at UPDATE time via the .eq("features", "{}") filter
+ *      (the STRING form is required: supabase-js serializes an object value as
+ *      "eq.[object Object]", which Postgres rejects — verified live
+ *      2026-08-21). A row with ANY real app-written features can never be
+ *      selected for update, even if it gained them between the SELECT and
+ *      the UPDATE.
+ *   2. Only the features and feature_schema_version columns are written.
+ *      result, realized_r, exit_price, pnl, ts, direction — every outcome
+ *      field — is immutable here. Overwriting a LABEL is what F-29 punished;
+ *      this pass cannot reach a label.
+ *   3. Reconstructed features carry their own provenance marker
+ *      (sentiment.source = "resolver-bar-reconstruction"), so a repaired row
+ *      is distinguishable from an engine-features row forever.
+ *   4. Bounded per invocation (BACKFILL_BATCH rows) so the */15 cron stays
+ *      fast; at 40 rows/run the 287-row backlog clears in ~2 hours.
+ *   5. Rows whose pre-emission bars are insufficient for reconstruction are
+ *      counted and left untouched — no invented numbers.
+ */
+async function backfillEmptyFeatures(
+  client: ReturnType<typeof getAdminClient>,
+  emittedById: Map<string, string>,
+): Promise<{ examined: number; backfilled: number; noEmission: number; noBars: number; failed: number }> {
+  const { data: emptyRows, error } = await client
+    .from("trade_outcomes_v1")
+    .select("signal_id")
+    .eq("features", "{}")
+    .order("ts", { ascending: true })
+    .limit(BACKFILL_BATCH);
+  if (error) throw new Error(`trade_outcomes_v1 empty-features read failed: ${error.message}`);
+  const targets = (emptyRows ?? []) as { signal_id: string }[];
+
+  let backfilled = 0;
+  let noEmission = 0;
+  let noBars = 0;
+  let failed = 0;
+  for (const row of targets) {
+    const emittedAt = emittedById.get(row.signal_id);
+    if (!emittedAt) {
+      noEmission += 1;
+      continue;
+    }
+    const features = await computeLearningFeatures(client, new Date(emittedAt).getTime());
+    if (features === null) {
+      noBars += 1;
+      continue;
+    }
+    // The gate is the .eq("features", {}) filter on the UPDATE itself: Postgres
+    // applies it atomically, so a row that gained real features after the
+    // SELECT above is left untouched. Only the features columns are written.
+    const { error: updateError } = await client
+      .from("trade_outcomes_v1")
+      .update({ features, feature_schema_version: 1 })
+      .eq("signal_id", row.signal_id)
+      .eq("features", "{}");
+    if (updateError) {
+      failed += 1;
+      console.warn(`[Item179d] backfill UPDATE failed for ${row.signal_id.slice(-6)}: ${updateError.message}`);
+      continue;
+    }
+    backfilled += 1;
+  }
+  return { examined: targets.length, backfilled, noEmission, noBars, failed };
 }
 
 /**
@@ -464,6 +554,19 @@ Deno.serve(async (req: Request) => {
       if (writeErr) throw new Error(`trade_outcomes_v1 upsert failed: ${writeErr.message}`);
     }
 
+    // ITEM 179(d): repair the features column of historical empty-features
+    // rows. GATE stated on backfillEmptyFeatures — features column only,
+    // only where features = '{}', outcome fields immutable, provenance marked.
+    const emittedById = new Map(rows.map((r) => [r.signal_id, r.emitted_at] as const));
+    let backfill: Awaited<ReturnType<typeof backfillEmptyFeatures>> | null = null;
+    try {
+      backfill = await backfillEmptyFeatures(client, emittedById);
+    } catch (err: unknown) {
+      // The backfill must never take the resolver's main path down.
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[Item179d] backfill pass failed: ${message}`);
+    }
+
     const body = {
       ok: true,
       examined: rows.length,
@@ -471,6 +574,7 @@ Deno.serve(async (req: Request) => {
       skippedExisting,
       unresolvable,
       unresolvableReasons,
+      backfill,
       at: new Date().toISOString(),
     };
     console.log(`[resolve-emitted-signals] ${JSON.stringify(body)}`);

@@ -491,10 +491,24 @@ function formatOutboundPushBlock(stats: OutboundPushStatsInput | null | undefine
  */
 function formatBuildProvenanceBlock(p: BuildProvenanceInput | null | undefined): string[] {
   if (!p) return ["Build provenance: NOT INSTRUMENTED (caller did not supply buildProvenance)."];
-  const lines: string[] = [
+  const lines: string[] = [];
+  // ITEM 184(a) — substitution failure is LOUD, not silent. Item 168a's marker
+  // claimed babel.config.js replaced the placeholders, but no plugin existed,
+  // so every export since Item 168 printed literal __BUILD_SHA__. The plugin
+  // now exists (babel.config.js rork-build-marker); if a stale Metro transform
+  // cache still serves the unsubstituted module, this is what surfaces it.
+  if (p.buildSha === "__BUILD_SHA__" || p.markedAt === "__BUILD_STAMP__") {
+    lines.push(
+      "⚠️ BUILD MARKER SUBSTITUTION FAILED — the literal placeholder survived into this bundle.",
+      "   The babel.config.js rork-build-marker plugin did not inject for this build (stale",
+      "   Metro transform cache or plugin regression). This export CANNOT be attributed to a",
+      "   specific git tree. Rebuild with `expo start -c` to clear the transform cache. (Item 184a)",
+    );
+  }
+  lines.push(
     `Build marker: ${p.buildSha} (BUILD-DERIVED, babel-injected at transform time — Item 168a)`,
     `Build stamp: ${p.markedAt}`,
-  ];
+  );
   lines.push("Runtime symbol probes (read from the RUNNING bundle, never from the repo):");
   for (const probe of p.probes) {
     lines.push(`  [${probe.present ? "PRESENT" : "ABSENT "}] ${probe.label} -> ${probe.observed}`);

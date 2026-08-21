@@ -124,8 +124,14 @@ async function main() {
       console.log('raw centroid-difference weights (engine math):');
       for (const [k, v] of Object.entries(raw)) console.log(`  ${k.padEnd(18)} ${v >= 0 ? '+' : ''}${v.toFixed(4)}`);
       if (absSum > 0) {
-        console.log('normalised (|w|/sum|w|):');
-        for (const [k, v] of Object.entries(raw)) console.log(`  ${k.padEnd(18)} ${(Math.abs(v) / absSum).toFixed(4)}`);
+        // ITEM 183(b) FIX — SIGN PRESERVED. The previous print divided |w| by
+        // sum|w|, DROPPING THE SIGN: loss-predicting features (timeWindow
+        // -0.1238, volume -0.0523) displayed as the LARGEST POSITIVE weights
+        // (0.315, 0.133). Production retrainModel() divides the SIGNED value
+        // by sum|w| (signalEngine.ts:7713) and always preserved the sign — the
+        // defect was in THIS display line only, never in the engine.
+        console.log('normalised (w/sum|w|, SIGN PRESERVED — matches retrainModel signalEngine.ts:7713):');
+        for (const [k, v] of Object.entries(raw)) console.log(`  ${k.padEnd(18)} ${(v / absSum).toFixed(4)}`);
       } else console.log('all raw weights ZERO even on clean rows — centroids identical');
     } else console.log('INSUFFICIENT class diversity on clean rows — no vector reported');
   } else console.log('n < 20 — TOO SMALL to fit six weights. No vector reported (honest).');

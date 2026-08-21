@@ -7319,31 +7319,125 @@ class SignalGenerationEngine {
     };
   }
 
+  /**
+   * ITEM 179(c) — bar-derived learning-context reconstruction. Mirrors the
+   * resolver's computeLearningFeatures(): RSI-14 (Wilder) and ATR-14 over the
+   * M1 bars in the 60 minutes BEFORE emission, read DIRECT from gold_m1_bars
+   * via the anon key. Returns null when bars are insufficient — the caller
+   * then keeps the default-context path (which logs loudly).
+   *
+   * Labeled reconstruction, not engine-identical values: the engine computes
+   * its own scalars on M5 aggregates with live sentiment/DXY feeds; these are
+   * M1 bar-derived approximations for capture, marked
+   * featuresSource='app-bar-reconstruction' so the provenance is permanent.
+   */
+  private async reconstructLearningFeaturesFromBars(emittedAtMs: number): Promise<Partial<SignalLearningContext> | null> {
+    try {
+      const client = this.getDailyOhlcSupabaseClient();
+      if (!client) return null;
+      const fromIso = new Date(emittedAtMs - 60 * 60_000).toISOString();
+      const toIso = new Date(emittedAtMs - 1_000).toISOString();
+      const { data, error } = await client
+        .from('gold_m1_bars')
+        .select('timestamp, high, low, close')
+        .gte('timestamp', fromIso)
+        .lte('timestamp', toIso)
+        .order('timestamp', { ascending: true })
+        .range(0, 999);
+      if (error || !data || data.length < 15) return null;
+      const bars = data as Array<{ timestamp: string; high: number; low: number; close: number }>;
+      const closes = bars.map((b) => Number(b.close));
+      let avgGain = 0;
+      let avgLoss = 0;
+      for (let i = 1; i <= 14; i += 1) {
+        const d = closes[i] - closes[i - 1];
+        if (d >= 0) avgGain += d;
+        else avgLoss -= d;
+      }
+      avgGain /= 14;
+      avgLoss /= 14;
+      for (let i = 15; i < closes.length; i += 1) {
+        const d = closes[i] - closes[i - 1];
+        avgGain = (avgGain * 13 + Math.max(d, 0)) / 14;
+        avgLoss = (avgLoss * 13 + Math.max(-d, 0)) / 14;
+      }
+      const rsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+      let trSum = 0;
+      let trN = 0;
+      for (let i = 1; i < bars.length; i += 1) {
+        const prevClose = Number(bars[i - 1].close);
+        trSum += Math.max(
+          Number(bars[i].high) - Number(bars[i].low),
+          Math.abs(Number(bars[i].high) - prevClose),
+          Math.abs(Number(bars[i].low) - prevClose),
+        );
+        trN += 1;
+      }
+      const atr = trN > 0 ? trSum / trN : null;
+      if (!Number.isFinite(rsi) || atr === null || !Number.isFinite(atr)) return null;
+      return {
+        rsi: Number(rsi.toFixed(2)),
+        atr: Number(atr.toFixed(2)),
+        volumeRatio: 1,
+        timeWindowFactor: 1,
+        dxyChange: 0,
+        sentiment: { score: 0, confidence: 0, source: 'app-bar-reconstruction' },
+        schemaVersion: 1,
+        featuresSource: 'app-bar-reconstruction',
+      };
+    } catch (err) {
+      console.warn('[Item179] learning-context bar reconstruction failed:', err instanceof Error ? err.message : String(err));
+      return null;
+    }
+  }
+
   async recordTradeOutcome(signalId: string, entryPrice: number, exitPrice: number, result: 'WIN' | 'LOSS', features?: Partial<SignalLearningContext>, misleadingFeatures?: FeatureConfidence[], signalDuration?: number, confidence?: number, stopDistance?: number): Promise<void> {
     const pnl = result === 'WIN' ? Math.abs(exitPrice - entryPrice) : -Math.abs(exitPrice - entryPrice);
     const normalizedConfidence = Math.max(0.42, Math.min(0.95, confidence ?? this.performanceMetrics.avgConfidence ?? 0.72));
+    // ITEM 179(c) — bar-derived fallback when the caller dropped the learning
+    // context. Every app call site passes signal.learningContext, and that
+    // field persists with signal_history, so this fires only for a signal
+    // restored without its context (e.g. emitted before an app update added
+    // the field). Previously such an outcome silently fell back to DEFAULT
+    // scalars — the uniform-1/6 mechanism. Now the six scalars are
+    // reconstructed from the real M1 bars before emission. `signalDuration`
+    // is (now - emission) at every call site, so the emission instant is
+    // Date.now() - signalDuration.
+    let effectiveFeatures = features;
+    if (features === undefined || Object.keys(features).length === 0) {
+      const emittedAtMs = typeof signalDuration === 'number' && Number.isFinite(signalDuration) && signalDuration > 0
+        ? Date.now() - signalDuration
+        : null;
+      if (emittedAtMs !== null) {
+        const reconstructed = await this.reconstructLearningFeaturesFromBars(emittedAtMs);
+        if (reconstructed !== null) {
+          effectiveFeatures = reconstructed;
+          console.warn(`⚠️ [Item179] outcome ${signalId.slice(-6)} arrived with NO learning context — reconstructed bar-derived features (rsi=${reconstructed.rsi}, atr=${reconstructed.atr}) from gold_m1_bars before emission; provenance featuresSource='app-bar-reconstruction'`);
+        }
+      }
+    }
     const defaultContext = createDefaultLearningContext();
     // The six v1 scalars are still normalized with explicit fallbacks (they are
     // REQUIRED and read unconditionally by drift/correlation code). Every wide
     // v2 field is carried through verbatim via the spread: absent stays absent,
     // so a legacy record is never back-filled with invented values.
     const normalizedFeatures: SignalLearningContext = {
-      ...(features ?? {}),
-      rsi: typeof features?.rsi === 'number' ? features.rsi : defaultContext.rsi,
-      atr: typeof features?.atr === 'number' ? features.atr : defaultContext.atr,
-      volumeRatio: typeof features?.volumeRatio === 'number' ? features.volumeRatio : defaultContext.volumeRatio,
-      dxyChange: typeof features?.dxyChange === 'number' ? features.dxyChange : defaultContext.dxyChange,
-      timeWindowFactor: typeof features?.timeWindowFactor === 'number' ? features.timeWindowFactor : defaultContext.timeWindowFactor,
-      sentiment: features?.sentiment ?? defaultContext.sentiment,
-      schemaVersion: features?.schemaVersion ?? 1,
+      ...(effectiveFeatures ?? {}),
+      rsi: typeof effectiveFeatures?.rsi === 'number' ? effectiveFeatures.rsi : defaultContext.rsi,
+      atr: typeof effectiveFeatures?.atr === 'number' ? effectiveFeatures.atr : defaultContext.atr,
+      volumeRatio: typeof effectiveFeatures?.volumeRatio === 'number' ? effectiveFeatures.volumeRatio : defaultContext.volumeRatio,
+      dxyChange: typeof effectiveFeatures?.dxyChange === 'number' ? effectiveFeatures.dxyChange : defaultContext.dxyChange,
+      timeWindowFactor: typeof effectiveFeatures?.timeWindowFactor === 'number' ? effectiveFeatures.timeWindowFactor : defaultContext.timeWindowFactor,
+      sentiment: effectiveFeatures?.sentiment ?? defaultContext.sentiment,
+      schemaVersion: effectiveFeatures?.schemaVersion ?? 1,
     };
     // ITEM 169(c) — write-time capture assertion. An outcome whose incoming
-    // learning context was dropped silently falls back to defaults for all six
-    // scalars, which is precisely the uniform-1/6 mechanism (identical winner
-    // and loser centroids). The fallback now announces itself instead of
-    // pretending to be data.
-    if (features === undefined || Object.keys(features).length === 0) {
-      console.warn(`⚠️ [Item169] outcome ${signalId.slice(-6)} recorded with DEFAULT features — the caller dropped the learning context (capture defect, not a modelling one)`);
+    // learning context was dropped AND could not be reconstructed from bars
+    // falls back to defaults for all six scalars, which is precisely the
+    // uniform-1/6 mechanism (identical winner and loser centroids). The
+    // fallback announces itself instead of pretending to be data.
+    if (effectiveFeatures === undefined || Object.keys(effectiveFeatures).length === 0) {
+      console.warn(`⚠️ [Item169] outcome ${signalId.slice(-6)} recorded with DEFAULT features — the caller dropped the learning context and bar reconstruction was unavailable (capture defect, not a modelling one)`);
     }
     
     // PHASE 2 (C4): infer direction from realised geometry so no call site has

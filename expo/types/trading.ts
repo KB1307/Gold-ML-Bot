@@ -208,6 +208,14 @@ export interface SignalLearningContext {
   /** 1 = legacy six-scalar record, 2 = wide vector below. */
   schemaVersion?: number;
 
+  /**
+   * ITEM 179(c) — provenance marker. 'app-bar-reconstruction' when the
+   * learning context was missing at outcome time and the six scalars were
+   * reconstructed from gold_m1_bars before emission (RSI-14/ATR-14, M1).
+   * Absent on every engine-generated record.
+   */
+  featuresSource?: string;
+
   // momentum / trend
   macdHistogram?: number;
   emaCrossover?: number;
