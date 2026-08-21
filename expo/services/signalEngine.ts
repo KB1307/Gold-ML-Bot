@@ -5771,8 +5771,28 @@ class SignalGenerationEngine {
       return [];
     }
     
-    const recentOutcomes = this.tradeOutcomes.slice(-20);
-    const olderOutcomes = this.tradeOutcomes.slice(-40, -20);
+    // ITEM 201(b) — DRIFT WINDOWS EXCLUDE PROVENANCE-MARKED RECONSTRUCTION ROWS.
+    // Measured 2026-08-21 (expo/scripts/item201b_drift_retrain.ts): with all
+    // rows the drift is dominated by reconstruction defaults — sentiment
+    // drift 11.875 (0.0000 -> 0.1188), mean 2.5068 — because HALF the older
+    // window is backfill rows whose sentiment/volume/dxy/timeWindow are
+    // documented DEFAULTS, not measurements. Excluding them: sentiment drift
+    // 0.735 (0.0800 -> 0.1462), mean 0.3275. Retraining on the contaminated
+    // windows would bake a manufactured drift signal into the weights.
+    // Fallback: if fewer than 40 measurable rows exist, use all rows (the
+    // pre-fix behaviour) so drift stays computable on a young corpus.
+    // Did NOT change: the drift formula, the status thresholds, the retrain
+    // trigger conjunction, or the learner itself.
+    const measurableOutcomes = this.tradeOutcomes.filter(o => {
+      const f = o.features as Partial<SignalLearningContext> | undefined;
+      const sent = f?.sentiment as { source?: string } | undefined;
+      return sent?.source !== 'resolver-bar-reconstruction'
+        && f?.featuresSource !== 'app-bar-reconstruction'
+        && (f as Record<string, unknown> | undefined)?.featuresIncomplete !== true;
+    });
+    const driftSource = measurableOutcomes.length >= 40 ? measurableOutcomes : this.tradeOutcomes;
+    const recentOutcomes = driftSource.slice(-20);
+    const olderOutcomes = driftSource.slice(-40, -20);
     
     if (olderOutcomes.length < 10) {
       return [];
@@ -7602,6 +7622,23 @@ class SignalGenerationEngine {
         }
       }
     }
+    // ITEM 199(c) — ENGINE-NATIVE ATR CONSTRUCT PROVENANCE. The engine's
+    // calculateRealATR(14) is a SIMPLE MEAN of the last 14 true ranges over
+    // bar-aligned M1 history (TwelveData XAU/USD 1-min), NOT Wilder. Until
+    // now only reconstruction rows carried construct provenance, leaving
+    // engine-native rows silent in the same atr column — exactly how F-32
+    // started. Any features reaching this point WITHOUT an atrMethod are
+    // engine-native and now get their own provenance values, so both
+    // constructs are self-describing forever. Did NOT change: the atr value
+    // itself, any other feature, the reconstruction path's wilder/M1/14 set.
+    if (effectiveFeatures && effectiveFeatures.atrMethod === undefined) {
+      effectiveFeatures = {
+        ...effectiveFeatures,
+        atrPeriod: 14,
+        atrTimeframe: 'M1',
+        atrMethod: 'mean-tr',
+      };
+    }
     const defaultContext = createDefaultLearningContext();
     // The six v1 scalars are still normalized with explicit fallbacks (they are
     // REQUIRED and read unconditionally by drift/correlation code). Every wide
@@ -8980,6 +9017,17 @@ class SignalGenerationEngine {
       legacyType: zone.legacyType ?? zone.type,
       rejectionsFromBelow: zone.rejectionsFromBelow ?? 0,
       rejectionsFromAbove: zone.rejectionsFromAbove ?? 0,
+      // ITEM 200(d) — entry-backing annotation: this zone's distance from the
+      // entry in ATR units. Together with zone.price, the emitted row's entry
+      // and stored atr, BOTH entry-backing splits (nearest opposing zone
+      // AHEAD of the entry in the direction of risk, and nearest opposing
+      // zone BEHIND the entry — the 4601 shape) are directly re-derivable
+      // under BOTH typings from the snapshot alone, so the forward
+      // measurement never depends on reconstructing engine state.
+      // Underpowered must not mean nothing ships: the 200(b/c) splits found
+      // no CI separation (buckets n=1..59, MDE ±20-35pp), so the ANNOTATION
+      // is the ship; a flagged entry-backing check waits for forward evidence.
+      distFromEntryAtr: parseFloat((Math.abs(zone.price - entryPriceWithSlippage) / Math.max(features.atr, 0.01)).toFixed(2)),
     }));
     
     // ── SELL SUPPRESSION CHECK ──────────────────────────────────────────────

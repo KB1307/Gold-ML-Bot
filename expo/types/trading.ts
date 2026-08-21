@@ -150,6 +150,12 @@ export interface DetectedSRZone {
   rejectionsFromBelow?: number;
   /** ITEM 191 — approaches from ABOVE rejected back up (support behaviour). */
   rejectionsFromAbove?: number;
+  /**
+   * ITEM 200(d) — entry-backing annotation: this zone's distance from the
+   * signal's entry in ATR units at generation time. Present on snapshots
+   * written after 2026-08-21; absent on older ones.
+   */
+  distFromEntryAtr?: number;
 }
 
 export interface MarketOutlook {
