@@ -19,15 +19,16 @@
  * in the diagnostics export are the ONLY evidence of what the bundle contains.
  */
 
-// MARKER_CACHE_BUSTER_V2 (2026-08-21T21:30Z): this comment intentionally
-// changes the file's content hash. Metro's transform cache keys on file
-// content, so a cached PRE-PLUGIN transform of this module (with the literal
-// placeholders) survives dev-server restarts and is still served NEXT TO
-// freshly-transformed modules — proven by the 2026-08-21T21:21Z export, which
-// carried af7da4a-era runtime probe keys while still printing literal
-// placeholders. Changing this file's content forces every cache — dev and CI
-// alike — to re-transform it through the babel.config.js rork-build-marker
-// plugin on the next build.
+// MARKER_CACHE_BUSTER_V3 (2026-08-21T22:05Z): v2 mis-attributed the 21:21Z
+// export's literal placeholders to Metro transform-cache staleness. The
+// git-proven root cause: the rork-build-marker plugin was absent from
+// babel.config.js entirely — removed a second time that day by af7da4a
+// (17:44Z) — so no transform could substitute at all. The plugin is now
+// restored SCOPED to this module only (it no longer rewrites the failure
+// detector's own comparison literals in diagnosticsExport.ts), enforced
+// mechanically by expo/scripts/ci_guard_build_marker.ts. This comment still
+// changes the file's content hash, forcing any older cached transform of
+// this module to be re-created through the restored, scoped plugin.
 
 /** Git SHA of the tree this bundle was built from (babel-injected at build). */
 export const BUILD_SHA = '__BUILD_SHA__';

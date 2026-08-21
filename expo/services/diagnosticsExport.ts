@@ -494,31 +494,43 @@ function formatBuildProvenanceBlock(p: BuildProvenanceInput | null | undefined):
   const lines: string[] = [];
   // ITEM 184(a) — substitution failure is LOUD, not silent. Item 168a's marker
   // claimed babel.config.js replaced the placeholders, but no plugin existed,
-  // so every export since Item 168 printed literal __BUILD_SHA__. The plugin
-  // now exists (babel.config.js rork-build-marker); if a stale Metro transform
-  // cache still serves the unsubstituted module, this is what surfaces it.
-  // ITEM 201(a) — the substitution status line renders on EVERY export,
-  // success and failure alike, so its ABSENCE in any export is itself
-  // diagnostic: that export predates this instrumentation. Additionally,
-  // editing this file changes its content hash, which invalidates any stale
-  // Metro transform-cache entry serving a pre-Item-184a version of this
-  // module — the exact mixed-staleness failure seen in the 2026-08-21T21:21Z
-  // export (fresh af7da4a runtime-probe keys served alongside a literal
-  // __BUILD_SHA__ marker and NO warning, i.e. a stale diagnosticsExport
-  // module next to a fresh signalEngine module).
-  const markerSubstituted = p.buildSha !== "__BUILD_SHA__" && p.markedAt !== "__BUILD_STAMP__";
+  // so every export since Item 168 printed literal __BUILD_SHA__.
+  //
+  // ITEM 201(a) v2 — ROOT CAUSE CORRECTED (was previously mis-attributed to
+  // Metro transform-cache staleness): the plugin was accidentally REMOVED
+  // from babel.config.js twice on 2026-08-21 — b1c7ca8 (14:48Z, restored by
+  // 58a08f1 at 15:00Z) and af7da4a (17:44Z, still absent until 1aacb36+). The
+  // 21:21Z export's literal __BUILD_SHA__ needed no staleness theory: with no
+  // plugin in the config, no transform substitutes. The MISSING warning had a
+  // second, in-repo cause: the original plugin's StringLiteral visitor
+  // replaced the placeholders in EVERY module — including THIS detector's own
+  // comparison strings — so any plugin-era transform of this file compiled
+  // the check to `p.buildSha === "<sha>"`, structurally unable to match a
+  // literal placeholder (and a fully-substituted build would FALSELY report
+  // FAILED, both sides substituted to the same SHA). The plugin is now SCOPED
+  // to constants/buildMarker.ts only, and the sentinels below are built by
+  // RUNTIME CONCATENATION so no StringLiteral in this file ever equals the
+  // placeholder — no transform, plugin or not, stale or fresh, can defuse
+  // this detector. ci_guard_build_marker.ts fails the round if any of this
+  // is removed.
+  const PLACEHOLDER_SHA = "__BUILD_" + "SHA__";
+  const PLACEHOLDER_STAMP = "__BUILD_" + "STAMP__";
+  const markerSubstituted =
+    p.buildSha !== PLACEHOLDER_SHA && p.markedAt !== PLACEHOLDER_STAMP;
   if (!markerSubstituted) {
     lines.push(
       "⚠️ BUILD MARKER SUBSTITUTION FAILED — the literal placeholder survived into this bundle.",
-      "   The babel.config.js rork-build-marker plugin did not inject for this build (stale",
-      "   Metro transform cache or plugin regression). This export CANNOT be attributed to a",
-      "   specific git tree. Rebuild with `expo start -c` to clear the transform cache. (Item 184a)",
+      "   Either the rork-build-marker plugin is absent from babel.config.js (it was",
+      "   accidentally removed twice on 2026-08-21: b1c7ca8, af7da4a) or a stale Metro",
+      "   transform cache is serving a pre-plugin module. This export CANNOT be",
+      "   attributed to a specific git tree. Run expo/scripts/ci_guard_build_marker.ts",
+      "   and rebuild with `expo start -c`. (Items 184a/201a)",
     );
   }
   lines.push(
     `Build marker: ${p.buildSha} (BUILD-DERIVED, babel-injected at transform time — Item 168a)`,
     `Build stamp: ${p.markedAt}`,
-    `Build marker substitution: ${markerSubstituted ? "SUCCEEDED (babel rork-build-marker injected; placeholder absent) — Item 201a" : "FAILED (literal placeholder present — see warning above) — Item 201a"}`,
+    `Build marker substitution: ${markerSubstituted ? "SUCCEEDED (scoped rork-build-marker injected; placeholder absent) — Item 201a" : "FAILED (literal placeholder present — see warning above) — Item 201a"}`,
   );
   lines.push("Runtime symbol probes (read from the RUNNING bundle, never from the repo):");
   for (const probe of p.probes) {
