@@ -678,8 +678,10 @@ const REJECTION_DIRECTED_ZONES_ENABLED = false;
  * ±50.7pp — the zero arm holds 8 of the 30 rows the pre-registered gate
  * (n>=30/arm) requires, and both CIs are uninformative.
  *
- * SHIPPED BEHIND AN OFF FLAG per Item 192(d). At the current emission rate
- * (~2 zero-opposing signals/week) the zero arm reaches n=30 around 2026-11-20.
+ * SHIPPED BEHIND AN OFF FLAG per Item 192(d). ACCRUAL MEASURED FROM THE DATA
+ * (not assumed): 8 zero-opposing canonical rows accumulated over the snapshot
+ * era 2026-07-16 -> 2026-08-21 (36 days) = ~0.22/day (~1.6/week); the zero
+ * arm reaches n=30 around 2026-11-28 at that rate.
  * Flip condition (pre-registered, unchanged from 180(e)/192(c)): the
  * zero-opposing arm is materially worse with the EV CI excluding zero at
  * n>=30/arm.
