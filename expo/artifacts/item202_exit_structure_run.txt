@@ -1,0 +1,158 @@
+
+================================================================================================
+ITEMS 202/203/204 — EXIT-STRUCTURE MEASUREMENT (READ-ONLY)
+================================================================================================
+  emitted_signals_v1 rows        : 445
+  by source                      : {"BACKFILL":413,"LIVE":32}
+  trade_outcomes_v1 rows         : 430
+  gold_m1_bars window            : 2026-06-29T08:24:44.894Z -> 2026-08-21T20:55:00.000Z (55009 bars)
+  resolution window              : 8h (MAX_RESOLUTION_WINDOW_MS), fromScratch, safeBarStart = createdAt+60s
+
+================================================================================================
+202(a) — TELEMETRY CARD vs PERFORMANCE SNAPSHOT RECONCILIATION
+================================================================================================
+  "Today's Signals (12)" population = emitted_signals_v1 rows with emitted_at in [2026-08-21T00:00Z, 2026-08-22T00:00Z): 12 rows, all source=LIVE
+  card day-window                 : telemetry.tsx startOfLocalDay(device tz) over in-memory signalHistory — the 12 visible rows match this UTC day 1:1 (entries 4608.1/4612.7/4624.4/4605.4/4601.0 all present)
+  Day Win Rate denominator        : wins/(wins+losses) of TODAY's classified signals (telemetry.tsx:117-118), classifySignalOutcome counts SL_AFTER_BE as WIN (TradingContext.tsx:489)
+  stored outcomes for the 12      : WIN=11  LOSS=1  absent=0  -> stored day WR = 91.7%
+
+  Performance Snapshot (dashboard.tsx:658-674) = performanceMetrics (TradingContext.tsx:2303-2341):
+    window  : ALL closedTrades in the ENTIRE in-memory history (all-time), NOT today
+    WinRate : winningTrades/totalTrades          (TradingContext.tsx:2331)
+    PF      : totalProfit/totalLoss in DOLLARS   (TradingContext.tsx:2332-2334, computeSignalPnL) — not R
+  LIVE stored analogue (trade_outcomes_v1, all-time, n=421 with realized_r):
+    WR=62.5%   PF($)=1.13   PF(R)=1.05
+  -> RECONCILED: the two card numbers describe DIFFERENT populations (today-12 vs all-time) and the snapshot PF is DOLLAR-based;
+     92% day WR and 65% all-time WR are not contradictory. The stored all-time book reproduces both headline figures.
+
+================================================================================================
+202(b) — THE 12 SIGNALS (2026-08-21 UTC day), STORED
+================================================================================================
+  signal_id             dir  entry    sl      tp1     tp2     tp3     conf  stored result  stored realized_r
+  31_04x0bkmoc   SELL 4608.1  4616.1  4605.6  4603.1  4600.1  0.90  WIN           0.2750
+  05_zs6y4hdmo   SELL 4612.7  4620.7  4610.2  4607.7  4604.7  0.87  WIN           0.2875
+  94_4xipcur7d   SELL 4624.3  4632.3  4621.8  4619.3  4616.3  0.90  WIN           0.2911
+  22_a01l1xb7n   BUY  4605.4  4597.4  4607.9  4610.4  4613.4  0.94  WIN           0.2911
+  00_hpy5mh8ld   BUY  4601    4593    4603.5  4606    4609    0.94  LOSS          -1.0000
+  85_ytk3ifkwf   SELL 4587.3  4594.3  4584.8  4582.3  4579.3  0.77  WIN           0.3143
+  87_lrjqt1yfb   BUY  4590    4582    4592.5  4595    4598    0.95  WIN           0.2875
+  30_oaprcxg43   BUY  4584.5  4577.5  4587    4589.5  4592.5  0.93  WIN           1.1429
+  58_7n0o2bz0x   BUY  4582.3  4574.3  4584.8  4587.3  4590.3  0.90  WIN           0.2875
+  56_4feo7fwqq   BUY  4568.6  4561.6  4571.1  4573.6  4576.6  0.88  WIN           1.1429
+  16_i44ilxit7   BUY  4566.3  4559.3  4568.8  4571.3  4574.3  0.82  WIN           1.1429
+  42_n3idsszpf   BUY  4533    4525    4535.5  4538    4541    0.90  WIN           1.0253
+
+  canonical baseline resolve: 432 signals resolved (13 with zero bars, excluded)
+
+================================================================================================
+202(c) — CANONICAL RE-RESOLUTION OF THE 12 (fromScratch, 8h window, NET per evCompute $0.20/trade)
+================================================================================================
+  signal_id   dir  entry   canonical status      R_gross   R_net    stored result  stored R   match
+  31_04x0bkmoc SELL 4608.1  SL_AFTER_BE          0.275    0.250    WIN           0.275      MATCH
+      coverage 0.1h of 8h (TRUNCATED — bars end 2026-08-21T20:55Z), exit bar 2026-08-21T20:49:00.000Z
+  05_zs6y4hdmo SELL 4612.7  SL_AFTER_BE          0.288    0.263    WIN           0.287      MATCH
+      coverage 0.6h of 8h (TRUNCATED — bars end 2026-08-21T20:55Z), exit bar 2026-08-21T20:28:00.000Z
+  94_4xipcur7d SELL 4624.3  SL_AFTER_BE          0.275    0.250    WIN           0.291      MATCH
+      coverage 2.7h of 8h (TRUNCATED — bars end 2026-08-21T20:55Z), exit bar 2026-08-21T18:34:00.000Z
+  22_a01l1xb7n BUY  4605.4  SL_AFTER_BE          0.275    0.250    WIN           0.291      MATCH
+      coverage 5.4h of 8h (TRUNCATED — bars end 2026-08-21T20:55Z), exit bar 2026-08-21T15:37:00.000Z
+  00_hpy5mh8ld BUY  4601    SL_HIT               -1.000   -1.025   LOSS          -1.000     MATCH
+      coverage 6.4h of 8h (TRUNCATED — bars end 2026-08-21T20:55Z), exit bar 2026-08-21T14:34:00.000Z
+  85_ytk3ifkwf SELL 4587.3  SL_AFTER_BE          0.314    0.286    WIN           0.314      MATCH
+      coverage 7.2h of 8h (TRUNCATED — bars end 2026-08-21T20:55Z), exit bar 2026-08-21T13:45:00.000Z
+  87_lrjqt1yfb BUY  4590    SL_AFTER_BE          0.288    0.263    WIN           0.287      MATCH
+      coverage 8.0h of 8h, exit bar 2026-08-21T10:40:00.000Z
+  30_oaprcxg43 BUY  4584.5  ALL_TARGETS_HIT      1.143    1.114    WIN           1.143      MATCH
+      coverage 8.0h of 8h, exit bar 2026-08-21T09:08:00.000Z
+  58_7n0o2bz0x BUY  4582.3  SL_AFTER_BE          0.288    0.263    WIN           0.287      MATCH
+      coverage 8.0h of 8h, exit bar 2026-08-21T09:00:00.000Z
+  56_4feo7fwqq BUY  4568.6  ALL_TARGETS_HIT      1.143    1.114    WIN           1.143      MATCH
+      coverage 8.0h of 8h, exit bar 2026-08-21T08:23:00.000Z
+  16_i44ilxit7 BUY  4566.3  SL_HIT               -1.000   -1.029   WIN           1.143      MISMATCH (win/loss DIFF, |ΔR|=2.171)
+      coverage 8.0h of 8h, exit bar 2026-08-21T07:09:00.000Z
+  42_n3idsszpf BUY  4533    ALL_TARGETS_HIT      1.000    0.975    WIN           1.025      MISMATCH (win/loss same, |ΔR|=0.050)
+      coverage 8.0h of 8h, exit bar 2026-08-21T01:35:00.000Z
+
+================================================================================================
+CANONICAL BOOK (baseline lock 0.35R) — two coverage cuts
+================================================================================================
+  ALL decided (any coverage) n=428  WR=62.4%  EV_gross=+0.0598R  EV_net=+0.0230R  PF_net=1.06  MaxDD_net=18.65R
+  FULL 8h coverage decided n=422  WR=62.1%  EV_gross=+0.0596R  EV_net=+0.0227R  PF_net=1.06  MaxDD_net=18.65R
+  FULL-coverage decided status mix: {"ALL_TARGETS_HIT":89,"SL_AFTER_BE":151,"SL_HIT":160,"PARTIAL_WIN_SL_HIT":22}
+  era split at 2026-07-16T10:51:28.481Z: snapshot-era n=182, pre-snapshot n=240
+    snapshot-era (LOCK_035) n=182  WR=54.4%  EV_gross=-0.0133R  EV_net=-0.0517R  PF_net=0.89  MaxDD_net=16.00R
+    pre-snapshot  (LOCK_035) n=240  WR=67.9%  EV_gross=+0.1149R  EV_net=+0.0792R  PF_net=1.24  MaxDD_net=18.65R
+
+================================================================================================
+202(d) — EXIT-TYPE R-DISTRIBUTIONS (FULL 8h-coverage canonical population)
+================================================================================================
+  SL_AFTER_BE          : n=151  gross R min=0.275 median=0.347 max=0.360  net R min=0.250 median=0.307 max=0.329
+  PARTIAL_WIN_SL_HIT   : n=22  gross R min=0.356 median=0.595 max=0.700  net R min=0.322 median=0.550 max=0.650
+  ALL_TARGETS/TP3      : n=89  gross R min=0.899 median=1.321 max=1.795  net R min=0.876 median=1.283 max=1.744
+  SL_HIT               : n=160  gross R min=-1.000 median=-1.000 max=-1.000  net R min=-1.051 median=-1.035 max=-1.022
+  SL_AFTER_BE at exactly the per-signal lock price (|ΔR|<=0.05): 151/151
+  today's-12 SL_AFTER_BE (any coverage): n=7  gross R min=0.275 median=0.288 max=0.314
+
+================================================================================================
+202(e) — BREAKEVEN ARITHMETIC FROM ACTUAL EXIT SIZES (FULL-coverage canonical book, NET)
+================================================================================================
+  n=422  measured WR(net) = 62.1%
+  ACTUAL avg win  (net) = +0.6696R   ACTUAL avg loss (net) = -1.0366R
+  ACTUAL avg win  (gross)= +0.7067R   ACTUAL avg loss (gross)= -1.0000R
+  implied breakeven WR (net)   = 60.8%  (measured 62.1% -> ABOVE breakeven by 1.3pp)
+  implied breakeven WR (gross) = 58.6%
+
+================================================================================================
+203(b/c/d) — COUNTERFACTUAL LOCK REPLAYS (same trades, same bars, paired)
+================================================================================================
+  LOCK_050: effective lock in R (after 5-pip floor / 0.9*TP1 cap) min=0.256 median=0.482 max=0.513
+  LOCK_070: effective lock in R (after 5-pip floor / 0.9*TP1 cap) min=0.256 median=0.482 max=0.667
+  harness validation [LOCK_035 (live)] vs REAL resolver: 0 mismatches / 432
+  harness validation [LOCK_050] vs REAL resolver: 0 mismatches / 432
+  harness validation [LOCK_070] vs REAL resolver: 0 mismatches / 432
+  harness TRUSTED (0/0/0 mismatches) — TRAIL_TO_TP2 resolved through it
+  LOCK_035 (live)        n=  0  WR=0.0%  EV_gross=+0.0000R  EV_net=+0.0000R  PF_net=0.00  MaxDD_net=0.00R  BLOCKED
+  LOCK_035 (live)        n=422  WR=62.1%  EV_gross=+0.0596R  EV_net=+0.0227R  PF_net=1.06  MaxDD_net=18.65R
+  --- snapshot-era sub-books (era start 2026-07-16T10:51:28.481Z, same as item197_198_round.ts):
+    era LOCK_035 (live)  n=182  WR=54.4%  EV_gross=-0.0133R  EV_net=-0.0517R  PF_net=0.89  MaxDD_net=16.00R
+  LOCK_050               n=422  WR=62.1%  EV_gross=+0.0587R  EV_net=+0.0219R  PF_net=1.06  MaxDD_net=20.48R
+  LOCK_070               n=422  WR=62.1%  EV_gross=+0.0597R  EV_net=+0.0228R  PF_net=1.06  MaxDD_net=19.49R
+    era LOCK_050         n=182  WR=54.4%  EV_gross=-0.0318R  EV_net=-0.0703R  PF_net=0.85  MaxDD_net=20.48R
+    era LOCK_070         n=182  WR=54.4%  EV_gross=-0.0243R  EV_net=-0.0628R  PF_net=0.87  MaxDD_net=19.49R
+  TRAIL_TO_TP2           n=422  WR=51.2%  EV_gross=+0.0709R  EV_net=+0.0340R  PF_net=1.07  MaxDD_net=27.39R
+    era TRAIL_TO_TP2     n=182  WR=47.3%  EV_gross=+0.0335R  EV_net=-0.0050R  PF_net=0.99  MaxDD_net=16.11R
+
+  LOCK_050: pairs n=422  improved=90  degraded=14  unchanged=407
+     WIN->LOSS round-trips (by R-sign) = 0   of which baseline SL_AFTER_BE winners now negative = 0   TP2+/PARTIAL winners stopped at the higher lock before TP2 = 15
+     mean ΔEV_net = -0.0009R  paired-bootstrap 95% CI [-0.0192, 0.0155]
+     Wilcoxon signed-rank: n(nonz)=104 W+=4307 z=5.116 p(2-sided)=0.0000
+     POWER: paired MDE (80% power, α=0.05) = ±0.0251R EV_net
+     snapshot-era-only mean ΔEV_net (n=182) = -0.0186R
+  LOCK_070: pairs n=422  improved=91  degraded=21  unchanged=399
+     WIN->LOSS round-trips (by R-sign) = 0   of which baseline SL_AFTER_BE winners now negative = 0   TP2+/PARTIAL winners stopped at the higher lock before TP2 = 23
+     mean ΔEV_net = +0.0001R  paired-bootstrap 95% CI [-0.0225, 0.0203]
+     Wilcoxon signed-rank: n(nonz)=112 W+=4687 z=4.422 p(2-sided)=0.0000
+     POWER: paired MDE (80% power, α=0.05) = ±0.0303R EV_net
+     snapshot-era-only mean ΔEV_net (n=182) = -0.0111R
+  TRAIL_TO_TP2: pairs n=422  improved=127  degraded=64  unchanged=299
+     WIN->LOSS round-trips (by R-sign) = 46   of which baseline SL_AFTER_BE winners now negative = 46   TP2+/PARTIAL winners stopped at the higher lock before TP2 = 0
+     mean ΔEV_net = +0.0113R  paired-bootstrap 95% CI [-0.0499, 0.0706]
+     Wilcoxon signed-rank: n(nonz)=191 W+=9776 z=0.794 p(2-sided)=0.4271
+     POWER: paired MDE (80% power, α=0.05) = ±0.0861R EV_net
+     snapshot-era-only mean ΔEV_net (n=182) = +0.0467R
+
+================================================================================================
+204 — CONTINUATION PAST THE SL_AFTER_BE EXIT (same bars, remaining 8h window)
+================================================================================================
+  SL_AFTER_BE exits replayed (FULL 8h coverage): n=151
+  reached TP2 then TP3 : 87/151 (57.6%)
+  reached TP2 only     : 18/151 (11.9%)
+  reversed to wider SL : 45/151 (29.8%)
+  neither (window end) : 1/151 (0.7%)
+  CONTINUATION (TP2+)  : 105/151 (69.5%)  — Wilson 95% CI below
+     [0.618, 0.763]
+     POWER: n=151; MDE on the continuation fraction (80% power, α=0.05, two-sided vs p=0.5) ≈ ±0.057
+
+================================================================================================
+DONE (measurement only — nothing written, nothing shipped)
+================================================================================================
