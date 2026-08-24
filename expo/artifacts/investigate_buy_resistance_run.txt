@@ -1,0 +1,35 @@
+====================================================================================================
+INVESTIGATION: 2026-08-24 signals — total emitted=1, BUY=1, SELL=0
+====================================================================================================
+   [Resolver bl78nz] 🚨 Pre-TP1 SL wick-through on bar @ 2026-08-24T03:11:00.000Z → SL_HIT
+
+2026-08-24T02:56:10.273+00:00 UTC  BUY  entry=4642.7  SL=4634.7  TP1=4645.2  TP2=4647.7  TP3=4650.7  conf=0.91  src=LIVE
+  id=signal_1787540170273_5vebl78nz
+  htf=BULLISH  ltf=null  regime=RANGING  atr=3.20  rsi=57.3  hour=2  session=ASIAN
+  sl_mult=1  strength_diff=0.915  raw_conf=0.908
+  STORED OUTCOME: LOSS  exit=4634.7  realizedR=-1.0000  pnl=-7.900000000000546
+  REPLAY: status=undefined  outcome=null  exitPrice=4634.7  targetsHit=0
+  srZones snapshot (16 zones):
+    SUPPORT@4638.5  dist=4.2below  strength=100%  touches=5  source=PRICE_ACTION  tier=TIER_0_SERVER
+    RESISTANCE@4649.5  dist=6.8above  strength=100%  touches=7  source=PRICE_ACTION  tier=TIER_0_SERVER
+    RESISTANCE@4652.2  dist=9.5above  strength=100%  touches=10  source=PRICE_ACTION  tier=TIER_0_SERVER
+    RESISTANCE@4656.2  dist=13.5above  strength=99%  touches=1  source=PRICE_ACTION  tier=TIER_0_SERVER
+    SUPPORT@4634.7  dist=8.0below  strength=97%  touches=7  source=PRICE_ACTION  tier=TIER_0_SERVER
+    SUPPORT@4627.6  dist=15.1below  strength=97%  touches=5  source=PRICE_ACTION  tier=TIER_0_SERVER
+    SUPPORT@4624.3  dist=18.4below  strength=97%  touches=15  source=PRICE_ACTION  tier=TIER_0_SERVER
+    SUPPORT@4615.5  dist=27.2below  strength=96%  touches=31  source=PRICE_ACTION  tier=TIER_0_SERVER
+    SUPPORT@4617.3  dist=25.4below  strength=96%  touches=32  source=PRICE_ACTION  tier=TIER_0_SERVER
+    SUPPORT@4613.8  dist=28.9below  strength=96%  touches=28  source=PRICE_ACTION  tier=TIER_0_SERVER
+    SUPPORT@4611.2  dist=31.5below  strength=96%  touches=15  source=PRICE_ACTION  tier=TIER_0_SERVER
+    RESISTANCE@4640.8  dist=1.9below  strength=96%  touches=4  source=PRICE_ACTION  tier=TIER_0_SERVER
+    SUPPORT@4608.0  dist=34.7below  strength=95%  touches=37  source=PRICE_ACTION  tier=TIER_0_SERVER
+    SUPPORT@4621.1  dist=21.6below  strength=95%  touches=10  source=PRICE_ACTION  tier=TIER_0_SERVER
+    SUPPORT@4620.3  dist=22.4below  strength=94%  touches=9  source=PRICE_ACTION  tier=TIER_0_SERVER
+    SUPPORT@4604.5  dist=38.2below  strength=93%  touches=6  source=PRICE_ACTION  tier=TIER_0_SERVER
+  NEAREST RESISTANCE to entry: 4640.8  dist=1.9  strength=96%
+  NEAREST SUPPORT to entry:    4638.5  dist=4.2  strength=100%
+  attention_scores: EMPTY or null
+
+====================================================================================================
+DONE
+====================================================================================================

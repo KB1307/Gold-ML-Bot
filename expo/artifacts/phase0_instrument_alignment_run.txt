@@ -1,0 +1,50 @@
+====================================================================================================
+Phase 0 — timestamp / instrument alignment verification | 2026-08-24T07:03:42.440Z
+====================================================================================================
+
+## Item 1 — bar timestamp convention (should be OPEN time)
+  Sample: 2026-08-23T22:00:00.000Z o=4613.89 h=4623.66 l=4613.71 c=4623.58 | 2026-08-23T22:01:00.000Z o=4623.8 h=4624.49 l=4607.6 c=4610.12 | 2026-08-23T22:02:00.000Z o=4610.09 h=4613.79 l=4607.6 c=4612.87
+  Convention (open + 60s chaining): PASS
+
+## Item 2 — safeBarStart = signalCreatedAt + 60s
+  Signal signal_1787540170273_5vebl78nz @ 2026-08-24T02:56:10.273Z (entry 4642.7)
+  safeBarStart = 2026-08-24T02:57:10.273Z
+  Signal falls in bar 2026-08-24T02:56:00.000Z (excluded)
+  First evaluated bar = 2026-08-24T02:58:00.000Z
+  Semantics: PASS (first evaluated is first completed bar)
+
+## Item 3 — end-to-end epoch trace for one real signal
+  signal.emitted_at ISO = 2026-08-24T02:56:10.273Z
+  signal.emitted_at epoch = 1787540170273
+  audit window start    = 2026-08-24T02:56:10.273Z  epoch=1787540170273
+  audit window end      = 2026-08-24T10:56:10.273Z    epoch=1787568970273
+  first audit bar       = 2026-08-24T02:57:00.000Z  epoch=1787540220000
+  last audit bar        = 2026-08-24T07:02:00.000Z  epoch=1787554920000
+  All epochs clean UTC instants: PASS
+
+## Item 4 — instrument audit: three venue-pair basis deltas
+  Vantage window: 2026-08-23T22:00:00.000Z → 2026-08-24T07:03:00.000Z (543 bars)
+
+  Pair 2 — entry venue (Capital.com/Swissquote) vs Vantage close
+    n=1  median=-1.290  mean=-1.290  max=-1.290  min=-1.290
+    entry is on average -1.290 vs Vantage close
+
+  Pair 1 — TwelveData XAU/USD spot vs Vantage close
+    n=543  median=0.076  mean=0.082  max=15.126  min=-21.769
+
+  Pair 3 — TwelveData spot vs entry-price venue
+    n=1  median=-1.111  mean=-1.111  max=-1.111  min=-1.111
+
+  Yahoo GC=F futures vs Vantage close (fallback, expected large basis)
+    n=524  median=56.755  mean=56.730  max=58.370  min=55.240
+
+## Item 5 — toLocaleTimeString (display-only)
+  Bare calls defaulting to 12-hour AM/PM found in:
+    - signalEngine.ts:3846, 6568
+    - TradingContext.tsx:1209, 1214, 1218, 1225, 1230, 1257, 1267, 1276, 1304, 1331, 1341, 1350, 1403, 2593
+  24-hour calls already correct in resolver, dashboard, and some telemetry rows.
+  Phase 0 fix: switch bare calls to explicit { hour:"2-digit", minute:"2-digit", hour12:false }.
+
+====================================================================================================
+Phase 0 DONE
+====================================================================================================

@@ -155,7 +155,7 @@ export default function TelemetryScreen() {
               <View style={styles.headerTextContainer}>
                 <Text style={styles.headerTitle}>Engine Telemetry</Text>
                 <Text style={styles.headerSubtitle}>
-                  Live diagnostics • {new Date(snapshot.capturedAt).toLocaleTimeString()}
+                  Live diagnostics • {new Date(snapshot.capturedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}
                 </Text>
               </View>
               <View style={styles.liveDot} />
