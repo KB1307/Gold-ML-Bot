@@ -202,6 +202,18 @@ interface SRZone {
   /** ITEM 191 — approaches from ABOVE rejected back up (true support behaviour). */
   rejectionsFromAbove: number;
   tier: 'TIER_0_SERVER' | 'TIER_1_LOCAL';
+  /**
+   * ITEM 212 — merged cluster STRENGTH price (weighted centroid / strongest member).
+   * This is the price used for scoring and gating (reactionStrength, touches).
+   */
+  strengthPrice: number;
+  /**
+   * ITEM 212 — merged cluster ENTRY-EDGE price.
+   * For a SUPPORT cluster, the lowest price (best long entry).
+   * For a RESISTANCE cluster, the highest price (best short entry).
+   * Used for await-the-zone / signal targeting, separate from strengthPrice.
+   */
+  entryEdgePrice: number;
 }
 
 interface SRZoneReaction {
@@ -4212,6 +4224,10 @@ class SignalGenerationEngine {
             legacyType: z.type,
             rejectionsFromBelow: 0,
             rejectionsFromAbove: 0,
+            // ITEM 212: TIER_0 may not have computed these yet; fall back to the
+            // zone price so downstream geometry is always defined.
+            strengthPrice: z.strengthPrice ?? z.price,
+            entryEdgePrice: z.entryEdgePrice ?? z.price,
           }));
           this.tier0SRZonesFetchedAt = Date.now();
           console.log(`✅ SR-ZONES: TIER 0 loaded DIRECT from Supabase (${this.tier0SRZones.length} usable zone(s), ${result.weakZoneCount} below the ${0.3} consumer threshold)`);
@@ -4600,6 +4616,10 @@ class SignalGenerationEngine {
           legacyType: isResistance ? 'RESISTANCE' : 'SUPPORT',
           rejectionsFromBelow: 0,
           rejectionsFromAbove: 0,
+          // ITEM 212 — each raw zone seeds its own strength/edge price; merge loop will overwrite these
+          // on clusters that contain multiple members, so single-member zones are self-consistent.
+          strengthPrice: parseFloat(cluster.price.toFixed(1)),
+          entryEdgePrice: parseFloat(cluster.price.toFixed(1)),
         });
       }
     }
@@ -4627,12 +4647,26 @@ class SignalGenerationEngine {
           cluster.price = (cluster.price * cluster.touches + arr[j].price * arr[j].touches) / (cluster.touches + arr[j].touches);
           cluster.touches += arr[j].touches;
           cluster.rejectionWicks += arr[j].rejectionWicks;
+          // ITEM 212 — keep BOTH the weighted average price and the strongest-member price.
+          // strengthPrice = price of the cluster member with the highest reactionStrength.
+          if (arr[j].reactionStrength > cluster.reactionStrength) {
+            cluster.strengthPrice = arr[j].price;
+          }
           cluster.reactionStrength = Math.max(cluster.reactionStrength, arr[j].reactionStrength);
           cluster.confluenceScore = Math.max(cluster.confluenceScore, arr[j].confluenceScore);
+          // entryEdgePrice = outermost merged cluster member in the risk direction of the zone type:
+          // SUPPORT → risk is below, so lowest price; RESISTANCE → risk is above, so highest price.
+          if (cluster.type === 'SUPPORT') {
+            cluster.entryEdgePrice = Math.min(cluster.entryEdgePrice, arr[j].price);
+          } else {
+            cluster.entryEdgePrice = Math.max(cluster.entryEdgePrice, arr[j].price);
+          }
           j++;
         }
         cluster.price = parseFloat(cluster.price.toFixed(1));
         cluster.reactionStrength = parseFloat(cluster.reactionStrength.toFixed(3));
+        cluster.strengthPrice = parseFloat((cluster.strengthPrice ?? cluster.price).toFixed(1));
+        cluster.entryEdgePrice = parseFloat((cluster.entryEdgePrice ?? cluster.price).toFixed(1));
         merged.push(cluster);
         i = j;
       }
@@ -9028,7 +9062,30 @@ class SignalGenerationEngine {
       // no CI separation (buckets n=1..59, MDE ±20-35pp), so the ANNOTATION
       // is the ship; a flagged entry-backing check waits for forward evidence.
       distFromEntryAtr: parseFloat((Math.abs(zone.price - entryPriceWithSlippage) / Math.max(features.atr, 0.01)).toFixed(2)),
+      // ITEM 212 — merged cluster strength/entry-edge prices. If the zone was built
+      // by the merge logic, these carry the combined cluster's price and outer edge.
+      strengthPrice: zone.strengthPrice,
+      entryEdgePrice: zone.entryEdgePrice,
     }));
+
+    // ITEM 210 / 213 — signal-level entry-backing + driving-zone-touch annotations.
+    // Computed purely from the snapshot, so they are durable even if the engine state resets.
+    const atr = features.atr || 0.01;
+    const opposingType = analysis.signalType === 'BUY' ? 'RESISTANCE' : 'SUPPORT';
+    // Nearest opposing zone BEHIND the entry (BUY: resistance below entry; SELL: support above entry).
+    const behindZones = srZonesSnapshot.filter(z => z.type === opposingType && ((analysis.signalType === 'BUY' && z.price < entryPriceWithSlippage) || (analysis.signalType === 'SELL' && z.price > entryPriceWithSlippage)));
+    const nearestBehind = behindZones.length > 0
+      ? behindZones.sort((a, b) => Math.abs(a.price - entryPriceWithSlippage) - Math.abs(b.price - entryPriceWithSlippage))[0]
+      : null;
+    // Driving zone: nearest opposing zone AHEAD of entry (used by the path-to-target gate).
+    const aheadZones = srZonesSnapshot.filter(z => z.type === opposingType && ((analysis.signalType === 'BUY' && z.price > entryPriceWithSlippage) || (analysis.signalType === 'SELL' && z.price < entryPriceWithSlippage)));
+    const drivingZone = aheadZones.length > 0
+      ? aheadZones.sort((a, b) => Math.abs(a.price - entryPriceWithSlippage) - Math.abs(b.price - entryPriceWithSlippage))[0]
+      : null;
+    const nearestOppZoneBehindEntryPrice = nearestBehind ? nearestBehind.price : null;
+    const nearestOppZoneBehindEntryType = nearestBehind ? nearestBehind.type : null;
+    const nearestOppZoneBehindEntryDistAtr = nearestBehind ? parseFloat((Math.abs(nearestBehind.price - entryPriceWithSlippage) / atr).toFixed(2)) : null;
+    const drivingZoneTouches = drivingZone ? drivingZone.touches : null;
     
     // ── SELL SUPPRESSION CHECK ──────────────────────────────────────────────
     // Placed AFTER all geometry is computed but BEFORE any internal state
@@ -9537,6 +9594,10 @@ class SignalGenerationEngine {
             : null),
       srZonesSnapshot,
       attentionScores: fullAttentionScores,
+      nearestOppZoneBehindEntryPrice,
+      nearestOppZoneBehindEntryType,
+      nearestOppZoneBehindEntryDistAtr,
+      drivingZoneTouches,
       source: 'LIVE',
     });
 

@@ -1,0 +1,111 @@
+====================================================================================================
+ITEMS 209-213 MEASUREMENT — 2026-08-24T08:21:29.080Z
+====================================================================================================
+emitted=447 outcomes=432
+canonical (resolved, non-scratch): n=333
+
+today (2026-08-24) canonical: n=2
+   [Resolver bl78nz] 🚨 Pre-TP1 SL wick-through on bar @ 2026-08-24T03:11:00.000Z → SL_HIT
+  2026-08-24T02:56:10.273+00:00 BUY entry=4642.7 SL=4634.7 TP1=4645.2 stored=LOSS/-1.0000 replay=undefined/4634.7
+   [Resolver z6o9nm] 🚨 Pre-TP1 SL wick-through on bar @ 2026-08-24T07:42:00.000Z → SL_HIT
+  2026-08-24T07:15:09.88+00:00 BUY entry=4648.3 SL=4640.3 TP1=4650.8 stored=LOSS/-1.0000 replay=undefined/4640.3
+
+====================================================================================================
+ITEM 209 — ZONE TYPE STALENESS / OUT-OF-BOUNDARY SNAPSHOTS
+====================================================================================================
+snapshots with >=1 opposing zone on wrong side of entry: 16/333 (4.8%)
+  OUT-OF-BOUNDARY: n=16 {"n":16,"wr":0.6875,"ev":0.06564481250000004,"pf":1.2040002276343873,"maxdd":2.813767}
+  IN-BOUNDARY:     n=136 {"n":136,"wr":0.45588235294117646,"ev":-0.15019794117647026,"pf":0.7313353948438852,"maxdd":22.410627999999956}
+  OUT-OF-BOUNDARY EV 95% CI: [-0.3470, 0.4781]
+  IN-BOUNDARY     EV 95% CI: [-0.3208, 0.0263]
+  POWER: n=16 per arm; MDE on mean Δ ≈ ±0.7068R
+  First 5 out-of-boundary signals:
+    signal_1784298031802_owl9md6dl BUY entry=4003.2 zone=4002 dist=1.20ATR r=-1.0476
+    signal_1784719050263_kuf3jqjqq BUY entry=4122.3 zone=4028.7 dist=93.60ATR r=-1.0513
+    signal_1784763405368_cdcktteiu BUY entry=4121.9 zone=4040.7 dist=81.20ATR r=+0.3095
+    signal_1785449826886_olxqpbr5j BUY entry=4108.2 zone=4099.7 dist=8.50ATR r=-1.0244
+    signal_1785526393391_o9kktmhos BUY entry=4049.2 zone=4043.7 dist=5.50ATR r=+0.3250
+
+====================================================================================================
+ITEM 210 — ENTRY-BACKING DISTANCE TO NEAREST OPPOSING ZONE BEHIND ENTRY
+====================================================================================================
+  bucket <=0.5: n=3 WR=100.0% EV=0.5685R PF=0.00 95%CI=[0.2750,1.1429]
+  bucket >2.0: n=7 WR=71.4% EV=-0.0839R PF=0.72 95%CI=[-0.4757,0.3019]
+  bucket 0.5-1.0: n=5 WR=60.0% EV=0.1960R PF=1.48 95%CI=[-0.7526,1.1429]
+  bucket 1.0-1.5: n=1 WR=0.0% EV=-1.0476R PF=0.00 95%CI=[NaN,NaN]
+  2026-08-24 signals placed:
+    signal_1787540170273_5vebl78nz BUY entry=4642.7 RESISTANCE@4640.8 dist=0.59ATR bucket=0.5-1.0 r=-1.0000
+
+  07:15Z oddity explanation — full snapshot (16 zones):
+    SUPPORT@4649.8 dist=1.5above entry t=16 rs=100%
+    RESISTANCE@4651.9 dist=3.6above entry t=16 rs=100%
+    RESISTANCE@4653.8 dist=5.5above entry t=11 rs=100%
+    SUPPORT@4646.5 dist=1.8below entry t=9 rs=99%
+    SUPPORT@4644.6 dist=3.7below entry t=15 rs=99%
+    SUPPORT@4642.4 dist=5.9below entry t=22 rs=99%
+    RESISTANCE@4656.6 dist=8.3above entry t=4 rs=98%
+    RESISTANCE@4655.1 dist=6.8above entry t=4 rs=97%
+    SUPPORT@4640.3 dist=8.0below entry t=30 rs=96%
+    SUPPORT@4637.8 dist=10.5below entry t=25 rs=96%
+    SUPPORT@4637.4 dist=10.9below entry t=25 rs=96%
+    SUPPORT@4635.7 dist=12.6below entry t=22 rs=96%
+    SUPPORT@4633.0 dist=15.3below entry t=11 rs=95%
+    SUPPORT@4627.5 dist=20.8below entry t=5 rs=82%
+    SUPPORT@4623.6 dist=24.7below entry t=10 rs=82%
+    SUPPORT@4618.7 dist=29.6below entry t=11 rs=82%
+  => SUPPORT above entry is the same stale-typing mechanism as 209: the zone was typed SUPPORT when spot was lower, then price rose above it before emission.
+
+====================================================================================================
+ITEM 212 — SAME-SIDE ZONE DENSITY / MERGE FAILURE
+====================================================================================================
+same-side clusters within 1.5 ATR: total groups=193, groups with 3+ zones=48
+group size distribution: {"2":145,"3":37,"4":10,"5":1}
+within-cluster gap ATR: median=0.84 mean=0.83
+
+  02:56Z SUPPORT cluster analysis (12 support zones):
+    4604.5 t=6 rs=93%
+    4608.0 t=37 rs=95%
+    4611.2 t=15 rs=96%
+    4613.8 t=28 rs=96%
+    4615.5 t=31 rs=96%
+    4617.3 t=32 rs=96%
+    4620.3 t=9 rs=94%
+    4621.1 t=10 rs=95%
+    4624.3 t=15 rs=97%
+    4627.6 t=5 rs=97%
+    4634.7 t=7 rs=97%
+    4638.5 t=5 rs=100%
+    gaps: 3.5, 3.2, 2.6, 1.7, 1.8, 3.0, 0.8, 3.2, 3.3, 7.1, 3.8 (ATR=3.20)
+
+====================================================================================================
+ITEM 213 — REACTION STRENGTH / TOUCH COUNT SATURATION
+====================================================================================================
+reactionStrength: n=1576 min=0.000 median=0.850 max=1.000 mean=0.638
+touches: n=1576 min=0 median=42 max=1488 mean=205.1
+reactionStrength histogram:
+  <0.9: 873 (55.4%)
+  0.9-0.95: 105 (6.7%)
+  0.95-0.99: 246 (15.6%)
+  >=0.99: 352 (22.3%)
+
+outcome split by driving-zone touch count:
+  low-touch (<=5):  n=47 WR=48.9% EV=-0.1920R CI=[-0.4529,0.0776]
+  high-touch (>=15): n=81 WR=42.0% EV=-0.1228R CI=[-0.3596,0.1246]
+  POWER: n_low=47 n_high=81; MDE ≈ ±0.5366R
+
+====================================================================================================
+ITEM 215 — ATTENTION_SCORES COVERAGE
+====================================================================================================
+attention_scores non-empty: 264/447 (59.1%)
+  snapshot-era (>=2026-07-16T10:51:28Z): 193/193 (100.0%)
+  pre-snapshot: 71/254 (28.0%)
+  last 5 raw attention_scores values:
+    signal_1787335944494_4xipcur7d: [{"side":"SELL","score":35,"feature":"COUNTER TREND REJECTION SETUP","signedScore":35,"opposesSignal":false},{"side":"SELL","score":35,"feature":"RSI LEARNED MODULATION","signedScore":35,"opposesSigna
+    signal_1787343686605_zs6y4hdmo: [{"side":"SELL","score":40,"feature":"HTF LTF BEARISH ALIGNMENT","signedScore":40,"opposesSignal":false},{"side":"SELL","score":40,"feature":"RSI LEARNED MODULATION","signedScore":40,"opposesSignal":f
+    signal_1787345172331_04x0bkmoc: [{"side":"SELL","score":40,"feature":"HTF LTF BEARISH ALIGNMENT","signedScore":40,"opposesSignal":false},{"side":"SELL","score":40,"feature":"RSI LEARNED MODULATION","signedScore":40,"opposesSignal":f
+    signal_1787540170273_5vebl78nz: [{"side":"BUY","score":40,"feature":"HTF LTF BULLISH ALIGNMENT","signedScore":40,"opposesSignal":false},{"side":"SELL","score":40,"feature":"RSI LEARNED MODULATION","signedScore":40,"opposesSignal":tr
+    signal_1787555709880_94nz6o9nm: [{"side":"BUY","score":37.5,"feature":"SR ZONE STRONG REVERSAL","signedScore":37.5,"opposesSignal":false},{"side":"BUY","score":25,"feature":"LTF MOMENTUM BUY","signedScore":25,"opposesSignal":false},
+
+====================================================================================================
+DONE
+====================================================================================================

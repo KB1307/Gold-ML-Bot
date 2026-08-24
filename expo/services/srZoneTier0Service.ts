@@ -70,6 +70,10 @@ export interface Tier0SRZone {
   source: Tier0ZoneSource;
   confluenceScore: number;
   lastTouchTs: string | null;
+  // ITEM 212 — merged cluster STRENGTH price (weighted centroid / strongest member).
+  strengthPrice: number | null;
+  // ITEM 212 — outermost merged cluster member in the risk direction of the zone type.
+  entryEdgePrice: number | null;
 }
 
 /** Why a TIER_0 read did not yield usable zones. Explicit so the caller can
@@ -303,6 +307,8 @@ export async function fetchTier0SRZones(): Promise<Tier0ReadResult> {
       source: String(row.source) as Tier0ZoneSource,
       confluenceScore: Number(row.confluence_score ?? 0),
       lastTouchTs: typeof row.last_touch_ts === "string" ? row.last_touch_ts : null,
+      strengthPrice: row.strength_price != null ? Number(row.strength_price) : null,
+      entryEdgePrice: row.entry_edge_price != null ? Number(row.entry_edge_price) : null,
     }));
 
   if (unexpired.length === 0) {

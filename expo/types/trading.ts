@@ -156,6 +156,20 @@ export interface DetectedSRZone {
    * written after 2026-08-21; absent on older ones.
    */
   distFromEntryAtr?: number;
+  /**
+   * ITEM 212 — merged cluster STRENGTH price (weighted centroid / strongest member).
+   * This is the price used for scoring and gating (reactionStrength, touches).
+   * Present on snapshots written after 2026-08-24; absent on older ones.
+   */
+  strengthPrice?: number;
+  /**
+   * ITEM 212 — merged cluster ENTRY-EDGE price.
+   * For a SUPPORT cluster, the lowest price (best long entry).
+   * For a RESISTANCE cluster, the highest price (best short entry).
+   * Used for await-the-zone / signal targeting, separate from strengthPrice.
+   * Present on snapshots written after 2026-08-24; absent on older ones.
+   */
+  entryEdgePrice?: number;
 }
 
 export interface MarketOutlook {

@@ -55,6 +55,20 @@ export interface EmittedSignalRecord {
   zoneMapAgeMinutes?: number | null;
   srZonesSnapshot?: unknown;
   attentionScores?: unknown;
+  /**
+   * ITEM 210 — entry-backing annotation: nearest opposing zone BEHIND the entry.
+   * For a BUY this is the nearest RESISTANCE below entry; for a SELL the nearest
+   * SUPPORT above entry. Distance in ATR units. NULL if no such zone exists.
+   */
+  nearestOppZoneBehindEntryPrice?: number | null;
+  nearestOppZoneBehindEntryType?: 'SUPPORT' | 'RESISTANCE' | null;
+  nearestOppZoneBehindEntryDistAtr?: number | null;
+  /**
+   * ITEM 213 — reaction-strength admission annotation: touch count of the zone
+   * that actually drives the path-to-target gate (nearest opposing zone AHEAD of
+   * entry). NULL if no such zone exists.
+   */
+  drivingZoneTouches?: number | null;
   source: EmittedSignalSource;
 }
 
@@ -128,8 +142,12 @@ const toRow = (r: EmittedSignalRecord): Record<string, unknown> => ({
   ltf_trend: r.ltfTrend ?? null,
   rsi: r.rsi ?? null,
   zone_map_age_minutes: r.zoneMapAgeMinutes ?? null,
-  sr_zones_snapshot: (r.srZonesSnapshot ?? null) as Record<string, unknown> | null,
-  attention_scores: (r.attentionScores ?? null) as Record<string, unknown> | null,
+  sr_zones_snapshot: (r.srZonesSnapshot ?? null) as unknown,
+  attention_scores: (r.attentionScores ?? null) as unknown,
+  nearest_opp_zone_behind_entry_price: r.nearestOppZoneBehindEntryPrice ?? null,
+  nearest_opp_zone_behind_entry_type: r.nearestOppZoneBehindEntryType ?? null,
+  nearest_opp_zone_behind_entry_dist_atr: r.nearestOppZoneBehindEntryDistAtr ?? null,
+  driving_zone_touches: r.drivingZoneTouches ?? null,
   source: r.source,
 });
 
