@@ -635,21 +635,26 @@ itself the finding (audit Finding 1), recorded rather than papered over.
 | 159 | Measurement: LIVE book + 95% CI at current n, sample size + calendar date | `expo/scripts/item159_160_161_round.ts` |
 | 160 | MEASURED + RELAXED: OB filter re-measured (present n=291 EV +0.0036R vs absent n=115 +0.0213R, Welch p=0.86 — Item 114's z=2.295 did not reproduce) → 160(c) hard reject replaced by 5pt confidence penalty (LIVE, SE:783). RESOLUTION PENDING as Phase C/C3 | SE:783-787 |
 | 161 | Measurement: attention features held-out validated (49 features; volume_node_support_resistance PREDICTIVE r=0.232 CI[0.053,0.397]; none anti-predictive → no disable flags) | `item159_160_161_round.ts` |
-| 162-166 | RECONSTRUCTION GAP | no in-repo record |
+| 162, 164-166 | RECONSTRUCTION GAP (unchanged) | no in-repo record. **163 RESOLVED 2026-08-24 (Checkpoint E/E1): ANNOTATION-SHIPPED** — the Item-163 method (per-feature Pearson r vs realized_r with Fisher CI) is durably cited by `item179_180_181_183_round.ts` (183(c)) |
 | 167 | SHIPPED: stand-aside observability (reason ring buffer + hourly snapshots) + bar-freshness alarm (DEGRADED >15min = engine staleness seal, DOWN >60min, weekend guard) | migration 009, SE reason ring buffer |
 | 168 | SHIPPED: build marker BUILD-DERIVED via babel git-SHA injection; marker-substitution failure made LOUD | `babel.config.js`, `ci_guard_build_marker.ts` |
 | 169 | SHIPPED: resolver writes bar-reconstructed RSI-14/ATR-14 (287/417 corpus rows were empty via the resolver path) | `resolve-emitted-signals` |
-| 170-171 | RECONSTRUCTION GAP (167-172 round) | no in-repo record |
+| 170 | RECONSTRUCTION GAP — attributed 2026-08-24 (E1): chat-only analysis round (ML comparison, explicitly NO CODE) | chat-history source only |
+| 171 | **RESOLVED 2026-08-24 (E1): MEASURED** — `item167_169_171_round.ts` (171(a) zero-opposing split, 171(c) entry-to-zone distance), commit 413939a. The Phase D audit missed the script (commit message names only 167/168/169/172) | `expo/scripts/item167_169_171_round.ts` |
 | 172 | SHIPPED: user minConfidence above the enforced 0.68 now governs absolutely | SE |
-| 173-178 | RECONSTRUCTION GAP | no in-repo record |
+| 173 | RECONSTRUCTION GAP — attributed 2026-08-24 (E1): chat-only carried-items slot (173(a) Item-163 weights inverted) | chat-history source only |
+| 174-178 | RECONSTRUCTION GAP | no in-repo record |
 | 179 | SHIPPED: bar-derived learning-context reconstruction (179(c) fallback; 179(d) backfill features) | SE:7556-7647, `item179_backfill_features.ts` |
-| 180-183 | RECONSTRUCTION GAP | no in-repo record |
+| 180 | **RESOLVED 2026-08-24 (E1): MEASURED** — 180(b) zone-map reconstruction + demand shelves, 180(c) near/far entry-quality on LIVE maps, commit ec79a20 | `item179_180_181_183_round.ts` |
+| 181 | **RESOLVED 2026-08-24 (E1): MEASURED** — 181(a) BoS/ChoCh vs shelves, 181(b) BoS-flip zone split, commit ec79a20 | same script |
+| 182 | RECONSTRUCTION GAP | no in-repo record |
+| 183 | **RESOLVED 2026-08-24 (E1): MEASURED** — 183(a) clean-row accrual + revised n=200 date, 183(c) attention weight table, commit ec79a20 | same script |
 | 184 | SHIPPED: 184(a) marker substitution failure is LOUD | `diagnosticsExport.ts:495`, `item184a_babel_marker_proof.cjs` |
-| 185-190 | RECONSTRUCTION GAP | no in-repo record |
+| 185, 187-190 | RECONSTRUCTION GAP | no in-repo record. **186 RESOLVED 2026-08-24 (E1): ANNOTATION-SHIPPED** — its result (drift score 0.6330 HIGH, driven entirely by sentiment) is cited in `item196b_drift_artefact_check.ts`'s header, commit af7da4a |
 | 191 | LIVE evidence columns (client since 191; **server port shipped Phase A/A3** — migration 012; changed set 13/32 zones). Flag OFF | SE applyRejectionDirectedTyping, `sr_zones_v1` |
 | 192 | OFF: no-structure veto for zero-opposing maps. Arm n≥30 at ~0.22/day → projected ~2026-11-28 | SE:709 |
 | 193 | OFF with 192: await-the-zone armed from the no-structure branch (193(b)) | SE no-structure branch |
-| 194 | RECONSTRUCTION GAP | no in-repo record |
+| 194 | **RESOLVED 2026-08-24 (E1): SHIPPED** — `[Item194]` startup reconciliation against emitted_signals_v1, TradingContext.tsx:813-846, commit af7da4a. The audit's "no in-repo record" was wrong — a code-marker search finds it | `expo/contexts/TradingContext.tsx` |
 | 195 | SHIPPED: genuine Wilder ATR-14 recompute + construct provenance in the atr column | SE:7598-7627, `item195_recompute_backfill_atr.ts` |
 | 196 | 196(b) drift artefact check SHIPPED; 196(d) 50-pip asymmetric entry buffer OFF | SE:735, `item196d_entry_buffer.ts` |
 | 197/198 | Measurement: snapshot-era book (−0.1352R arithmetic confirmed); 191(e) re-run on direct ATR | `item197_198_round.ts` |
@@ -669,6 +674,20 @@ itself the finding (audit Finding 1), recorded rather than papered over.
 | 216 | BLOCKED per explicit user instruction (modulation report-only) | — |
 | 217 | RECONSTRUCTION GAP | no in-repo record |
 | 218 | SHIPPED: mandatory ledger round (this ledger is its durable successor) | commit cfc2a0c |
+
+### ITEMS 219-223 — THE FIVE-CHECKPOINT ROUND (2026-08-24T20:45Z)
+
+One prompt, one round, five checkpoints (A–E), each with a written artifact and a PASS gate.
+
+| Item | Status | Evidence / pointer |
+|---|---|---|
+| 219 | SHIPPED — THE CANONICAL INSTRUMENT (Checkpoint A): `canonicalBook.ts`, a PINNED fromScratch replay (8h window/Item 41a, safeBarStart=emitted+60s, join population, evCompute $0.20 net, bootstrap seed 20260824). A0 settled gross/net with row-level arithmetic: stored realized_r is WRITER-DEPENDENT — app path writes GROSS (signalEngine.ts:7755; 28 rows) vs cron/backfill NET (301 rows). Canonical vs stored on the identical join population: ZERO sign disagreements, 332/334 exit-price agreement — F-29 repairs held. Quotable book: FULL n=432 EV_net +0.0133R [CI −0.0729, +0.1003]; post-boundary LIVE n=36 EV_net −0.2617R. QUOTING RULE: only canonicalBook.ts output is quotable; stored realized_r never without its era convention | `expo/scripts/canonicalBook.ts`, `artifacts/checkpoint_a_book_reconciliation.txt` |
+| 220 | MEASURED — WRITE-PATH EXPOSURE + ITEMS 209/210/213 RE-RUNS (Checkpoint B): the write-path guard shipped 39 min AFTER the exposure window closed (68cc662 16:55:33Z vs window [08:40:18Z, ~16:16Z)); 2 of at least 4 LIVE emissions in the window were LOST (orphan outcome rows signal_1787580401459 / signal_1787587872040 = fingerprint; lower bound — invisible losses possible). 209 inversion survives directionally (out-of-boundary −0.0528R beats in-boundary −0.1457R, n=18/137); 210 re-run SUPPORTS entry-backing (near +0.1873R vs far −0.2928R, n=9/9, underpowered); 213 ordering reproduced but within noise (MDE ±0.53R). The 181 rows explained: 181/181 pre-boundary empty snapshots | `expo/scripts/item210_213_rerun.ts`, `artifacts/checkpoint_b_clean_data_reruns.txt` |
+| 221 | MEASURED — OB REMOVAL: PROJECTION vs ACTUAL (Checkpoint C): projected 2.71 → 21.43 signals/day (OB off, funnel replay); actual 6.7/day extrapolated from k=1 in 0.15 days (Poisson 95% CI [0.0, 19.8]/day — PROVISIONAL, not yet decidable); post-removal funnel sums EXACTLY (912=912); new binding gate cluster_dedup (76.6% of attempts); canonical re-run moved by 1 ordinary resolution (no OB-absent resolution possible before 2026-08-25T04:30Z) | `scripts/item148_funnel_measure.ts` (Checkpoint C section), `artifacts/checkpoint_c_ob_removal.txt` |
+| 222 | MEASURED — VENUE BASIS FIRST CUT + PRE-REGISTERED GATE (Checkpoint D): 206 app bars accrued; median |basis| $0.775 = 31.0% of TP1 (cross-checks the 28.4% stamp-basis); 63.6% of minutes cross ≥1 zone boundary (1.77 crossings/min); lag-1 autocorr 0.721 (PREVIEW ONLY — 206 min cannot measure a half-life). Persistence UNMEASURABLE until 2026-09-07 (pre-registered minimum); proposal costed: translate the ZONE MAP into app space (the ladder is frame-free — relative to entry); NO CODE SHIPPED | `expo/scripts/item214b_basis_persistence.ts`, `artifacts/checkpoint_d_venue_basis.txt` |
+| 223 | SHIPPED — LEDGER CLOSURE (Checkpoint E): 7 gap items recovered (171, 180, 181, 183, 186, 163, 194 — see E1 corrections above), 2 attributed chat-only (170, 173), 26 remain genuinely unknown (35 marked → 28 remaining). Awaiting-sample list re-dated; next decision point CONFIRMED: the era-mean test ~2026-09-01 → 09-08 (post-boundary LIVE canonical EV −0.2617R at n=36, CI [−0.5378, +0.0346]; clean exclusion needs n≈49-60 at ~12 LIVE outcomes/week) | `artifacts/checkpoint_e_ledger.txt` |
+
+**Awaiting-sample additions from this round:** OB-absent forward cohort (Item 221 follow-up — do post-removal resolutions match the +0.0177R backtest cohort; ~2026-09-07 onward); venue-basis persistence gate (Item 222 — autocorr ≥ 0.5 or half-life ≥ 30 min AND residual crossing ≤ 2% of minutes; 2026-09-07).
 
 **Cross-round items resolved by the 2026-08-24 remediation plan:** Item 120
 (B1 — underpowered verdict, era-mean test settles ~2026-09-01 if the post-

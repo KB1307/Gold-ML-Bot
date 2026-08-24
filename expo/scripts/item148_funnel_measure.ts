@@ -481,10 +481,73 @@ async function main() {
     console.log(`\n  Projected emission is >= 2/day (${projectedPerDay.toFixed(2)}/day). No relaxation needed.`);
   }
 
+  // ── CHECKPOINT C — THE OB REMOVAL: PROJECTION vs ACTUAL ────────────────────
+  console.log('\n' + '='.repeat(80));
+  console.log('CHECKPOINT C — THE OB REMOVAL: PROJECTION vs ACTUAL');
+  console.log('='.repeat(80));
+  const OB_REMOVAL_MS = Date.parse('2026-08-24T16:55:33Z'); // commit 68cc662
+  console.log(`  removal           : OB_FILTER_ENABLED=false shipped in 68cc662 (2026-08-24T16:55:33Z)`);
+  console.log(`  run at            : ${new Date().toISOString()}`);
+  console.log(`  NOTE: the "ALL GATES ON" arm above is now HISTORICAL — production no longer runs the`);
+  console.log(`  OB filter. The OB-OFF arm is the projection of the CURRENT production configuration.`);
+
+  const projPerDay = spanDays > 0 ? noObFilter.emissions / spanDays : 0;
+  const basePerDay = spanDays > 0 ? allOn.emissions / spanDays : 0;
+  console.log(`\n  C1 PROJECTION (OB-off funnel arm over the ${spanDays.toFixed(1)}-day bar replay):`);
+  console.log(`    all-gates-ON (pre-removal)  : ${basePerDay.toFixed(2)} signals/day (${allOn.emissions} emissions)`);
+  console.log(`    OB REMOVED (production now) : ${projPerDay.toFixed(2)} signals/day (${noObFilter.emissions} emissions)`);
+  console.log(`    projected BUY/SELL split    : ${noObFilter.buyEmissions}:${noObFilter.sellEmissions}`);
+  console.log(`    marginal cost of OB filter  : ${obFilterCost} signals (${(obFilterCost / Math.max(allOn.emissions, 1) * 100).toFixed(1)}%) — cross-check vs 148(b) above`);
+
+  // C2 — the ACTUAL rate since removal, with Poisson noise stated BEFORE the result
+  const { data: postRemovalRows } = await supabase
+    .from('emitted_signals_v1')
+    .select('signal_id, emitted_at, direction, source')
+    .gte('emitted_at', new Date(OB_REMOVAL_MS).toISOString())
+    .order('emitted_at', { ascending: true });
+  const postRows = (postRemovalRows ?? []) as { signal_id: string; emitted_at: string; direction: string; source: string }[];
+  const postLive = postRows.filter(r => r.source === 'LIVE');
+  const elapsedDays = Math.max((Date.now() - OB_REMOVAL_MS) / (24 * 3600 * 1000), 1e-9);
+  const k = postLive.length;
+  const ratePerDay = k / elapsedDays;
+  const poisLo = Math.max(0, k - 1.96 * Math.sqrt(Math.max(k, 1))) / elapsedDays;
+  const poisHi = (k + 1.96 * Math.sqrt(Math.max(k, 1))) / elapsedDays;
+  console.log(`\n  C2 ACTUAL (LIVE emissions since removal, ${elapsedDays.toFixed(2)} days elapsed):`);
+  console.log(`    POWER STATED FIRST: with k=${k} observed events the Poisson 95% CI on the rate is`);
+  console.log(`    [${poisLo.toFixed(1)}, ${poisHi.toFixed(1)}]/day (normal approx) — at k<10 this window is`);
+  console.log(`    PROVISIONAL and cannot confirm or refute the projection.`);
+  console.log(`    observed: ${k} LIVE emission(s) -> ${ratePerDay.toFixed(1)} signals/day extrapolated`);
+  for (const r of postLive) {
+    console.log(`      ${r.emitted_at}  ${r.direction}  ${r.signal_id}`);
+  }
+  const nonLivePost = postRows.length - postLive.length;
+  if (nonLivePost > 0) console.log(`    (${nonLivePost} non-LIVE row(s) in window, excluded from the rate)`);
+  const agrees = ratePerDay >= poisLo && projPerDay >= poisLo && projPerDay <= poisHi;
+  console.log(`    projection (${projPerDay.toFixed(2)}/day) vs actual (${ratePerDay.toFixed(1)}/day): `);
+  console.log(`      ${projPerDay >= poisLo && projPerDay <= poisHi ? 'CONSISTENT with the observed count (projection inside the Poisson CI)' : 'NOT yet decidable at this count — window too short'}`);
+
+  // C3 — the binding gate with OB gone
+  const stageCounts = [...noObFilter.stages.entries()].sort((a, b) => b[1] - a[1]);
+  console.log(`\n  C3 THE POST-REMOVAL FUNNEL (OB gone) — binding gate:`);
+  console.log(`    stages ranked: ${stageCounts.map(([s, c]) => `${s}=${c}`).join('  ')}`);
+  console.log(`    BINDING GATE: ${stageCounts[0][0]} (${stageCounts[0][1]} rejections, ${(stageCounts[0][1] / noObFilter.attempts * 100).toFixed(1)}% of attempts)`);
+  console.log(`    (stage-sum check for this arm is printed above: must equal attempts)`);
+
+  // C4 — book implication
+  console.log(`\n  C4 BOOK IMPLICATION:`);
+  console.log(`    The OB-absent cohort measured +0.0177R (95% CI includes zero, n=118, armB.txt era)`);
+  console.log(`    now EMITS in production. Those signals enter the canonical book as they resolve`);
+  console.log(`    (8h windows from emission). canonicalBook.ts is re-run at the end of this round and`);
+  console.log(`    the movement (or absence of movement) is recorded in the artifact — the post-removal`);
+  console.log(`    LIVE signals emitted 16:27Z/20:22Z today have not yet closed their 8h windows, so no`);
+  console.log(`    OB-absent resolution can appear in the book until after 2026-08-25T04:30Z.`);
+
   // ── Caveats ─────────────────────────────────────────────────────────────────
   console.log('\n' + '='.repeat(80));
   console.log('CAVEATS');
   console.log('='.repeat(80));
+  console.log('  0. CHECKPOINT C inherits every caveat below — the funnel is a gate-logic replay, not');
+  console.log('     the engine; the projection is approximate and the actual-rate window is hours old.');
   console.log('  1. The confidence gate is simulated via the empirical pass rate from emitted_signals_v1,');
   console.log('     not the full engine confidence computation. The actual per-candidate confidence');
   console.log('     depends on feature alignment, RSI, HTF/LTF trends, etc. — which this script does not compute.');

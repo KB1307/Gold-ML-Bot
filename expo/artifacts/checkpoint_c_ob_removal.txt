@@ -1,0 +1,208 @@
+================================================================================
+ITEM 148 — THE CUMULATIVE FUNNEL (5th round)
+================================================================================
+Timestamp: 2026-08-24T20:30:28.911Z
+
+--- FETCHING LIVE sr_zones_v1 ---
+  Fetched 32 zones
+--- FETCHING emitted_signals_v1 (confidence distribution) ---
+  Fetched 451 signals
+--- FETCHING gold_m1_bars (last 7 days) ---
+  Fetched 6887 bars (2026-08-17T20:31:00+00:00 to 2026-08-24T20:29:00+00:00)
+  Span: 7.0 days
+
+  Confidence pass rate (all signals): 82.9% (threshold 0.68)
+  Confidence pass rate (LIVE only): 97.4%
+
+================================================================================
+--- 148(a): FULL FUNNEL (all gates live) ---
+================================================================================
+
+  ALL GATES ON (production):
+    Attempts: 912
+    → confidence_gate            0  (0.0%)
+    → path_to_target_veto       63  (6.9%)
+    → cluster_dedup            118  (12.9%)
+    → time_window_dedup          0  (0.0%)
+    → ob_filter                712  (78.1%)
+    EMITTED                     19  (2.1%)
+    Sum of stages: 912 (must equal attempts: 912) ✅ PASS
+    BUY: 11, SELL: 8
+    Projected: 2.71 signals/day
+
+================================================================================
+--- 148(b): MARGINAL EMISSION COST PER GATE ---
+================================================================================
+
+  Path veto OFF:
+    Attempts: 912
+    → confidence_gate            0  (0.0%)
+    → path_to_target_veto        0  (0.0%)
+    → cluster_dedup            160  (17.5%)
+    → time_window_dedup          0  (0.0%)
+    → ob_filter                716  (78.5%)
+    EMITTED                     36  (3.9%)
+    Sum of stages: 912 (must equal attempts: 912) ✅ PASS
+    BUY: 18, SELL: 18
+    Projected: 5.14 signals/day
+    Marginal cost of path veto: 17 signals (89.5%)
+
+  Cluster dedup OFF (time window still ON):
+    Attempts: 912
+    → confidence_gate            0  (0.0%)
+    → path_to_target_veto       63  (6.9%)
+    → cluster_dedup              0  (0.0%)
+    → time_window_dedup        115  (12.6%)
+    → ob_filter                715  (78.4%)
+    EMITTED                     19  (2.1%)
+    Sum of stages: 912 (must equal attempts: 912) ✅ PASS
+    BUY: 11, SELL: 8
+    Projected: 2.71 signals/day
+    Marginal cost of cluster dedup: 0 signals (0.0%)
+
+  Time window OFF (cluster dedup still ON):
+    Attempts: 912
+    → confidence_gate            0  (0.0%)
+    → path_to_target_veto       63  (6.9%)
+    → cluster_dedup            118  (12.9%)
+    → time_window_dedup          0  (0.0%)
+    → ob_filter                712  (78.1%)
+    EMITTED                     19  (2.1%)
+    Sum of stages: 912 (must equal attempts: 912) ✅ PASS
+    BUY: 11, SELL: 8
+    Projected: 2.71 signals/day
+    Marginal cost of time window: 0 signals (0.0%)
+
+  OB filter OFF:
+    Attempts: 912
+    → confidence_gate            0  (0.0%)
+    → path_to_target_veto       63  (6.9%)
+    → cluster_dedup            699  (76.6%)
+    → time_window_dedup          0  (0.0%)
+    → ob_filter                  0  (0.0%)
+    EMITTED                    150  (16.4%)
+    Sum of stages: 912 (must equal attempts: 912) ✅ PASS
+    BUY: 76, SELL: 74
+    Projected: 21.43 signals/day
+    Marginal cost of OB filter: 131 signals (689.5%)
+
+  Confidence gate OFF:
+    Attempts: 912
+    → confidence_gate            0  (0.0%)
+    → path_to_target_veto       63  (6.9%)
+    → cluster_dedup            118  (12.9%)
+    → time_window_dedup          0  (0.0%)
+    → ob_filter                712  (78.1%)
+    EMITTED                     19  (2.1%)
+    Sum of stages: 912 (must equal attempts: 912) ✅ PASS
+    BUY: 11, SELL: 8
+    Projected: 2.71 signals/day
+    Marginal cost of confidence gate: 0 signals (0.0%)
+
+================================================================================
+--- 148(c): PROJECTED SIGNALS/DAY + BUY/SELL SPLIT ---
+================================================================================
+  Projected: 2.71 signals/day
+  BUY: 1.57/day (11 total)
+  SELL: 1.14/day (8 total)
+  BUY/SELL ratio: 11:8
+
+  ACTUAL emission rate (from emitted_signals_v1):
+    Total signals: 451
+    LIVE: 38
+    BACKFILL: 413
+
+================================================================================
+--- 148(d): WORST GATE ANALYSIS ---
+================================================================================
+  Gates ranked by emission cost:
+    ob_filter                cost=131 signals (689.5% of production emissions)
+    path_to_target_veto      cost=17 signals (89.5% of production emissions)
+    cluster_dedup            cost=0 signals (0.0% of production emissions)
+    time_window_dedup        cost=0 signals (0.0% of production emissions)
+    confidence_gate          cost=0 signals (0.0% of production emissions)
+
+  Projected emission is >= 2/day (2.71/day). No relaxation needed.
+
+================================================================================
+CHECKPOINT C — THE OB REMOVAL: PROJECTION vs ACTUAL
+================================================================================
+  removal           : OB_FILTER_ENABLED=false shipped in 68cc662 (2026-08-24T16:55:33Z)
+  run at            : 2026-08-24T20:30:32.719Z
+  NOTE: the "ALL GATES ON" arm above is now HISTORICAL — production no longer runs the
+  OB filter. The OB-OFF arm is the projection of the CURRENT production configuration.
+
+  C1 PROJECTION (OB-off funnel arm over the 7.0-day bar replay):
+    all-gates-ON (pre-removal)  : 2.71 signals/day (19 emissions)
+    OB REMOVED (production now) : 21.43 signals/day (150 emissions)
+    projected BUY/SELL split    : 76:74
+    marginal cost of OB filter  : 131 signals (689.5%) — cross-check vs 148(b) above
+
+  C2 ACTUAL (LIVE emissions since removal, 0.15 days elapsed):
+    POWER STATED FIRST: with k=1 observed events the Poisson 95% CI on the rate is
+    [0.0, 19.8]/day (normal approx) — at k<10 this window is
+    PROVISIONAL and cannot confirm or refute the projection.
+    observed: 1 LIVE emission(s) -> 6.7 signals/day extrapolated
+      2026-08-24T20:22:56.597+00:00  BUY  signal_1787602976597_c9q2mvrjp
+    projection (21.43/day) vs actual (6.7/day): 
+      NOT yet decidable at this count — window too short
+
+  C3 THE POST-REMOVAL FUNNEL (OB gone) — binding gate:
+    stages ranked: cluster_dedup=699  path_to_target_veto=63
+    BINDING GATE: cluster_dedup (699 rejections, 76.6% of attempts)
+    (stage-sum check for this arm is printed above: must equal attempts)
+
+  C4 BOOK IMPLICATION:
+    The OB-absent cohort measured +0.0177R (95% CI includes zero, n=118, armB.txt era)
+    now EMITS in production. Those signals enter the canonical book as they resolve
+    (8h windows from emission). canonicalBook.ts is re-run at the end of this round and
+    the movement (or absence of movement) is recorded in the artifact — the post-removal
+    LIVE signals emitted 16:27Z/20:22Z today have not yet closed their 8h windows, so no
+    OB-absent resolution can appear in the book until after 2026-08-25T04:30Z.
+
+================================================================================
+CAVEATS
+================================================================================
+  0. CHECKPOINT C inherits every caveat below — the funnel is a gate-logic replay, not
+     the engine; the projection is approximate and the actual-rate window is hours old.
+
+================================================================================================
+C4b — CANONICAL BOOK RE-RUN (did the book move after removal?)
+================================================================================================
+  canonicalBook.ts re-run at 2026-08-24T20:31:15Z (removal was 16:55:33Z):
+
+    FULL (all sources)           n=432  WR=61.8%  EV_gross=+0.0500R  EV_net=+0.0133R  PF_net=1.03  95%CI_net=[-0.0729, +0.1003]
+    snapshot-era (>= boundary)   n=192  WR=54.2%  EV_gross=-0.0312R  EV_net=-0.0690R
+    post-boundary LIVE only      n= 36  WR=47.2%  EV_gross=-0.2365R  EV_net=-0.2617R
+
+  vs the Checkpoint A run at 20:18:33Z (n=431, EV_net=+0.0157R; post-boundary LIVE n=35,
+  EV_net=-0.2399R):
+    - the book moved by ONE row resolving inside those 13 minutes (n 431 -> 432,
+      EV_net +0.0157 -> +0.0133R): ordinary accrual, NOT an OB-absent signal.
+    - NO OB-absent resolution can appear yet: the post-removal LIVE signals (16:27:35Z,
+      20:22:56Z) close their 8h windows at 00:27Z and 04:23Z on 2026-08-25.
+    - The measured OB-absent cohort (+0.0177R, CI includes zero, n=118) enters the book as
+      those signals resolve. The funnel projects ~8x the emission rate, so within ~1-2
+      weeks the book will contain enough OB-absent resolutions to test whether the +0.0177R
+      cohort figure holds forward. That test is the C4 follow-up, pre-registered here.
+
+  GATE G-C: PASS.
+    - projection: 2.71/day (OB on, historical) -> 21.43/day (OB off, production now),
+      BUY/SELL 76:74, marginal cost of the OB filter 131 signals (689.5%).
+    - actual: 1 LIVE emission in 0.15 days = 6.7/day extrapolated, Poisson 95% CI
+      [0.0, 19.8]/day at k=1 — PROVISIONAL, cannot yet confirm or refute the projection.
+    - post-removal funnel sums EXACTLY: 0+63+699+0+0+150 = 912 = attempts (PASS, line 84).
+    - new binding gate: cluster_dedup (699 rejections, 76.6% of attempts).
+    - book implication stated; canonical re-run shows movement = 1 ordinary resolution.
+  1. The confidence gate is simulated via the empirical pass rate from emitted_signals_v1,
+     not the full engine confidence computation. The actual per-candidate confidence
+     depends on feature alignment, RSI, HTF/LTF trends, etc. — which this script does not compute.
+  2. The OB filter uses a zone-density proxy, not the real computeMarketStructure().
+     A candidate near a zone is assumed to have an OB; this overestimates OB pass rate.
+  3. The funnel is sampled every 15 bars (15 min), not every tick. The actual engine
+     evaluates on every tick (~5s), so the real attempt count is much higher.
+  4. The cluster dedup tracks simulated emissions, not real active signals. A real
+     active signal may persist longer (until TP/SL), blocking more candidates.
+  5. These caveats mean the ABSOLUTE numbers are approximate, but the RELATIVE costs
+     (which gate costs the most emission) are reliable because all gates use the same
+     simulation framework.

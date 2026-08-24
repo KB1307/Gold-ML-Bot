@@ -1,0 +1,79 @@
+
+====================================================================================================
+CHECKPOINT D — VENUE BASIS: PERSISTENCE MEASUREMENT (PROPOSE, DO NOT SHIP)
+====================================================================================================
+  run at            : 2026-08-24T20:34:02.142Z
+  app_m1_bars rows  : 206
+  first / last bar  : 2026-08-24T17:03:00+00:00 -> 2026-08-24T20:32:00+00:00
+
+====================================================================================================
+D1 — BASIS DISTRIBUTION (app close − Vantage close, minute-matched)
+====================================================================================================
+  matched minutes   : 206/206 app bars (210 Vantage bars in window)
+  mean |basis|      : $1.572  (62.9% of TP1)
+  median |basis|    : $0.775  (31.0% of TP1)
+  p90 |basis|       : $4.440  (177.6% of TP1)
+  p95 |basis|       : $5.090  (203.6% of TP1)
+  max |basis|       : $11.320  (452.8% of TP1)
+  sign              : 106 positive / 99 negative / 1 zero — roughly symmetric (level + noise)
+  mean signed basis : $-0.272
+  prior stamp-basis (item214, n=24): median $0.68 = 28.4% of TP1, p90 $1.52 —
+  cross-check: minute-bar basis median 31.0% of TP1
+
+====================================================================================================
+D2 — ACCRUAL SUFFICIENCY (pre-registered minimums, decided before this run)
+====================================================================================================
+  accrued                      : 206 app bars over 0.17 days (capture since ~2026-08-24T16:30Z)
+  distribution minimum         : 1380 bars (one full trading day) -> NOT MET (15% of minimum)
+  persistence minimum          : 2 weeks of bars -> NOT MET. Persistence claims STOP here.
+  persistence measurement date : 2026-09-07 (accrual continues automatically; nothing to do but wait)
+  D2 VERDICT: distribution PROVISIONAL (fewer than 1 trading day — report the numbers above as a first cut, not a claim);
+  persistence UNMEASURABLE until 2026-09-07. The lag-1 autocorrelation preview below is
+  a preview ONLY — it cannot authorize anything at this n.
+
+  PERSISTENCE PREVIEW (NOT a claim): lag-1 autocorrelation of the signed basis = 0.721 on n=206 minutes.
+    interpretation bound: at this n the standard error of an autocorrelation is ~1/sqrt(n) = ±0.070;
+    the preview is statistically distinguishable from zero — but 206 minutes cannot measure a half-life.
+
+====================================================================================================
+D3 — BOUNDARY-CROSSING FREQUENCY (vs CURRENT sr_zones_v1 map — approximation, see header)
+====================================================================================================
+  zone map           : 32 zones (top 32 by reaction_strength)
+  minutes evaluated  : 206
+  minutes with >=1 zone boundary CROSSED by the basis: 131 (63.6%)
+  total zone crossings: 365 (1.77 per minute)
+  minutes where |basis| > distance to nearest zone edge: 160 (77.7%)
+    e.g. 2026-08-24T17:04:00+00:00 app=4646.7 v=4645.92 crossings=1
+    e.g. 2026-08-24T17:05:00+00:00 app=4646.7 v=4645.31 crossings=2
+    e.g. 2026-08-24T17:06:00+00:00 app=4646.7 v=4645.8 crossings=1
+    e.g. 2026-08-24T17:07:00+00:00 app=4650.14 v=4650.62 crossings=2
+    e.g. 2026-08-24T17:08:00+00:00 app=4653.32 v=4654.43 crossings=1
+
+  DEFECT-VS-QUIRK READ (provisional, n=206 minutes): a crossing frequency of
+  63.6% of minutes is HIGH — consistent with a DEFECT-class frame mismatch —
+  but this is ONE 0.2-day window on the CURRENT map. The decision waits for 2026-09-07.
+
+====================================================================================================
+D4 — PROPOSAL (NOTHING SHIPPED) + AUTHORISING GATE
+====================================================================================================
+  Two translation forms, costed:
+  A) TRANSLATE THE ZONE MAP into app-feed space at read time (zone' = zone + T, T = a
+     rolling robust estimate of the basis, e.g. median over the last 60 app bars):
+     - the ladder (SL/TP) is RELATIVE to entry, hence frame-free; the zone map is the
+       ONLY Vantage-frame object the engine consumes -> the map is the side to move.
+     - error carried: the RESIDUAL (basis − T), not the basis. Requires persistence.
+     - zones refresh every 15 min (slow side); the engine already reads its own feed.
+  B) TRANSLATE ENTRIES into Vantage space at emission: carries the FULL instantaneous
+     basis into every zone-relative decision, and leaves entries/SL/TP — the things
+     that execute — in a frame the engine no longer observes directly. STRICTLY WORSE.
+  => A is the candidate. The ladder needs no translation (relative by construction).
+
+  AUTHORISING GATE (pre-registered NOW, evaluated 2026-09-07):
+    1. basis persistence on >= 2 weeks of app bars: lag-1 autocorrelation >= 0.5 OR
+       half-life >= 30 minutes. (White noise -> gate FAILS -> single-venue geometry:
+       widen TP1 beyond cross-venue noise or move the stack to one venue.)
+    2. residual boundary-crossing frequency with T applied <= 2% of minutes.
+    3. no scoring/gate constant changes ship with the translation — additive only.
+
+DONE (measurement only — nothing written, nothing shipped)
+

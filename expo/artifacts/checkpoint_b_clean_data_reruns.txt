@@ -1,0 +1,132 @@
+
+====================================================================================================
+CHECKPOINT B — WRITE-PATH EXPOSURE + ITEMS 209/210/213 RE-RUN ON CLEAN DATA
+====================================================================================================
+  run at                    : 2026-08-24T20:28:58.820Z
+  emitted_signals_v1 rows   : 451   trade_outcomes_v1 rows: 437
+
+====================================================================================================
+B1 — WHAT HAPPENED TO PRE-MIGRATION WRITES (guard was NOT live during the window)
+====================================================================================================
+  timeline (git):
+    2026-08-24 08:40:18Z  cfc2a0c  annotation columns added to EVERY emission insert (toRow)
+    2026-08-24 16:14Z     live probe: columns ABSENT in production (emittedSignalService.ts:155)
+    2026-08-24 ~16:16Z    migration 011 applied (bounded by first column-populated row below)
+    2026-08-24 16:55:33Z  68cc662  write-path guard ships — AFTER the window closed
+  => exposure window = [08:40:18Z, ~16:16Z); an app running cfc2a0c code emitting in this
+     window would have its insert rejected WHOLE (PGRST204, unknown column).
+
+  2026-08-24 emissions (all sources): 6
+    2026-08-24T02:56:10.273+00:00  LIVE     BUY  entry=4642.7  PRE-SHIP         no-cols  snapshot_zones=16  id=signal_1787540170273_5vebl78nz
+    2026-08-24T07:15:09.88+00:00  LIVE     BUY  entry=4648.3  PRE-SHIP         no-cols  snapshot_zones=16  id=signal_1787555709880_94nz6o9nm
+    2026-08-24T10:05:49.163+00:00  LIVE     BUY  entry=4649.2  EXPOSURE-WINDOW  no-cols  snapshot_zones=16  id=signal_1787565949163_9nrhqdj3t
+    2026-08-24T12:27:46.753+00:00  LIVE     BUY  entry=4660.8  EXPOSURE-WINDOW  no-cols  snapshot_zones=16  id=signal_1787574466753_isfkbrukd
+    2026-08-24T16:27:35.643+00:00  LIVE     SELL entry=4658.4  POST-MIGRATION   no-cols  snapshot_zones=16  id=signal_1787588855643_059s68pqr
+    2026-08-24T20:22:56.597+00:00  LIVE     BUY  entry=4651.8  POST-MIGRATION   no-cols  snapshot_zones=16  id=signal_1787602976597_c9q2mvrjp
+
+  emissions PERSISTED inside the exposure window [08:40Z, 16:16Z): 2
+  rows with nearest_opp_zone_behind_entry_price populated: 0/451
+  rows with driving_zone_touches populated:               2/451
+
+  outcome rows whose signal_id is ABSENT from emitted_signals_v1: 3
+    signal_1787083581937_xr6mjtadq  emitted~=2026-08-18T20:06:21.937Z  outcome_ts=2026-08-18T20:14:03.981+00:00  result=WIN  realized_r=0.275  (predates the window — separate, older defect)
+    signal_1787580401459_cpid69ppf  emitted~=2026-08-24T14:06:41.459Z  outcome_ts=2026-08-24T14:16:40.673+00:00  result=WIN  realized_r=0.3291  *** EMISSION TIME INSIDE EXPOSURE WINDOW — LOST WRITE ***
+    signal_1787587872040_446kz8aab  emitted~=2026-08-24T16:11:12.040Z  outcome_ts=2026-08-24T16:56:06.677+00:00  result=WIN  realized_r=0.2911  *** EMISSION TIME INSIDE EXPOSURE WINDOW — LOST WRITE ***
+  (a signal whose emission insert failed would still get its OUTCOME pushed by the
+   app path — orphan outcome rows are the fingerprint of lost emission writes)
+
+  last LIVE emission before the window : 2026-08-24T07:15:09.88+00:00
+  first LIVE emission after migration  : 2026-08-24T16:27:35.643+00:00
+
+  B1 VERDICT: the guard shipped 16:55:33Z — 39 minutes AFTER the window closed. During the
+  window at least 4 LIVE emissions were attempted: 2 persisted (10:05:49Z, 12:27:46Z —
+  their inserts carried no unknown columns, so the emitting app instance still ran
+  pre-cfc2a0c code), and 2 were LOST (emitted 14:06:41Z and 16:11:12Z — the app instance
+  had updated to cfc2a0c code between 12:27:46Z and 14:06:41Z; whole-insert PGRST204
+  rejection). Their outcome rows exist as ORPHANS above — the fingerprint. Detection is
+  only possible when the app later pushed an outcome; a lost emission whose outcome never
+  pushed is invisible to this probe, so 2 is a LOWER BOUND.
+  Book impact: both lost signals were WINs (+0.3291R, +0.2911R gross-convention) and are
+  absent from every book (no emitted row -> no entry/sl to replay): the join book is
+  ~+0.002R too pessimistic — negligible for the book, but the write path LOST 2 of 4 live
+  emissions in one afternoon. The guard (now live) exists because of exactly this.
+
+  VERIFIED FINDING (was a premise, now measured): the prior round's inputs were derived
+  from sr_zones_snapshot IN-SCRIPT — snapshot is populated on 2/2 window rows;
+  the missing columns could not corrupt those inputs. (Prior round's own run:
+  items_209_213_measurement.ts:228/266/381 parse the snapshot, never the columns.)
+
+  join population (realized_r non-null, is_scratch not true): n=336 (prior round: n=333)
+  canonical replay decided: 334/336
+
+====================================================================================================
+B2 — ITEM 210 RE-RUN: NEAREST OPPOSING ZONE BEHIND ENTRY (distance in ATR)
+====================================================================================================
+  POWER FIRST: prior buckets were n=3/5/7 — at sd≈1.0R the per-bucket MDE is
+  ±1.96*sd/sqrt(n) ≈ ±1.1R (n=3) / ±0.9R (n=5) / ±0.7R (n=7). Only a bucket with
+  n>=30 resolves |EV| < 0.36R. State n before reading any EV below.
+
+  (a) CONSISTENCY CHECK — column values vs snapshot-derived values (rows with columns):
+      behind-entry dist_atr: 0/0 agree within 0.05 ATR
+      driving-zone touches : 1/1 agree exactly
+
+  (b) RE-RUN on grown corpus (prior round: n=3/5/7 buckets; both label sources):
+    bucket <=0.5  : n=  4  stored EV=+0.1764R WR=75.0%  |  canonical EV=+0.1504R (n=4)  |  MDE≈±0.87R  (prior n=3 EV=+0.5685R)
+    bucket 0.5-1.0: n=  5  stored EV=+0.1960R WR=60.0%  |  canonical EV=+0.1803R (n=5)  |  MDE≈±1.05R  (prior n=5 EV=+0.1960R)
+    bucket 1.0-1.5: n=  1  stored EV=-1.0476R WR=0.0%  |  canonical EV=-1.0476R (n=1)  |  MDE≈±1.96R  (prior n=1 EV=-1.0476R)
+    bucket 1.5-2.0: n=0
+    bucket >2.0   : n=  8  stored EV=-0.1984R WR=62.5%  |  canonical EV=-0.2130R (n=8)  |  MDE≈±0.47R  (prior n=7 EV=-0.0839R)
+  PRIOR (items_209_213_measurement_run.txt): near buckets POSITIVE at tiny n — <=0.5 n=3 EV=+0.5685R,
+  0.5-1.0 n=5 EV=+0.1960R, 1.0-1.5 n=1 EV=-1.0476R, >2.0 n=7 EV=-0.0839R. The re-run tests the
+  same question on a grown corpus: does NEAR backing still outperform FAR backing?
+    near-backed (<=1.0 ATR): n=9 EV=+0.1873R
+    far-backed  (>1.0 ATR) : n=9 EV=-0.2928R
+    inversion DOES NOT survive at current n
+
+====================================================================================================
+B3 — ITEM 213 RE-RUN: DRIVING-ZONE TOUCH SPLIT (nearest opposing zone AHEAD of entry)
+====================================================================================================
+  prior round: low-touch n=47 EV=-0.1920R | high-touch n=81 EV=-0.1228R
+  re-run STORED labels   : low-touch n=47 EV=-0.1920R WR=48.9%  |  high-touch n=82 EV=-0.1157R WR=42.7%
+  re-run CANONICAL labels: low-touch n=46 EV=-0.1832R WR=50.0%  |  high-touch n=81 EV=-0.1298R WR=42.0%
+  POWER: n_low=47 n_high=82; two-arm MDE ≈ ±0.5332R — the 0.0764R gap is WITHIN noise (not resolvable)
+  prior ordering REPRODUCED (low-touch worse)
+
+====================================================================================================
+B4 — ITEM 209 RE-RUN: OUT-OF-BOUNDARY OPPOSING ZONES + THE 181 UNACCOUNTED ROWS
+====================================================================================================
+  prior round: out-of-boundary n=16 EV=+0.0656R | in-boundary n=136 EV=-0.1502R
+  (prior INVERSION: signals with an opposing zone on the WRONG side of entry did BETTER)
+  re-run STORED   : out n=18 EV=-0.0528R | in n=137 EV=-0.1457R
+  re-run CANONICAL: out n=18 EV=-0.0693R | in n=135 EV=-0.1535R
+
+  THE 181 ROWS: join rows whose snapshot parsed to ZERO zones: 181
+    by era: pre-boundary=181  post-boundary=0
+    prior round: canonical n=333, split n=16+136=152, skipped=181 — arithmetic:
+    181 = 181 rows skipped for EMPTY snapshots (not missing data — the
+    pre-snapshot-era BACKFILL rows carry no sr_zones_snapshot at all because the column
+    did not exist before 2026-07-16T10:51:28Z). Era split above CONFIRMS the mechanism.
+    (Today's join n=336: 155 with zones + 181 empty = 336.)
+
+====================================================================================================
+B5 — VERDICT ON THE INVERSIONS (no softening)
+====================================================================================================
+  1. ITEM 209 (wrong-side zones): the inversion SURVIVES directionally — out-of-boundary
+     n=18 EV=-0.0528R still beats in-boundary n=137 EV=-0.1457R (prior: +0.0656 vs -0.1502).
+     Both arms' CIs overlap heavily; it is a measurement against the zone-typing thesis,
+     NOT a lever. Accrue.
+  2. ITEM 210 (behind-entry distance): the re-run SUPPORTS the entry-backing thesis —
+     near-backed (<=1.0 ATR) n=9 EV=+0.1873R vs far-backed n=9 EV=-0.2928R, same direction
+     as the prior tiny buckets. Underpowered (two-arm MDE ~±1.3R); not actionable yet.
+  3. ITEM 213 (driving-zone touches): ordering REPRODUCED on both label sources (low-touch
+     worse: -0.1920 vs -0.1157 stored; -0.1832 vs -0.1298 canonical) but the 0.0764R gap is
+     WITHIN noise (MDE ±0.5332R). Underpowered.
+  4. THE 181 ROWS are fully explained and verified: 181/181 are pre-boundary BACKFILL rows
+     whose sr_zones_snapshot is empty because the column did not exist before
+     2026-07-16T10:51:28Z (0 post-boundary rows skipped). Not missing data — era structure.
+  5. WRITE PATH: 2 of at least 4 LIVE emissions in the exposure window were LOST (B1).
+     The guard is live now; the 2 orphan WINs cannot be replayed (no emitted row) but could
+     be re-inserted from app diagnostics if the payloads still exist on-device.
+
+DONE (measurement only — nothing written, nothing shipped)
+
