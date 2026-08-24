@@ -1,0 +1,55 @@
+====================================================================================================
+PHASE C / C1 — ITEM 214: VENUE BASIS vs TP1 — 2026-08-24T16:33:48.500Z
+====================================================================================================
+emitted signals: 450
+gold_m1_bars loaded: 65217 (2026-06-18T13:39:00.000Z → 2026-08-24T16:33:00.000Z)
+
+── POWER (before result) ──
+LIVE n=37, BACKFILL n=413 (bar coverage applied below).
+Statistic: median |basis| as % of TP1 distance vs the pre-registered 20% threshold.
+A systematic (signed) bias is separately reported; the threshold test is on |basis|.
+matched: 439/450 (unmatched 11: no bar within ±10 min)
+
+LIVE (all): n=37
+  covering-bar match: exact-minute lag mean=28.7s; entry inside bar [low,high]: 33/37 (89.2%)
+  TP1 distance ($): median=2.50 p10=2.50 p90=5.60
+  signed basis ($): mean=-0.342 median=0.160 (positive = app feed ABOVE Vantage close)
+  |basis| ($): median=0.680 p90=1.520 max=16.210
+  |basis| as % of TP1: median=17.6% p90=60.8% max=289.5%
+  PRE-REGISTERED THRESHOLD (median > 20% of TP1): ✅ not exceeded
+
+BACKFILL (all): n=402
+  covering-bar match: exact-minute lag mean=30.8s; entry inside bar [low,high]: 382/402 (95.0%)
+  TP1 distance ($): median=2.60 p10=2.10 p90=5.60
+  signed basis ($): mean=-0.084 median=0.000 (positive = app feed ABOVE Vantage close)
+  |basis| ($): median=0.610 p90=2.130 max=11.680
+  |basis| as % of TP1: median=20.2% p90=81.3% max=449.2%
+  PRE-REGISTERED THRESHOLD (median > 20% of TP1): ❌ EXCEEDED — STRUCTURAL FIX REQUIRED
+
+LIVE · TP1 dist <= $3.00 (new 25-pip ladder era): n=24
+  covering-bar match: exact-minute lag mean=32.5s; entry inside bar [low,high]: 22/24 (91.7%)
+  TP1 distance ($): median=2.50 p10=2.50 p90=2.50
+  signed basis ($): mean=0.082 median=0.180 (positive = app feed ABOVE Vantage close)
+  |basis| ($): median=0.710 p90=1.540 max=2.580
+  |basis| as % of TP1: median=28.4% p90=61.6% max=103.2%
+  PRE-REGISTERED THRESHOLD (median > 20% of TP1): ❌ EXCEEDED — STRUCTURAL FIX REQUIRED
+
+LIVE · TP1 dist >  $3.00 (older ladder era): n=13
+  covering-bar match: exact-minute lag mean=21.6s; entry inside bar [low,high]: 11/13 (84.6%)
+  TP1 distance ($): median=5.60 p10=5.60 p90=5.60
+  signed basis ($): mean=-1.125 median=-0.030 (positive = app feed ABOVE Vantage close)
+  |basis| ($): median=0.560 p90=1.340 max=16.210
+  |basis| as % of TP1: median=10.0% p90=23.9% max=289.5%
+  PRE-REGISTERED THRESHOLD (median > 20% of TP1): ✅ not exceeded
+
+── 10 largest LIVE |basis| as % of TP1 ──
+  2026-08-13T15:49:35.293+00:00 signal_1786636175293_agy7h6uok basis=-16.21$ tp1Dist=5.60$ pct=289.5% inBarRange=false
+  2026-08-19T12:55:53.898+00:00 signal_1787144153898_qxjfnnbjf basis=+2.58$ tp1Dist=2.50$ pct=103.2% inBarRange=false
+  2026-08-21T01:32:17.543+00:00 signal_1787275937542_n3idsszpf basis=-2.01$ tp1Dist=2.50$ pct=80.4% inBarRange=true
+  2026-08-21T09:04:23.931+00:00 signal_1787303063930_oaprcxg43 basis=-1.54$ tp1Dist=2.50$ pct=61.6% inBarRange=true
+  2026-08-21T08:17:24.156+00:00 signal_1787300244156_4feo7fwqq basis=-1.52$ tp1Dist=2.50$ pct=60.8% inBarRange=true
+  2026-08-19T13:00:25.005+00:00 signal_1787144425005_5qyon2qk8 basis=+1.40$ tp1Dist=2.50$ pct=56.0% inBarRange=true
+  2026-08-24T07:15:09.88+00:00 signal_1787555709880_94nz6o9nm basis=+1.38$ tp1Dist=2.50$ pct=55.2% inBarRange=true
+  2026-08-24T02:56:10.273+00:00 signal_1787540170273_5vebl78nz basis=-1.29$ tp1Dist=2.50$ pct=51.6% inBarRange=true
+  2026-08-20T16:14:50.572+00:00 signal_1787242490572_wgih5hw6r basis=+1.20$ tp1Dist=2.50$ pct=48.0% inBarRange=true
+  2026-08-21T13:42:27.885+00:00 signal_1787319747885_ytk3ifkwf basis=-1.18$ tp1Dist=2.50$ pct=47.2% inBarRange=true

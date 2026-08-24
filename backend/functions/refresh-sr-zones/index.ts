@@ -76,6 +76,16 @@ interface ServerSRZone {
   source: ZoneSource;
   confluenceScore: number;
   lastTouchTs: string | null;
+  /** PHASE A/A2 (ITEM 212): price of the cluster's strongest member. Equals `price` for single-member clusters. */
+  strengthPrice: number;
+  /** PHASE A/A2 (ITEM 212): outermost member in the risk direction (SUPPORT -> lowest, RESISTANCE -> highest). Equals `price` for single-member clusters. */
+  entryEdgePrice: number;
+  /** PHASE A/A3 (ITEM 191): spot-relative typing. Equals `type` while REJECTION_DIRECTED_ZONES_ENABLED is off — stored so the changed set is measurable. */
+  legacyType: "SUPPORT" | "RESISTANCE";
+  /** PHASE A/A3 (ITEM 191): approaches from below rejected back down (resistance behaviour). Evidence only. */
+  rejectionsFromBelow: number;
+  /** PHASE A/A3 (ITEM 191): approaches from above rejected back up (support behaviour). Evidence only. */
+  rejectionsFromAbove: number;
 }
 
 // ── Supabase client (inline — no external deps needed in Edge Functions) ─────
@@ -217,12 +227,18 @@ function computeZones(bars: Bar[], now: number): ServerSRZone[] {
   // Cluster candidates
   // ITEM 150: count tracks how many candidate levels merged — needed for
   // clusterScore in the corrected reactionStrength formula.
+  // PHASE A/A2 (ITEM 212): memberPrices tracks every candidate level that
+  // merged into the cluster, so strength_price (strongest member) and
+  // entry_edge_price (outermost member in the risk direction) can be derived
+  // server-side — previously only the client computed them, so every TIER_0
+  // row wrote NULL and the mapper fell back to `price`.
   const clustered: {
     price: number;
     source: ZoneSource;
     sources: Set<ZoneSource>;
     alwaysAdmit: boolean;
     count: number;
+    memberPrices: number[];
   }[] = [];
   for (const c of candidates) {
     const existing = clustered.find((cl) => Math.abs(cl.price - c.price) < clusterMergeWidth);
@@ -231,6 +247,7 @@ function computeZones(bars: Bar[], now: number): ServerSRZone[] {
       existing.sources.add(c.source);
       existing.alwaysAdmit = existing.alwaysAdmit || !!c.alwaysAdmit;
       existing.count += 1;
+      existing.memberPrices.push(c.price);
       if (c.source === "PRICE_ACTION") existing.source = c.source;
     } else {
       clustered.push({
@@ -239,9 +256,89 @@ function computeZones(bars: Bar[], now: number): ServerSRZone[] {
         sources: new Set([c.source]),
         alwaysAdmit: !!c.alwaysAdmit,
         count: 1,
+        memberPrices: [c.price],
       });
     }
   }
+
+  // PHASE A/A2 helper: per-member reaction strength. The client's Item 212
+  // merge takes the strongest member's PRICE as strengthPrice, where each
+  // member is an already-scored zone. Here members are raw candidate levels,
+  // so each member is scored with the SAME formula (cluster count = 1,
+  // confluence = its own single source) and the argmax member's price wins.
+  // Ties resolve to the first (lowest-index) member. This comparison score is
+  // used ONLY to select strengthPrice — the zone's own reactionStrength keeps
+  // the cluster-level formula below, unchanged.
+  const memberScore = (memberPrice: number, isResistance: boolean): number => {
+    let touches = 0;
+    let rejectionWicks = 0;
+    let totalRejectionSize = 0;
+    let lastTouchTs = 0;
+    for (let i = 0; i < closes.length; i++) {
+      const price = closes[i];
+      const high = highs[i];
+      const low = lows[i];
+      if (Math.abs(price - memberPrice) < zoneWidth) {
+        touches++;
+        lastTouchTs = timestamps[i];
+      }
+      if (isResistance && high >= memberPrice - zoneWidth && price < memberPrice) {
+        const wickSize = high - Math.max(price, closes[Math.max(0, i - 1)]);
+        if (wickSize > zoneWidth * 0.3) {
+          rejectionWicks++;
+          totalRejectionSize += wickSize;
+        }
+      }
+      if (!isResistance && low <= memberPrice + zoneWidth && price > memberPrice) {
+        const wickSize = Math.min(price, closes[Math.max(0, i - 1)]) - low;
+        if (wickSize > zoneWidth * 0.3) {
+          rejectionWicks++;
+          totalRejectionSize += wickSize;
+        }
+      }
+    }
+    const touchScore = Math.min(1, touches / 6);
+    const rejectionScore = Math.min(1, rejectionWicks / 4);
+    const avgRejectionSize = rejectionWicks > 0 ? totalRejectionSize / rejectionWicks : 0;
+    const rejectionSizeScore = Math.min(1, avgRejectionSize / (atr * 0.5));
+    const hasEarnedEvidence = touches >= 1 || rejectionWicks >= 1;
+    const raw =
+      (touchScore * 0.28) +
+      (rejectionScore * 0.28) +
+      (rejectionSizeScore * 0.16) +
+      (hasEarnedEvidence ? Math.min(1, 1 / 3) * 0.16 : 0) +
+      (hasEarnedEvidence ? Math.min(1, 0.25) * 0.12 : 0);
+    const ageHours = lastTouchTs > 0 ? Math.max(0, now - lastTouchTs) / (60 * 60 * 1000) : 0;
+    const decay = lastTouchTs > 0 ? Math.pow(0.5, ageHours / ZONE_STALENESS_HALF_LIFE_HOURS) : 1;
+    const uncapped = Math.min(1, raw * decay);
+    return touches === 0 ? Math.min(uncapped, 0.29) : uncapped;
+  };
+
+  // PHASE A/A3 helper (ITEM 191): directed rejection counts over the full 24h
+  // bar window. Same wick tests as the client's applyRejectionDirectedTyping()
+  // (signalEngine.ts:4299-4313), direction-agnostic — the legacy wick test only
+  // counts each event when the zone already sits on that side of spot, which is
+  // exactly the discarded evidence Item 191 identified. LABEL NOTE: the client
+  // counts over ~100 in-memory M1 samples; this counts over the 24h window —
+  // the two instruments must never be silently mixed.
+  const directedCounts = (zonePrice: number): { below: number; above: number } => {
+    let below = 0;
+    let above = 0;
+    for (let i = 0; i < closes.length; i++) {
+      const price = closes[i];
+      const high = highs[i];
+      const low = lows[i];
+      if (high >= zonePrice - zoneWidth && price < zonePrice) {
+        const wickSize = high - Math.max(price, closes[Math.max(0, i - 1)]);
+        if (wickSize > zoneWidth * 0.3) below++;
+      }
+      if (low <= zonePrice + zoneWidth && price > zonePrice) {
+        const wickSize = Math.min(price, closes[Math.max(0, i - 1)]) - low;
+        if (wickSize > zoneWidth * 0.3) above++;
+      }
+    }
+    return { below, above };
+  };
 
   // Score each cluster
   const zones: ServerSRZone[] = [];
@@ -324,6 +421,25 @@ function computeZones(bars: Bar[], now: number): ServerSRZone[] {
     const legacyReactionStrength = touches === 0 ? Math.min(uncappedLegacyRS, 0.29) : uncappedLegacyRS;
 
     if (cluster.alwaysAdmit || touches >= 2 || rejectionWicks >= 1) {
+      // PHASE A/A2 (ITEM 212): strength = strongest member's price; edge =
+      // outermost member in the risk direction. Single-member clusters seed
+      // both to the cluster price so they stay self-consistent.
+      let strengthPrice = cluster.price;
+      if (cluster.memberPrices.length > 1) {
+        let bestScore = -1;
+        for (const mp of cluster.memberPrices) {
+          const s = memberScore(mp, isResistance);
+          if (s > bestScore) {
+            bestScore = s;
+            strengthPrice = mp;
+          }
+        }
+      }
+      const entryEdgePrice = isResistance
+        ? Math.max(...cluster.memberPrices)
+        : Math.min(...cluster.memberPrices);
+      // PHASE A/A3 (ITEM 191): evidence only — `type` stays spot-relative.
+      const directed = directedCounts(cluster.price);
       zones.push({
         price: parseFloat(cluster.price.toFixed(1)),
         type: isResistance ? "RESISTANCE" : "SUPPORT",
@@ -334,6 +450,11 @@ function computeZones(bars: Bar[], now: number): ServerSRZone[] {
         source: cluster.source,
         confluenceScore,
         lastTouchTs: lastTouchTs > 0 ? new Date(lastTouchTs).toISOString() : null,
+        strengthPrice: parseFloat(strengthPrice.toFixed(1)),
+        entryEdgePrice: parseFloat(entryEdgePrice.toFixed(1)),
+        legacyType: isResistance ? "RESISTANCE" : "SUPPORT",
+        rejectionsFromBelow: directed.below,
+        rejectionsFromAbove: directed.above,
       });
     }
   }
@@ -378,6 +499,13 @@ async function upsertThenPrune(
     source: z.source,
     confluence_score: z.confluenceScore,
     last_touch_ts: z.lastTouchTs,
+    // PHASE A/A2 + A3 (ITEMS 212/191): the server now writes these — columns
+    // added live by migrations 010/012 before this deploy.
+    strength_price: z.strengthPrice,
+    entry_edge_price: z.entryEdgePrice,
+    legacy_type: z.legacyType,
+    rejections_from_below: z.rejectionsFromBelow,
+    rejections_from_above: z.rejectionsFromAbove,
     updated_at: runTs,
   }));
 

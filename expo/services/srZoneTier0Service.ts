@@ -74,6 +74,15 @@ export interface Tier0SRZone {
   strengthPrice: number | null;
   // ITEM 212 — outermost merged cluster member in the risk direction of the zone type.
   entryEdgePrice: number | null;
+  // PHASE A/A3 (ITEM 191): spot-relative typing the SERVER stored. Equals `type`
+  // while REJECTION_DIRECTED_ZONES_ENABLED is off; stored so the changed set is
+  // measurable on TIER_0 snapshots, which previously wrote legacyType ?? type —
+  // identical for every server zone.
+  legacyType: "SUPPORT" | "RESISTANCE" | null;
+  // PHASE A/A3 (ITEM 191): directed rejection counts computed by the SERVER over
+  // its 24h bar window (NOT the client's ~100-sample window — different instrument).
+  rejectionsFromBelow: number | null;
+  rejectionsFromAbove: number | null;
 }
 
 /** Why a TIER_0 read did not yield usable zones. Explicit so the caller can
@@ -269,7 +278,7 @@ export async function fetchTier0SRZones(): Promise<Tier0ReadResult> {
     const res = await client
       .from("sr_zones_v1")
       .select(
-        "price, type, touches, rejection_wicks, reaction_strength, source, confluence_score, last_touch_ts",
+        "price, type, touches, rejection_wicks, reaction_strength, source, confluence_score, last_touch_ts, strength_price, entry_edge_price, legacy_type, rejections_from_below, rejections_from_above",
       )
       .order("reaction_strength", { ascending: false })
       .limit(32);
@@ -309,6 +318,9 @@ export async function fetchTier0SRZones(): Promise<Tier0ReadResult> {
       lastTouchTs: typeof row.last_touch_ts === "string" ? row.last_touch_ts : null,
       strengthPrice: row.strength_price != null ? Number(row.strength_price) : null,
       entryEdgePrice: row.entry_edge_price != null ? Number(row.entry_edge_price) : null,
+      legacyType: row.legacy_type === "RESISTANCE" || row.legacy_type === "SUPPORT" ? row.legacy_type : null,
+      rejectionsFromBelow: row.rejections_from_below != null ? Number(row.rejections_from_below) : null,
+      rejectionsFromAbove: row.rejections_from_above != null ? Number(row.rejections_from_above) : null,
     }));
 
   if (unexpired.length === 0) {

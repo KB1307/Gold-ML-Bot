@@ -1,0 +1,175 @@
+CHECKPOINT A — PHASE A COMPLETE (hard stop satisfied)
+Items 150-218 cross-audit remediation · executed 2026-08-24T16:09Z → 16:29Z
+Evidence rule: every number below was pasted from a LIVE query or a real
+deployment response in this session. Nothing below is quoted from a prior round.
+
+═══════════════════════════════════════════════════════════════════
+A1 — SCHEMA CONTRACT vs PRODUCTION
+═══════════════════════════════════════════════════════════════════
+
+MEASUREMENT FIRST (verifySchemaContractLive.ts, 2026-08-24T16:16:19Z):
+  BEFORE: migrations 010/011 were NOT applied in production.
+    ❌ 010_zone_strength_edge: MISSING in sr_zones_v1: strength_price, entry_edge_price
+    ❌ 011_emitted_signal_annotations: MISSING in emitted_signals_v1:
+       nearest_opp_zone_behind_entry_price, nearest_opp_zone_behind_entry_type,
+       nearest_opp_zone_behind_entry_dist_atr, driving_zone_touches
+    ⚠️ emittedSignalService.ts (Item 210/213 round) already wrote those 4 columns.
+    Consequence confirmed: PostgREST rejects the ENTIRE insert on the next live
+    emission → live capture death (F-1 class). The Item 149 guard printed PASS
+    against the same database because its inventory ends at Item 149 — the exact
+    stale-guard drift this checkpoint exists to catch.
+
+  MIGRATIONS APPLIED LIVE (runMigration tool, this session):
+    - zone-strength-edge (010): sr_zones_v1 + strength_price, entry_edge_price ✅
+    - emitted-signal-annotations (011): emitted_signals_v1 + 4 annotation cols ✅
+    - directed-zone-typing (012): sr_zones_v1 + legacy_type,
+      rejections_from_below, rejections_from_above ✅
+    (each call returned: "Migration applied successfully. TypeScript types have
+     been updated at backend/types.ts and copied to each app's
+     src/integrations/supabase/types.ts" — the type-regeneration gap is closed too.)
+
+  AFTER (verifySchemaContractLive.ts, same session):
+    ✅ 001_shadow_signals_v1: all 26 expected column(s) present
+    ✅ 004_emitted_signals_v1: all 25 expected column(s) present
+    ✅ 006_zone_cadence_and_telemetry: all 1 expected column(s) present
+    ✅ 010_zone_strength_edge: all 2 expected column(s) present
+    ✅ 011_emitted_signal_annotations: all 4 expected column(s) present
+    VERDICT: ✅ PASS — repo migrations and live production schema agree.
+  Live column sets (service role, select * limit 1):
+    sr_zones_v1 (15): confluence_score, entry_edge_price, first_seen_ts, id,
+      last_touch_ts, legacy_reaction_strength, legacy_type, price,
+      reaction_strength, rejections_from_above, rejections_from_below,
+      rejection_wicks, source, strength_price, touches, type, updated_at
+    emitted_signals_v1 (30): prior 26 + nearest_opp_zone_behind_entry_price,
+      nearest_opp_zone_behind_entry_type, nearest_opp_zone_behind_entry_dist_atr,
+      driving_zone_touches
+
+  WRITE-PATH GUARD SHIPPED (emittedSignalService.ts):
+    Probes the live column set once per process, prunes the row to it before
+    sending, and on a PGRST204 "Could not find the column" error strips the
+    named column and retries (max 5). A missing annotation column now costs one
+    FIELD, never the ROW. Log tag: [EmittedSignal] A1_GUARD.
+
+  GUARD EXTENDED (ci_guard_schema_contract.ts): inventory now carries the 010/
+  011/012 columns (sr_zones_v1: strength_price, entry_edge_price, legacy_type,
+  rejections_from_below, rejections_from_above; emitted_signals_v1: the 4
+  annotation columns), so the Item 149 guard can no longer print PASS while the
+  code writes columns the database lacks.
+
+═══════════════════════════════════════════════════════════════════
+A2 — ITEM 212 PORTED TO THE SERVER (TIER_0 no longer writes NULL)
+═══════════════════════════════════════════════════════════════════
+
+Deployed: refresh-sr-zones edge function redeployed after the code change
+  → https://tcbnqmnzsnjhqkyuhrch.supabase.co/functions/v1/refresh-sr-zones
+Manual trigger response (POST, service key, 2026-08-24T16:26:37Z):
+  {"success":true,"barsFetched":1106,"rawZones":32,"dedupedZones":32,
+   "upserted":32,"overThreshold":32,...,"elapsedMs":2921}
+
+LIVE ROWS WRITTEN BY THE SERVER (service-role read, same session):
+  rows written in the last 10 min: 32/32
+  non-NULL counts: {"strength":32,"edge":32,"legacy":32,"below":32,"above":32}
+  sample rows:
+    SUPPORT    price=4651.8 strength=4652.2 edge=4651.6 legacy=SUPPORT below=21 above=32
+    RESISTANCE price=4665.3 strength=4665.3 edge=4665.3 legacy=RESISTANCE below=25 above=20
+    RESISTANCE price=4674.7 strength=4674.1 edge=4675   legacy=RESISTANCE below=23 above=13
+    RESISTANCE price=4658.3 strength=4658.6 edge=4658.6 legacy=RESISTANCE below=21 above=27
+    SUPPORT    price=4656.3 strength=4656.8 edge=4656.1 legacy=SUPPORT below=20 above=32
+  zones where strength != edge (multi-member evidence): 20/32
+  → Item 212 is no longer inert on the primary zone path.
+
+  Mirror path (expo/backend/trpc/routes/srZones.ts) carries the same port
+  (interface + cluster memberPrices + memberScore + directedCounts + upsert
+  rows + getZones read mapping).
+
+═══════════════════════════════════════════════════════════════════
+A3 — ITEM 191 DIRECTED TYPING ON THE SERVER (evidence only, flag OFF)
+═══════════════════════════════════════════════════════════════════
+
+Migration 012 applied live (see A1). Server writes legacy_type +
+rejections_from_below/above on every zone row (32/32 non-NULL above).
+
+  zones where directed typing WOULD differ from shipped type (the changed set,
+  previously unmeasurable on TIER_0): 13/32
+    shipped=RESISTANCE below=21 above=27 price=4658.3
+    shipped=RESISTANCE below=19 above=21 price=4660.3
+    shipped=SUPPORT    below=30 above=23 price=4653.8
+    shipped=SUPPORT    below=49 above=37 price=4645.5
+    shipped=RESISTANCE below=16 above=23 price=4661.6
+  → Item 191's flip criterion (EV split on the changed set) is now ACCRUING on
+    the primary zone source. REJECTION_DIRECTED_ZONES_ENABLED stays false.
+  Read path: srZoneTier0Service selects the new columns; the engine's TIER_0
+  mapper fills legacyType/rejectionsFrom* from the server row (client-window
+  counts from applyRejectionDirectedTyping() still take precedence as labels).
+
+═══════════════════════════════════════════════════════════════════
+A4 — F-34 CLOSED: 48h ZONE-MAP STALENESS (reportZoneMapAge.ts, LIVE)
+═══════════════════════════════════════════════════════════════════
+
+cron.job_run_details is NOT reachable via PostgREST (measured,
+artifacts/ddl_access_probe_2026-08-19.txt §2), so pipeline_health_v1 — the
+persisted 15-minute check that derives its numbers server-side from cron.job /
+net._http_response — IS the live cron record. Labels before conclusions.
+
+  Window: 2026-08-22T16:25Z → 2026-08-24T16:26Z
+  checks in 48h: 205
+  status counts: {"HEALTHY":86,"DEGRADED":1,"DOWN":118}
+  by check type:
+    pipeline_main n=192: {"HEALTHY":86,"DEGRADED":1,"DOWN":105}
+    bar_freshness n=13:  {"DOWN":13}
+  unhealthy window: 2026-08-22T20:45Z → 2026-08-23T23:00Z
+  [main check] cron_lag_minutes (n=192): min=-0.00 p50=-0.00 p95=0.00 max=15.00
+  zone_lag_minutes (n=192): min=0.00 p50=187.40 p95=1476.65 max=1619.90
+  136(f) criterion as literally written (max age < 20 min over 48h): ❌ NOT MET
+  [open-market stretch since 2026-08-23T23:00Z]: n=69 checks, all HEALTHY=true
+  [open-market] zone_lag_minutes: min=0.00 p50=4.20 p95=15.00 max=15.00
+  [open-market] 136(f) criterion (max age < 20 min): ✅ MET
+
+  Engine's own view at emission (emitted_signals_v1, 48h):
+    emissions: 4 · zone_map_age present: 4 · NULL (TIER_1 fallback): 0
+    age minutes: min=2 p50=4.5 max=7 · emissions with age >= 20 min: 0/4
+  sr_zones_v1 cache freshness now: newest updated_at 8.6 min old.
+
+  VERDICT (Item 136(d)/(f) closed): the 48h "NOT MET" is a WEEKEND-LABEL
+  artifact, not a cron failure. The unhealthy window is exactly the Sat/Sun
+  OTC gold closure (bars stop printing → zones legitimately stop updating),
+  and the MAIN pipeline check lacks the weekend guard migration 009 gave the
+  bar-freshness check. On the open-market stretch the criterion is MET
+  (p50=4.2, max=15.0 min) and every emission saw a ≤7-minute-old map.
+  136(f) DECISION: the criterion must be restated as "max zone lag < 20 min
+  over the trailing OPEN-MARKET window (weekend excluded)" — under that
+  statement the criterion PASSES and no local zone overlay is warranted on
+  staleness grounds. Recommended follow-up (not shipped this phase): give the
+  main health check the same weekend guard migration 009 gave bar-freshness,
+  so a closed market stops reporting DOWN.
+
+═══════════════════════════════════════════════════════════════════
+CHECKS + WHAT WAS NOT CHANGED
+═══════════════════════════════════════════════════════════════════
+
+runChecks(expo): ✅ GREEN (after one TS fix in srZones.ts getZones mapping)
+runChecks(backend): ✅ GREEN
+
+What Phase A did NOT change:
+  - No scoring change of any kind: reactionStrength formulas untouched in both
+    server files (the pre-existing formula DRIFT between the edge function's
+    Item 150 weights 0.28/0.28/0.16/0.16/0.12 and the tRPC mirror's B21-reverted
+    0.3/0.3/0.2/0.2 + confluence is pre-existing and is FLAGGED here, not
+    silently "fixed" — it needs its own measured decision).
+  - No flag value changed. All nine OFF flags remain OFF (MODULATION,
+    ENTRY_QUALITY_TRIGGER, REJECTION_DIRECTED_ZONES, NO_STRUCTURE_VETO,
+    ENTRY_BUFFER, TP3_CONFIDENCE_STRETCH, STRENGTH_WEIGHTED_ZONE_SELECTION,
+    OB_FILTER mode 'penalty' unchanged, PATH_TO_TARGET_VETO stays true).
+  - No gating, no ladder geometry, no thresholds, no zone typing change
+    (directed counts are evidence columns only; `type` stays spot-relative).
+  - No changes to trade_outcomes_v1 / shadow_signals_v1 / resolver.
+
+Notable side-finding (recorded, not acted on): the tRPC srZones mirror lacks
+the Item 150 zero-touch cap and uses different RS weights than the deployed
+edge function. The cron path (edge function) is authoritative for TIER_0
+writes; the mirror only matters if the tRPC backend is ever reachable.
+Deferred to the Phase C/D decision list rather than silently changed.
+
+═══════════════════════════════════════════════════════════════════
+CHECKPOINT A: CLOSED. Phase B may begin.
+═══════════════════════════════════════════════════════════════════

@@ -42,6 +42,12 @@ const INVENTORY: { table: string; column: string; source: string }[] = [
   { table: 'sr_zones_v1', column: 'confluence_score', source: 'refresh-sr-zones/index.ts:368' },
   { table: 'sr_zones_v1', column: 'last_touch_ts', source: 'refresh-sr-zones/index.ts:369' },
   { table: 'sr_zones_v1', column: 'updated_at', source: 'refresh-sr-zones/index.ts:370' },
+  // PHASE A/A2 (ITEM 212) + A3 (ITEM 191) — server-written zone evidence.
+  { table: 'sr_zones_v1', column: 'strength_price', source: 'refresh-sr-zones/index.ts (A2 port)' },
+  { table: 'sr_zones_v1', column: 'entry_edge_price', source: 'refresh-sr-zones/index.ts (A2 port)' },
+  { table: 'sr_zones_v1', column: 'legacy_type', source: 'refresh-sr-zones/index.ts (A3 port)' },
+  { table: 'sr_zones_v1', column: 'rejections_from_below', source: 'refresh-sr-zones/index.ts (A3 port)' },
+  { table: 'sr_zones_v1', column: 'rejections_from_above', source: 'refresh-sr-zones/index.ts (A3 port)' },
 
   // ── emitted_signals_v1 (written by expo/services/emittedSignalService.ts) ──
   { table: 'emitted_signals_v1', column: 'signal_id', source: 'emittedSignalService.ts:111' },
@@ -67,6 +73,11 @@ const INVENTORY: { table: string; column: string; source: string }[] = [
   { table: 'emitted_signals_v1', column: 'sr_zones_snapshot', source: 'emittedSignalService.ts:131' },
   { table: 'emitted_signals_v1', column: 'attention_scores', source: 'emittedSignalService.ts:132' },
   { table: 'emitted_signals_v1', column: 'source', source: 'emittedSignalService.ts:133' },
+  // PHASE A/A1 — ITEM 210/213 annotation columns (migrations 010/011, applied live 2026-08-24).
+  { table: 'emitted_signals_v1', column: 'nearest_opp_zone_behind_entry_price', source: 'emittedSignalService.ts (ITEM 210)' },
+  { table: 'emitted_signals_v1', column: 'nearest_opp_zone_behind_entry_type', source: 'emittedSignalService.ts (ITEM 210)' },
+  { table: 'emitted_signals_v1', column: 'nearest_opp_zone_behind_entry_dist_atr', source: 'emittedSignalService.ts (ITEM 210)' },
+  { table: 'emitted_signals_v1', column: 'driving_zone_touches', source: 'emittedSignalService.ts (ITEM 213)' },
 
   // ── trade_outcomes_v1 (written by backend resolver + learningStore) ──
   { table: 'trade_outcomes_v1', column: 'signal_id', source: 'resolver + learningStore' },

@@ -18,6 +18,138 @@ export type Database = {
   }
   public: {
     Tables: {
+      app_m1_bars: {
+        Row: {
+          close: number
+          created_at: string
+          high: number
+          id: number
+          low: number
+          open: number
+          source: string
+          timestamp: string
+        }
+        Insert: {
+          close: number
+          created_at?: string
+          high: number
+          id?: number
+          low: number
+          open: number
+          source?: string
+          timestamp: string
+        }
+        Update: {
+          close?: number
+          created_at?: string
+          high?: number
+          id?: number
+          low?: number
+          open?: number
+          source?: string
+          timestamp?: string
+        }
+        Relationships: []
+      }
+      emitted_signals_v1: {
+        Row: {
+          atr: number | null
+          attention_scores: Json | null
+          confidence: number
+          created_at: string
+          direction: string
+          driving_zone_touches: number | null
+          emitted_at: string
+          entry: number
+          feature_schema_version: number
+          hour_utc: number | null
+          htf_trend: string | null
+          id: number
+          ltf_trend: string | null
+          nearest_opp_zone_behind_entry_dist_atr: number | null
+          nearest_opp_zone_behind_entry_price: number | null
+          nearest_opp_zone_behind_entry_type: string | null
+          raw_confidence: number | null
+          regime: string | null
+          rsi: number | null
+          session_name: string | null
+          signal_id: string
+          sl: number
+          sl_multiplier: number | null
+          source: string
+          sr_zones_snapshot: Json | null
+          strength_diff: number | null
+          tp1: number
+          tp2: number
+          tp3: number
+          zone_map_age_minutes: number | null
+        }
+        Insert: {
+          atr?: number | null
+          attention_scores?: Json | null
+          confidence: number
+          created_at?: string
+          direction: string
+          driving_zone_touches?: number | null
+          emitted_at: string
+          entry: number
+          feature_schema_version?: number
+          hour_utc?: number | null
+          htf_trend?: string | null
+          id?: number
+          ltf_trend?: string | null
+          nearest_opp_zone_behind_entry_dist_atr?: number | null
+          nearest_opp_zone_behind_entry_price?: number | null
+          nearest_opp_zone_behind_entry_type?: string | null
+          raw_confidence?: number | null
+          regime?: string | null
+          rsi?: number | null
+          session_name?: string | null
+          signal_id: string
+          sl: number
+          sl_multiplier?: number | null
+          source?: string
+          sr_zones_snapshot?: Json | null
+          strength_diff?: number | null
+          tp1: number
+          tp2: number
+          tp3: number
+          zone_map_age_minutes?: number | null
+        }
+        Update: {
+          atr?: number | null
+          attention_scores?: Json | null
+          confidence?: number
+          created_at?: string
+          direction?: string
+          driving_zone_touches?: number | null
+          emitted_at?: string
+          entry?: number
+          feature_schema_version?: number
+          hour_utc?: number | null
+          htf_trend?: string | null
+          id?: number
+          ltf_trend?: string | null
+          nearest_opp_zone_behind_entry_dist_atr?: number | null
+          nearest_opp_zone_behind_entry_price?: number | null
+          nearest_opp_zone_behind_entry_type?: string | null
+          raw_confidence?: number | null
+          regime?: string | null
+          rsi?: number | null
+          session_name?: string | null
+          signal_id?: string
+          sl?: number
+          sl_multiplier?: number | null
+          source?: string
+          sr_zones_snapshot?: Json | null
+          strength_diff?: number | null
+          tp1?: number
+          tp2?: number
+          tp3?: number
+          zone_map_age_minutes?: number | null
+        }
+        Relationships: []
+      }
       gold_m1_bars: {
         Row: {
           close: number
@@ -45,6 +177,42 @@ export type Database = {
           open?: number
           timestamp?: string
           volume?: number | null
+        }
+        Relationships: []
+      }
+      pipeline_health_v1: {
+        Row: {
+          checked_at: string
+          cron_lag_minutes: number | null
+          detail: Json
+          failures: Json
+          id: number
+          last_cron_success_at: string | null
+          non200_count: number
+          status: string
+          window_hours: number
+        }
+        Insert: {
+          checked_at?: string
+          cron_lag_minutes?: number | null
+          detail?: Json
+          failures?: Json
+          id?: never
+          last_cron_success_at?: string | null
+          non200_count?: number
+          status: string
+          window_hours?: number
+        }
+        Update: {
+          checked_at?: string
+          cron_lag_minutes?: number | null
+          detail?: Json
+          failures?: Json
+          id?: never
+          last_cron_success_at?: string | null
+          non200_count?: number
+          status?: string
+          window_hours?: number
         }
         Relationships: []
       }
@@ -138,39 +306,57 @@ export type Database = {
       sr_zones_v1: {
         Row: {
           confluence_score: number
+          entry_edge_price: number | null
           first_seen_ts: string
           id: number
           last_touch_ts: string | null
+          legacy_reaction_strength: number | null
+          legacy_type: string | null
           price: number
           reaction_strength: number
           rejection_wicks: number
+          rejections_from_above: number | null
+          rejections_from_below: number | null
           source: string
+          strength_price: number | null
           touches: number
           type: string
           updated_at: string
         }
         Insert: {
           confluence_score?: number
+          entry_edge_price?: number | null
           first_seen_ts?: string
           id?: never
           last_touch_ts?: string | null
+          legacy_reaction_strength?: number | null
+          legacy_type?: string | null
           price: number
           reaction_strength?: number
           rejection_wicks?: number
+          rejections_from_above?: number | null
+          rejections_from_below?: number | null
           source: string
+          strength_price?: number | null
           touches?: number
           type: string
           updated_at?: string
         }
         Update: {
           confluence_score?: number
+          entry_edge_price?: number | null
           first_seen_ts?: string
           id?: never
           last_touch_ts?: string | null
+          legacy_reaction_strength?: number | null
+          legacy_type?: string | null
           price?: number
           reaction_strength?: number
           rejection_wicks?: number
+          rejections_from_above?: number | null
+          rejections_from_below?: number | null
           source?: string
+          strength_price?: number | null
           touches?: number
           type?: string
           updated_at?: string
@@ -290,7 +476,8 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      check_bar_freshness: { Args: never; Returns: Json }
+      get_pipeline_health: { Args: { p_window_hours?: number }; Returns: Json }
     }
     Enums: {
       [_ in never]: never

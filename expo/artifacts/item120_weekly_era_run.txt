@@ -1,0 +1,59 @@
+====================================================================================================
+PHASE B / B1 — ITEM 120 / F-10: WEEKLY ERA BUCKETING — 2026-08-24T16:32:00.695Z
+====================================================================================================
+emitted=450 outcomes=435
+canonical (resolved, non-scratch): n=335
+canonical by source: {"BACKFILL":299,"LIVE":36}
+full canonical book: n=335 EV=-0.0722 sd=0.9525R
+
+── POWER (stated BEFORE results) ──
+weeks spanned: 9 · mean canonical signals/week: 37.2
+per-week EV MDE at sd=0.9525R, n≈37/week: ±0.3069R
+  → A single week cannot resolve the question at this n (MDE dwarfs the |−0.10R| era effect).
+  → PRIMARY TEST: LIVE-only n-weighted weekly-EV slope, bootstrap CI (5000 resamples).
+     A slope is decisive only if its 95% CI excludes zero.
+  → PRE-REGISTERED GATE: LIVE-only slope negative with CI excluding zero ⇒ forward edge
+     NEGATIVE ⇒ no flag flips, no gate loosens; Phase C reduces to C1.
+     CI includes zero ⇒ verdict UNDERPOWERED, accrual date named below.
+
+── WEEKLY SERIES (canonical, all sources) ──
+weekStart      n   LIVE  BACK  SIM    EV(R)      WR      95% CI (bootstrap)
+2026-06-29   90      0    90    0    -0.0961    60%  [-0.264, 0.081]
+2026-07-06   43      0    43    0    +0.1074    67%  [-0.153, 0.357]
+2026-07-13   70      0    70    0    -0.0775    54%  [-0.306, 0.156]
+2026-07-20   38      0    38    0    +0.0176    55%  [-0.316, 0.375]
+2026-07-27   24      0    24    0    -0.4970    33%  [-0.789, -0.160]
+2026-08-03   24      0    24    0    +0.3496    58%  [-0.105, 0.831]
+2026-08-10   13      3    10    0    -0.1042    38%  [-0.780, 0.575]
+2026-08-17   29     29     0    0    -0.2250    52%  [-0.507, 0.063]
+2026-08-24    4      4     0    0    -1.0000     0%  [-1.000, -1.000]
+
+── LIVE-ONLY WEEKLY SERIES ──
+2026-08-10  n=  3  EV=  +0.6792  WR=  67%  CI=[-1.025, 1.587]
+2026-08-17  n= 29  EV=  -0.2250  WR=  52%  CI=[-0.505, 0.074]
+2026-08-24  n=  4  EV=  -1.0000  WR=   0%  CI=[-1.000, -1.000]
+
+── PRIMARY TEST: LIVE-only weekly EV slope (n-weighted, bootstrap over signals) ──
+observed LIVE-only slope: -0.8321R per week
+LIVE-only slope 95% bootstrap CI: [-0.6472, 0.6336]R/week
+CI excludes zero: NO
+
+── SECONDARY: full-canonical weekly EV slope ──
+observed full-canonical slope: -0.0206R per week
+
+── ERA SPLIT at snapshot boundary 2026-07-16T10:51:28Z (Item 201) ──
+PRE-boundary all     n=181  EV=  -0.0166  WR= 61.3%  CI=[-0.1391, 0.1094]
+POST-boundary all    n=154  EV=  -0.1377  WR= 47.4%  CI=[-0.2957, 0.0251]
+PRE-boundary LIVE: n=0
+POST-boundary LIVE   n= 36  EV=  -0.2358  WR= 47.2%  CI=[-0.5119, 0.0577]
+
+── VERDICT (pre-registered) ──
+UNDERPOWERED / INCONCLUSIVE: LIVE-only slope CI includes zero.
+slope CI half-width ≈ ±0.6404R/week at current n (36 LIVE signals over 3 weeks, ~12.0/week).
+TREND TEST: to resolve a |0.10R/week| slope needs n≈1476 LIVE signals ≈ 120 more weeks ≈ 27.7 months at 12.0/week.
+  → At this emission rate the trend test is closer to IMPOSSIBLE than underpowered (mindset rule 8).
+  → The instrument that CAN settle the era question is the POST-boundary LIVE MEAN, not the slope.
+POST-boundary LIVE mean EV=-0.2358, CI half-width ±0.2747 at n=36.
+  If the TRUE post-boundary LIVE EV stays at the observed -0.2358: n≈49 ⇒ ~1.1 more weeks to exclude zero.
+  To resolve a |0.10R| era EV at all: n≈272 ⇒ ~20 more weeks ≈ 4.5 months.
+Per the pre-registered gate this is NOT evidence of a positive edge — flags stay OFF.

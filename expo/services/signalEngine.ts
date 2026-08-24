@@ -10,6 +10,7 @@ import { resolveSignalWithBars } from "@/services/signalResolver";
 import type { OhlcBar } from "@/services/barStore";
 import { appendDiagnosticEvent } from "@/services/diagnosticEventStore";
 import { fetchTier0SRZones, recordTier0FallbackUse } from "@/services/srZoneTier0Service";
+import { recordAppFeedTick } from "@/services/appFeedBarCapture";
 import { DirectionalScoreAccumulator } from "@/services/directionalScoring";
 import { computeMarketStructure, findNearbyUnmitigatedOBs } from "@/services/marketStructure";
 import { EXECUTION_COST_PER_TRADE_USD, costInR } from "@/constants/executionCost";
@@ -734,6 +735,27 @@ const NO_STRUCTURE_VETO_ENABLED = false;
 const ENTRY_BUFFER_ENABLED = false;
 const ENTRY_BUFFER_PIPS = 50; // DERIVED (196d): best net-EV width from the canonical re-resolution
 /**
+ * PHASE C / C2 — BEHIND-ENTRY ARMING for await-the-zone (ITEM 210/211 route).
+ * Ships OFF. The 2026-08-24 failed BUYs (bl78nz, z6o9nm) both had an opposing
+ * zone BEHIND the entry rather than in the path — a shape the path-to-target
+ * veto cannot see and await-the-zone cannot arm for (it arms only from the
+ * blocking-zone branch or the OFF no-structure branch). This is the fourth
+ * arming condition: nearest opposing zone BEHIND entry within
+ * BEHIND_ENTRY_ARMING_MAX_ATR (1.0 ATR — the Item 210 bucket boundary where
+ * bucket EV flips sign: <=0.5 ATR +0.5685R, 0.5-1.0 +0.1960R, >2.0 -0.0839R)
+ * AND a same-side shelf inside the 3 ATR band (RS >= 0.3) -> arm a pending
+ * entry at the shelf instead of emitting at market.
+ * MEASURED ACCRUAL (2026-08-24, live probe): 7/335 canonical (2.1%) match the
+ * condition; LIVE rate 7/36 = 19.4% of LIVE emissions, ~2.8/week; armed EV
+ * +0.1623R at n=7 (deeply underpowered — recorded, not acted on).
+ * GATE (pre-registered): flip ON only when the armed bucket reaches n>=30 with
+ * the EV CI excluding zero; at ~2.8/week that projects ~2026-11-15. Re-run the
+ * rate probe before flipping — if the LIVE rate regresses toward the canonical
+ * 2.1%, the projection slips past 2028 and the gate should be restated.
+ */
+const BEHIND_ENTRY_ARMING_ENABLED = false;
+const BEHIND_ENTRY_ARMING_MAX_ATR = 1.0;
+/**
  * ITEM 138(d) — TP3 CONFIDENCE STRETCH.
  *
  * MEASUREMENT (138(c)): the TP3/SL ratio for high-confidence (>=0.89) signals
@@ -768,17 +790,22 @@ const TP3_CONFIDENCE_STRETCH_ENABLED = false;
  * mitigation honoured and NO top-10-by-strength truncation — the measured
  * construct. See `buildStructureBars()` and `hasNearbyUnmitigatedOB()`.
  */
-const OB_FILTER_ENABLED = true;
-/** ITEM 160(c) — RELAXATION (pre-registered gate triggered 2026-08-19).
- * Re-measured on the CURRENT construct over the canonical book
- * (scripts/item159_160_161_round.ts): OB-present n=291 EV_net=+0.0036R vs
- * OB-absent n=115 EV_net=+0.0213R, Welch t=-0.177 p≈0.86 — the original
- * authorising split (Item 108: z=2.295, p=0.0217) does NOT reproduce and the
- * split no longer excludes zero at 95%. Per the pre-registered 160(c) gate the
- * filter relaxes from hard reject to a confidence penalty.
- * RE-ENABLE criterion: a held-out re-measurement with n≥100 per arm whose
- * OB-present vs OB-absent EV difference excludes zero at 95%, favouring the
- * filter — then set OB_FILTER_MODE back to 'reject'. */
+const OB_FILTER_ENABLED = false;
+/** PHASE C / C3 — REMOVAL (pre-registered criterion met 2026-08-24).
+ * Re-measured a SECOND time on the CURRENT construct over the grown canonical
+ * book (scripts/item159_160_161_round.ts, artifacts/item160_remeasure_run.txt):
+ *   OB-present n=306 EV_net=+0.0006R CI=[-0.1016,0.1028] PF=1.00
+ *   OB-absent  n=118 EV_net=+0.0177R CI=[-0.1443,0.1796] PF=1.05
+ *   Welch t=-0.174 p≈0.8616
+ * Both arms now exceed the pre-registered n≥100 threshold and the split STILL
+ * does not exclude zero (p=0.86) — the original authorising split (Item 114:
+ * z=2.295, p=0.0217) has now failed to reproduce TWICE. The 160(c) relaxation
+ * (hard reject → 5pt penalty) was itself a post-hoc loosening: it kept charging
+ * a penalty against an unvalidated confidence score on an effect that does not
+ * exist. The filter is therefore REMOVED (enabled=false).
+ * RE-ENABLE criterion (unchanged): a held-out re-measurement with n≥100 per
+ * arm whose OB-present vs OB-absent EV difference excludes zero at 95%,
+ * FAVOURING the filter — then re-enable and set OB_FILTER_MODE='reject'. */
 const OB_FILTER_MODE: 'reject' | 'penalty' = 'penalty';
 /** ITEM 160(c) — confidence penalty (percentage points) applied when no
  * nearby unmitigated OB exists. A candidate whose penalised confidence falls
@@ -866,11 +893,14 @@ const DEDUP_CLUSTER_BAND_ATR = 1.5;
  * is material. */
 const SESSION_OPEN_LONDON_UTC_HOUR = 7;
 const SESSION_OPEN_NY_UTC_HOUR = 13;
-/** ITEM 98(c) — STRENGTH-WEIGHTED ZONE SELECTION.
- * Gate: n=2 near-strongest vs n=46 near-weak — severely underpowered.
- * Ship BEHIND AN OFF FLAG. Forward evidence: once n >= 30 per arm, re-run
- * the canonical split and flip this flag if the gap is material. */
-const STRENGTH_WEIGHTED_ZONE_SELECTION_ENABLED = false;
+/** PHASE D / D3 — STRENGTH-WEIGHTED ZONE SELECTION: DELETED 2026-08-24.
+ * The Item 98(c) flag shipped OFF at n=2 near-strongest vs n=46 near-weak and
+ * NO CODE EVER READ IT — 120 items of "waiting for forward evidence" with no
+ * instrument collecting any. A flag without a reader is a ledger lie: it
+ * implies a decision exists when none does. Deleted rather than wired, per
+ * the 150-218 audit. If strength-weighted selection is ever wanted, it must
+ * ship as a REAL gated mechanism with an accrual instrument and a projected
+ * flip date — not as a bare constant. */
 const NEAR_MISS_CONFIDENCE_LOW = 0.60;
 const NEAR_MISS_CONFIDENCE_HIGH = 0.68;
 const NEAR_MISS_DIFF_LOW = 0.04;
@@ -1749,6 +1779,8 @@ class SignalGenerationEngine {
   private awaitZoneConverted: number = 0;
   private awaitZoneExpired: number = 0;
   private awaitZoneInvalidated: number = 0;
+  /** PHASE C / C2 — behind-entry arming telemetry (flag OFF until n>=30, EV CI excludes zero). */
+  private behindEntryArmed: number = 0;
   /** ITEM 167(d): ring buffer of recent stand-aside REASONS (persisted with the counters). */
   private standAsideReasons: Array<{ ts: number; reason: string; m5Bars: number; newestM5AgeMin: number | null }> = [];
   /** ITEM 167(c): hourly counter snapshots → computable 24h rate (the lifetime counter hid degradation). */
@@ -2037,6 +2069,12 @@ class SignalGenerationEngine {
     // priceHistory samples above) — this is the genuine tick-frequency + tick-price
     // record that replaces the old synthetic momentum-derived order-flow inputs.
     this.recordTickArrival(now, price);
+
+    // PHASE C / C1 (ITEM 214): aggregate this app-feed tick into a durable M1 bar
+    // (app_m1_bars). Write-only instrument for the cross-venue basis fix — O(1)
+    // per tick, one fire-and-forget upsert per completed minute, never read on
+    // the signal path. Zero scoring change.
+    recordAppFeedTick(price, now);
 
     if (shouldSampleHistory) {
       this.lastPriceHistorySampleAt = now;
@@ -4219,11 +4257,14 @@ class SignalGenerationEngine {
             source: z.source,
             confluenceScore: z.confluenceScore,
             tier: 'TIER_0_SERVER',
-            // ITEM 191: legacy spot-relative type from the server's computeZones;
-            // the directed counts are filled by applyRejectionDirectedTyping().
-            legacyType: z.type,
-            rejectionsFromBelow: 0,
-            rejectionsFromAbove: 0,
+            // ITEM 191 / PHASE A-A3: legacy spot-relative type from the server's
+            // computeZones; the directed counts now arrive from the SERVER too
+            // (24h bar window — a DIFFERENT instrument than the client's
+            // ~100-sample window; applyRejectionDirectedTyping() overwrites them
+            // with the client-window counts, which remain the shipped labels).
+            legacyType: z.legacyType ?? z.type,
+            rejectionsFromBelow: z.rejectionsFromBelow ?? 0,
+            rejectionsFromAbove: z.rejectionsFromAbove ?? 0,
             // ITEM 212: TIER_0 may not have computed these yet; fall back to the
             // zone price so downstream geometry is always defined.
             strengthPrice: z.strengthPrice ?? z.price,
@@ -9436,6 +9477,58 @@ class SignalGenerationEngine {
           });
           return null;
         }
+      }
+    }
+
+    // ── PHASE C / C2 — BEHIND-ENTRY ARMING (ships OFF; see flag comment for gate) ──
+    if (BEHIND_ENTRY_ARMING_ENABLED) {
+      const c2OppType = analysis.signalType === 'BUY' ? 'RESISTANCE' : 'SUPPORT';
+      const c2SameType = analysis.signalType === 'BUY' ? 'SUPPORT' : 'RESISTANCE';
+      const behindZones = features.srZones
+        .filter(z => z.type === c2OppType && ((analysis.signalType === 'BUY' && z.price < entryPriceWithSlippage) || (analysis.signalType === 'SELL' && z.price > entryPriceWithSlippage)))
+        .sort((a, b) => Math.abs(a.price - entryPriceWithSlippage) - Math.abs(b.price - entryPriceWithSlippage));
+      const nearestBehind = behindZones[0];
+      const behindDistAtr = nearestBehind
+        ? Math.abs(nearestBehind.price - entryPriceWithSlippage) / Math.max(features.atr, 0.01)
+        : Infinity;
+      const c2Shelf = features.srZones
+        .filter(z => z.type === c2SameType && z.reactionStrength >= 0.3)
+        .filter(z => {
+          const d = Math.abs(z.price - entryPriceWithSlippage) / Math.max(features.atr, 0.01);
+          return d <= 3.0 && d > 0.1;
+        })
+        .sort((a, b) => b.reactionStrength - a.reactionStrength);
+      if (nearestBehind && behindDistAtr <= BEHIND_ENTRY_ARMING_MAX_ATR && c2Shelf.length > 0) {
+        const targetZone = c2Shelf[0];
+        const movedEntry = targetZone.price;
+        this.behindEntryArmed += 1;
+        const clusterId = `${analysis.signalType}_${movedEntry.toFixed(1)}`;
+        const pendingTimeoutMs = 4 * 60 * 60 * 1000; // 4h expiry — same as the other arming routes
+        const existing = this.pendingZoneEntries.get(clusterId);
+        if (!existing) {
+          this.pendingZoneEntries.set(clusterId, {
+            direction: analysis.signalType,
+            zonePrice: movedEntry,
+            zoneClusterId: clusterId,
+            armedAt: now,
+            expiresAt: now + pendingTimeoutMs,
+            signalParams: {
+              confidence: tier0AdjustedConfidence,
+              tp1, tp2, tp3, sl,
+              originalEntry: entryPriceWithSlippage,
+              slMultiplier: atrMultiplier,
+              atr: features.atr,
+              regime: features.marketRegime.type,
+              rsi: features.rsi,
+              topFeatures,
+            },
+          });
+          console.log(`⏳ [AwaitTheZone/C2] ARMED pending ${analysis.signalType} at ${c2SameType} ${movedEntry.toFixed(1)} (reaction ${(targetZone.reactionStrength * 100).toFixed(0)}%) — nearest ${c2OppType} BEHIND entry at ${nearestBehind.price.toFixed(1)} (${behindDistAtr.toFixed(2)} ATR) instead of emitting at market`);
+        }
+        this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'behind-entry arming (C2): opposing zone behind entry within 1.0 ATR -> await the same-side shelf', {
+          entryPrice: movedEntry, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips,
+        });
+        return null;
       }
     }
 

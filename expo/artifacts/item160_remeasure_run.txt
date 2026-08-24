@@ -1,0 +1,89 @@
+ROUND 159/160/161 — 2026-08-24T16:48:10.509Z
+signals=450 outcomes=435
+
+== 159(c) ERA BOOKS ==
+LIVE     n=36 WR=47.2% EV_net=-0.2358R CI=[-0.5239,0.0523] PF=0.55
+BACKFILL n=388 WR=62.9% EV_net=+0.0278R CI=[-0.0625,0.1180] PF=1.07
+ALL      n=424 WR=61.6% EV_net=+0.0054R CI=[-0.0810,0.0917] PF=1.01
+
+== 159(d) DISTINGUISHING SAMPLE SIZE ==
+LIVE EV_net=-0.2358R sd=0.8818R; BACKFILL EV_net=0.0278R (n=388)
+n for LIVE CI to exclude BACKFILL mean: 44 (ETA 2026-08-25)
+n for Welch |t|>=2 at current means/sds: 52 (ETA 2026-08-26)
+rate assumed 7.29/day
+
+== 159(e) ROWS UNDER CURRENT GATE CONFIG (all gates live 2026-08-18) ==
+LIVE: total=36 emitted>=2026-08-18=31 resolved=31
+BACKFILL: total=388 emitted>=2026-08-18=0 resolved=0
+LIVE under current gates book: n=31 WR=48.4% EV_net=-0.2750R CI=[-0.5561,0.0060] PF=0.47
+
+== 159(a) STRUCTURAL FIELD AVAILABILITY ==
+LIVE (emitted n=37): atr_present=100.0% zones_snapshot_present=100.0% attention_present=100.0%
+  span: 2026-08-13T15:49:35.293+00:00 → 2026-08-24T16:27:35.643+00:00
+BACKFILL (emitted n=413): atr_present=0.0% zones_snapshot_present=38.5% attention_present=55.7%
+  span: 2026-06-29T08:25:44.894+00:00 → 2026-08-13T06:30:03.583+00:00
+
+== 160(a) OB PRESENT vs ABSENT — CURRENT CONSTRUCT ==
+fetching gold_m1_bars 2026-06-28T08:25:00.000Z → 2026-08-24T12:27:46.753Z ...
+bars fetched: 56503 (span 2026-06-28T22:00:00.000Z → 2026-08-24T12:27:00.000Z)
+POWER FIRST: OB-present n=306, OB-absent n=118, abstain(no ATR)=0, no-bars(<21)=0
+OB-present n=306 WR=61.4% EV_net=+0.0006R CI=[-0.1016,0.1028] PF=1.00
+OB-absent  n=118 WR=61.9% EV_net=+0.0177R CI=[-0.1443,0.1796] PF=1.05
+Welch t=-0.174 p≈0.8616 (normal approx)
+PRE-REGISTERED GATE 160(c): split excludes zero at 95%? NO — RELAX to confidence penalty
+
+== 161(b,c) ATTENTION FEATURES vs REALISED R — HELD-OUT ==
+resolved rows with attention_scores: 260/424
+time split: fit n=130 (2026-07-12T23:20:20.803+00:00→2026-07-21T08:09:28.483+00:00) | held-out n=130 (2026-07-21T09:10:14.109+00:00→2026-08-24T12:27:46.753+00:00)
+features found (inverted from generator): rsi_learned_modulation, sr_zone_strong_reversal, ltf_momentum_sell, strong_support_proximity, strong_resistance_proximity, multi_touch_sr_confirmation, fibonacci_alignment, below_vwap, bollinger_expansion, volume_node_support_resistance, ltf_momentum_buy, bullish_quasimodo, bearish_divergence, bearish_quasimodo, bollinger_squeeze_bull_breakout, above_vwap, strong_downtrend, bearish_engulfing, bearish_macd_momentum, sr_zone_rejection_wick, bullish_ema_crossover, bullish_macd_momentum, bearish_ema_crossover, bearish_pin_bar, adx_trend_strength, bullish_pin_bar, strong_uptrend, high_liquidity_session, doji_context, sr_zone_bounce, htf_ltf_bearish_alignment, htf_ltf_bullish_alignment, bullish_engulfing, counter_trend_rejection_setup, neutral_htf_oversold_buy, bullish_divergence, session_high_sweep, neutral_htf_overbought_sell, session_low_sweep, bar_bearish_reversal, bar_below_vwap, bar_bullish_reversal, bar_above_vwap, bar_adx_trend_strength, bar_strong_downtrend_pattern, bar_strong_uptrend, bar_strong_uptrend_pattern, counter_trend_bounce_setup, volatile_regime_context
+feature                                n_fit  r_fit   n_held  r_held  95%CI(held)      verdict
+rsi_learned_modulation                    87  -0.064      83   0.056  [-0.162,0.268]  INDETERMINATE
+sr_zone_strong_reversal                   83   0.066     100   0.131  [-0.068,0.319]  INDETERMINATE
+ltf_momentum_sell                         34     NaN      21     NaN  [NaN,NaN]  INDETERMINATE
+bar_strong_downtrend_pattern               0     NaN      10  -0.232  [-0.752,0.466]  INDETERMINATE
+bearish_engulfing                          4     NaN       6  -0.208  [-0.872,0.726]  INDETERMINATE
+bearish_macd_momentum                      4     NaN      33  -0.184  [-0.496,0.170]  INDETERMINATE
+strong_resistance_proximity              101   0.000      87  -0.020  [-0.230,0.192]  INDETERMINATE
+multi_touch_sr_confirmation               98   0.000      91  -0.000  [-0.206,0.206]  INDETERMINATE
+below_vwap                                78   0.000      32  -0.000  [-0.349,0.349]  INDETERMINATE
+bearish_pin_bar                           12   0.000       8  -0.000  [-0.705,0.705]  INDETERMINATE
+bar_bullish_reversal                       0     NaN      25  -0.000  [-0.395,0.395]  INDETERMINATE
+fibonacci_alignment                      114  -0.000     121  -0.000  [-0.178,0.178]  INDETERMINATE
+bearish_divergence                         6  -0.000       6  -0.000  [-0.812,0.812]  INDETERMINATE
+bar_strong_uptrend_pattern                 0     NaN      15  -0.000  [-0.512,0.512]  INDETERMINATE
+htf_ltf_bullish_alignment                  6  -0.000      36  -0.000  [-0.329,0.329]  INDETERMINATE
+bullish_pin_bar                            8  -0.000       7   0.000  [-0.753,0.753]  INDETERMINATE
+htf_ltf_bearish_alignment                 31  -0.000       8   0.000  [-0.705,0.705]  INDETERMINATE
+bollinger_expansion                       43  -0.000      20   0.000  [-0.443,0.443]  INDETERMINATE
+above_vwap                                24   0.000       8   0.000  [-0.705,0.705]  INDETERMINATE
+bar_below_vwap                             0     NaN      16   0.000  [-0.496,0.496]  INDETERMINATE
+bearish_quasimodo                         62  -0.000      70   0.017  [-0.218,0.251]  INDETERMINATE
+bar_adx_trend_strength                     0     NaN      27   0.074  [-0.315,0.442]  INDETERMINATE
+strong_support_proximity                 115  -0.000      90   0.141  [-0.068,0.338]  INDETERMINATE
+bar_above_vwap                             0     NaN      51   0.150  [-0.131,0.409]  INDETERMINATE
+bullish_ema_crossover                      1     NaN      39   0.170  [-0.153,0.461]  INDETERMINATE
+sr_zone_rejection_wick                    27  -0.236      11   0.175  [-0.475,0.701]  INDETERMINATE
+bullish_macd_momentum                      5     NaN      42   0.192  [-0.119,0.469]  INDETERMINATE
+volume_node_support_resistance           123  -0.115     124   0.196  [0.020,0.360]  PREDICTIVE
+ltf_momentum_buy                          15     NaN      12     NaN  [NaN,NaN]  INDETERMINATE
+bullish_quasimodo                         45   0.000      45   0.189  [-0.110,0.458]  INDETERMINATE
+bollinger_squeeze_bull_breakout            1     NaN       0     NaN  [NaN,NaN]  INDETERMINATE
+strong_downtrend                          10  -0.000       6     NaN  [NaN,NaN]  INDETERMINATE
+bearish_ema_crossover                      1     NaN       8     NaN  [NaN,NaN]  INDETERMINATE
+adx_trend_strength                        46   0.043      17   0.285  [-0.227,0.673]  INDETERMINATE
+strong_uptrend                            10   0.000       8     NaN  [NaN,NaN]  INDETERMINATE
+high_liquidity_session                    91   0.000     113   0.000  [-0.185,0.185]  INDETERMINATE
+doji_context                               5     NaN       1     NaN  [NaN,NaN]  INDETERMINATE
+sr_zone_bounce                             2     NaN       1     NaN  [NaN,NaN]  INDETERMINATE
+bullish_engulfing                          4     NaN       6     NaN  [NaN,NaN]  INDETERMINATE
+counter_trend_rejection_setup              1     NaN       1     NaN  [NaN,NaN]  INDETERMINATE
+neutral_htf_oversold_buy                   1     NaN       1     NaN  [NaN,NaN]  INDETERMINATE
+bullish_divergence                         3     NaN       6   0.260  [-0.699,0.885]  INDETERMINATE
+session_high_sweep                        11   0.000       9   0.543  [-0.189,0.887]  INDETERMINATE
+neutral_htf_overbought_sell                1     NaN       1     NaN  [NaN,NaN]  INDETERMINATE
+session_low_sweep                          0     NaN       4     NaN  [NaN,NaN]  INDETERMINATE
+bar_bearish_reversal                       0     NaN      10   0.212  [-0.482,0.743]  INDETERMINATE
+bar_strong_uptrend                         0     NaN       5     NaN  [NaN,NaN]  INDETERMINATE
+counter_trend_bounce_setup                 0     NaN       5     NaN  [NaN,NaN]  INDETERMINATE
+volatile_regime_context                    0     NaN       1     NaN  [NaN,NaN]  INDETERMINATE
+161(d) flags to ship: NONE qualify (no negative held-out r with CI excluding zero)

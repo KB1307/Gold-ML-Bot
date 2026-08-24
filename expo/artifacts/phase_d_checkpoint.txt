@@ -1,0 +1,87 @@
+CHECKPOINT D — PHASE D COMPLETE (final checkpoint)
+Items 150-218 cross-audit remediation · executed 2026-08-24T16:35Z → 17:00Z
+Evidence: SYSTEM_CHECKLIST.md (ledger + flag register), verifySettingsMigration_run.txt,
+phase_a/b/c_checkpoint.txt, all item run artifacts in expo/artifacts/.
+
+═══════════════════════════════════════════════════════════════════
+D1 — THE DURABLE LEDGER RESTORED
+═══════════════════════════════════════════════════════════════════
+
+SYSTEM_CHECKLIST.md now carries a section for EVERY item 142-218:
+  - 30 items with durable evidence (script, artifact, or live code pointer).
+  - 27 items marked RECONSTRUCTION GAP — no in-repo record exists at all.
+    That count is itself the audit's Finding 1 quantified: over a third of a
+    77-item span left no durable trace. Recorded honestly, not papered over.
+  - Carried items 156, 205, 206 flagged in the ledger as ZERO-REFERENCE items.
+  - §2 PARAMETER REGISTER corrected: MIN_SIGNAL_CONVICTION_THRESHOLD :408→:473,
+    MIN_SIGNAL_STRENGTH_DIFFERENCE_BASE :409→:474, the ladder table now reads
+    25/50/80 (Item 121) at TradingContext.tsx:57-59/63/78 with correct
+    R-multiples (0.357R / 0.714R / 1.143R against slPips 70).
+  - FLAG REGISTER added: every behaviour-gating flag with line, value, item,
+    flip criterion, MEASURED accrual rate, and projected decision date.
+    Rows resolved this round: OB filter (removed, C3), strength-weighted flag
+    (deleted, D3), behind-entry arming (new, C2, OFF, ~2026-11-15 projection).
+
+═══════════════════════════════════════════════════════════════════
+D2 — VERSIONED SETTINGS MIGRATION (F-9, 97 items overdue — closed)
+═══════════════════════════════════════════════════════════════════
+
+Shipped: expo/services/settingsMigration.ts (pure, versioned v1→v2),
+wired into TradingContext load path; Settings gains optional schemaVersion.
+
+  RULES (pre-registered in the module):
+    - v1 row with ladder exactly 49/74/98 → 25/50/80 (stale DEFAULT; Item
+      109(b) measured 25/50/80 superior on every metric).
+    - v1 row with useDynamicSL true → false (stale pre-Item-82 DEFAULT; Item
+      19 measured the path worse in both directions; one-tap re-enable remains).
+    - Everything else preserved verbatim; v2 rows never re-touched.
+
+  PROOF (verifySettingsMigration.ts — 4 cases, all assertions passed):
+    ✅ persisted 49/74/98 + useDynamicSL=true → 25/50/80 + false + stamped v2
+       (THE checkpoint requirement)
+    ✅ customized 30/60/90 row → values preserved, dynamicSL corrected, stamped
+    ✅ already-v2 row → unchanged (idempotent)
+    ✅ stale ladder + custom 0.90 confidence → ladder migrates, confidence kept
+  No more mixed-ladder forward measurements from existing installs.
+
+═══════════════════════════════════════════════════════════════════
+D3 — DEAD FLAG RESOLVED: DELETED
+═══════════════════════════════════════════════════════════════════
+
+STRENGTH_WEIGHTED_ZONE_SELECTION_ENABLED (Item 98(c)): declared 2026-08-14,
+read by NOTHING for 120 items, collecting no evidence, projecting no date.
+Deleted; a tombstone comment at the old site records why and states the rule:
+any future strength-weighted selection must ship as a REAL gated mechanism
+with an accrual instrument and a projected flip date — never a bare constant.
+
+═══════════════════════════════════════════════════════════════════
+FINAL STATE OF THE ROUND
+═══════════════════════════════════════════════════════════════════
+
+All four checkpoints CLOSED with pasted live evidence:
+  A (16:29Z) — schema drift fixed, server ports live, F-34 closed.
+  B (16:31Z) — Item 120 finally measured: UNDERPOWERED, gate NOT engaged;
+               era-mean test settles ~2026-09-01 if the post-boundary LIVE EV
+               holds at −0.2358R. Standing rule: flags stay OFF regardless.
+  C (16:55Z) — venue basis STRUCTURAL (28.4% median of TP1; failed BUYs at
+               51.6%/55.2%), instrument shipped; C2 armed-route OFF with gate;
+               C3 OB penalty REMOVED on a second failed reproduction (p=0.8616).
+  D (this file) — ledger + flag register + settings migration + dead flag.
+
+Migrations applied LIVE this round: 010, 011, 012, 013.
+Edge function redeployed: refresh-sr-zones (Item 212/191 server ports).
+Live writes verified: 32/32 zone rows non-NULL on all five new columns.
+
+Standing decisions with dates (from the flag register):
+  ~2026-09-01  era-mean test decisive (if EV holds at −0.2358R)
+  ~2026-10-28  confidence-R resolvable (B3 accrual, n≈164)
+  ~mid-Oct 2026  entry-quality / TP3-stretch / directed-typing arms reach n≥30-80
+  ~2026-11-15  behind-entry arming gate (C2, n≥30 armed)
+  ~2026-11-28  no-structure veto arm (n≥30, own projection)
+
+What was NOT changed anywhere in the round: no OFF flag flipped ON; ladder
+geometry, zone typing, reaction-strength formulas, confidence computation, and
+entry stamping all untouched; the only behavioural change is the C3 REMOVAL,
+pre-registered in the plan and evidenced at n=306/118 (p=0.8616).
+
+CHECKPOINT D: CLOSED. PLAN COMPLETE.

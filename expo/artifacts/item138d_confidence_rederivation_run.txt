@@ -1,0 +1,30 @@
+====================================================================================================
+PHASE B / B3 — ITEM 138(d): CONFIDENCE RE-DERIVATION (LIVE-ONLY) — 2026-08-24T16:49:56.814Z
+====================================================================================================
+canonical n=335, LIVE-only n=36
+
+── POWER (before results) ──
+n=36 LIVE rows. Correlation significance floor |r| ≥ 0.341.
+A 0.80-threshold EV split gives arms of ~n=18 each, MDE ≈ ±0.93R.
+This test can only detect a strong relationship; anything weaker is honestly UNDERPOWERED.
+
+── CONFIDENCE vs CANONICAL R (LIVE-only) ──
+Pearson r = -0.169  95% CI [-0.472, 0.169]  (floor 0.341)
+CI excludes zero: NO
+
+── EV BY CONFIDENCE TERCILE (fixed split, LIVE-only) ──
+low tercile  n= 12  conf[0.66–0.90]  EV=+0.0881R  WR=58%  CI=[-0.463, 0.656]
+mid tercile  n= 12  conf[0.90–0.91]  EV=-0.4025R  WR=42%  CI=[-0.786, -0.002]
+high tercile n= 12  conf[0.91–0.95]  EV=-0.3930R  WR=42%  CI=[-0.786, 0.036]
+
+── THRESHOLD STABILITY (LIVE-only, informative only at this n) ──
+th=0.68: above n=35 EV=-0.2688R | below n=1 EV=+0.9205R
+th=0.75: above n=34 EV=-0.2473R | below n=2 EV=-0.0398R
+th=0.80: above n=33 EV=-0.2644R | below n=3 EV=+0.0783R
+th=0.85: above n=31 EV=-0.2967R | below n=5 EV=+0.1420R
+th=0.90: above n=29 EV=-0.3665R | below n=7 EV=+0.3057R
+
+── VERDICT (pre-registered) ──
+UNDERPOWERED: CI includes zero and is wide (±0.320). A real |r| up to ~0.64 could hide.
+To resolve a |r|=0.15 confidence-R relationship: n≈164 ⇒ ~9 more weeks ≈ 2.1 months at 14/week.
+Per the pre-registered rule: NO re-thresholding and NO confidence changes on this evidence.

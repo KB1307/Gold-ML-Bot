@@ -1,0 +1,33 @@
+================================================================================
+PHASE D / D2 — SETTINGS MIGRATION PROOF — 2026-08-24T16:41:19.191Z
+================================================================================
+
+Case 1: persisted 49/74/98 + useDynamicSL=true (stale defaults row)
+  ✅ tp1Pips 49 → 25
+  ✅ tp2Pips 74 → 50
+  ✅ tp3Pips 98 → 80
+  ✅ useDynamicSL true → false
+  ✅ schemaVersion stamped 2
+  ✅ changed flag true
+  ✅ slPips untouched at 70
+  changes: TP ladder 49/74/98 → 25/50/80 (pre-Item-121 stale default; Item 109(b) measured 25/50/80 superior) | useDynamicSL true → false (pre-Item-82 stale default; Item 19 measured the path worse in both directions — re-enable in Settings if deliberate) | schemaVersion stamped 2
+
+Case 2: user-customized install (30/60/90 ladder, useDynamicSL=true)
+  ✅ custom ladder preserved 30/60/90
+  ✅ useDynamicSL true → false (stale-default rule applies to ALL v1 rows; one-tap re-enable in Settings)
+  ✅ minConfidence preserved 0.90
+  ✅ schemaVersion stamped
+  ✅ changed true (version stamp only for values)
+
+Case 3: already-migrated v2 row
+  ✅ v2 row returned unchanged
+  ✅ changed=false
+
+Case 4: stale 49/74/98 ladder + custom minConfidence 0.90 + useDynamicSL true
+  ✅ ladder migrated to 25/50/80
+  ✅ minConfidence preserved 0.90
+  ✅ useDynamicSL true → false (stale default rule)
+
+================================================================================
+VERDICT: ✅ PASS — all migration cases behave as pre-registered.
+The checkpoint requirement is satisfied: a persisted 49/74/98 install migrates to 25/50/80.

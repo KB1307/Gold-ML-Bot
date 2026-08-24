@@ -151,6 +151,55 @@ const toRow = (r: EmittedSignalRecord): Record<string, unknown> => ({
   source: r.source,
 });
 
+// ── PHASE A / A1 — WRITE-PATH GUARD (drop the FIELD, never the ROW) ──────────
+// Evidence (verifySchemaContractLive.ts, 2026-08-24T16:14Z): the Item 210/213
+// columns did not exist in production while the code already wrote them — an
+// unapplied migration would make PostgREST reject the ENTIRE insert, killing
+// live signal capture (F-1 class). The guard: probe the live column set once,
+// prune the row to it before sending, and on a PGRST204 "Could not find the
+// column" error strip the named column and retry. A missing annotation column
+// costs one measurement field; a rejected insert costs the whole row.
+
+/** PostgREST unknown-column error, e.g.:
+ *  "Could not find the 'nearest_opp_zone_behind_entry_price' column of
+ *   'emitted_signals_v1' in the schema cache" */
+const MISSING_COLUMN_RE = /Could not find the '([a-z0-9_]+)' column/i;
+
+let emittedTableColumns: Set<string> | null = null;
+
+/** Fetch the live column set once per process (select * limit 1 → keys). */
+const resolveEmittedTableColumns = async (client: SupabaseClient): Promise<Set<string> | null> => {
+  if (emittedTableColumns) return emittedTableColumns;
+  try {
+    const { data } = await client.from('emitted_signals_v1').select('*').limit(1);
+    if (data && data.length > 0) {
+      emittedTableColumns = new Set(Object.keys(data[0]));
+      return emittedTableColumns;
+    }
+  } catch {
+    // Fall through — probe failure is not fatal; the retry path below still guards.
+  }
+  return null;
+};
+
+/** Remove fields the live table lacks. Returns the pruned row and the dropped names. */
+const pruneRowToLiveColumns = (
+  row: Record<string, unknown>,
+  columns: Set<string> | null,
+): { row: Record<string, unknown>; dropped: string[] } => {
+  if (!columns) return { row, dropped: [] };
+  const pruned: Record<string, unknown> = {};
+  const dropped: string[] = [];
+  for (const key of Object.keys(row)) {
+    if (columns.has(key)) {
+      pruned[key] = row[key];
+    } else {
+      dropped.push(key);
+    }
+  }
+  return { row: pruned, dropped };
+};
+
 /**
  * Persist an emitted signal to emitted_signals_v1. Fire-and-forget: errors are
  * counted and logged, never propagated to the caller.
@@ -175,14 +224,34 @@ export function pushEmittedSignalRecord(record: EmittedSignalRecord): void {
 
   void (async () => {
     try {
-      const { error } = await client
-        .from('emitted_signals_v1')
-        .upsert(toRow(safeRecord), { onConflict: 'signal_id' });
-      if (error) {
+      const columns = await resolveEmittedTableColumns(client);
+      const { row, dropped } = pruneRowToLiveColumns(toRow(safeRecord), columns);
+      if (dropped.length > 0) {
+        console.warn(`[EmittedSignal] A1_GUARD: dropped ${dropped.length} column(s) absent from live schema: ${dropped.join(', ')} — ROW preserved`);
+      }
+      // Self-healing retry: if the schema cache shifted between probe and write,
+      // strip the offending column and retry. Max 5 attempts so a pathological
+      // error can never loop.
+      let attempt = 0;
+      for (;;) {
+        const { error } = await client
+          .from('emitted_signals_v1')
+          .upsert(row, { onConflict: 'signal_id' });
+        if (!error) {
+          emittedWriteSuccesses += 1;
+          return;
+        }
+        const m = error.message.match(MISSING_COLUMN_RE);
+        if (m && attempt < 5) {
+          const missing = m[1];
+          delete row[missing];
+          attempt += 1;
+          console.warn(`[EmittedSignal] A1_GUARD: column '${missing}' rejected by live schema — dropped the FIELD, retrying (attempt ${attempt}/5). ROW preserved.`);
+          continue;
+        }
         emittedWriteFailures += 1;
         console.warn(`[EmittedSignal] EMISSION_WRITE_FAILED (fire-and-forget): ${serializeError(error)}`);
-      } else {
-        emittedWriteSuccesses += 1;
+        return;
       }
     } catch (err: unknown) {
       emittedWriteFailures += 1;

@@ -50,6 +50,16 @@ export interface ServerSRZone {
   source: ZoneSource;
   confluenceScore: number;
   lastTouchTs: string | null;
+  /** PHASE A/A2 (ITEM 212): price of the cluster's strongest member. Equals `price` for single-member clusters. */
+  strengthPrice: number;
+  /** PHASE A/A2 (ITEM 212): outermost member in the risk direction (SUPPORT -> lowest, RESISTANCE -> highest). Equals `price` for single-member clusters. */
+  entryEdgePrice: number;
+  /** PHASE A/A3 (ITEM 191): spot-relative typing. Equals `type` while REJECTION_DIRECTED_ZONES_ENABLED is off. */
+  legacyType: "SUPPORT" | "RESISTANCE";
+  /** PHASE A/A3 (ITEM 191): approaches from below rejected back down (resistance behaviour). Evidence only. */
+  rejectionsFromBelow: number;
+  /** PHASE A/A3 (ITEM 191): approaches from above rejected back up (support behaviour). Evidence only. */
+  rejectionsFromAbove: number;
 }
 
 function getServiceRoleClient() {
@@ -198,18 +208,92 @@ async function computeZonesFromBars(): Promise<ServerSRZone[] | null> {
     candidates.push({ price: Math.min(...weekIdx.map((t) => lows[t.i])), source: "WEEKLY", alwaysAdmit: true });
   }
 
-  const clustered: { price: number; source: ZoneSource; sources: Set<ZoneSource>; alwaysAdmit: boolean }[] = [];
+  // PHASE A/A2 (ITEM 212): memberPrices tracks every candidate level that
+  // merged into the cluster, so strength_price and entry_edge_price can be
+  // derived here too — previously only the edge function computed them, so
+  // rows written via this route left those columns NULL.
+  const clustered: { price: number; source: ZoneSource; sources: Set<ZoneSource>; alwaysAdmit: boolean; memberPrices: number[] }[] = [];
   for (const c of candidates) {
     const existing = clustered.find((cl) => Math.abs(cl.price - c.price) < clusterMergeWidth);
     if (existing) {
       existing.price = (existing.price + c.price) / 2;
       existing.sources.add(c.source);
       existing.alwaysAdmit = existing.alwaysAdmit || !!c.alwaysAdmit;
+      existing.memberPrices.push(c.price);
       if (c.source === "PRICE_ACTION") existing.source = c.source;
     } else {
-      clustered.push({ price: c.price, source: c.source, sources: new Set([c.source]), alwaysAdmit: !!c.alwaysAdmit });
+      clustered.push({ price: c.price, source: c.source, sources: new Set([c.source]), alwaysAdmit: !!c.alwaysAdmit, memberPrices: [c.price] });
     }
   }
+
+  // PHASE A/A2 helper: per-member comparison score (cluster count = 1,
+  // confluence = single source) used ONLY to pick the strongest member's
+  // price. Uses THIS FILE's B21-reverted formula so the mirror stays
+  // internally consistent; the zone's own reactionStrength is unchanged.
+  const memberScore = (memberPrice: number, isResistance: boolean): number => {
+    let touches = 0;
+    let rejectionWicks = 0;
+    let totalRejectionSize = 0;
+    let lastTouchTs = 0;
+    for (let i = 0; i < closes.length; i++) {
+      const price = closes[i];
+      const high = highs[i];
+      const low = lows[i];
+      if (Math.abs(price - memberPrice) < zoneWidth) {
+        touches++;
+        lastTouchTs = timestamps[i];
+      }
+      if (isResistance && high >= memberPrice - zoneWidth && price < memberPrice) {
+        const wickSize = high - Math.max(price, closes[Math.max(0, i - 1)]);
+        if (wickSize > zoneWidth * 0.3) {
+          rejectionWicks++;
+          totalRejectionSize += wickSize;
+        }
+      }
+      if (!isResistance && low <= memberPrice + zoneWidth && price > memberPrice) {
+        const wickSize = Math.min(price, closes[Math.max(0, i - 1)]) - low;
+        if (wickSize > zoneWidth * 0.3) {
+          rejectionWicks++;
+          totalRejectionSize += wickSize;
+        }
+      }
+    }
+    const touchScore = Math.min(1, touches / 6);
+    const rejectionScore = Math.min(1, rejectionWicks / 4);
+    const avgRejectionSize = rejectionWicks > 0 ? totalRejectionSize / rejectionWicks : 0;
+    const rejectionSizeScore = Math.min(1, avgRejectionSize / (atr * 0.5));
+    const hasEarnedEvidence = touches >= 1 || rejectionWicks >= 1;
+    const raw = Math.min(
+      1,
+      touchScore * 0.3 + rejectionScore * 0.3 + rejectionSizeScore * 0.2 + Math.min(1, 1 / 3) * (hasEarnedEvidence ? 0.2 : 0) + (hasEarnedEvidence ? Math.min(1, 0.25) : 0),
+    );
+    const ageHours = lastTouchTs > 0 ? Math.max(0, now - lastTouchTs) / (60 * 60 * 1000) : 0;
+    const decay = lastTouchTs > 0 ? Math.pow(0.5, ageHours / ZONE_STALENESS_HALF_LIFE_HOURS) : 1;
+    return Math.min(1, raw * decay);
+  };
+
+  // PHASE A/A3 helper (ITEM 191): directed rejection counts over the full
+  // 24h window — same direction-agnostic wick tests as the client's
+  // applyRejectionDirectedTyping(). LABEL NOTE: counts over 24h of bars, not
+  // the client's ~100-sample in-memory window; never mix the instruments.
+  const directedCounts = (zonePrice: number): { below: number; above: number } => {
+    let below = 0;
+    let above = 0;
+    for (let i = 0; i < closes.length; i++) {
+      const price = closes[i];
+      const high = highs[i];
+      const low = lows[i];
+      if (high >= zonePrice - zoneWidth && price < zonePrice) {
+        const wickSize = high - Math.max(price, closes[Math.max(0, i - 1)]);
+        if (wickSize > zoneWidth * 0.3) below++;
+      }
+      if (low <= zonePrice + zoneWidth && price > zonePrice) {
+        const wickSize = Math.min(price, closes[Math.max(0, i - 1)]) - low;
+        if (wickSize > zoneWidth * 0.3) above++;
+      }
+    }
+    return { below, above };
+  };
 
   const zones: ServerSRZone[] = [];
   for (const cluster of clustered) {
@@ -275,6 +359,23 @@ async function computeZonesFromBars(): Promise<ServerSRZone[] | null> {
     const legacyReactionStrength = Math.min(1, legacyRawReactionStrength * recencyDecayFactor);
 
     if (cluster.alwaysAdmit || touches >= 2 || rejectionWicks >= 1) {
+      // PHASE A/A2 (ITEM 212): strongest member + outermost edge.
+      let strengthPrice = cluster.price;
+      if (cluster.memberPrices.length > 1) {
+        let bestScore = -1;
+        for (const mp of cluster.memberPrices) {
+          const s = memberScore(mp, isResistance);
+          if (s > bestScore) {
+            bestScore = s;
+            strengthPrice = mp;
+          }
+        }
+      }
+      const entryEdgePrice = isResistance
+        ? Math.max(...cluster.memberPrices)
+        : Math.min(...cluster.memberPrices);
+      // PHASE A/A3 (ITEM 191): evidence only — `type` stays spot-relative.
+      const directed = directedCounts(cluster.price);
       zones.push({
         price: parseFloat(cluster.price.toFixed(1)),
         type: isResistance ? "RESISTANCE" : "SUPPORT",
@@ -285,6 +386,11 @@ async function computeZonesFromBars(): Promise<ServerSRZone[] | null> {
         source: cluster.source,
         confluenceScore,
         lastTouchTs: lastTouchTs > 0 ? new Date(lastTouchTs).toISOString() : null,
+        strengthPrice: parseFloat(strengthPrice.toFixed(1)),
+        entryEdgePrice: parseFloat(entryEdgePrice.toFixed(1)),
+        legacyType: isResistance ? "RESISTANCE" : "SUPPORT",
+        rejectionsFromBelow: directed.below,
+        rejectionsFromAbove: directed.above,
       });
     }
   }
@@ -345,6 +451,13 @@ async function upsertZones(zones: ServerSRZone[]): Promise<{ inserted: number } 
     source: z.source,
     confluence_score: z.confluenceScore,
     last_touch_ts: z.lastTouchTs,
+    // PHASE A/A2 + A3 (ITEMS 212/191): the mirror now writes these too —
+    // columns added live by migrations 010/012.
+    strength_price: z.strengthPrice,
+    entry_edge_price: z.entryEdgePrice,
+    legacy_type: z.legacyType,
+    rejections_from_below: z.rejectionsFromBelow,
+    rejections_from_above: z.rejectionsFromAbove,
     updated_at: runTs,
   }));
 
@@ -412,6 +525,17 @@ export const srZonesRouter = createTRPCRouter({
         source: row.source as ZoneSource,
         confluenceScore: row.confluence_score,
         lastTouchTs: row.last_touch_ts,
+        // PHASE A/A2 + A3 (ITEMS 212/191): read-path mapping. Columns exist live
+        // (migrations 010/012, applied 2026-08-24); ?? fallbacks keep reads safe
+        // against any row predating them.
+        strengthPrice: Number((row as Record<string, unknown>).strength_price ?? row.price),
+        entryEdgePrice: Number((row as Record<string, unknown>).entry_edge_price ?? row.price),
+        legacyType:
+          (row as Record<string, unknown>).legacy_type === "RESISTANCE" || (row as Record<string, unknown>).legacy_type === "SUPPORT"
+            ? ((row as Record<string, unknown>).legacy_type as "SUPPORT" | "RESISTANCE")
+            : (row.type as "SUPPORT" | "RESISTANCE"),
+        rejectionsFromBelow: Number((row as Record<string, unknown>).rejections_from_below ?? 0),
+        rejectionsFromAbove: Number((row as Record<string, unknown>).rejections_from_above ?? 0),
       }));
 
     return { zones, tier: "TIER_0_SERVER" as const, available: true };

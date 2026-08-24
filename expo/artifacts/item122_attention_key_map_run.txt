@@ -1,0 +1,84 @@
+====================================================================================================
+PHASE B / B2 — ITEM 122 / C-2: ATTENTION KEY MAP + HELD-OUT VALIDATION — 2026-08-24T16:47:15.798Z
+====================================================================================================
+
+── PART 1: DISPLAY-NAME ↔ ENGINE-KEY MAP ──
+engine keys extracted from source: 46
+signals with attention data: 267/450
+distinct display names in live data: 49
+
+MAP (display → engine key, by coverage):
+  VOLUME NODE SUPPORT RESISTANCE     → volume_node_support_resistance     n=253
+  FIBONACCI ALIGNMENT                → fibonacci_alignment                n=242
+  HIGH LIQUIDITY SESSION             → high_liquidity_session             n=209
+  STRONG SUPPORT PROXIMITY           → strong_support_proximity           n=207
+  MULTI TOUCH SR CONFIRMATION        → multi_touch_sr_confirmation        n=193
+  STRONG RESISTANCE PROXIMITY        → strong_resistance_proximity        n=192
+  RSI LEARNED MODULATION             → rsi_learned_modulation             n=174
+  BEARISH QUASIMODO                  → bearish_quasimodo                  n=136
+  BULLISH QUASIMODO                  → bullish_quasimodo                  n=92
+  BOLLINGER EXPANSION                → bollinger_expansion                n=67
+  LTF MOMENTUM SELL                  → ltf_momentum_sell                  n=58
+  BAR ABOVE VWAP                     → bar_above_vwap                     n=52
+  BULLISH MACD MOMENTUM              → bullish_macd_momentum              n=49
+  BULLISH EMA CROSSOVER              → bullish_ema_crossover              n=42
+  HTF LTF BULLISH ALIGNMENT          → htf_ltf_bullish_alignment          n=42
+  HTF LTF BEARISH ALIGNMENT          → htf_ltf_bearish_alignment          n=40
+  BEARISH MACD MOMENTUM              → bearish_macd_momentum              n=38
+  BAR ADX TREND STRENGTH             → bar_adx_trend_strength             n=28
+  LTF MOMENTUM BUY                   → ltf_momentum_buy                   n=27
+  BAR BULLISH REVERSAL               → bar_bullish_reversal               n=25
+  SESSION HIGH SWEEP                 → session_high_sweep                 n=22
+  BEARISH PIN BAR                    → bearish_pin_bar                    n=21
+  BAR BELOW VWAP                     → bar_below_vwap                     n=17
+  BAR STRONG UPTREND PATTERN         → bar_strong_uptrend_pattern         n=16
+  BULLISH PIN BAR                    → bullish_pin_bar                    n=15
+  BEARISH DIVERGENCE                 → bearish_divergence                 n=13
+  BAR BEARISH REVERSAL               → bar_bearish_reversal               n=11
+  BEARISH ENGULFING                  → bearish_engulfing                  n=10
+  BEARISH EMA CROSSOVER              → bearish_ema_crossover              n=10
+  BULLISH ENGULFING                  → bullish_engulfing                  n=10
+  BAR STRONG DOWNTREND PATTERN       → bar_strong_downtrend_pattern       n=10
+  BULLISH DIVERGENCE                 → bullish_divergence                 n=9
+  DOJI CONTEXT                       → doji_context                       n=8
+  BAR STRONG UPTREND                 → bar_strong_uptrend                 n=6
+  COUNTER TREND BOUNCE SETUP         → counter_trend_bounce_setup         n=5
+  SESSION LOW SWEEP                  → session_low_sweep                  n=4
+  COUNTER TREND REJECTION SETUP      → counter_trend_rejection_setup      n=2
+  NEUTRAL HTF OVERSOLD BUY           → neutral_htf_oversold_buy           n=2
+  NEUTRAL HTF OVERBOUGHT SELL        → neutral_htf_overbought_sell        n=2
+  VOLATILE REGIME CONTEXT            → volatile_regime_context            n=1
+
+⚠️ DRIFT — display names with NO engine key (stored data the engine can no longer produce):
+  SR ZONE STRONG REVERSAL (n=186)
+  BELOW VWAP (n=111)
+  ADX TREND STRENGTH (n=65)
+  SR ZONE REJECTION WICK (n=39)
+  ABOVE VWAP (n=34)
+  STRONG UPTREND (n=19)
+  STRONG DOWNTREND (n=16)
+  SR ZONE BOUNCE (n=3)
+  BOLLINGER SQUEEZE BULL BREAKOUT (n=1)
+
+── PART 2: TEN-FEATURE HELD-OUT VALIDATION ──
+canonical joined rows with attention data: 205/335
+POWER: at n≈300, |r| ≥ 0.11 is the 95% significance floor; smaller values are noise.
+This is a LABEL AUDIT joining stored display names back to canonical R — not a discovery claim (rule 6).
+
+held-out half: n=103 (chronological split at row 102)
+
+feature                          coverage  held-out n   r (signedScore vs R)
+VOLUME NODE SUPPORT RESISTANCE         253          97   r=+0.040  CI[-0.161, 0.237]
+FIBONACCI ALIGNMENT                    242          95   r=+0.000  CI[-0.202, 0.202]
+HIGH LIQUIDITY SESSION                 209          89   r=+0.000  CI[-0.208, 0.208]
+STRONG SUPPORT PROXIMITY               207          66   r=+0.097  CI[-0.148, 0.331]
+MULTI TOUCH SR CONFIRMATION            193          70   r=+0.000  CI[-0.235, 0.235]
+STRONG RESISTANCE PROXIMITY            192          66   r=-0.060  CI[-0.298, 0.184]
+RSI LEARNED MODULATION                 174          61   r=-0.008  CI[-0.259, 0.244]
+BEARISH QUASIMODO                      136          50   r=-0.001  CI[-0.280, 0.277]
+BULLISH QUASIMODO                       92          37   r=+0.141  CI[-0.192, 0.444]
+BOLLINGER EXPANSION                     67          16   r=+0.000  CI[-0.496, 0.496]
+
+* = CI excludes zero. Given the multiple-comparison count (10 features),
+  a single marginal * is NOT a lever — it is a candidate for the next
+  pre-registered validation, exactly as Item 161 treated its findings.

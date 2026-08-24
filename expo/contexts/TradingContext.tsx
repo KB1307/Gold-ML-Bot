@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { TradingSignal, SignalStatus, Settings, MarketOutlook, PerformanceMetrics, PositionSizing, DailyOHLC } from "@/types/trading";
 import { signalEngine, setExternalPrice, fetchLiveGoldPriceFallback } from "@/services/signalEngine";
+import { migrateSettingsToV2, SETTINGS_SCHEMA_VERSION } from "@/services/settingsMigration";
 import { Platform, AppState, type AppStateStatus } from "react-native";
 import { fetchHistoricalData } from "@/lib/trpc";
 import { goldWebSocketService } from "@/services/goldWebSocketService";
@@ -40,6 +41,9 @@ export const EXECUTION_COST_PRICE_UNITS = 0.05;
  * because structural runway + opposing-zone veto sizing still read them.
  */
 const DEFAULT_SETTINGS: Settings = {
+  // PHASE D/D2 (F-9): version-stamped defaults — persisted rows without schemaVersion
+  // are migrated once on load (see services/settingsMigration.ts).
+  schemaVersion: SETTINGS_SCHEMA_VERSION,
   // ITEM 121 — defaults moved to the MEASURED-BETTER ladder.
   // Item 109(b) canonical A/B on the identical population (n=412, 8h window,
   // shared evCompute cost model) measured 25/50/80 as superior to the prior
@@ -2484,13 +2488,23 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       if (savedSettings) {
         const rawParsedSettings = JSON.parse(savedSettings) as Settings;
-        const parsedSettings = sanitizeSettings(rawParsedSettings);
+        // PHASE D / D2 (F-9): one-time versioned migration. A pre-Item-121 row keeps
+        // the stale 49/74/98 ladder and a pre-Item-82 row keeps useDynamicSL=true —
+        // both entered the row as old DEFAULTS, and every forward measurement runs
+        // on a mix of two ladders until they are corrected.
+        const migration = migrateSettingsToV2(rawParsedSettings);
+        if (migration.changed) {
+          console.log(`🔧 [SettingsMigration v1→${SETTINGS_SCHEMA_VERSION}] ${migration.changes.join('; ')}`);
+        }
+        const parsedSettings = sanitizeSettings(migration.settings);
         setSettings(parsedSettings);
         console.log('✅ Settings loaded:', parsedSettings);
 
-        if (parsedSettings.minConfidence !== rawParsedSettings.minConfidence) {
+        if (migration.changed || parsedSettings.minConfidence !== rawParsedSettings.minConfidence) {
           await AsyncStorage.setItem("trading_settings", JSON.stringify(parsedSettings));
-          console.log(`🔒 Raised persisted minimum confidence to enforced floor ${(ENFORCED_MIN_SIGNAL_CONFIDENCE * 100).toFixed(0)}%`);
+          if (parsedSettings.minConfidence !== rawParsedSettings.minConfidence) {
+            console.log(`🔒 Raised persisted minimum confidence to enforced floor ${(ENFORCED_MIN_SIGNAL_CONFIDENCE * 100).toFixed(0)}%`);
+          }
         }
       } else {
         console.log('⚠️ No saved settings found - using defaults');

@@ -1,0 +1,125 @@
+CHECKPOINT C — PHASE C COMPLETE (hard stop satisfied)
+Items 150-218 cross-audit remediation · executed 2026-08-24T16:33Z → 16:55Z
+Evidence: item214_venue_basis_run.txt, item160_remeasure_run.txt, item122_attention_key_map_run.txt,
+item138d_confidence_rederivation_run.txt, live rate probe (C2).
+
+═══════════════════════════════════════════════════════════════════
+C1 — VENUE BASIS vs TP1 (ITEM 214 re-opened and MEASURED)
+═══════════════════════════════════════════════════════════════════
+
+Construct: entry stamp (app feed) vs the gold_m1_bars (Vantage) close of the
+covering minute, as a fraction of |tp1 − entry|. 450 signals, 65,217 bars,
+matched 439/450.
+
+  LIVE (all, n=37):         median |basis| = 17.6% of TP1  → threshold not exceeded
+  BACKFILL (n=402):         median |basis| = 20.2% of TP1  → EXCEEDED
+  LIVE · current 25-pip ladder era (n=24):
+                            median |basis| = 28.4% of TP1, p90 = 61.6%
+                            → ❌ PRE-REGISTERED 20% THRESHOLD EXCEEDED
+  LIVE · older ladder era (n=13): median 10.0% → not exceeded (TP1 was $5.60)
+
+  SMOKING GUN — the two failed 2026-08-24 BUYs:
+    signal_1787540170273_5vebl78nz (bl78nz): basis −$1.29 = 51.6% of TP1
+    signal_1787555709880_94nz6o9nm (z6o9nm): basis +$1.38 = 55.2% of TP1
+  The cross-venue basis on the exact failing trades exceeded HALF the first
+  target. The zone map is in the Vantage frame; entries execute in the app
+  frame; the frames disagree by a median $0.68 (p90 $1.52) while TP1 is $2.50.
+
+  PRE-REGISTERED VERDICT APPLIED: STRUCTURAL FIX REQUIRED.
+  Shipped this round (the fix's prerequisite instrument, zero scoring change):
+    - migration 013 applied LIVE: app_m1_bars (app-feed M1 OHLC, anon-insert RLS)
+    - expo/services/appFeedBarCapture.ts: fire-and-forget tick→bar aggregation,
+      wired into the engine tick path, never read on the signal path.
+  DECISION (pre-registered sequence): whether the basis is a persistent level
+  (translatable into the zone map) or white noise (NOT translatable — a rigid
+  translation would add noise) is currently UNMEASURABLE because no app-feed
+  bar history exists. app_m1_bars is that instrument. Once ~2 weeks accrue:
+  measure basis autocorrelation/half-life → if persistent, ship the frame
+  translation with a pre-registered gate; if white noise, the fix is
+  single-venue geometry (widen TP1 beyond cross-venue noise, or move the whole
+  stack onto one venue). A rigid translation is NOT shipped blind.
+
+═══════════════════════════════════════════════════════════════════
+C2 — BEHIND-ENTRY ARMING for await-the-zone (shipped OFF, gated)
+═══════════════════════════════════════════════════════════════════
+
+Shipped: signalEngine.ts BEHIND_ENTRY_ARMING_ENABLED = false (fourth arming
+condition for the pending-zone machinery). When ON it would arm a pending entry
+at the strongest same-side shelf instead of emitting at market, when the
+nearest opposing zone sits BEHIND the entry within 1.0 ATR.
+
+  - X = 1.0 ATR is DERIVED, not chosen: the Item 210 bucket boundary where
+    bucket EV flips sign (≤0.5 ATR +0.5685R, 0.5–1.0 +0.1960R, >2.0 −0.0839R).
+  - MEASURED ACCRUAL (live probe this session): 7/335 canonical (2.1%) match;
+    LIVE rate 7/36 = 19.4% ≈ 2.8/week; armed EV +0.1623R at n=7 (recorded,
+    not acted on — deeply underpowered).
+  - GATE (pre-registered, in the code comment): flip ON only at n≥30 in the
+    armed bucket with the EV CI excluding zero → projected ~2026-11-15 at
+    2.8/week. The comment also mandates re-running the rate probe before any
+    flip (if the LIVE rate regresses to the canonical 2.1%, the projection
+    slips past 2028 and the gate must be restated).
+  - Telemetry counter behindEntryArmed added.
+
+  NOT changed: the no-structure branch, the veto branch, Item 104 conversion
+  loop, emission logic — all byte-identical while the flag is false.
+
+═══════════════════════════════════════════════════════════════════
+C3 — OB PENALTY: RE-MEASURED THEN REMOVED
+═══════════════════════════════════════════════════════════════════
+
+Re-measured on the identical construct (item159_160_161_round.ts), grown corpus:
+
+  OB-present n=306 EV_net=+0.0006R CI=[-0.1016,0.1028] PF=1.00 WR=61.4%
+  OB-absent  n=118 EV_net=+0.0177R CI=[-0.1443,0.1796] PF=1.05 WR=61.9%
+  Welch t=-0.174 p≈0.8616
+
+  Both arms now exceed the pre-registered n≥100 threshold, and the split STILL
+  does not exclude zero. Item 114's original authorising split (z=2.295,
+  p=0.0217) has now failed to reproduce TWICE. DECISION: REMOVED —
+  OB_FILTER_ENABLED = false, with the full decision record and the unchanged
+  re-enable criterion (held-out re-measure, n≥100/arm, excluding zero
+  FAVOURING the filter) written at the declaration.
+
+  B3 context that made removal inevitable: confidence-vs-canonical-R on the
+  LIVE-only corpus is r=−0.169, CI [−0.472, 0.169] — the 5pt penalty was being
+  charged against a score with no demonstrated ranking power (and point-estimate
+  NEGATIVE direction: the high-confidence tercile EV −0.3930R vs low +0.0881R).
+
+═══════════════════════════════════════════════════════════════════
+B2 / B3 (executed at their scheduled position, Phase B completion)
+═══════════════════════════════════════════════════════════════════
+
+B2 — key map (item122_attention_key_map.ts): the display↔engine conversion is
+  mechanical (key.replace(/_/g,' ').toUpperCase(), SE:9026/9038); the inverse
+  map covers 25 live engine keys. 49 distinct display names exist in the stored
+  data; 9 have no current engine key — genuinely RETIRED features (per the
+  SE:6808 removal note), so historical rows carry legacy labels that must never
+  be silently mixed with current ones. Ten-feature held-out validation
+  (chronological 50/50, held-out n=103): no feature's CI excludes zero (max
+  |r| = 0.141 bullish_quasimodo) — no lever, consistent with Item 161.
+
+B3 — confidence re-derivation (item138d_confidence_rederivation.ts):
+  LIVE-only n=36, r = −0.169, CI [−0.472, 0.169] (floor 0.341) → UNDERPOWERED,
+  not evidence of validity. To resolve |r|=0.15: n≈164 ⇒ ~9 more weeks
+  (~2026-10-28). Per the pre-registered rule: no re-thresholding, no confidence
+  changes on this evidence. (This is what made C3's removal of the confidence
+  penalty the only defensible action.)
+
+═══════════════════════════════════════════════════════════════════
+CHECKS + WHAT WAS NOT CHANGED
+═══════════════════════════════════════════════════════════════════
+
+tsc: ✅ green after C2/C3 (runChecks at phase close below).
+
+What Phase C did NOT change:
+  - No OFF flag flipped ON: BEHIND_ENTRY_ARMING_ENABLED ships false;
+    NO_STRUCTURE_VETO, ENTRY_QUALITY, REJECTION_DIRECTED, ENTRY_BUFFER,
+    TP3_CONFIDENCE_STRETCH, MODULATION all unchanged (false).
+  - The only behavioural change in Phase C is REMOVAL (C3): OB_FILTER_ENABLED
+    true → false, pre-registered and sanctioned by the C3 item text
+    ("re-measure at n>=100 per arm, or remove").
+  - Zone typing, reaction strength formulas, ladder geometry, confidence
+    computation, entry stamping: all untouched.
+  - appFeedBarCapture is write-only; nothing on the signal path reads it.
+
+CHECKPOINT C: CLOSED.

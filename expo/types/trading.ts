@@ -457,4 +457,10 @@ export interface Settings {
    * today but could change — this is flippable back on without a code change.
    */
   allowShortSignals: boolean;
+  /**
+   * PHASE D/D2 (F-9): persisted-settings schema version. Absent on rows written
+   * before the versioned migration — those rows are migrated once on load
+   * (see services/settingsMigration.ts) and stamped with the current version.
+   */
+  schemaVersion?: number;
 }

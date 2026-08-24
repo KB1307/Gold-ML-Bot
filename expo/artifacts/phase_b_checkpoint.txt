@@ -1,0 +1,92 @@
+CHECKPOINT B — PHASE B (B1 complete; B2/B3 deferred per fixed execution order)
+Items 150-218 cross-audit remediation · executed 2026-08-24T16:30Z
+Evidence: expo/artifacts/item120_weekly_era_run.txt (full run, live Supabase read)
+
+═══════════════════════════════════════════════════════════════════
+B1 — ITEM 120 / F-10 WEEKLY ERA BUCKETING (5+ rounds skipped — now done)
+═══════════════════════════════════════════════════════════════════
+
+POPULATION (identical construct to items_209_213_measurement.ts):
+  emitted=450 outcomes=435 canonical (resolved, non-scratch) n=335
+  canonical by source: {"BACKFILL":299,"LIVE":36}
+  full canonical book: n=335 EV=-0.0722R sd=0.9525R
+  ⚠️ The +0.0178R full-book figure quoted in the plan is STALE — it predates the
+  recent LIVE losses. The current canonical book EV is NEGATIVE. Recorded so no
+  future round quotes the stale number.
+
+POWER (stated BEFORE results, in the run):
+  weeks spanned: 9 · mean canonical signals/week: 37.2
+  per-week EV MDE at sd=0.9525R, n≈37/week: ±0.3069R
+  → primary test pre-registered as the LIVE-only n-weighted weekly-EV slope,
+    bootstrap CI (5000 resamples over signals).
+
+WEEKLY SERIES (canonical, all sources):
+  weekStart      n   LIVE  BACK  SIM    EV(R)      WR      95% CI
+  2026-06-29   90      0    90    0    -0.0961    60%  [-0.264, 0.081]
+  2026-07-06   43      0    43    0    +0.1074    67%  [-0.153, 0.357]
+  2026-07-13   70      0    70    0    -0.0775    54%  [-0.306, 0.156]
+  2026-07-20   38      0    38    0    +0.0176    55%  [-0.316, 0.375]
+  2026-07-27   24      0    24    0    -0.4970    33%  [-0.789, -0.160]
+  2026-08-03   24      0    24    0    +0.3496    58%  [-0.105, 0.831]
+  2026-08-10   13      3    10    0    -0.1042    38%  [-0.780, 0.575]
+  2026-08-17   29     29     0    0    -0.2250    52%  [-0.507, 0.063]
+  2026-08-24    4      4     0    0    -1.0000     0%  [-1.000, -1.000]
+  (2026-08-24: all four LIVE emissions this week hit SL — the current failure
+   mode under investigation.)
+
+PRIMARY TEST (LIVE-only slope, n-weighted, bootstrap over signals):
+  observed LIVE-only slope: -0.8321R per week (3 LIVE weeks: +0.68, -0.23, -1.00)
+  95% bootstrap CI: [-0.6472, 0.6336]R/week → CI INCLUDES ZERO
+
+ERA SPLIT at snapshot boundary 2026-07-16T10:51:28Z (Item 201):
+  PRE-boundary all     n=181  EV=-0.0166  WR=61.3%  CI=[-0.1391, 0.1094]
+  POST-boundary all    n=154  EV=-0.1377  WR=47.4%  CI=[-0.2957, 0.0251]
+  POST-boundary LIVE   n=36   EV=-0.2358  WR=47.2%  CI=[-0.5119, 0.0577]
+  (PRE-boundary LIVE: n=0 — LIVE emission capture began at the snapshot era.)
+
+═══════════════════════════════════════════════════════════════════
+VERDICT (pre-registered gate, decided before the run)
+═══════════════════════════════════════════════════════════════════
+
+UNDERPOWERED / INCONCLUSIVE — the LIVE-only slope CI includes zero, so the
+pre-registered gate is NOT ENGAGED. Phase C proceeds in FULL (C1, C2, C3).
+
+Honest reading, stated plainly:
+  1. This is NOT evidence of a positive edge. The LIVE-only point estimates are
+     uniformly negative post-snapshot (-0.2250R week of Aug 17, -1.0000R week
+     of Aug 24, POST-boundary LIVE mean -0.2358R), and the era-split CI misses
+     excluding zero on the negative side by 0.058R. Every OFF flag stays OFF.
+  2. The trend test itself is closer to IMPOSSIBLE than underpowered (mindset
+     rule 8): resolving a |0.10R/week| slope needs n≈1476 LIVE signals ≈ 27.7
+     months at the measured 12.0 LIVE signals/week. The instrument that CAN
+     settle the era question is the POST-boundary LIVE MEAN:
+       - if the true post-boundary LIVE EV stays at -0.2358R: n≈49 ⇒ ~1.1 more
+         weeks to exclude zero (decision lands ~2026-09-01);
+       - to resolve a |0.10R| era EV at all: n≈272 ⇒ ~20 weeks ≈ 4.5 months
+         (decision lands ~2027-01-12).
+  3. RECOMMENDED standing rule until then: no flag flips, no threshold changes,
+     and the POST-boundary LIVE mean is re-run weekly (script is reusable:
+     `bunx tsx scripts/item120_weekly_era.ts`). If its CI excludes zero on the
+     negative side, the Phase-C gate engages retroactively.
+
+═══════════════════════════════════════════════════════════════════
+B2 / B3 — DEFERRED PER FIXED EXECUTION ORDER (not skipped)
+═══════════════════════════════════════════════════════════════════
+
+The plan's fixed execution order places B2/B3 after C1 and D1/D2 (rationale in
+the plan: D2 stops settings contamination of forward measurements, D1 is the
+anti-slip control). Therefore at this checkpoint:
+  B2 (attention key map): SCHEDULED — reconnaissance already done this session:
+     attention_scores is stored as an ARRAY of {side, score, feature,
+     signedScore, opposesSignal} objects; keys "0".."16" in the raw probe are
+     array indices, NOT engine keys. The display-name → engine-key map plus the
+     ten-feature held-out validation runs at its scheduled position.
+  B3 (confidence re-derivation): BLOCKED on B2 (named dependency), as the plan
+     itself specifies. Power will be stated before its result; on current
+     evidence (n=36 LIVE, 12/week) it will likely need an accrual date rather
+     than a threshold change.
+
+═══════════════════════════════════════════════════════════════════
+CHECKPOINT B: CLOSED (B1 complete, gate NOT engaged, B2/B3 scheduled
+per fixed order with written reasoning). Phase C begins.
+═══════════════════════════════════════════════════════════════════

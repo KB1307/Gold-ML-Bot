@@ -38,8 +38,8 @@ All paths relative to repo root. `SE` = `expo/services/signalEngine.ts`.
 
 | Constant | file:line | Value | Controls | Calibrated against | Still valid? |
 |---|---|---|---|---|---|
-| `MIN_SIGNAL_CONVICTION_THRESHOLD` | SE:408 | `0.55` | The single conviction gate | Item 73 G73-1 FAILED → 0.55 retained | Valid. **But** the WS distribution it is compared against moves with TIER_0 zone state (§7) |
-| `MIN_SIGNAL_STRENGTH_DIFFERENCE_BASE` | SE:409 | `0.12` | Default BUY-vs-SELL separation floor | — | Valid |
+| `MIN_SIGNAL_CONVICTION_THRESHOLD` | SE:473 | `0.55` | The single conviction gate | Item 73 G73-1 FAILED → 0.55 retained | Valid. **But** the WS distribution it is compared against moves with TIER_0 zone state (§7) |
+| `MIN_SIGNAL_STRENGTH_DIFFERENCE_BASE` | SE:474 | `0.12` | Default BUY-vs-SELL separation floor | — | Valid |
 | regime floor TRENDING | SE:412 | `0.09` | Separation floor per regime | Item 56 (proposed only) | Valid |
 | regime floor VOLATILE | SE:413 | `0.11` | " | " | Valid |
 | regime floor RANGING | SE:414 | `0.13` | " | " | Valid |
@@ -88,11 +88,11 @@ this arithmetic is illustrative of the mechanism, not a claim about today's valu
 
 | Constant | file:line | Value | R-multiple |
 |---|---|---|---|
-| `tp1Pips` | `expo/contexts/TradingContext.tsx:43` | `49` | **0.70R** ✅ matches |
-| `tp2Pips` | TradingContext.tsx:44 | `74` | 1.057R |
-| `tp3Pips` | TradingContext.tsx:45 | `98` | 1.40R |
-| `slPips` | TradingContext.tsx:46 | `70` | **1.00R** ✅ matches |
-| `maxSLPips` | TradingContext.tsx:54 | `90` | — |
+| `tp1Pips` | `expo/contexts/TradingContext.tsx:57` | `25` (ITEM 121 measured-better ladder; pre-D2 installs auto-migrated — see §3 note on the settings migration) | 0.357R |
+| `tp2Pips` | TradingContext.tsx:58 | `50` | 0.714R |
+| `tp3Pips` | TradingContext.tsx:59 | `80` | 1.143R |
+| `slPips` | TradingContext.tsx:63 | `70` | **1.00R** ✅ matches |
+| `maxSLPips` | TradingContext.tsx:78 | `90` | — |
 | `SL_WICK_PENETRATION_PIPS` | `signalResolver.ts:4` | `0.1` | — |
 | `POST_TP1_PROFIT_LOCK_R` | `signalResolver.ts:19` | `0.35` | The SL_AFTER_BE lock |
 | `POST_TP1_PROFIT_LOCK_MIN_PIPS` | `signalResolver.ts:45` | `5` | — |
@@ -609,6 +609,99 @@ mechanism as the driver of the mean/pass-rate shift.
 | HC-141e | B-2/B-3/B-4/B-5, E-2, D-4 — not reached. | **NOT REACHED** |
 
 ---
+
+### ITEMS 142-218 — THE RECONSTRUCTED LEDGER (Phase D/D1, 2026-08-24)
+
+The checklist previously ENDED at Item 141; Items 142-218 (77 items) existed only
+in chat history, code comments, and `expo/artifacts/*` — the mechanism by which
+items slipped. This ledger is reconstructed from those in-repo sources. Entries
+marked **RECONSTRUCTION GAP** have no durable in-repo record at all — that is
+itself the finding (audit Finding 1), recorded rather than papered over.
+
+| Item | Status | Evidence / pointer |
+|---|---|---|
+| 142-145 | RECONSTRUCTION GAP | no in-repo record |
+| 146 | Measurement: path-to-target veto block rate, live + frozen maps, both ladders | `expo/scripts/item146_147_150_151_measure.ts` |
+| 147 | Measurement (same round as 146) | same script |
+| 148 | Measurement: cumulative emission funnel of all four live suppressors (5th round, no more deferrals) | `expo/scripts/item148_funnel_measure.ts` |
+| 149 | SHIPPED: schema-contract guard. Its stale inventory was caught and fixed by Phase A/A1 (`verifySchemaContractLive.ts`) after it printed PASS against a schema lacking migrations 010/011 | `expo/scripts/ci_guard_schema_contract.ts`, `artifacts/ddl_access_probe_2026-08-19.txt` |
+| 150 | SHIPPED + LIVE: zero-touch zone RS cap at 0.29 (client + server refresh both) | SE merge loop; `backend/functions/refresh-sr-zones/index.ts` |
+| 151 | Measurement (same round as 146) | same script |
+| 152(b) | Measurement: era split (Item 120, fourth round) | `expo/scripts/item152b_era_split.ts` |
+| 153-155 | RECONSTRUCTION GAP | no in-repo record |
+| 156 | CARRIED — **zero code references**; flagged by the 150-218 audit | ledger-only |
+| 157 | RECONSTRUCTION GAP | no in-repo record |
+| 158 | SHIPPED: pipeline-health 7-day rollup + retention warning (6h http_response visibility gap) | migration 008, `PipelineHealthCard.tsx` |
+| 159 | Measurement: LIVE book + 95% CI at current n, sample size + calendar date | `expo/scripts/item159_160_161_round.ts` |
+| 160 | MEASURED + RELAXED: OB filter re-measured (present n=291 EV +0.0036R vs absent n=115 +0.0213R, Welch p=0.86 — Item 114's z=2.295 did not reproduce) → 160(c) hard reject replaced by 5pt confidence penalty (LIVE, SE:783). RESOLUTION PENDING as Phase C/C3 | SE:783-787 |
+| 161 | Measurement: attention features held-out validated (49 features; volume_node_support_resistance PREDICTIVE r=0.232 CI[0.053,0.397]; none anti-predictive → no disable flags) | `item159_160_161_round.ts` |
+| 162-166 | RECONSTRUCTION GAP | no in-repo record |
+| 167 | SHIPPED: stand-aside observability (reason ring buffer + hourly snapshots) + bar-freshness alarm (DEGRADED >15min = engine staleness seal, DOWN >60min, weekend guard) | migration 009, SE reason ring buffer |
+| 168 | SHIPPED: build marker BUILD-DERIVED via babel git-SHA injection; marker-substitution failure made LOUD | `babel.config.js`, `ci_guard_build_marker.ts` |
+| 169 | SHIPPED: resolver writes bar-reconstructed RSI-14/ATR-14 (287/417 corpus rows were empty via the resolver path) | `resolve-emitted-signals` |
+| 170-171 | RECONSTRUCTION GAP (167-172 round) | no in-repo record |
+| 172 | SHIPPED: user minConfidence above the enforced 0.68 now governs absolutely | SE |
+| 173-178 | RECONSTRUCTION GAP | no in-repo record |
+| 179 | SHIPPED: bar-derived learning-context reconstruction (179(c) fallback; 179(d) backfill features) | SE:7556-7647, `item179_backfill_features.ts` |
+| 180-183 | RECONSTRUCTION GAP | no in-repo record |
+| 184 | SHIPPED: 184(a) marker substitution failure is LOUD | `diagnosticsExport.ts:495`, `item184a_babel_marker_proof.cjs` |
+| 185-190 | RECONSTRUCTION GAP | no in-repo record |
+| 191 | LIVE evidence columns (client since 191; **server port shipped Phase A/A3** — migration 012; changed set 13/32 zones). Flag OFF | SE applyRejectionDirectedTyping, `sr_zones_v1` |
+| 192 | OFF: no-structure veto for zero-opposing maps. Arm n≥30 at ~0.22/day → projected ~2026-11-28 | SE:709 |
+| 193 | OFF with 192: await-the-zone armed from the no-structure branch (193(b)) | SE no-structure branch |
+| 194 | RECONSTRUCTION GAP | no in-repo record |
+| 195 | SHIPPED: genuine Wilder ATR-14 recompute + construct provenance in the atr column | SE:7598-7627, `item195_recompute_backfill_atr.ts` |
+| 196 | 196(b) drift artefact check SHIPPED; 196(d) 50-pip asymmetric entry buffer OFF | SE:735, `item196d_entry_buffer.ts` |
+| 197/198 | Measurement: snapshot-era book (−0.1352R arithmetic confirmed); 191(e) re-run on direct ATR | `item197_198_round.ts` |
+| 199 | SHIPPED: engine-native ATR construct provenance | SE:7669 |
+| 200 | SHIPPED: entry-backing annotations (distFromEntryAtr on every snapshot zone) | SE snapshot builder |
+| 201 | Measurement: snapshot-era book EV −0.1016R, era + vol control, ATR imputation fixed by direct recompute; 201(e)/201(f) carried | commit 1aacb36 |
+| 202-204 | Measurement only (exit structure round): trail-to-TP2 validated harness, paired Wilcoxon + bootstrap; NO scoring/exit changes shipped | `artifacts/item202_exit_structure_run.txt` |
+| 205/206 | CARRIED — **zero code references**; flagged by the 150-218 audit | ledger-only |
+| 207-208 | RECONSTRUCTION GAP | no in-repo record |
+| 209 | Measurement: out-of-boundary split n=16 (4.8%), WR 68.75%, EV +0.0656R, CI includes 0 → annotation-only | `artifacts/items_209_213_measurement_run.txt` |
+| 210 | SHIPPED: behind-entry annotation columns (migration 011, applied live Phase A) | `emittedSignalService.ts` |
+| 211 | BLOCKED on Item 210 forward evidence (~n≥80 per bucket) | — |
+| 212 | SHIPPED client + **server port Phase A/A2** (migration 010; 32/32 fresh rows non-NULL; 20/32 multi-member) | `refresh-sr-zones`, SE merge loop |
+| 213 | SHIPPED: driving-zone touches annotation (migration 011) | `emittedSignalService.ts` |
+| 214 | **MEASURED Phase C/C1**: venue basis = 28.4% of TP1 median on the current ladder (STRUCTURAL, threshold 20% exceeded); failed 2026-08-24 BUYs at 51.6%/55.2%. `app_m1_bars` instrument shipped (migration 013) | `artifacts/item214_venue_basis_run.txt` |
+| 215 | Measurement: attention coverage snapshot-era 193/193 = 100% | `items_209_213_measurement_run.txt` |
+| 216 | BLOCKED per explicit user instruction (modulation report-only) | — |
+| 217 | RECONSTRUCTION GAP | no in-repo record |
+| 218 | SHIPPED: mandatory ledger round (this ledger is its durable successor) | commit cfc2a0c |
+
+**Cross-round items resolved by the 2026-08-24 remediation plan:** Item 120
+(B1 — underpowered verdict, era-mean test settles ~2026-09-01 if the post-
+boundary LIVE EV stays at −0.2358R); Item 136(d)/(f) (A4 — weekend-label
+artifact, criterion MET on the open-market stretch); Item 122/C-2 (B2, this
+round); Item 138(d) (B3, this round); Item 123 still BLOCKED on 139(c)
+quarantine SQL (user action in the SQL Editor).
+
+#### FLAG REGISTER (Phase D/D1, 2026-08-24 — line numbers re-verified this round)
+
+Every flag that gates behaviour, its flip criterion, its measured accrual rate,
+and its projected decision date. A flag without an accrual instrument is a DEAD
+flag — none may be added to that state again (see D3).
+
+| Flag | Line | Value | Item | Flip criterion | Accrual | Projected decision |
+|---|---|---|---|---|---|---|
+| `TRAINING_WINDOW_DAYS` | SE:363 | `0` | 103 | Learner beats chance on held-out | n/a (learner at chance, Item 111) | indefinite |
+| `MODULATION_ENABLED` | SE:553 | `false` | 111/140 | held-out acc ≥55%, n≥200, p<0.05 | ~12 LIVE outcomes/week | ~mid-Dec 2026 |
+| `PATH_TO_TARGET_VETO_ENABLED` | SE:640 | `true` | 96 | stays ON (graded least-bad, Item 112) | — | — |
+| `ENTRY_QUALITY_TRIGGER_ENABLED` | SE:657 | `false` | 137 | entry-quality split n≥30/arm, EV CI separation | ~12/week | ~mid-Oct 2026 |
+| `REJECTION_DIRECTED_ZONES_ENABLED` | SE:684 | `false` | 191 | EV split on the changed set (13/32 zones) at n≥80 LIVE | ~12/week, accruing server-side since Phase A | ~late Oct 2026 |
+| `NO_STRUCTURE_VETO_ENABLED` | SE:709 | `false` | 192/193 | n≥30 zero-opposing arm | ~0.22/day (own note) | ~2026-11-28 |
+| `ENTRY_BUFFER_ENABLED` | SE:735 | `false` | 196(d) | forward n≥30/arm on the 50-pip buffer | ~12/week | ~mid-Oct 2026 |
+| `BEHIND_ENTRY_ARMING_ENABLED` (NEW, Phase C/C2) | ~SE:738 | `false` | 210/211 route | armed bucket n≥30 with EV CI excluding zero | 7/36 LIVE = 19.4%, ~2.8/week; armed EV +0.1623R at n=7 | ~2026-11-15 |
+| `TP3_CONFIDENCE_STRETCH_ENABLED` | ~SE:767 | `false` | 138 | TP3-stretch split n≥30/arm | ~12/week | ~mid-Oct 2026 |
+| `OB_FILTER_ENABLED` / `OB_FILTER_MODE` | SE:772 / :783 | **`false` — REMOVED Phase C/C3** | 114→160(c) | re-enable only if a held-out re-measure at n≥100/arm excludes zero FAVOURING the filter | n=306/118 measured 2026-08-24, p=0.8616 — removed | resolved 2026-08-24 |
+| `STRENGTH_WEIGHTED_ZONE_SELECTION_ENABLED` | — | **DELETED Phase D/D3** | 98(c) | had NO reader for 120 items — deleted; re-ship only as a real gated mechanism | none | resolved 2026-08-24 |
+| `BLOCKED_UTC_HOURS` | SE:596 | `[4, 11]` | 107 | active constraint (session-liquidity hazard), not a flip | — | — |
+
+**Phase D/D2 note:** `Settings` rows now carry `schemaVersion`; persisted rows without
+it are migrated once on load — a stale 49/74/98 ladder becomes 25/50/80 and a
+stale `useDynamicSL:true` becomes false (`expo/services/settingsMigration.ts`,
+proof in `expo/artifacts/verifySettingsMigration_run.txt`).
 
 ## 6. KNOWN FAULTS
 
