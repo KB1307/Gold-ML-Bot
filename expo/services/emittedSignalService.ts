@@ -353,6 +353,42 @@ export function pushEmittedSignalRecord(record: EmittedSignalRecord): void {
       if (dropped.length > 0) {
         console.warn(`[EmittedSignal] A1_GUARD: dropped ${dropped.length} column(s) absent from live schema: ${dropped.join(', ')} — ROW preserved`);
       }
+
+      // ── ITEM A.2 / CHECKPOINT A.2 — WRITE-ONLY fade annotation ────────────
+      // PRE-REGISTERED FORWARD GATE (must never drift): the fade condition may be
+      // proposed as a LIVE FILTER only when, on signals emitted AFTER this
+      // instrumentation ships (genuinely forward, not the historical sample), the
+      // FADE cohort reaches n>=50 AND its EV_net 95% CI upper bound sits below the
+      // WITH cohort's EV_net point estimate. Until then it is an observation,
+      // NOT a lever.
+      // Data-source rule: computed from gold_m1_bars ONLY (never priceHistory /
+      // Yahoo GC=F / TwelveData). Bars unavailable -> NULL, never a default. The
+      // engine emits byte-identically: this value is persisted and read by NOTHING
+      // in any gating/scoring path this round (grep-verifiable).
+      try {
+        const ems = new Date(safeRecord.emittedAt).getTime();
+        const { data: annBars } = await client.from('gold_m1_bars')
+          .select('timestamp, close')
+          .gte('timestamp', new Date(ems - 5 * 3600_000).toISOString())
+          .lt('timestamp', new Date(ems).toISOString())
+          .order('timestamp', { ascending: true }).limit(250);
+        const ann = ((annBars ?? []) as { timestamp: string; close: number }[])
+          .map(b => ({ ts: new Date(b.timestamp).getTime(), c: Number(b.close) }));
+        if (ann.length >= 150) {
+          let base = ann[0];
+          for (const b of ann) {
+            if (b.ts <= ann[ann.length - 1].ts - 4 * 3600_000) base = b; else break;
+          }
+          const delta = Math.round((ann[ann.length - 1].c - base.c) * 100) / 100;
+          row.agrees_with_prior_4h_move = safeRecord.direction === 'BUY' ? delta > 0 : delta < 0;
+          row.prior_4h_move_delta = delta;
+        } else {
+          row.agrees_with_prior_4h_move = null;
+          row.prior_4h_move_delta = null;
+        }
+      } catch (annErr: unknown) {
+        console.warn(`[EmittedSignal] A2 annotation unavailable -> NULL (write-only): ${annErr instanceof Error ? annErr.message : String(annErr)}`);
+      }
       // Self-healing retry: if the schema cache shifted between probe and write,
       // strip the offending column and retry. Max 5 attempts so a pathological
       // error can never loop.

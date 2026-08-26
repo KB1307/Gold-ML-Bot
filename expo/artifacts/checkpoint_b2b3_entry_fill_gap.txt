@@ -1,0 +1,77 @@
+ITEM B / CHECKPOINTS B.2 + B.3 — THE ENTRY-FILL BOOKING GAP, MEASURED AND GATED
+ARTIFACT: expo/artifacts/checkpoint_b2b3_entry_fill_gap.txt
+INSTRUMENT: expo/scripts/item233_entry_fill_gap.ts (REAL resolver both arms; shared lib/evCompute.ts both arms)
+RUN: 2026-08-26T21:25Z | anon-key reads only
+
+────────────────────────────────────────────────────────────────
+(a) BOTH ARMS' FULL STAT LINES (verbatim)
+────────────────────────────────────────────────────────────────
+  ARM 1 engine-booked (live semantics) n= 438  WR=61.9%  EV_net=+0.0143R  total=+6.26R
+  ARM 2 honest next-open fill          n= 440  WR=65.9%  EV_net=+0.0778R  total=+34.21R
+  PAIRED subset (both arms decided)    n= 438  WR=61.9%  EV_net=+0.0143R  total=+6.26R
+  PAIRED subset — arm 2 leg            n= 438  WR=66.0%  EV_net=+0.0781R  total=+34.20R
+  corpus accounting: total=472 coverage-excluded=32 no-fill-bar=0 paired-with-arm1=438 arm2-decided=440 both-decided=438
+(Note: corpus BAR set here spans Jun-18..Aug-26; ARM1 matches A.1's decided book exactly.)
+
+────────────────────────────────────────────────────────────────
+(b) PAIRED DIFFERENCE WITH CI AND THE PRE-STATED MDE (verbatim; power stated BEFORE the estimate)
+────────────────────────────────────────────────────────────────
+  MDE declared BEFORE use of point estimate (80% power, alpha 5%):
+    MDE = 2.80 x sigma_d / sqrt(n); with observed sigma_d=0.7351R at n=438 -> realised sensitivity +/-0.0983R
+    (pre-run band estimated from the provisional finding: sigma_d in [0.8, 1.2] -> MDE +/-[0.107, 0.161])
+  point estimate : +0.0638R per trade (total +27.93R over n=438)
+  normal approx 95% CI : [-0.0051, 0.1326]
+  bootstrap 20k  95% CI: [-0.0057, 0.1343]
+
+────────────────────────────────────────────────────────────────
+(c) CLASS FLIPS + THE 5 NAMED DIVERGENCES (verbatim)
+────────────────────────────────────────────────────────────────
+  outcome CLASS flips among both-decided: WIN->LOSS 29, LOSS->WIN 47
+
+  5 LARGEST SINGLE-SIGNAL DIVERGENCES:
+    signal_1785774978956_uv42x384t dir=BUY
+      arm1: SL_HIT exit 4030.00 (-1.0253R)      arm2: fill 4036.90 -> ALL_TARGETS_HIT exit 4049.80 (+1.6076R)  Δ=+2.6329R
+    signal_1785774314686_sw8ax6xd4 dir=BUY
+      arm1: SL_HIT exit 4030.10 (-1.0250R)      arm2: fill 4037.04 -> ALL_TARGETS_HIT exit 4049.84 (+1.5750R)  Δ=+2.6000R
+    signal_1786636175293_agy7h6uok dir=SELL
+      arm1: SL_HIT exit 4376.60 (-1.0250R)      arm2: fill 4382.70 -> ALL_TARGETS_HIT exit 4369.90 (+1.5750R)  Δ=+2.6000R
+    signal_1785353748376_nvhqystfu dir=SELL
+      arm1: SL_HIT exit 4075.10 (-1.0351R)      arm2: fill 4075.28 -> ALL_TARGETS_HIT exit 4067.18 (+1.3860R)  Δ=+2.4211R
+    signal_1782913493591_7h1bw8zag dir=BUY
+      arm1: ALL_TARGETS_HIT exit 4107.10 (+1.1573R)  arm2: fill 4107.18 -> SL_HIT exit 4098.28 (-1.0225R)  Δ=-2.1798R
+
+Reading: four of five largest gains are signals the book recorded as full −1R SL_HIT on a bar
+that had ALREADY printed the stop (the crossedSl path quoted in B.1); filled honestly one minute
+later from the real next open, they ran their ladder to TP3 instead. The fifth shows the defect
+cuts BOTH ways (a booked TP3-winner becomes an honest-fill loser) — exactly why this must be
+booked properly rather than cherry-picked either way.
+
+────────────────────────────────────────────────────────────────
+(d) EXPLICIT VERDICT vs PROVISIONAL: AGREE IN SIGN, DISAGREE IN MAGNITUDE
+────────────────────────────────────────────────────────────────
+Provisional: engine −0.0727R (n=128) vs honest-fill +0.0515R (n=126) — gap ≈ +0.12R/trade.
+Canonical : engine +0.0143R (n=438) vs honest-fill +0.0778R (n=438 paired) — gap ≈ +0.0638R/trade
+            (roughly HALF the provisional figure), CI [−0.0057, +0.1343] INCLUDES ZERO.
+
+────────────────────────────────────────────────────────────────
+CHECKPOINT B.3 — GATED SHIP DECISION
+────────────────────────────────────────────────────────────────
+Pre-registered gate: IF paired difference positive AND its 95% CI excludes zero → booking-defect
+correction ships mirrored in BOTH resolvers. ELSE → SHIP NOTHING, mark MEASURED-NOT-SHIPPED,
+state the required n.
+
+OUTCOME: positive point estimate (+0.0638R/trade, total +27.93R over the population) whose 95% CI
+INCLUDES ZERO by a hair (bootstrap upper bound +0.1343 vs lower −0.0057). The gate says
+SHIP NOTHING. No resolver fill-semantics change ships this round.
+
+MEASURED-NOT-SHIPPED — CI includes zero.
+Required forward n to resolve +0.0638R against σd=0.7351R at 80%/5%:
+  n = (2.80 × 0.7351 / 0.0638)^2 ≈ 1,041 paired decided signals — i.e. roughly 600 more than the
+  current 438. At recent emission rates (~34 attempts/hour, ~34/h sustained emissions of a few per
+  day) re-measure when the corpus reaches ≈1,050 decided pairs; the B.2 instrument reruns unchanged.
+
+DOCTRINE NOTE attached per MINDSET 2/3: even though B.3 refuses the lever TODAY, B.1 establishes
+the booked entry price equals stored entryPrice through all four confirmation paths regardless of
+where the confirming bar actually traded — a provenance fact independent of this round's EV
+significance, recorded in checkpoint_b1_entry_confirm.txt for whenever the n threshold is met.
+A partial ship (one resolver changed, other not) remains forbidden under the same clause.

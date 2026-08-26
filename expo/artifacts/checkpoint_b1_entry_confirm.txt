@@ -1,0 +1,97 @@
+ITEM B / CHECKPOINT B.1 — READ THE FUNCTION, DO NOT INFER
+ARTIFACT: expo/artifacts/checkpoint_b1_entry_confirm.txt
+Source: expo/services/signalResolver.ts as read LIVE this round (file read in full).
+
+────────────────────────────────────────────────────────────────
+QUOTE 1 — ENTRY-CONFIRMATION BLOCK (resolveSignalWithBars loop head)
+verbatim, expo/services/signalResolver.ts:243-262
+────────────────────────────────────────────────────────────────
+
+  for (const bar of evalBars) {
+    if (!entryConfirmed) {
+      const touchedZone = isBuy
+        ? bar.low <= (entryMax + ENTRY_TOL) && bar.high >= (entryMin - ENTRY_TOL)
+        : bar.high >= (entryMin - ENTRY_TOL) && bar.low <= (entryMax + ENTRY_TOL);
+      const crossedTp1 = isBuy ? bar.high >= signal.tp1 : bar.low <= signal.tp1;
+      const crossedSl = isBuy ? bar.low <= signal.sl : bar.high >= signal.sl;
+      const touchedExtended = isBuy
+        ? bar.low <= (entryMax + EXTENDED_ENTRY_TOL) && bar.high >= (entryMin - EXTENDED_ENTRY_TOL)
+        : bar.high >= (entryMin - EXTENDED_ENTRY_TOL) && bar.low <= (entryMax + EXTENDED_ENTRY_TOL);
+      if (touchedZone || crossedTp1 || crossedSl || touchedExtended) {
+        entryConfirmed = true;
+        // Provenance ONLY. The condition above is unchanged, so confirmation
+        // timing and the ladder walk are identical to pre-Item-21.
+        entryVia = (touchedZone || touchedExtended) ? 'zone' : 'levels-cross';
+        entryFillPrice = signal.entryPrice;
+      } else {
+        continue;
+      }
+    }
+
+with bands defined at :215-216:
+    const ENTRY_TOL = 1.0;
+    const EXTENDED_ENTRY_TOL = 3.0;
+
+────────────────────────────────────────────────────────────────
+QUOTE 2 — NEVER_FILLABLE RECLASSIFICATION, verbatim :437-475 (conditions :454-459)
+────────────────────────────────────────────────────────────────
+
+  const everTouchedEntryBand = evalBars.some(
+    b => b.low <= (entryMax + EXTENDED_ENTRY_TOL) && b.high >= (entryMin - EXTENDED_ENTRY_TOL),
+  );
+  ...
+  const fillabilityEvalNow = opts.evalNowMs ?? Date.now();
+  if (
+    entryConfirmed &&
+    !entrySeededFromStoredStatus &&
+    !everTouchedEntryBand &&
+    evalBars.length > 0 &&
+    fillabilityEvalNow - signalCreatedAtMs >= ENTRY_MATURITY_MS
+  ) {
+    ... '🚫 NEVER_FILLABLE: levels were reached but no bar of N ever traded the entry band'
+    currentStatus = 'NEVER_FILLABLE'; currentTargetsHit = 0;
+    exitPrice = signal.entryPrice; outcomeResult = null; ...
+  }
+
+────────────────────────────────────────────────────────────────
+WHAT FILL PRICE THE RESOLVER BOOKS, PER CONFIRMATION PATH
+────────────────────────────────────────────────────────────────
+In ALL FOUR confirmation paths the booked entry price is IDENTICAL: the stored SIGNAL ENTRY
+PRICE (entryFillPrice = signal.entryPrice, :258). The confirming bar influences WHETHER entry
+is credited, never AT WHAT PRICE. Consequences:
+
+* PATH zone        (band touched at ±$1.0 tol): entry booked = signal.entryPrice even though the
+  actual touch happened somewhere inside [entryMin−1, entryMax+1]. A real market order at that
+  moment would have filled at the TRADED price of that touch — within ±$1 of the band edge,
+  often exactly the band edge of the FARTHER side from TP (adverse) rather than entryPrice.
+* PATH touchedExtended (±$3.0 tol): ditto, but the touch can be up to $3 away from entryPrice.
+  Booked as entryPrice. On gold (PIP=$0.10), $3 = 30 pips ≈ large fraction of an $8 SL (80 pips).
+* PATH crossedTp1  (bar hit TP1, band NEVER touched): entry booked = entryPrice SIMULTANEOUSLY
+  WITH the TP level being marked hit ON THE SAME BAR (the confirmation `continue` falls straight
+  into ladder evaluation on the SAME bar iteration). The ladder walk then evaluates TP/SL on
+  that very bar — i.e., the trade is treated as having been entered in time to catch levels the
+  confirming bar itself printed. A market order placed AFTER seeing those prints could not have
+  obtained those fills retroactively.
+* PATH crossedSl   (bar hit SL first, band never touched): symmetric mechanical defect, the
+  worst one: the trade is entered at entryPrice on a bar that had ALREADY printed the stop
+  level, and the pre-TP1 branch (:383-390) fires only if a LATER bar breaches slTriggerPrice —
+  so the first bar's printed violation is consumed as the entry event itself. If later bars
+  recover, the book records a win whose position, filled honestly at the NEXT bar's open (or
+  at the printed-violation price under any sane execution), starts under water.
+
+isBuy/sell note: the two touchedZone arms and two touchedExtended arms are ALGEBRAICALLY
+IDENTICAL expressions reordered (`low<=hiEdge && high>=loEdge` both ways) — direction does not
+change the test; only crossedTp1/crossedSl flip sides.
+
+YOUR MECHANISM vs THE CODE: your stated mechanism (credited entry by a bar that crossed SL or
+TP1 without the band being traded, then a full −1R or wins booked off prices a real market order
+could not obtain) matches the crossedTp1/crossedSl branches exactly, INCLUDING your suspicion
+that EntryVia='levels-cross' is known-intentional-but-unpriced (comment at :102-117 documents
+Item 21 measuring 11/12 such signals as genuinely fillable LATER — but the booked outcome still
+walks the ladder from entryPrice with NO repricing, and the Item 21 spec's gap-repricing was
+measured AND REVERTED after changing 18/378 outcomes incl. two LOSS→WIN — :112-116).
+NEVER_FILLABLE covers only the zero-touch case as you said (:457 !everTouchedEntryBand), NOT the
+unrepresentative-fill-price case.
+
+CONCLUSION: mechanism ACCEPTED against the function text. Whether it MOVES EV is what B.2
+measures canonically; booking semantics themselves are unambiguous in the quotes above.

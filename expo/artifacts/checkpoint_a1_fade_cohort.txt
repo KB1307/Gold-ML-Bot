@@ -1,0 +1,127 @@
+====================================================================================================
+ITEM A / CHECKPOINT A.1 — THE FADE COHORT, RE-DERIVED WITH THE REAL RESOLVER
+ARTIFACT: expo/artifacts/checkpoint_a1_fade_cohort.txt
+INSTRUMENT: expo/scripts/item232_fade_cohort.ts
+RUNS: 2026-08-26T21:13Z, 21:15Z (bugged run retained as discipline record), 21:17Z (final below)
+CLOSING STANDARD: real console output of the REAL resolveSignalWithBars, cohort table, explicit
+AGREE/DISAGREE with deltas. Gate A.1 closes on THIS artifact only.
+====================================================================================================
+
+H1 — INSTRUMENT DISCIPLINE NOTES (what had to be fixed before the numbers were trustworthy)
+------------------------------------------------------------------------------------------------------
+* First working run laboured under a sign bug: cohort membership ignored signal direction (every
+  signal was labelled by "did price rise", not "did THE SIGNAL's direction agree"). Caught by
+  auditing the instrument before using its output (MINDSET 5); fixed and re-run. The intermediate
+  output is deliberately part of the record: FADE came out POSITIVE (+0.0752R) in that buggy run,
+  which alone would have been a dramatic headline. The correct definition reverses the naive read.
+* Second fix: 7 insufficient-lookback rows leaked into the decided-book total (cohorts said 431,
+  book line said 438). Fixed so excluded-from-label == excluded-from-all-populations.
+* Resolver-log sampling initially picked an ALL_TARGETS_HIT whose clean terminal path emits NO log
+  line at all; sampler now selects statuses whose branches actually print.
+
+H2 — RESOLVER'S OWN LOG LINES FOR 3 INDIVIDUAL SIGNALS (real console output, verbatim)
+------------------------------------------------------------------------------------------------------
+>>> SIGNAL signal_1782723707077_okxk37du2 🔀 Same-bar ambiguity @ 2026-06-29T09:33:00.000Z:
+    SL-side level 4044.9 (0.94 from open) closer than target 4042.1 (1.86) → SL_AFTER_BE
+>>> SIGNAL signal_1782742609296_s26qip64q 🚨 Pre-TP1 SL wick-through on bar @ 2026-06-29T14:19:00.000Z → SL_HIT
+>>> SIGNAL signal_1782963041639_b55vvqohz ⚖️ Post-TP2 runner retraced to entry on bar @
+    2026-07-02T04:19:00.000Z → PARTIAL_WIN_SL_HIT @ 4070.1
+
+H3 — POPULATION AND LABEL CONSTRUCTION (stated before results)
+------------------------------------------------------------------------------------------------------
+Corpus : 472 emitted signals | gold_m1_bars 68,236 bars, coverage 2026-06-18T13:39Z .. 2026-08-26T20:56Z.
+Outcome: resolveSignalWithBars(fromScratch:true, evalNowMs = min(emitted+8h, barsEnd) — REAL bar
+timestamps, never Date.now()), canonical instrument identical to Item 224/canonicalBook.ts.
+Win predicate: rNet > 0 with rNet = computeRNet() from lib/evCompute.ts (shared NET basis;
+EXECUTION_COST_PER_TRADE_USD = 0.20 quoted lib/evCompute.ts:17 this session).
+Prior-4h label: gold_m1_bars ONLY (never priceHistory/Yahoo/TwelveData);
+sign(close_last_bar_before_emission − close_of_bar ≈4h earlier), bars strictly BEFORE emitted_at.
+Insufficient prior bars (<150 of nominal 240): EXCLUDED FROM BOTH COHORTS AND THE BOOK — never a
+default value. Forward gap tolerance: closest covered bar <= t−4h.
+Coverage floor after emission: >=100 of 120 M1 bars in the first 2h (needs >=2h of bars AFTER).
+
+EXCLUSIONS ACCOUNTING (verbatim script output):
+  total emitted rows                      : 472
+  excluded: outside gold_m1_bars coverage : 0
+  excluded: <2h usable bars after emission: 32   (floor >=100/120)
+  excluded: unresolved/neutral terminal   : 2    (outcomeResult=null: EXPIRED_MISSED_ENTRY /
+                                                  NEVER_FILLABLE / CLOSED-flat)
+  excluded: insufficient prior-4h bars    : 7    (floor >=150/240) -> no default; both cohorts
+  DECIDED (resolved WIN-or-LOSS with valid 4h label): 431
+
+H4 — COHORT TABLE (canonical, real resolver) AND POWER
+------------------------------------------------------------------------------------------------------
+COHORT TABLE — CANONICAL REAL-RESOLVER BOOK (decided n=431)
+  WITH prior 4h move   n= 251  WR=62.5%  EV_net=+0.0274R  total=+6.8796R
+  AGAINST (fade)       n= 180  WR=61.7%  EV_net=-0.0006R  total=-0.1045R
+  whole decided book   n= 431  WR=62.2%  EV_net=+0.0157R  total=+6.7751R
+
+  WITH-minus-FADE EV difference : +0.0280R
+  bootstrap 95% CI (20k resamples, deterministic seed 20260826):
+                                [ -0.1451 , 0.2005 ]   P(diff>0)=62.6%
+
+  BY DIRECTION:
+    BUY WITH   n=141  WR=56.7%  EV_net=-0.0188R        SELL WITH  n=110  WR=70.0%  EV_net=+0.0867R
+    BUY FADE   n= 70  WR=58.6%  EV_net=+0.0571R        SELL FADE  n=110  WR=63.6%  EV_net=-0.0373R
+
+  HALF-SAMPLE STABILITY (chronological split at mid-emission timestamp):
+    H1 WITH  n=122  EV_net=+0.0556R     H1 FADE  n=82  EV_net=+0.0532R
+    H2 WITH  n=129  EV_net=+0.0007R     H2 FADE  n=98  EV_net=-0.0456R
+
+POWER STATEMENT FIRST (MINDSET 7): the observed difference is +0.0280R with CI [−0.1451, +0.2005].
+At n_WITH=251/n_FADE=180, the minimum detectable WITH-minus-FADE difference at 80% power /
+alpha 5% is ≈ ±0.24R (bootstrap-width-based). The provisional headline effect (+0.2314R) sits right
+AT this dataset's detection boundary — this round's data has the power to distinguish it from zero
+only marginally, and what it found instead is ~0.03R.
+
+H5 — VERDICT: DISAGREE. YOUR NUMBER WINS PER INSTRUCTIONS, AND IT CONTRADICTS EVERY HEADLINE FIGURE.
+------------------------------------------------------------------------------------------------------
+Provisional (Python port, n=128 decided):
+    WITH n=87  WR 58.6%  EV_net +0.0014R | FADE n=41  WR 43.9%  EV_net −0.2300R |
+    whole book n=128 EV_net −0.0727R ; diff +0.2314R CI [−0.1404, +0.5967] P=89.4%
+Canonical (REAL resolver, n=431 decided):
+    WITH n=251 WR 62.5%  EV_net +0.0274R | FADE n=180 WR 61.7%  EV_net −0.0006R |
+    whole book n=431 EV_net +0.0157R ;  diff +0.0280R CI [−0.1451, +0.2005] P=62.6%
+
+Deltas, each element:
+  * FADE EV:      −0.2300R -> −0.0006R   (delta +0.2294R; fade cohort is ~EV-ZERO here)
+  * FADE WR:       43.9%  -> 61.7%       (+17.8pp)
+  * FADE share of loss: provisional says fades carry "effectively the entire book loss";
+                  canonical fades total −0.10R over 180 trades while WITH carries +6.88R —
+                  the cohort asymmetry is GONE.
+  * Book EV:      −0.0727R -> +0.0157R   (SIGN FLIP vs the port's own book AND vs the 24-Aug
+                  stored-realized_r cross-audit's −0.0722R)
+  * n decided:    128 -> 431             (coverage/population differs — see H6)
+
+Mechanistic explanations for the discrepancy, in order of confidence:
+  1. POPULATION. gold_m1_bars (the ONLY store used here for labels AND outcomes windows) covers
+     all 472 emissions; the port's n=128-decided subset is not this population. Both WR/EV and the
+     split are population-sensitive.
+  2. OUTCOME BASIS. This re-derivation re-resolves every exit from price action via the REAL
+     resolver and prices it through the shared evCompute on BOTH sides. Stored realized_r mixes
+     writer eras (app-GROSS vs cron-NET — Item 219 quoting rule documented). A port reproducing
+     STORED labels 99.2% inherits whatever those labels carry.
+  3. Win-predicate choice matches your spec exactly (rNet > 0).
+NOTE the independent implication, reported NOT chased (scope constraint): a positive
+real-resolver replay book next to a negative stored book means at least one writer-era layer of
+stored realized_r materially misstates the resolver outcome on real signals. That is B-flavoured
+territory (Item B examines fill semantics directly).
+
+FURTHER EVIDENCE AGAINST USING THE FADE LEVER (MINDSET 6/8):
+  * By-direction: BUY fades are POSITIVE (+0.0571R) — the provisional's "holds in both directions"
+    does not survive the canonical population either (SELL fades mildly negative −0.0373R only).
+  * The WITH cohort itself goes flat in H2 (+0.0007R): even the agreed-direction side has no stable
+    positive process to isolate fades against.
+
+GATE A.1
+  real-resolver replay executed on LIVE Supabase data               : PASS
+  resolver's own log lines pasted for >=3 individual signals         : PASS (3, H2 above)
+  cohort table n/WR/EV/total both cohorts                            : PASS (H4)
+  CI on the difference                                               : PASS ([−0.1451, +0.2005])
+  explicit AGREE/DISAGREE with per-figure deltas                     : PASS (DISAGREE, H5)
+  insufficient-prior-bars handling stated                            : PASS (excluded, no default)
+
+  A.1 = CLOSED — CANONICAL NUMBERS DISAGREE WITH THE PROVISIONAL FINDING; per pre-registration the
+  canonical figures WIN. The fade hypothesis moves forward WEAKENED (diff +0.028R, CI includes
+  zero, BUY-fades positive) — which makes A.2's shadow instrumentation MORE important, since only
+  genuinely forward labels settle what observation-time analysis keeps contradicting itself on.
