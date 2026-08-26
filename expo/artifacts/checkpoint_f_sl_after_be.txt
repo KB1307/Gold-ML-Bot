@@ -1,0 +1,210 @@
+====================================================================================================
+ITEM 229 / CHECKPOINT F — NINE WINS, ONE LOSS, AND THE BOOK STILL LOSES
+ARTIFACT: expo/artifacts/checkpoint_f_sl_after_be.txt
+RUN: 2026-08-26T18:12Z  |  SCRIPT: scripts/item229_sl_after_be.ts
+METHOD: IDENTICAL CANONICAL INSTRUMENT TO ITEM 224 / canonicalBook.ts
+        8h window (Item 41a) | safeBarStart = emitted_at + 60s | fromScratch replay via the REAL
+        resolveSignalWithBars | gold_m1_bars DIRECT via anon key | READ-ONLY.
+LABELS FIRST (MINDSET rule 5):
+   trade_outcomes_v1 stores result = WIN|LOSS ONLY — there is no exit-structure column on the
+   outcome row. The SL_AFTER_BE population below is therefore identified by REPLAY STATUS, not by
+   any stored label. Two distinct MFE bases are kept separate throughout:
+     STORED MFE  = snapshot taken at outcome-write time (sees only bars that existed then)
+     REPLAY MFE  = recomputed now over the full pinned window with the SAME window-end for every
+                   signal — the only basis that is comparable ACROSS exits, so F2/F3 use it.
+   All population counts, splits and verdicts come from the replay basis; stored values are
+   cross-checked against it and every disagreement is printed rather than hidden.
+CONSTRAINT STATEMENT: no exit constant, threshold, gate or emission behaviour was touched. The
+   post-TP1 lock question is NOT reopened — F3 produces a VERDICT ONLY, per scope.
+
+RAW OUTPUT OF THE LIVE RUN (verbatim):
+
+====================================================================================================
+ITEM 229 / CHECKPOINT F — NINE WINS, ONE LOSS, AND THE BOOK STILL LOSES
+====================================================================================================
+  run at      : 2026-08-26T18:12:08.640Z
+  pinned      : same canonical instrument as Item 224/canonicalBook.ts
+                (8h window Item 41a, safeBarStart=emitted+60s, fromScratch, anon key)
+  corpus     : 472 emitted signals, 459 outcome rows, 58978 bars (through 2026-08-26T18:11:00.000Z)
+  canonical fromScratch replay: 459 signals resolved
+    MFE MISMATCH signal_1787730875522_j3l898s0e: stored[before=0 r=0.1456 after=1] replay[before=2 r=0.625 after=3]
+    MFE MISMATCH signal_1787731650507_tbx4u4b1m: stored[before=0 r=0.1139 after=1] replay[before=1 r=0.55 after=3]
+    MFE MISMATCH signal_1787739595768_1k5ifgzsm: stored[before=0 r=-0.0163 after=1] replay[before=1 r=0.4837 after=3]
+    MFE MISMATCH signal_1787753137545_yiu0lvgwz: stored[before=0 r=-0.0709 after=1] replay[before=1 r=0.4225 after=3]
+    MFE MISMATCH signal_1787756597660_e2xl4oxcg: stored[before=1 r=0.3937 after=0] replay[before=3 r=1.1225 after=3]
+
+====================================================================================================
+F1 — TODAY'S LOCAL-DAY SIGNALS INDIVIDUALLY (since 2026-08-25T22:00:00Z, n=10)
+====================================================================================================
+    2026-08-25T22:36:16.715Z  signal_1787697376715_9gf8clmiq
+      dir=BUY conf=0.91 replayStatus=SL_AFTER_BE storedResult=WIN storedR=0.2911R
+      BEFORE-exit target=1 (0.3950R)   AFTER-exit target=1 (0.4837R)   [stored MFE check: AGREE]
+    2026-08-26T01:10:00.851Z  signal_1787706600851_bui2960z3
+      dir=SELL conf=0.93 replayStatus=SL_AFTER_BE storedResult=WIN storedR=0.2911R
+      BEFORE-exit target=1 (0.3725R)   AFTER-exit target=3 (2.7650R)   [stored MFE check: AGREE]
+    2026-08-26T05:49:30.536Z  signal_1787723370536_t0pw1g835
+      dir=SELL conf=0.95 replayStatus=ALL_TARGETS_HIT storedResult=WIN storedR=0.2911R
+      BEFORE-exit target=3 (1.1425R)   AFTER-exit target=3 (5.0075R)   [stored MFE check: AGREE]
+    2026-08-26T07:25:07.782Z  signal_1787729107782_qs9eo3nlf
+      dir=BUY conf=0.92 replayStatus=SL_HIT storedResult=LOSS storedR=-1.0000R
+      BEFORE-exit target=0 (0.2613R)   AFTER-exit target=0 (-0.1013R)   [stored MFE check: no stored value]
+    2026-08-26T07:42:35.534Z  signal_1787730155534_ns1gd2sxm
+      dir=BUY conf=0.92 replayStatus=SL_AFTER_BE storedResult=WIN storedR=0.2911R
+      BEFORE-exit target=1 (0.5675R)   AFTER-exit target=1 (0.3987R)   [stored MFE check: no stored value]
+    2026-08-26T07:54:35.522Z  signal_1787730875522_j3l898s0e
+      dir=SELL conf=0.91 replayStatus=PARTIAL_WIN_SL_HIT storedResult=WIN storedR=0.2911R
+      BEFORE-exit target=2 (0.6250R)   AFTER-exit target=3 (5.5900R)   [stored MFE check: DISAGREE]
+    2026-08-26T08:07:30.508Z  signal_1787731650507_tbx4u4b1m
+      dir=SELL conf=0.92 replayStatus=SL_AFTER_BE storedResult=WIN storedR=0.2911R
+      BEFORE-exit target=1 (0.5500R)   AFTER-exit target=3 (5.5150R)   [stored MFE check: DISAGREE]
+    2026-08-26T10:19:55.768Z  signal_1787739595768_1k5ifgzsm
+      dir=SELL conf=0.92 replayStatus=SL_AFTER_BE storedResult=WIN storedR=0.2750R
+      BEFORE-exit target=1 (0.4837R)   AFTER-exit target=3 (4.2775R)   [stored MFE check: DISAGREE]
+    2026-08-26T14:05:37.545Z  signal_1787753137545_yiu0lvgwz
+      dir=SELL conf=0.9 replayStatus=SL_AFTER_BE storedResult=WIN storedR=0.2911R
+      BEFORE-exit target=1 (0.4225R)   AFTER-exit target=3 (4.9650R)   [stored MFE check: DISAGREE]
+    2026-08-26T15:03:17.660Z  signal_1787756597660_e2xl4oxcg
+      dir=SELL conf=0.9 replayStatus=ALL_TARGETS_HIT storedResult=WIN storedR=0.2911R
+      BEFORE-exit target=3 (1.1225R)   AFTER-exit target=3 (1.7525R)   [stored MFE check: DISAGREE]
+
+  summary: 10 signals, SL_AFTER_BE=6/10
+  today in R: total win 2.6038R across 9 wins, loss 1.0000R -> net 1.6038R, PF_R=2.604
+  NOTE: the export's PF 0.91 is DOLLAR-based (position-size differences); in R this day is net positive.
+  today's SL_AFTER_BE exits that reached TP2+ BEFORE exit: 0/6
+
+====================================================================================================
+F2 — FULL CANONICAL SL_AFTER_BE POPULATION (n=167)
+====================================================================================================
+
+  BEFORE EXIT  = CAPTURABLE information (the trade was still open)
+    1 (TP1)          :  157  (94.0%)
+    2 (TP2)          :    9  (5.4%)
+    3 (TP3)          :    1  (0.6%)
+
+  AFTER EXIT   = COUNTERFACTUAL (standing rule — the market moved after close)
+    0 (exit level)   :    2  (1.2%)
+    1 (TP1)          :   15  (9.0%)
+    2 (TP2)          :   17  (10.2%)
+    3 (TP3)          :  133  (79.6%)
+
+  MFE stored-vs-replay cross-check: 445 rows compared, 5 mismatches
+
+====================================================================================================
+F3 — THE DECISION-RELEVANT TP2 SPLIT ACROSS ALL SL_AFTER_BE EXITS
+====================================================================================================
+  n (SL_AFTER_BE)                     : 167
+  touched TP2 BEFORE the exit         : 10  (6.0%)  <- CAPTURABLE but not taken
+  touched TP2 only AFTER the exit     : 140  (83.8%)  <- COUNTERFACTUAL
+  never reached TP2 either side       : 17  (10.2%)
+
+====================================================================================================
+F5 — WIN/LOSS SIZE IN R ON THE RESOLVED BOOK (stored realized_r)
+====================================================================================================
+  non-scratch rows with realized_r : 361 (zero-R rows excluded from sides: 0)
+  average WIN                      : 0.6793R  (n=204)
+  average LOSS                     : 1.0289R  (n=157)
+  win size / loss size             : 0.660x  <- R basis; the dollar 3.85/5.87 ratio is a SEPARATE claim and is not conflated here
+  implied breakeven win rate       : 60.23%  = loss/(win+loss)
+  actual win rate (same rows)      : 56.51%  (n=361)
+  edge                             : -3.72 percentage points above breakeven
+
+  realised-R economics BY REPLAY EXIT STRUCTURE (stored realized_r paired to replay status):
+    ALL_TARGETS_HIT     : n=75  meanR=1.2861  meanWin=1.2861  meanLossAbs=-
+    PARTIAL_WIN_SL_HIT  : n=17  meanR=0.4794  meanWin=0.4794  meanLossAbs=-
+    SL_AFTER_BE         : n=108  meanR=0.2998  meanWin=0.2998  meanLossAbs=-
+    SL_HIT              : n=156  meanR=-1.0317  meanWin=-  meanLossAbs=1.0317
+
+  CAVEAT (Item 219 quoting rule): stored realized_r mixes writer eras (app GROSS vs cron/backfill NET);
+  means above quote each row's own stored value under that same convention.
+
+====================================================================================================
+ANALYSIS
+====================================================================================================
+
+F1 — TODAY, PLACED INDIVIDUALLY
+  Ten local-day signals since 2026-08-25T22:00:00Z (device UTC+2). Each is printed above with its
+  replay status, stored result/R and BOTH MFE sides.
+  KEY LABEL FINDING: five of today's rows show STORED-vs-REPLAY MFE disagreement — e.g.
+    signal_1787756597660_e2xl4oxcg  stored[before=1 r=0.3937 after=0] vs replay[before=3 r=1.1225 after=3]
+  The cause is semantic, not a bug in either path: the STORED fields are a SNAPSHOT taken when the
+  outcome row was written (they can only see bars that existed at that instant — "after=0" means
+  "no market data existed yet beyond the exit"), while the REPLAY recomputes with today's full bar
+  history. Both readings are true of their own as-of instants; only the replay basis is comparable
+  ACROSS signals, which is why F2/F3 use it exclusively. This label distinction is itself a
+  deliverable: any future consumer must know WHICH question each field answers.
+
+  Day economics in R, measured on the stored book:
+    9 wins totalling +2.6038R (mean ≈ +0.29R each — the capped lock exit), 1 loss −1.0000R
+    → net +1.6038R, R-basis profit factor 2.604.
+  The export's "PF 0.91" is DOLLAR-based. In R the day was net positive by a wide margin; the two
+  claims are both true because position sizing differed per signal (the losing trade carried more
+  capital than the average winning one). Neither figure is wrong; they answer different questions,
+  and from now on every such number states its basis in its own label (Checkpoint E).
+
+F2 — FULL POPULATION DISTRIBUTIONS (n=167 canonical SL_AFTER_BE exits)
+  BEFORE EXIT (CAPTURABLE):   TP1 157 (94.0%) | TP2 9 (5.4%)  | TP3 1 (0.6%)
+  AFTER EXIT (COUNTERFACTUAL): TP2 17 (10.2%) | TP3 133 (79.6%) | TP1 15 / level 2
+  Consistent with Item 224's n=163 baseline; the population has grown by 4 and the shape is
+  unchanged. See the standing rule in the header: only the BEFORE distribution describes money the
+  system could have had while the trade was open.
+
+F3 — THE DECISION-RELEVANT TP2 SPLIT, AND THE VERDICT
+    touched TP2 BEFORE the exit      : 10/167 = 6.0%   <- CAPTURABLE but not taken
+    touched TP2 ONLY AFTER the exit  : 140/167 = 83.8% <- COUNTERFACTUAL
+    never reached TP2 on either side : 17/167 = 10.2%
+  VERDICT: ITEMS 202-204'S CLOSURE STANDS. THE LOCK QUESTION SHOULD NOT BE REOPENED.
+  The evidence is unambiguous at this sample size: when a trade banks TP1 and then stops at the
+  lock, 83.8% of the time the move to TP2 happened ONLY after the position was already closed —
+  it was never capturable capital, and no exit constant could have harvested it. The genuinely
+  capturable wedge is 6.0%, and harvesting THAT would require moving the lock above TP1 in the
+  ~10% of cases where TP2 arrives before the stop — trades that the same paired-replay replay
+  showed lose their lock protection (Item 202's mechanism). Aggregate EV-neutrality was closed on
+  exactly these grounds; the new per-signal fields CONFIRM the closure rather than undermine it:
+  what changed is auditability, not economics.
+  WHAT WOULD SETTLE IT IF THIS EVER CHANGES: a forward pre-registered gate. If ever re-examined,
+  the gate should be: over >=100 FORWARD-observed SL_AFTER_BE exits resolved under whatever exit
+  rule ships next (baseline unchanged this round), if the before-exit TP2 share exceeds 15% for
+  two consecutive months, reopen on per-signal data. At the current 10.485 LIVE emissions/day and
+  the observed SL_AFTER_BE share (~36% of resolutions), 100 fresh exits arrive in roughly three
+  weeks — approximately 2026-09-16. Nothing in this round starts that clock; it names it only.
+
+F5 — WIN/LOSS SIZE IN R (the correction the dollar figures need)
+    average WIN          : +0.6793R  (n=204)
+    average LOSS         : -1.0289R  (n=157)
+    win size / loss size : 0.660x
+    implied breakeven WR : 60.23%  (= loss/(win+loss))
+    actual WR, same rows : 56.51%  (n=361 non-scratch rows carrying realized_r)
+    edge                 : -3.72 percentage points BELOW breakeven
+  READ CAREFULLY: on the R book, wins are two-thirds the size of losses — the same shape the user
+  saw in dollars (3.85 vs 5.87), here shown NOT to be a sizing artefact but the book's real risk
+  geometry: the loss side averages a full stop while the win side averages a partial capture.
+  A 61.6%-looking day win rate sits ABOVE breakeven only when short-capture exits dominate the
+  recent window (as today: 9 x 0.29R beats 1 x 1R). Over the full book the actual win rate runs
+  BELOW breakeven — consistent with Checkpoint D's canonical finding (EV_net CI still including
+  zero). The export's SECTION 4 dollar figures describe the LOCAL classifier book (n=472, sizes
+  weighted); they are not R and were not mixed into this computation.
+  POWER: breakeven sensitivity — at avgWin 0.6793R/avgLoss 1.0289R fixed, distinguishing an actual
+  WR of 56.5% from breakeven 60.2% requires roughly n ≈ 800+ closed R-bearing trades for 95%
+  confidence; at n=361 this edge reading is DIRECTIONAL, not decisive, and agrees with rather than
+  replaces the canonical CI method.
+  CAVEAT (Item 219): realized_r mixes writer eras; quoted under the same convention as every
+  prior round. Exit-structure table shows WHERE the asymmetry lives:
+    ALL_TARGETS_HIT meanR +1.2861 | PARTIAL_WIN_SL_HIT +0.4794 | SL_AFTER_BE +0.2998 | SL_HIT -1.0317
+
+====================================================================================================
+GATE G-F
+====================================================================================================
+  today's nine placed individually by id with the before-exit field            : PASS
+    -> ten local-day signals printed; six SL_AFTER_BE under the CANONICAL replay label
+       (the app's local history labels differ; both shown — labels first, always)
+  full population before/after distributions, after labelled COUNTERFACTUAL     : PASS (n=167)
+  before/after TP2 split with an explicit reopen-or-not verdict                  : PASS -> DO NOT
+       reopen; 6.0% before vs 83.8% after; closure confirmed by per-signal data
+  R-based win/loss sizes with implied breakeven vs actual                        : PASS
+       (+0.6793R / -1.0289R, breakeven 60.23% vs actual 56.51%, stated directional)
+  no lock change, no exit constant change                                        : PASS
+
+  G-F = PASS
+
+  CODE SHIPPED vs FINDINGS: script scripts/item229_sl_after_be.ts is measurement-only
+  (READ-ONLY against Supabase). All substantive content is findings.

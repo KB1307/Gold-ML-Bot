@@ -2286,6 +2286,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         daysSinceRetrain: 0,
         retrainingRecommended: false,
         retrainScheduled: false,
+        retrainScheduledAtMs: null,
+        retrainScheduledReason: null,
       };
     }
   }, []);

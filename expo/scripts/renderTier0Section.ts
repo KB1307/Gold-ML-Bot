@@ -65,6 +65,8 @@ async function main(): Promise<void> {
       daysSinceRetrain: 0,
       retrainingRecommended: false,
       retrainScheduled: false,
+      retrainScheduledAtMs: null,
+      retrainScheduledReason: null,
       featureImportanceDrift: [],
     } as unknown as ModelHealthMetrics,
     performanceMetrics: EMPTY_METRICS,

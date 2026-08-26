@@ -1729,6 +1729,10 @@ class SignalGenerationEngine {
   private conceptDriftScore: number = 0;
   private driftAlertLevel: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' = 'NONE';
   private retrainScheduled: boolean = false;
+  /** ITEM 230(G5) — provenance of the CURRENT schedule, recorded purely for DISPLAY
+   *  (screen banner + export Section 3). No trigger logic reads these. */
+  private retrainScheduledAtMs: number | null = null;
+  private retrainScheduledReason: string | null = null;
   private dailyOHLCHistory: DailyOHLC[] = [];
   private currentDayOHLC: { open: number; high: number; low: number; close: number; date: string } | null = null;
   private lastNYCloseCheck: number = 0;
@@ -5844,6 +5848,8 @@ class SignalGenerationEngine {
       console.log('🔥'.repeat(30) + '\n');
       
       this.retrainScheduled = true;
+      this.retrainScheduledAtMs = Date.now();
+      this.retrainScheduledReason = 'Concept drift alert HIGH (drift score reached 0.6)';
       
       console.log('\n✅ Concept Drift Response: Retrain Scheduled');
       console.log('   - Retrain flag set to TRUE');
@@ -7954,12 +7960,18 @@ class SignalGenerationEngine {
         console.log(`   ✅ EXECUTING NOW: Low-liquidity window active (${currentUTCHour}:00 UTC)`);
         await this.walkForwardOptimization(reason);
         this.retrainScheduled = false;
+
+        this.retrainScheduledAtMs = null;
+
+        this.retrainScheduledReason = null;
       } else {
         console.log(`🔔 RETRAINING NEEDED: ${reason}`);
         console.log(`   ⏰ SCHEDULED: Waiting for low-liquidity window (Asian Session: 22:00-07:00 UTC)`);
         console.log(`   Current Time: ${currentUTCHour}:00 UTC (High Liquidity)`);
         console.log(`   Reason: Minimize execution risk and resource contention`);
         this.retrainScheduled = true;
+        this.retrainScheduledAtMs = Date.now();
+        this.retrainScheduledReason = `${reason} - deferred until the low-liquidity window (22:00-07:00 UTC)`;
       }
     } else if (this.retrainScheduled && isLowLiquidityWindow) {
       console.log(`🔔 EXECUTING SCHEDULED RETRAIN`);
@@ -7967,6 +7979,10 @@ class SignalGenerationEngine {
       console.log(`   Previous trigger: High drift or confidence degradation`);
       await this.walkForwardOptimization('Scheduled Retrain (Deferred from Peak Hours)');
       this.retrainScheduled = false;
+
+      this.retrainScheduledAtMs = null;
+
+      this.retrainScheduledReason = null;
     } else if (this.retrainScheduled) {
       console.log(`⏰ RETRAIN SCHEDULED: Waiting for Asian Session (22:00-07:00 UTC)`);
       console.log(`   Current Time: ${currentUTCHour}:00 UTC`);
@@ -8275,6 +8291,8 @@ class SignalGenerationEngine {
           if (shouldRetrain) {
             console.log(`⚠️ Model is ${daysSince.toFixed(1)} days old - retrain scheduled for next low-liquidity window`);
             this.retrainScheduled = true;
+            this.retrainScheduledAtMs = Date.now();
+            this.retrainScheduledReason = 'Stored model was > 2 days old when weights loaded';
           }
         } else {
           console.log('⚠️ No previous training time found - initializing fresh model');
@@ -8434,6 +8452,10 @@ class SignalGenerationEngine {
         try {
           await this.walkForwardOptimization('Scheduled Retrain (D5 decoupled from trade resolution)');
           this.retrainScheduled = false;
+
+          this.retrainScheduledAtMs = null;
+
+          this.retrainScheduledReason = null;
         } catch (retrainErr) {
           console.error('D5: Retrain failed (non-blocking, will retry next low-liquidity window):', retrainErr instanceof Error ? retrainErr.message : String(retrainErr));
         }
@@ -10699,6 +10721,8 @@ class SignalGenerationEngine {
       daysSinceRetrain: parseFloat(daysSinceRetrain.toFixed(1)),
       retrainingRecommended,
       retrainScheduled: this.retrainScheduled,
+      retrainScheduledAtMs: this.retrainScheduledAtMs,
+      retrainScheduledReason: this.retrainScheduledReason,
     };
   }
 

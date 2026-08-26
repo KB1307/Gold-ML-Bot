@@ -1,0 +1,124 @@
+====================================================================================================
+ITEM 231 / CHECKPOINT H — THE BUILD MARKER, STILL
+ARTIFACT: expo/artifacts/checkpoint_h_build_marker.txt
+RUN: 2026-08-26T18:29Z
+CLOSING STANDARD (H4, restated up front): ONLY a REAL export printed by the RUNNING APP showing a
+REAL short SHA closes gate G-H. Transform-time proof scripts, CI guards and build logs demonstrate
+mechanical correctness — they do NOT close the gate, because that standard already failed twice by
+counting such evidence as closure. This checkpoint therefore closes BLOCKED-ON-USER with exact,
+ordered, executable steps. Silence would not have been an acceptable close either.
+====================================================================================================
+
+H3 — THE TRANSFORM PLUGIN WAS ABSENT AGAIN; IT IS NOW RESTORED WITH A GUARD COMMENT
+------------------------------------------------------------------------------------------------------
+Live inspection of babel.config.js at round start returned:
+    presets: [["babel-preset-expo", { unstable_transformImportMeta: true }]],
+with NO plugins array — the THIRD removal of rorkBuildMarkerPlugin (after b1c7ca8 and af7da4a on
+2026-08-21). The Item 201(a) warning firing and naming both commits is the failure DETECTOR doing
+its job; the removal is what still makes every export unattributable.
+
+RESTORED (complete file shipped this round, plain JS — node loads it directly during transform
+bootstrap, so TS annotations are illegal there):
+    const rorkBuildMarkerPlugin = {
+      name: "rork-build-marker",
+      visitor: {
+        StringLiteral(path, state) {
+          const file = (state && state.file && state.file.opts && state.file.opts.filename) || "";
+          if (!file.includes("buildMarker")) return;                       <- SCOPED (load-bearing)
+          if (path.node.value === "__BUILD_SHA__")   path.node.value = getBuildSha();
+          else if (path.node.value === "__BUILD_STAMP__") path.node.value = new Date().toISOString();
+        },
+      },
+    };
+    module.exports = function (api) {
+      api.cache(true);
+      return {
+        presets: [["babel-preset-expo", { unstable_transformImportMeta: true }]],
+        plugins: [rorkBuildMarkerPlugin],                                  <- REGISTERED
+      };
+    };
+    (getBuildSha() shells to `git rev-parse --short HEAD` once per process and falls back to
+     "SHA_UNAVAILABLE" loudly rather than faking a value.)
+
+A prominent GUARD COMMENT now sits atop the file naming all prior removals and stating that the
+plugin is enforced mechanically by scripts/ci_guard_build_marker.ts — so the next reviewer who
+thinks it "looks unused" finds the reason before deleting it, not after.
+
+H2 — MECHANICAL PROOF (IMPORTANT: neither script CLOSES the gate; see H4)
+------------------------------------------------------------------------------------------------------
+ci_guard_build_marker.ts output (verbatim):
+
+ci_guard_build_marker — build-marker chain integrity check
+
+  self-test: all mutated fixtures correctly rejected (5/5)
+
+  babel.config.js        : plugin defined, registered, scoped to buildMarker
+  constants/buildMarker  : both placeholder literals present
+  diagnosticsExport      : sentinel detector present, no bare-literal comparison
+
+✅ ci_guard_build_marker PASSED — plugin, placeholders, and sentinel detector intact.
+
+item184a_babel_marker_proof.cjs — the ACTUAL transform of constants/buildMarker.ts through THIS
+exact babel.config.js (verbatim):
+
+git rev-parse --short HEAD : ac82d98
+transformed BUILD_SHA      : ac82d98
+transformed BUILD_MARKED_AT: 2026-08-26T18:29:15.542Z
+sha substituted correctly  : YES
+stamp is a fresh ISO string: YES (2026-08-26T18:29:15.542Z)
+literal placeholder remains: NO (good)
+
+H1 — EXACT ORDERED STEPS FOR A SUBSTITUTED SHA TO APPEAR IN A REAL EXPORT
+------------------------------------------------------------------------------------------------------
+The chain requires, in order: (1) the plugin present in the transform config — DONE this round;
+(2) both placeholder literals intact in constants/buildMarker.ts — verified present by the guard;
+(3) a TRANSFORM that actually re-runs over that module — Metro keys its transform cache on file
+content, so a stale cached transform (or any restart without cache clearing) can keep serving a
+bundle transformed while the plugin was absent; (4) a reload producing a new bundle in the app;
+(5) a diagnostics export triggered on device. User-executable steps:
+
+  1. Confirm your working tree includes this round's babel.config.js restore
+     (`rg -n "rorkBuildMarkerPlugin" expo/babel.config.js` must match).
+  2. Stop any running Metro/expo process completely.
+  3. From the expo/ directory:  npx expo start -c
+     (the -c clears Metro's transform cache — REQUIRED, otherwise step-2-era cached transforms of
+     buildMarker.ts may be served and the literal survives yet again).
+  4. Reload the app in Expo Go / the simulator so a fresh bundle downloads.
+  5. Trigger the diagnostics export exactly as you did for the 16:53Z export.
+  6. EXPECT in Build provenance: a real short SHA (ac82d98 as of this round's tree — or its
+     successor commit) plus BUILD_MARKED_AT stamped within seconds of the rebuild. If instead you
+     see literal __BUILD_SHA__/__BUILD_STAMP__, run:
+         bun scripts/ci_guard_build_marker.ts        (chain integrity)
+         node scripts/item184a_babel_marker_proof.cjs (substitution through THIS config)
+     Both passed here minutes ago; if they pass on your machine but the export still shows a
+     literal, the bundle is being served stale — repeat steps 2-4 insisting on the cache clear.
+
+IF A USER ACTION IS REQUIRED: yes — step 5 must be performed by you on the running app. That makes
+the honest gate close BLOCKED-ON-USER, which is an accepted close per the checkpoint definition;
+claiming closure off a proof script would be the third time this gate was falsely closed.
+
+H4 — WHAT WOULD CLOSE THIS GATE (and what will never)
+------------------------------------------------------------------------------------------------------
+CLOSES: a real export captured on the running app whose Build provenance section prints a real
+short SHA matching the tree being run and a fresh ISO stamp.
+NEVER CLOSES: a transform-time proof output (item184a runs Babel offline against one module — it
+cannot see what Metro serves), a green CI guard (it checks text, not bundles), or a build log.
+That standard has failed this gate twice already; it stands unchanged.
+
+====================================================================================================
+GATE G-H
+====================================================================================================
+  exact ordered rebuild steps stated, user-executable                        : PASS
+  CI guard run and output pasted verbatim                                    : PASS
+     -> PASSED incl. its own regression self-test (5/5 mutated fixtures rejected)
+  babel.config.js pasted at line level, plugin presence CONFIRMED            : PASS
+     -> was ABSENT (third removal); restored defined + registered + scoped, with
+        the DO-NOT-STRIP guard comment shipped atop the file
+  transform-level proof pasted                                               : PASS (and marked as
+     NOT gate-closing: sha ac82d98 substituted correctly, fresh stamp, no literal remains)
+  closing standard restated                                                  : PASS
+  real export showing a real SHA                                             : BLOCKED-ON-USER
+
+  G-H = BLOCKED-ON-USER — an acceptable close under the checkpoint's own terms. Steps are above;
+  the moment you paste an export showing a real SHA, the five-round-old marker chain is finally
+  verified END TO END against the thing it exists to attribute: a real running bundle.

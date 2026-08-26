@@ -31,6 +31,8 @@ const FALLBACK_TELEMETRY: TelemetrySnapshot = {
     daysSinceRetrain: 0,
     retrainingRecommended: false,
     retrainScheduled: false,
+    retrainScheduledAtMs: null,
+    retrainScheduledReason: null,
   },
   hypoStats: { avgSlippageDiff: 0, hypotheticalAccuracy: 0 },
   perfMetrics: { recentWinRate: 0, profitFactor: 0, avgConfidence: 0, recentWinningConfidences: [] },
@@ -180,27 +182,33 @@ export default function TelemetryScreen() {
             </View>
 
             <View style={styles.grid4}>
+              {/* ITEM 228: every counter names its own window — Attempts/Generated/RATE are
+                  PROCESS-LIFETIME figures, never calendar-day ones. */}
               <MetricTile
                 icon={<Zap size={16} color="#FFD700" />}
                 label="Attempts"
+                caption="since process start"
                 value={snapshot.generationStats.attempts.toString()}
                 accent="#FFD700"
               />
               <MetricTile
                 icon={<Target size={16} color="#22c55e" />}
                 label="Generated"
+                caption="since process start"
                 value={snapshot.generationStats.successful.toString()}
                 accent="#22c55e"
               />
               <MetricTile
                 icon={<TrendingUp size={16} color="#38bdf8" />}
                 label="Rate"
+                caption="lifetime % · not daily"
                 value={`${snapshot.generationStats.rate.toFixed(1)}%`}
                 accent="#38bdf8"
               />
               <MetricTile
                 icon={<Gauge size={16} color="#a78bfa" />}
                 label="Avg Conf"
+                caption="last 20 closed"
                 value={`${(snapshot.perfMetrics.avgConfidence * 100).toFixed(0)}%`}
                 accent="#a78bfa"
               />
@@ -235,13 +243,17 @@ export default function TelemetryScreen() {
 
               <View style={styles.divider} />
 
+              {/* ITEM 228: model-health numbers cover only the engine's LATEST
+                  evaluation cycle, not any calendar day. */}
               <StatRow
                 label="Drift Alert"
+                hint="latest engine cycle"
                 value={snapshot.modelHealth.driftAlertLevel}
                 valueColor={driftColor(snapshot.modelHealth.driftAlertLevel)}
               />
               <StatRow
                 label="Concept Drift"
+                hint="latest cycle windows"
                 value={snapshot.modelHealth.conceptDriftScore.toFixed(3)}
                 valueColor={snapshot.modelHealth.conceptDriftScore > 0.5 ? "#ef4444" : "#fff"}
               />
@@ -252,11 +264,13 @@ export default function TelemetryScreen() {
               />
               <StatRow
                 label="Confidence Degradation"
+                hint="latest engine cycle"
                 value={`${(snapshot.modelHealth.confidenceDegradation * 100).toFixed(2)}%`}
                 valueColor={snapshot.modelHealth.confidenceDegradation > 0.08 ? "#f59e0b" : "#fff"}
               />
               <StatRow
                 label="Days Since Retrain"
+                hint="app-era clock"
                 value={snapshot.modelHealth.daysSinceRetrain.toString()}
                 valueColor={snapshot.modelHealth.daysSinceRetrain > 5 ? "#f59e0b" : "#fff"}
               />
@@ -265,10 +279,19 @@ export default function TelemetryScreen() {
                 value={snapshot.modelHealth.retrainingRecommended ? "YES" : "NO"}
                 valueColor={snapshot.modelHealth.retrainingRecommended ? "#f59e0b" : "#22c55e"}
               />
+              {/* ITEM 230(G5): the banner states WHEN the schedule was set and BY WHAT trigger,
+                  so Recommended=NO beside Scheduled=YES reads as two different gates, not a
+                  contradiction. Display only — the retrain trigger logic is untouched. */}
               {snapshot.modelHealth.retrainScheduled ? (
                 <View style={styles.scheduledBanner}>
                   <AlertTriangle size={14} color="#f59e0b" />
-                  <Text style={styles.scheduledText}>Retrain scheduled — will run automatically</Text>
+                  <Text style={styles.scheduledText}>
+                    {`Retrain scheduled${
+                      snapshot.modelHealth.retrainScheduledAtMs
+                        ? ` at ${new Date(snapshot.modelHealth.retrainScheduledAtMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`
+                        : ""
+                    } — ${snapshot.modelHealth.retrainScheduledReason ?? "trigger recorded before provenance shipped"}. Runs automatically in the next Asian-session window (22:00–07:00 UTC).`}
+                  </Text>
                 </View>
               ) : null}
             </View>
@@ -279,21 +302,25 @@ export default function TelemetryScreen() {
             </View>
 
             <View style={styles.grid3}>
+              {/* ITEM 228: these three cover ONLY the last 20 closed outcomes */}
               <MetricTile
                 icon={<TrendingUp size={16} color="#22c55e" />}
                 label="Win Rate"
+                caption="last 20 closed"
                 value={`${(snapshot.perfMetrics.recentWinRate * 100).toFixed(0)}%`}
                 accent="#22c55e"
               />
               <MetricTile
                 icon={<BarChart3 size={16} color="#38bdf8" />}
                 label="Profit Factor"
+                caption="last 20 closed"
                 value={snapshot.perfMetrics.profitFactor.toFixed(2)}
                 accent="#38bdf8"
               />
               <MetricTile
                 icon={<Gauge size={16} color="#FFD700" />}
                 label="Sharpe / trade"
+                caption="local signal book"
                 value={performanceMetrics.sharpeRatio.toFixed(3)}
                 accent="#FFD700"
               />
@@ -307,11 +334,13 @@ export default function TelemetryScreen() {
             <View style={styles.card}>
               <StatRow
                 label="Hypothetical Accuracy"
+                hint="accumulated · this process"
                 value={`${snapshot.hypoStats.hypotheticalAccuracy.toFixed(1)}%`}
                 valueColor={snapshot.hypoStats.hypotheticalAccuracy >= 85 ? "#22c55e" : "#f59e0b"}
               />
               <StatRow
                 label="Avg Slippage Diff"
+                hint="accumulated · this process"
                 value={`${snapshot.hypoStats.avgSlippageDiff.toFixed(2)} pips`}
                 valueColor={snapshot.hypoStats.avgSlippageDiff < 2 ? "#22c55e" : "#f59e0b"}
               />
@@ -321,6 +350,10 @@ export default function TelemetryScreen() {
               <Target size={16} color="#9ca3af" />
               <Text style={styles.sectionTitle}>Today's Signals ({todaySignals.length})</Text>
             </View>
+            {/* ITEM 228: the TODAY boundary is DEVICE-LOCAL. A UTC-day view of the same book
+                WILL differ whenever a signal lands between 22:00Z and midnight — this line
+                exists so that difference reads as expected, not as lost signals. */}
+            <Text style={styles.sectionSub}>Your local day (device timezone) — UTC-day counts will differ</Text>
 
             <View style={styles.grid4}>
               <MetricTile label="BUY" value={todayStats.buys.toString()} icon={<TrendingUp size={16} color="#22c55e" />} accent="#22c55e" />
@@ -371,6 +404,7 @@ export default function TelemetryScreen() {
               <Eye size={16} color="#9ca3af" />
               <Text style={styles.sectionTitle}>Setup Brewing ({snapshot.nearMisses.length})</Text>
             </View>
+            <Text style={styles.sectionSub}>Filtered setups held in engine memory · this process</Text>
 
             {snapshot.nearMisses.length === 0 ? (
               <View style={styles.emptyToday}>
@@ -402,6 +436,7 @@ export default function TelemetryScreen() {
               <BarChart3 size={16} color="#9ca3af" />
               <Text style={styles.sectionTitle}>Diff Bucket EV</Text>
             </View>
+            <Text style={styles.sectionSub}>Rejected-setup replay win rates · accumulated this process</Text>
             <View style={styles.card}>
               <StatRow label="Low (0.06-0.09)" value={`${snapshot.diffBuckets.low.wins}W/${snapshot.diffBuckets.low.losses}L · ${(snapshot.diffBuckets.low.ev * 100).toFixed(0)}%`} valueColor={snapshot.diffBuckets.low.ev >= 0.55 ? "#22c55e" : "#f59e0b"} />
               <StatRow label="Mid (0.09-0.15)" value={`${snapshot.diffBuckets.mid.wins}W/${snapshot.diffBuckets.mid.losses}L · ${(snapshot.diffBuckets.mid.ev * 100).toFixed(0)}%`} valueColor={snapshot.diffBuckets.mid.ev >= 0.55 ? "#22c55e" : "#f59e0b"} />
@@ -410,7 +445,9 @@ export default function TelemetryScreen() {
 
             <View style={styles.footerNote}>
               <Text style={styles.footerText}>
-                Telemetry refreshes every 5s. Engine runs continuously while the app is open. History tab records every signal generated today.
+                Telemetry refreshes every 5s. Engine runs continuously while the app is open.
+                Times shown in device-local time. "Since process start" counters reset when the
+                app restarts — they are session totals, not calendar days.
               </Text>
             </View>
           </ScrollView>
@@ -449,14 +486,17 @@ function shortStatus(status: TradingSignal["status"], targetsHit: number): strin
   }
 }
 
+// ITEM 228: `caption` carries the WINDOW ("since process start", "last 20 closed") so no
+// number on this screen can be misread as covering a different period than it does.
 interface MetricTileProps {
   icon?: React.ReactNode;
   label: string;
+  caption?: string;
   value: string;
   accent: string;
 }
 
-function MetricTile({ icon, label, value, accent }: MetricTileProps) {
+function MetricTile({ icon, label, caption, value, accent }: MetricTileProps) {
   return (
     <View style={[styles.tile, { borderColor: `${accent}33` }]}>
       <View style={styles.tileHeader}>
@@ -464,20 +504,26 @@ function MetricTile({ icon, label, value, accent }: MetricTileProps) {
         <Text style={styles.tileLabel}>{label}</Text>
       </View>
       <Text style={[styles.tileValue, { color: accent }]} numberOfLines={1}>{value}</Text>
+      {caption ? <Text style={styles.tileCaption}>{caption}</Text> : null}
     </View>
   );
 }
 
+// ITEM 228: `hint` names the window of the figure on the right of this row.
 interface StatRowProps {
   label: string;
+  hint?: string;
   value: string;
   valueColor?: string;
 }
 
-function StatRow({ label, value, valueColor = "#fff" }: StatRowProps) {
+function StatRow({ label, hint, value, valueColor = "#fff" }: StatRowProps) {
   return (
     <View style={styles.statRow}>
-      <Text style={styles.statLabel}>{label}</Text>
+      <View style={styles.statLabelWrap}>
+        <Text style={styles.statLabel}>{label}</Text>
+        {hint ? <Text style={styles.statHint}>{hint}</Text> : null}
+      </View>
       <Text style={[styles.statValue, { color: valueColor }]}>{value}</Text>
     </View>
   );
@@ -616,6 +662,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 6,
   },
+  tileCaption: {
+    fontSize: 9,
+    color: "#6b7280",
+    fontWeight: "600",
+  } as const,
   tileLabel: {
     fontSize: 10,
     color: "#9ca3af",
@@ -671,10 +722,25 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 8,
   },
+  statLabelWrap: {
+    flex: 1,
+    paddingRight: 12,
+  },
   statLabel: {
     fontSize: 13,
     color: "#9ca3af",
     fontWeight: "500",
+  } as const,
+  statHint: {
+    fontSize: 10,
+    color: "#4b5563",
+    marginTop: 2,
+  } as const,
+  sectionSub: {
+    fontSize: 11,
+    color: "#6b7280",
+    marginTop: -6,
+    marginBottom: 10,
   } as const,
   statValue: {
     fontSize: 14,

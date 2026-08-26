@@ -611,6 +611,13 @@ function formatModelHealthSection(modelHealth: ModelHealthMetrics): string {
   lines.push(`Days since retrain: ${modelHealth.daysSinceRetrain}`);
   lines.push(`Retraining recommended: ${modelHealth.retrainingRecommended ? "YES" : "no"}`);
   lines.push(`Retrain scheduled: ${modelHealth.retrainScheduled ? "YES" : "no"}`);
+  // ITEM 230(G5) - display-only provenance so Recommended=NO beside Scheduled=YES stops being
+  // contradictory ON THE PAGE: the schedule names WHEN it was set and BY WHAT trigger.
+  // The trigger logic itself is untouched.
+  if (modelHealth.retrainScheduled) {
+    lines.push(`Retrain scheduled AT: ${modelHealth.retrainScheduledAtMs ? safeDate(modelHealth.retrainScheduledAtMs) : "unknown (set before Item 230 provenance)"}`);
+    lines.push(`Retrain schedule TRIGGER: ${modelHealth.retrainScheduledReason ?? "unknown (set before Item 230 provenance)"}`);
+  }
   lines.push("");
   // ITEM 64(d): label corrected from "Feature importance drift" to "Feature value drift"
   // — this metric measures average feature VALUE among winners (central tendency),

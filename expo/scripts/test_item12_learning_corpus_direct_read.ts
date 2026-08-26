@@ -344,7 +344,7 @@ async function main(): Promise<void> {
   const modelHealth = {
     modelHealthScore: 85, featureCorrelationStatus: "HEALTHY", confidenceDegradation: 0,
     conceptDriftScore: 0, driftAlertLevel: "NONE", daysSinceRetrain: 0,
-    retrainingRecommended: false, retrainScheduled: false, featureImportanceDrift: [],
+    retrainingRecommended: false, retrainScheduled: false, retrainScheduledAtMs: null, retrainScheduledReason: null, featureImportanceDrift: [],
   } as unknown as Parameters<typeof buildDiagnosticsExportText>[0]["modelHealth"];
 
   const instrumented = buildDiagnosticsExportText({

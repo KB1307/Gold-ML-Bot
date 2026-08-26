@@ -1,0 +1,184 @@
+====================================================================================================
+ITEM 230 / CHECKPOINT G — THE DRIFT SCORE AND THE RETRAIN CONTRADICTION
+ARTIFACT: expo/artifacts/checkpoint_g_drift_retrain.txt
+RUN: 2026-08-26T18:2xZ | SCRIPT: scripts/item230_drift_exclusion.ts
+DISPLAY-ONLY CHECKPOINT: shipped changes are (1) schedule provenance FIELDS recorded wherever
+retrainScheduled flips (pure bookkeeping read by nobody but display), (2) the telemetry banner
+text now names WHEN it was set and BY WHAT trigger, (3) export Section 3 prints two provenance
+lines under "Retrain scheduled:". NO retrain trigger, threshold, gate or emission behaviour was
+touched; MODULATION_ENABLED remains false throughout.
+METHOD: analyzeFeatureValueDrift() replicated EXACTLY — same Item 201(b) filter predicate,
+same >=40 fallback, same slice(-20)/slice(-40,-20) windows, winners-only averaging, same
+|new-old|/(old+0.01) formula, same STABLE<0.3<=DEGRADING<0.6<=CRITICAL thresholds — computed on
+the live corpus THREE ways:
+   BASIS A all rows | BASIS B the shipped path incl. its fallback | BASIS C engine-native only.
+====================================================================================================
+
+RAW LIVE RUN OUTPUT (verbatim):
+
+====================================================================================================
+ITEM 230 / CHECKPOINT G — DRIFT SCORE RECOMPUTED THREE WAYS ON LIVE CORPUS
+====================================================================================================
+
+  corpus            : 459 outcome rows
+  reconstruction-marked rows (Item 201(b) predicate): 289/459 overall, 0/40 inside the drifting window region
+  measurable rows after exclusion filter: 170
+
+  SHIPPED-PATH RESOLUTION: exclusion APPLIED (>=40 measurable rows)
+
+-- BASIS A — ALL ROWS (pre-201(b)) --
+   rsi          53.1892 -> 49.1548   drift=0.0758  STABLE
+   atr          2.4800 -> 2.4714   drift=0.0034  STABLE
+   volumeRatio  0.8907 -> 1.4319   drift=0.6010  CRITICAL
+   sentiment    0.2000 -> 0.0214   drift=0.8503  CRITICAL
+   dxyChange    0.0000 -> 0.0000   drift=0.0000  STABLE
+
+-- BASIS B — SHIPPED PATH (filter + fallback) --
+   rsi          53.1892 -> 49.1548   drift=0.0758  STABLE
+   atr          2.4800 -> 2.4714   drift=0.0034  STABLE
+   volumeRatio  0.8907 -> 1.4319   drift=0.6010  CRITICAL
+   sentiment    0.2000 -> 0.0214   drift=0.8503  CRITICAL
+   dxyChange    0.0000 -> 0.0000   drift=0.0000  STABLE
+
+-- BASIS C — ENGINE-NATIVE ONLY (strict, no fallback) --
+   rsi          53.1892 -> 49.1548   drift=0.0758  STABLE
+   atr          2.4800 -> 2.4714   drift=0.0034  STABLE
+   volumeRatio  0.8907 -> 1.4319   drift=0.6010  CRITICAL
+   sentiment    0.2000 -> 0.0214   drift=0.8503  CRITICAL
+   dxyChange    0.0000 -> 0.0000   drift=0.0000  STABLE
+
+====================================================================================================
+SENTIMENT PROVENANCE CENSUS AMONG WINDOW WINNERS
+====================================================================================================
+  OLDER window (winners) — shipped-path: BULLISH SENTIMENT=1, NEUTRAL=3, STRONG BUY MOMENTUM=1
+  OLDER window (winners) — engine-native: BULLISH SENTIMENT=1, NEUTRAL=3, STRONG BUY MOMENTUM=1
+  RECENT window (winners) — shipped-path: BEARISH SENTIMENT=4, BULLISH SENTIMENT=4, NEUTRAL=4, STRONG BUY MOMENTUM=1, STRONG SELL PRESSURE=1
+  RECENT window (winners) — engine-native: BEARISH SENTIMENT=4, BULLISH SENTIMENT=4, NEUTRAL=4, STRONG BUY MOMENTUM=1, STRONG SELL PRESSURE=1
+
+  A default sentiment (score 0 / feed unavailable) on rows whose provenance is NOT marked
+  passes every shipped filter — if the census above shows such sources, that IS the reach gap.
+  engine-native winner rows with sentiment score > 0: 21/89
+
+====================================================================================================
+VOLUME RATIO VERIFICATION (engine-native field — is 0.891 -> 1.432 REAL?)
+====================================================================================================
+  engine-native: older[5] = 0.779 1.238 0.519 0.663 1.254
+           recent[14] = 1.481 2.052 1.520 1.145 0.578 2.153 1.492 1.107 0.589 1.000 1.103 3.953 1.221 0.653
+
+====================================================================================================
+RECOMMENDED=NO / SCHEDULED=YES TRACE FACTS (code paths quoted, no behaviour changed)
+====================================================================================================
+  retrainingRecommended formula  : signalEngine.ts:10685-10688
+     (driftAlertLevel HIGH || conceptDriftScore > 0.5 || confidenceDegradation > 0.08
+      || daysSinceRetrain > 5)
+  NOTE: PER-FEATURE CRITICAL is NOT an input to that recommendation flag.
+  retrainScheduled SET sites     : :5846 (concept-drift HIGH response)
+                                   :7962 (trigger fired outside low-liquidity window)
+  retrainScheduled CLEARED       : :7956/:7969 (walkForwardOptimization executed)
+                                   :8436+ (D5 decoupled execution inside 22:00-07:00 UTC)
+  retrainScheduled declaration   : :1731 private boolean — IN-MEMORY ONLY, resets on restart.
+  DEDUCTION: process origin ~2026-08-24T16:27-20:22Z (Item 228 reconciliation). Asian
+  windows (22:00-07:00 UTC) passed on Aug 24, Aug 25 and today before 07:00Z. For
+  retrainScheduled to be TRUE at export time (16:53Z), it was set AFTER 07:00Z today:
+  a trigger fired during TODAY's daytime evaluation cycle. It will execute in the next
+  low-liquidity window beginning 22:00Z tonight.
+
+====================================================================================================
+ANALYSIS
+====================================================================================================
+
+G1 — IS THE ITEM 201(b) EXCLUSION REACHING THIS COMPUTATION? YES — MEASURED, NOT ASSUMED.
+  289 of 459 outcome rows carry reconstruction provenance overall, but only 0/40 inside the
+  window region, leaving 170 measurable rows — comfortably above the >=40 fallback floor. So the
+  shipped path resolves to the EXCLUDED windows (printed verdict above), and BASIS B reproduces
+  THIS export's Section 3 numbers EXACTLY:
+      volumeRatio 0.891 -> 1.432 drift 0.601 CRITICAL
+      sentiment   0.200 -> 0.021 drift 0.850 CRITICAL
+  All three bases are IDENTICAL here because no marked row sits inside either drift window.
+  The exclusion is working; its reach was never the problem in this cycle.
+
+G2 — SENTIMENT: REAL VALUES, BUT THE DRIFT NUMBER IS A SIGNED-MEAN CANCELLATION ARTIFACT.
+  The sentiment values driving the windows are ENGINE-NATIVE, not defaults. The provenance census
+  among window winners shows real feed sources on both sides (BULLISH SENTIMENT, BEARISH
+  SENTIMENT, NEUTRAL, STRONG BUY MOMENTUM, STRONG SELL PRESSURE). No default-carrying unmarked
+  row leaked through. So per G2's plain-language standard: yes — sentiment among winners REALLY
+  moved 0.200 -> 0.021 on engine-native rows only.
+  BUT what that movement actually contains: the OLDER window holds 5 winners, every one with a
+  positive-or-neutral sentiment source (net mean +0.200). The RECENT window holds 14 winners of
+  which FOUR carry BEARISH-sentiment sources alongside bullish ones — strong signed scores
+  cancelling to a near-zero mean (+0.021). This metric measures central tendency of feature VALUE
+  among winners (Item 64(d) relabel says exactly this), so divergence among winners is reported
+  as "drift toward zero" and stamped CRITICAL by a threshold written for magnitude shifts.
+  VERDICT: not a reconstruction artefact — AND not evidence that the model degraded. It is a REAL
+  change in winner composition (winners increasingly arise under bearish sentiment too) mislabeled
+  as degradation by a central-tendency statistic. No fix was applied to the metric: changing the
+  drift formula would alter what fires — the standing Item 64(d) reasoning applies until a
+  pre-registered round addresses the formula itself.
+
+G3 — VOLUME RATIO: REAL, AND IT SURVIVES THE EXCLUSION COMPLETELY.
+  Engine-native field; identical across all three bases; the per-row dump shows the shift in raw
+  values: older-window winning ratios [0.519 .. 1.254] vs recent-window [0.578 .. 3.953] with
+  several rows above 1.5. Winners really are arriving on heavier relative volume than they used
+  to. REAL signal, at stated POWER: n=5 older vs n=14 recent winners — tiny samples, and the
+  0.601 reading clears the 0.6 CRITICAL threshold by 0.001. Treat as flag-worthy, not verdict-
+  worthy; both CRITICALs will feed tonight's retrain schedule which is the system working as
+  designed.
+
+G4 — WHY "RETRAINING RECOMMENDED: NO" AND "RETRAIN SCHEDULED: YES" ARE NOT A CONTRADICTION.
+  Two different gates with two different input sets:
+    - retrainingRecommended (:10685-10688) reads ONLY: driftAlertLevel HIGH || conceptDriftScore
+      > 0.5 || confidenceDegradation > 0.08 || daysSinceRetrain > 5. PER-FEATURE CRITICAL IS NOT
+      AN INPUT. With concept drift score low and confidence degradation inside threshold, that
+      flag correctly reads NO.
+    - retrainScheduled is set by :5846 (concept-drift HIGH response), :7962 (trigger fired
+      outside low-liquidity window — including ANY per-feature CRITICAL via the Item 64(c)
+      conjunction at :7943), or :8277 (stored model age > 2 days at load); cleared when
+      walkForwardOptimization executes (:7956/:7969/:8436 D5 decoupled block).
+  WHEN WAS TODAY'S SCHEDULE SET: retrainScheduled is declared in-memory (:1731) and resets on
+  restart, so it cannot be older than this process (origin ~2026-08-24T16:27-20:22Z per Item
+  228). Asian-session execution windows passed on Aug 24/25 and today before 07:00Z; had the
+  flag been TRUE entering any of them, D5 would have executed and cleared it. Therefore it was
+  set AFTER 07:00Z today — a trigger fired during today's daytime evaluation cycles, consistent
+  with these very CRITICALs being live — and it will execute in the window beginning 22:00Z
+  tonight. ITEM 201(c) CHECK: the stale-persistence defect CANNOT resurface here, because the
+  flag does not persist at all; nothing can outlive its session, let alone its trigger. The
+  adjacency confusion is a LABELING gap between two genuinely different gates, closed by the G5
+  display fix below rather than by touching any trigger.
+  NOTE ON STALENESS RISK (stated honestly): if a schedule set by per-feature CRITICAL survives
+  while those features recover before the next window, the schedule WILL still execute tonight —
+  by design, since an armed retrain cannot be safely un-armed asynchronously. The banner now
+  says so plainly instead of implying a contradiction.
+
+G5 — DISPLAY FIX SHIPPED (display-only)
+  - signalEngine.ts: retrainScheduledAtMs / retrainScheduledReason recorded at ALL THREE set
+    sites (:5846 'Concept drift alert HIGH (drift score reached 0.6)', :7962 '<trigger reason>
+    - deferred until the low-liquidity window', :8277 'Stored model was > 2 days old when
+    weights loaded') and reset alongside every clear. Bookkeeping only — no logic reads them.
+  - getModelHealthMetrics() exposes both (consumers' mocks updated).
+  - telemetry.tsx banner: "Retrain scheduled <HH:MM> — <trigger>. Runs automatically in the next
+    Asian-session window (22:00–07:00 UTC)." — no more bare "will run automatically" beside a NO.
+  - diagnosticsExport.ts Section 3: two added lines, "Retrain scheduled AT:" / "Retrain schedule
+    TRIGGER:", rendered whenever scheduled=YES.
+
+====================================================================================================
+GATE G-G
+====================================================================================================
+  exclusion verified at its call site, drift computed BOTH ways                     : PASS
+     -> three ways; all identical; shipped path = filtered windows (170 >= 40);
+        exact reproduction of Section 3's 0.601/0.850 printed
+  sentiment adjudicated real-or-artefact                                            : PASS
+     -> real engine-native values (census pasted); CRITICAL label is a signed-mean
+        cancellation artifact of a central-tendency metric, named as such; no formula
+        change applied without its own gate
+  volumeRatio adjudicated                                                           : PASS
+     -> real, survives exclusion fully, power stated (n=5 vs n=14)
+  recommended/scheduled pair explained with origin timing                           : PASS
+     -> gates differ in inputs; schedule set after 07:00Z today; will execute 22:00Z;
+        Item 201(c) staleness impossible (in-memory only)
+  display fix shipped                                                               : PASS
+  MODULATION_ENABLED false; triggers untouched                                      : PASS
+
+  G-G = PASS
+
+  CODE SHIPPED vs FINDINGS: shipped = schedule-provenance fields + getter exposure + banner +
+  export lines (+ mock updates). Findings = everything in the ANALYSIS section.

@@ -128,6 +128,8 @@ async function main(): Promise<void> {
       daysSinceRetrain: 1,
       retrainingRecommended: false,
       retrainScheduled: false,
+      retrainScheduledAtMs: null,
+      retrainScheduledReason: null,
       featureImportanceDrift: [],
     } as unknown as ExportInput["modelHealth"],
     performanceMetrics: {

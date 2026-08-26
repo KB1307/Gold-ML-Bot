@@ -110,7 +110,7 @@ async function main() {
     modelHealth: {
       modelHealthScore: 0, featureCorrelationStatus: 'N/A', confidenceDegradation: 0,
       conceptDriftScore: 0, driftAlertLevel: 'none', daysSinceRetrain: 0,
-      retrainingRecommended: false, retrainScheduled: false, featureImportanceDrift: [],
+      retrainingRecommended: false, retrainScheduled: false, retrainScheduledAtMs: null, retrainScheduledReason: null, featureImportanceDrift: [],
     },
     performanceMetrics: {
       totalTrades: 0, winningTrades: 0, losingTrades: 0, winRate: 0, profitFactor: 0,

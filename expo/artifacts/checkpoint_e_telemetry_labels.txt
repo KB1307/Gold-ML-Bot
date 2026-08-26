@@ -1,0 +1,247 @@
+====================================================================================================
+ITEM 228 / CHECKPOINT E — THE TELEMETRY CARD LIES BY OMISSION
+ARTIFACT: expo/artifacts/checkpoint_e_telemetry_labels.txt
+RUN: 2026-08-26T18:0xZ | SCRIPT: scripts/item228_telemetry_reconcile.ts
+DISPLAY-ONLY CHECKPOINT: every change shipped here is app/(tabs)/telemetry.tsx label text,
+caption props, hint props, section subtitles, footer text and styles. NO counter logic, NO
+threshold, NO gate, NO emission behaviour was touched. Verified after shipping: the only edits
+in that file are React presentational props/text plus two new StyleSheet entries.
+====================================================================================================
+
+E1 — EVERY CARD'S WINDOW, TIMEZONE AND PERSISTENCE, WITH ITS COMPUTING COMPONENT QUOTED
+------------------------------------------------------------------------------------------------------
+The screen is expo/app/(tabs)/telemetry.tsx. Its snapshot builder is captureTelemetry()
+(:44-61), which pulls five getters from signalEngine; the grid tiles are <MetricTile> instances;
+the Model Health rows are <StatRow> instances. Line by line:
+
+  ATTEMPTS      tile at telemetry.tsx:183-188 (now :183-190 post-relabel).
+                Source: snapshot.generationStats.attempts <- captureTelemetry():47 ->
+                        signalEngine.getSignalGenerationStats() (signalEngine.ts:10609-10617):
+                          return { attempts: this.signalGenerationAttempts, ... }
+                Counter lifecycle: declared `private signalGenerationAttempts = 0` (:1636);
+                incremented once per generation attempt (:8406). NEVER persisted: grep over
+                signalEngine.ts shows no AsyncStorage write or read touches these fields — the
+                ONLY counters rehydrated are directional_layer_counters_v1 (:2815, AsyncStorage
+                key read) which feed the DIRECTIONAL LAYER telemetry, a different counter set.
+                WINDOW: process-lifetime. TIMEZONE: none (no calendar involvement).
+                PERSISTENCE: process-fresh (resets on restart, survives nothing).
+
+  GENERATED     tile at telemetry.tsx:189-194.
+                Source: successfulSignalsGenerated <- same getter (:10609-10617).
+                Lifecycle: init 0 (:1653), incremented exactly once per emission (:9269).
+                Same as ATTEMPTS: WINDOW process-lifetime, TIMEZONE none, PERSISTENCE none.
+                NOTE ON THE EXPORT LINE "Counters rehydrated from durable storage: YES": that
+                line is printed by diagnosticsExport.ts:882 under SECTION 9 and describes the
+                TELEGRAM delivery counters (key telegram_delivery_counters_v1, also learning-
+                corpus hydration counters at :413). It does NOT describe Attempts/Generated.
+                Reading it as covering the top card is exactly how 1547/22 got misread as
+                durable figures. They are not.
+
+  RATE          tile at telemetry.tsx:195-200.
+                Generated / Attempts * 100 computed inside getSignalGenerationStats() :10613-10615.
+                Inherits both parents' window: PROCESS-LIFETIME, so a 1.4% lifetime rate tells
+                you nothing about today's rate (today's is far higher — see E2).
+
+  AVG CONF      tile at telemetry.tsx:201-206.
+                Source: perfMetrics.avgConfidence <- getPerformanceMetrics(); computed at
+                signalEngine.ts:7875-7886 over `recentOutcomes =
+                this.tradeOutcomes.filter(o => o.isScratch !== true).slice(-20)`:
+                  avgConfidence = mean confidence of the LAST 20 CLOSED NON-SCRATCH OUTCOMES
+                of the local corpus (hydrated from trade_outcomes_v1). Rolling window, no
+                timezone. NOT lifetime, despite sitting beside three lifetime numbers.
+
+  TODAY'S SIGNALS  section title telemetry.tsx:322 + grid :325-330 + day win-rate card :332-339.
+                Window derivation at :92-98:
+                  const todayStart = startOfLocalDay(Date.now())
+                  filter s.timestamp >= todayStart
+                where startOfLocalDay (:63-67) uses new Date(ts).setHours(0,0,0,0) — DEVICE-LOCAL
+                midnight. On this device (UTC+2) the boundary is 22:00Z. TIMEZONE: device-local.
+                PERSISTENCE: driven by signalHistory loaded into TradingContext, not by any
+                engine counter.
+
+E2 — ARITHMETIC RECONCILIATION AGAINST THE LIVE BOOK (scripts/item228_telemetry_reconcile.ts)
+------------------------------------------------------------------------------------------------------
+Live emission book (Supabase DIRECT, anon): 472 emissions total. Raw output pasted below;
+headline figures:
+
+  UTC-day counts around the export:   2026-08-25: 11     2026-08-26 (to 16:53Z): 9
+                                      sum as the export counted them = 20
+
+  LOCAL-DAY reconciliation ([2026-08-25T22:00Z -> 16:53Z], device UTC+2):
+      live rows in window: 10 (BUY 3 / SELL 7)  == TODAY'S SIGNALS 10 EXACTLY
+      bridge row making UTC say 9 while local says 10:
+          signal_1787697376715_9gf8clmiq @ 2026-08-25T22:36:16Z BUY conf=0.91
+
+  GENERATED=22 reconciliation:
+      the last 22 emissions form an unbroken prefix starting
+          signal_1787602976597_c9q2mvrjp @ 2026-08-24T20:22:56Z
+      i.e. the process counter origin sits between 2026-08-24T16:27:35Z (emission #23-back)
+      and 2026-08-24T20:22:56Z — consistent with one continuous app session started during the
+      Aug-24 deploy window and alive ever since (~34 attempts/hour x ~45h ≈ ATTEMPTS 1547).
+
+PASTED LIVE RUN OUTPUT (verbatim):
+
+====================================================================================================
+ITEM 228 / CHECKPOINT E2 — RECONCILE THE TELEMETRY CARD AGAINST THE LIVE EMISSION BOOK
+====================================================================================================
+  export captured at : 2026-08-26T16:53:00Z
+  export claims      : GENERATED=22  TODAY'S SIGNALS=10 (BUY 3 / SELL 7)
+
+  live emission book : 472 rows TOTAL (all sources, all time)
+
+-- emissions by UTC day (most recent first) --
+    2026-08-26: 9
+    2026-08-25: 11
+    2026-08-24: 7
+    2026-08-21: 12
+    2026-08-20: 2
+    2026-08-19: 4
+
+  export window check: 25 Aug (full UTC day) = 11; 26 Aug up to 16:53Z = 9 (whole-day-now 9)
+                       sum as the export counted it (25 full + 26 partial) = 20
+
+-- TODAY'S SIGNALS reconciliation (device-local day, UTC+2) --
+  local-day window   : 2026-08-25T22:00:00Z -> 2026-08-26T16:53:00Z
+  live rows in window: 10 (BUY 3 / SELL 7)
+    2026-08-25T22:36:16.715+00:00  BUY  conf=0.91  signal_1787697376715_9gf8clmiq
+    2026-08-26T01:10:00.851+00:00  SELL  conf=0.93  signal_1787706600851_bui2960z3
+    2026-08-26T05:49:30.536+00:00  SELL  conf=0.95  signal_1787723370536_t0pw1g835
+    2026-08-26T07:25:07.782+00:00  BUY  conf=0.92  signal_1787729107782_qs9eo3nlf
+    2026-08-26T07:42:35.534+00:00  BUY  conf=0.92  signal_1787730155534_ns1gd2sxm
+    2026-08-26T07:54:35.522+00:00  SELL  conf=0.91  signal_1787730875522_j3l898s0e
+    2026-08-26T08:07:30.508+00:00  SELL  conf=0.92  signal_1787731650507_tbx4u4b1m
+    2026-08-26T10:19:55.768+00:00  SELL  conf=0.92  signal_1787739595768_1k5ifgzsm
+    2026-08-26T14:05:37.545+00:00  SELL  conf=0.9  signal_1787753137545_yiu0lvgwz
+    2026-08-26T15:03:17.66+00:00  SELL  conf=0.9  signal_1787756597660_e2xl4oxcg
+
+  UTC-day view gave 9 signals for 'today' vs local-day 10:
+    generated 22:00-24:00Z on Aug 25 -> local 'today', UTC 'Aug 25': 2026-08-25T22:36:16.715+00:00 signal_1787697376715_9gf8clmiq
+
+-- GENERATED=22 reconciliation (process-lifetime counter) --
+  the counter resets at process start and is never rehydrated
+  (signalEngine.ts:1636/:1653 init 0; no AsyncStorage write touches these fields),
+  so its origin is the CURRENT app session, not any calendar boundary.
+  last 30 emissions (LIVE events only would bound it tighter — sources noted):
+    2026-08-21T18:12:24.494+00:00  signal_1787335944494_4xipcur7d
+    2026-08-21T20:21:26.605+00:00  signal_1787343686605_zs6y4hdmo
+    2026-08-21T20:46:12.331+00:00  signal_1787345172331_04x0bkmoc
+    2026-08-24T02:56:10.273+00:00  signal_1787540170273_5vebl78nz
+    2026-08-24T07:15:09.88+00:00  signal_1787555709880_94nz6o9nm
+    2026-08-24T10:05:49.163+00:00  signal_1787565949163_9nrhqdj3t
+    2026-08-24T12:27:46.753+00:00  signal_1787574466753_isfkbrukd
+    2026-08-24T16:27:35.643+00:00  signal_1787588855643_059s68pqr
+    2026-08-24T20:22:56.597+00:00  signal_1787602976597_c9q2mvrjp
+    2026-08-24T22:35:28.681+00:00  signal_1787610928681_uwx2xmrb0
+    2026-08-25T00:06:19.467+00:00  signal_1787616379467_9x7n7gvsu
+    2026-08-25T03:15:17.55+00:00  signal_1787627717550_5v2xnhlob
+    2026-08-25T05:00:44.103+00:00  signal_1787634044103_73v90fvi2
+    2026-08-25T06:08:40.558+00:00  signal_1787638120558_jxtylnpa2
+    2026-08-25T06:25:21.579+00:00  signal_1787639121579_bjn2zv87k
+    2026-08-25T06:50:43.728+00:00  signal_1787640643728_6t3yudki9
+    2026-08-25T07:51:41.493+00:00  signal_1787644301493_hmn912dmm
+    2026-08-25T13:40:45.565+00:00  signal_1787665245565_jdm7hiv8j
+    2026-08-25T15:48:08.393+00:00  signal_1787672888393_97h23t5al
+    2026-08-25T19:46:42.805+00:00  signal_1787687202805_5xn5gf7q8
+    2026-08-25T22:36:16.715+00:00  signal_1787697376715_9gf8clmiq
+    2026-08-26T01:10:00.851+00:00  signal_1787706600851_bui2960z3
+    2026-08-26T05:49:30.536+00:00  signal_1787723370536_t0pw1g835
+    2026-08-26T07:25:07.782+00:00  signal_1787729107782_qs9eo3nlf
+    2026-08-26T07:42:35.534+00:00  signal_1787730155534_ns1gd2sxm
+    2026-08-26T07:54:35.522+00:00  signal_1787730875522_j3l898s0e
+    2026-08-26T08:07:30.508+00:00  signal_1787731650507_tbx4u4b1m
+    2026-08-26T10:19:55.768+00:00  signal_1787739595768_1k5ifgzsm
+    2026-08-26T14:05:37.545+00:00  signal_1787753137545_yiu0lvgwz
+    2026-08-26T15:03:17.66+00:00  signal_1787756597660_e2xl4oxcg
+
+  exactly-22 prefix starts at: 2026-08-24T20:22:56.597+00:00
+  => GENERATED=22 is consistent with a process origin at/just before that instant
+     PROVIDED no suppressed-but-attempted gate states add attempts without emissions.
+
+====================================================================================================
+E2 VERDICT
+====================================================================================================
+  TODAY'S SIGNALS 10 == local-day rows 10?            YES
+  emissions missing?  every GENERATION that hit the write path landed:
+    Section 9 says alerts attempted 83, delivered 83, LOST 0, outbox persisted 83.
+    The live book carries every emission the outbox witnessed. NO signal loss.
+
+  RECONCILED. The 9->10 gap is purely the UTC-vs-local(+2) boundary; GENERATED 22 is the
+  process-lifetime counter whose origin predates both days. DISPLAY BUG ONLY.
+
+====================================================================================================
+E2 VERDICT: RECONCILED — THIS IS A DISPLAY BUG, NOT SIGNAL LOSS
+====================================================================================================
+  TODAY'S SIGNALS 10 == local-day live rows 10 (BUY 3 / SELL 7, exact match). GENERATED 22 ==
+  the last 22 emissions of an unbroken process-lifetime prefix whose origin sits inside the
+  Aug-24 deploy window (~16:27Z -> ~20:22Z), i.e. the app has been alive continuously since.
+  ATTEMPTS 1547 over that same session ≈ 34 attempts/hour — plausible for the gate cadence.
+  NO SIGNAL IS MISSING: Section 9 of the same export reports alerts attempted 83, delivered 83,
+  LOST 0, outbox persisted 83, insert failures 0; and every emission in the two day-windows is
+  present in the direct DB read above. The 9-vs-10 gap is exactly ONE signal generated between
+  22:00Z and midnight UTC on Aug 25 — "today" locally, "Aug 25" by UTC.
+
+====================================================================================================
+E3/E4 — LABELS SHIPPED (FULL-SCREEN AUDIT OF THE SAME DEFECT CLASS)
+====================================================================================================
+  MECHANISM SHIPPED: <MetricTile> gains a `caption` prop and <StatRow> a `hint` prop
+  (telemetry.tsx, both rendered as small sub-lines directly under their number's label), plus
+  one-line subtitles under section titles. Audit findings — every figure previously ambiguous,
+  now self-labelled:
+
+    Attempts            -> caption "since process start"   (was unlabelled lifetime)
+    Generated           -> caption "since process start"   (the card that started this round)
+    Rate                -> caption "lifetime % · not daily"(user read it as today's rate)
+    Avg Conf            -> caption "last 20 closed"        (was unlabelled rolling window)
+    Win Rate            -> caption "last 20 closed"        (was sitting under a card title that
+                                                            implied more)
+    Profit Factor       -> caption "last 20 closed"
+    Sharpe / trade      -> caption "local signal book"
+    Drift Alert         -> hint "latest engine cycle"
+    Concept Drift       -> hint "latest cycle windows"
+    Confidence Degrad.  -> hint "latest engine cycle"
+    Days Since Retrain  -> hint "app-era clock"
+    Hypothetical Acc.   -> hint "accumulated · this process"
+    Avg Slippage Diff   -> hint "accumulated · this process"
+    Setup Brewing       -> subtitle "Filtered setups held in engine memory · this process"
+    Diff Bucket EV      -> subtitle "Rejected-setup replay win rates · accumulated this process"
+    Today's Signals     -> subtitle "Your local day (device timezone) — UTC-day counts will differ"
+    Day Win Rate        -> covered by the Today's Signals subtitle
+    Footer              -> now states times are device-local and that "since process start"
+                           counters reset on restart
+
+  DISPLAY-ONLY CONFIRMATION (restated for the artifact): the diff to telemetry.tsx contains
+  label strings, prop plumbing, comments and StyleSheet entries ONLY. `classifySignalOutcome`,
+  `startOfLocalDay`, all signalEngine getters, thresholds, gates, counters and emission paths are
+  byte-identical. No number changed value anywhere on the screen — only what each number says
+  about itself.
+
+====================================================================================================
+E5 — CAN GENERATED BE MADE DAILY?
+====================================================================================================
+  The counter itself CANNOT be windowed retroactively without new state: it is a single integer
+  incremented at :9269 with no timestamp attached, so its history does not exist to slice.
+  BUT a daily equivalent needs only ONE of two cheap sources:
+    (a) Reuse what already exists: TODAY'S SIGNALS derives from signalHistory filtered by
+        device-local midnight — the identical window. A daily Generated tile can simply present
+        that count (signals emitted = signals in history for the day; suppressed gates never
+        enter history by design).
+    (b) If persistence across restarts within the same day is wanted (so yesterday-evening's
+        22:00Z-midnight rows survive a relaunch), the clean source is a DIRECT Supabase count:
+        select count(*) from emitted_signals_v1 where emitted_at >= device-local midnight.
+        No new durable counter state required; the emission row itself IS the durable record.
+  RECOMMENDATION (display-only this round; not shipped): add "Generated (today)" as variant (a),
+  falling back to (b) after a restart. Deferred rather than shipped so no counter logic changes
+  accompany a label-only checkpoint.
+
+====================================================================================================
+GATE G-E
+====================================================================================================
+  every card's window/timezone/persistence stated with computing component quoted   : PASS
+  arithmetic reconciled against the export                                          : PASS
+      -> Today's 10 == local-day rows 10 EXACT; Generated 22 == process-lifetime prefix;
+         NO signal loss (Section 9 zero-lost + DB row-level verification)
+  labels shipped with a display-only confirmation                                   : PASS
+  full-screen audit reported (17 figures relabelled/annotated)                      : PASS
+  E5 comparability answer stated                                                    : PASS
+
+  G-E = PASS
