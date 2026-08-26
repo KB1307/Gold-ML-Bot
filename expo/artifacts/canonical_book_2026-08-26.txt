@@ -1,0 +1,171 @@
+
+====================================================================================================
+CHECKPOINT A — THE CANONICAL BOOK (pinned fromScratch replay) + GROSS/NET PROBE + STORED COMPARISON
+====================================================================================================
+  run at                          : 2026-08-26T07:51:57.768Z
+  emitted_signals_v1 rows         : 467
+  by source                       : {"BACKFILL":413,"LIVE":54}
+  trade_outcomes_v1 rows          : 453
+  gold_m1_bars window             : 2026-06-29T08:24:44.894Z -> 2026-08-26T07:50:00.000Z (58357 bars)
+  PINNED                          : 8h window (Item 41a), safeBarStart=emitted+60s, fromScratch, evCompute $0.20 cost, bootstrap seed 20260824
+  era boundary                    : 2026-07-16T10:51:28.481Z
+
+====================================================================================================
+A0 — IS STORED realized_r GROSS OR NET? (row-level arithmetic on stored fields: emitted entry/sl + stored exit_price)
+====================================================================================================
+  evCompute.ts:41 documents realized_r as NET; Item 202(c) measured GROSS on the 12 signals of 2026-08-21.
+  The resolver Edge Function computes NET since commit 912242c (2026-08-17 21:30Z, "BLOCK A / E-1");
+  before that commit both resolvers wrote GROSS (the D6 finding). Both eras therefore exist in the table.
+  Test per row: g = R_gross(stored exit_price); n = g - costInR(risk); stored matches whichever |stored - x| <= 0.01R.
+
+  join population (realized_r non-null, is_scratch not true): n=352
+  outcome-row disposition: total=453  join=352  realized_r=null excluded=9  scratch excluded=89  no-emission-row=3
+  emitted signals with NO outcome row at all: 17
+
+  VERDICT COUNTS over n=352 (tolerance ±0.01R):
+    stored realized_r == GROSS arithmetic : 37
+    stored realized_r == NET arithmetic   : 301
+    neither (|Δ| > tol on both)           : 14
+    skipped (null exit_price / zero risk) : 0
+
+  row-level examples — GROSS-matching rows:
+  78_dmsfs1y62  BUY  entry=4267.7 sl=4259.7 risk=8.0 exit=4273.3  storedR=0.7000  g=0.7000 (Δ0.0000)  n=0.6750 (Δ0.0250)  ts=2026-08-07T05:38:00+00:00
+  37_ok8k8tofc  SELL  entry=4387.3 sl=4395.3 risk=8.0 exit=4395.3  storedR=-1.0000  g=-1.0000 (Δ0.0000)  n=-1.0250 (Δ0.0250)  ts=2026-08-24T10:58:53.782+00:00
+  49_49tu3yso9  SELL  entry=4411.2 sl=4419.2 risk=8.0 exit=4419.2  storedR=-1.0000  g=-1.0000 (Δ0.0000)  n=-1.0250 (Δ0.0250)  ts=2026-08-24T10:58:53.303+00:00
+  08_6xyoymjxy  BUY  entry=4399.3 sl=4391.3 risk=8.0 exit=4391.3  storedR=-1.0000  g=-1.0000 (Δ0.0000)  n=-1.0250 (Δ0.0250)  ts=2026-08-24T10:58:52.786+00:00
+  row-level examples — NET-matching rows:
+  94_f8lyggwqq  SELL  entry=4063 sl=4070.9 risk=7.9 exit=4055  storedR=0.9873  g=1.0127 (Δ0.0253)  n=0.9873 (Δ0.0000)  ts=2026-06-29T08:44:00+00:00
+  77_okxk37du2  SELL  entry=4047.4 sl=4055.3 risk=7.9 exit=4044.9  storedR=0.2911  g=0.3165 (Δ0.0253)  n=0.2911 (Δ0.0000)  ts=2026-06-29T09:34:00+00:00
+  93_e7b7h9q1q  SELL  entry=4046.7 sl=4055 risk=8.3 exit=4043.9  storedR=0.3133  g=0.3373 (Δ0.0241)  n=0.3133 (Δ0.0000)  ts=2026-06-29T12:30:00+00:00
+  41_4tski332e  BUY  entry=4018.5 sl=4010.6 risk=7.9 exit=4026.5  storedR=0.9873  g=1.0127 (Δ0.0253)  n=0.9873 (Δ0.0000)  ts=2026-06-29T14:26:00+00:00
+  row-level examples — NEITHER (possible label defects, see A2 disagreement analysis):
+  22_2xab1bx70  BUY  entry=4393.4 sl=4385.4 risk=8.0 exit=4396.1  storedR=0.3544  g=0.3375 (Δ0.0169)  n=0.3125 (Δ0.0419)  ts=2026-08-18T10:46:10.393+00:00
+  93_5a2fijbnk  BUY  entry=4364.7 sl=4356.7 risk=8.0 exit=4366.9  storedR=0.2911  g=0.2750 (Δ0.0161)  n=0.2500 (Δ0.0411)  ts=2026-08-19T10:21:44.292+00:00
+  98_qxjfnnbjf  BUY  entry=4431 sl=4422.1 risk=8.9 exit=4439  storedR=0.9205  g=0.8989 (Δ0.0216)  n=0.8764 (Δ0.0441)  ts=2026-08-19T12:56:55.605+00:00
+  42_n3idsszpf  BUY  entry=4533 sl=4525 risk=8.0 exit=4541  storedR=1.0253  g=1.0000 (Δ0.0253)  n=0.9750 (Δ0.0503)  ts=2026-08-21T01:36:13.844+00:00
+
+  transition by ts day (ts = exit-bar time for bar-writer rows; wall-clock WRITE time for app-path rows): gross / net / neither
+    2026-06-29: 0 / 6 / 0
+    2026-06-30: 0 / 9 / 0
+    2026-07-01: 0 / 13 / 0
+    2026-07-02: 0 / 40 / 0
+    2026-07-03: 0 / 8 / 0
+    2026-07-05: 0 / 1 / 0
+    2026-07-06: 0 / 6 / 0
+    2026-07-07: 0 / 2 / 0
+    2026-07-08: 0 / 4 / 0
+    2026-07-09: 0 / 4 / 0
+    2026-07-10: 0 / 9 / 0
+    2026-07-12: 0 / 1 / 0
+    2026-07-13: 0 / 17 / 0
+    2026-07-14: 0 / 12 / 0
+    2026-07-15: 0 / 13 / 0
+    2026-07-16: 0 / 12 / 0
+    2026-07-17: 0 / 17 / 0
+    2026-07-20: 0 / 7 / 0
+    2026-07-21: 0 / 17 / 0
+    2026-07-22: 0 / 6 / 0
+    2026-07-23: 0 / 5 / 0
+    2026-07-24: 0 / 2 / 0
+    2026-07-29: 0 / 18 / 0
+    2026-07-30: 0 / 9 / 0
+    2026-07-31: 0 / 27 / 0
+    2026-08-03: 0 / 13 / 0
+    2026-08-04: 0 / 2 / 0
+    2026-08-05: 0 / 3 / 0
+    2026-08-06: 0 / 3 / 0
+    2026-08-07: 1 / 2 / 0
+    2026-08-10: 0 / 2 / 0
+    2026-08-11: 0 / 3 / 0
+    2026-08-12: 0 / 4 / 0
+    2026-08-13: 0 / 1 / 0
+    2026-08-14: 0 / 3 / 0
+    2026-08-18: 0 / 0 / 1
+    2026-08-19: 1 / 0 / 2
+    2026-08-20: 1 / 0 / 0
+    2026-08-21: 8 / 0 / 3
+    2026-08-22: 2 / 0 / 0
+    2026-08-24: 16 / 0 / 2
+    2026-08-25: 8 / 0 / 3
+    2026-08-26: 0 / 0 / 3
+
+  verdict by SOURCE (writer attribution): gross / net / neither
+    BACKFILL: 1 / 298 / 0
+    LIVE: 36 / 3 / 14
+
+  verdict by ts FORMAT (ms-precision = app-path wall-clock write; no-ms = bar-time cron/backfill write): gross / net / neither
+    bar-time (cron/backfill write): 5 / 209 / 1
+    ms wall-clock (app-path write): 32 / 92 / 13
+
+  A0 VERDICT (row-level, pasted arithmetic above): stored realized_r is NOT one convention —
+  it is WRITER-DEPENDENT. The counts, source split, and ts-format split above identify the
+  writers. Code corroboration: the app path realizes GROSS by construction —
+  services/signalEngine.ts:7755 computes realizedR = pnl / stopDistance (no cost), and
+  services/learningStore.ts upserts it directly into trade_outcomes_v1 (anon key,
+  onConflict=signal_id, first writer wins the race with the cron resolver). The net-fixed
+  writers are the resolve-emitted-signals Edge Function (NET since 912242c, 2026-08-17)
+  and the repair/backfill scripts built on the shared evCompute module.
+  Any instrument that reads stored realized_r as a single convention inherits a
+  one-cost-unit error on the gross-writer rows. The canonical book below does not read
+  stored realized_r at all — it replays bars.
+
+  canonical fromScratch replay: 454 signals resolved (13 with zero bars, excluded)
+
+====================================================================================================
+A1/A2 — THE CANONICAL BOOK (fromScratch replay labels; quotable)
+====================================================================================================
+  decided (any coverage): 449   decided with FULL 8h coverage: 446
+  excluded by canonical rule (outcome === null: EXPIRED_MISSED_ENTRY / NEVER_FILLABLE / ACTIVE): 5
+  canonical-null status mix: {"CLOSED":2,"NEVER_FILLABLE":2,"ACTIVE":1}
+  FULL (all sources)             n=446  WR=61.9%  EV_gross=+0.0477R  EV_net=+0.0115R  PF_net=1.03  MaxDD_net=18.65R  95%CI_net=[-0.0713, +0.0986]
+    snapshot-era (>= boundary)   n=206  WR=54.9%  EV_gross=-0.0304R  EV_net=-0.0674R  PF_net=0.86  MaxDD_net=18.24R  95%CI_net=[-0.2018, +0.0656]
+    pre-snapshot (< boundary)    n=240  WR=67.9%  EV_gross=+0.1149R  EV_net=+0.0792R  PF_net=1.24  MaxDD_net=18.65R  95%CI_net=[-0.0269, +0.1883]
+    post-boundary LIVE only      n= 50  WR=52.0%  EV_gross=-0.1760R  EV_net=-0.2012R  PF_net=0.59  MaxDD_net=12.82R  95%CI_net=[-0.4375, +0.0424]
+  FULL book per-source counts: {"BACKFILL":396,"LIVE":50}
+  FULL book canonical status mix: {"ALL_TARGETS_HIT":92,"SL_AFTER_BE":162,"SL_HIT":170,"PARTIAL_WIN_SL_HIT":22}
+
+====================================================================================================
+A2 — STORED-LABEL BOOK ON THE IDENTICAL POPULATION (join: realized_r non-null, is_scratch not true)
+====================================================================================================
+  join rows with a canonical verdict: 350 (join population n=352; 2 have canonical outcome=null and are excluded from BOTH books)
+  CANONICAL (join population)    n=350  WR=55.7%  EV_gross=-0.0342R  EV_net=-0.0697R  PF_net=0.85  MaxDD_net=36.15R  95%CI_net=[-0.1677, +0.0295]
+    join snapshot-era CANONICAL  n=169  WR=49.7%  EV_gross=-0.0913R  EV_net=-0.1265R  PF_net=0.76  MaxDD_net=25.58R  95%CI_net=[-0.2758, +0.0306]
+    join snapshot-era STORED as-is n=169  WR=49.7%  EV_gross=-0.1266R  EV_net=-0.1266R  PF_net=0.76  MaxDD_net=25.13R  95%CI_net=[-0.2732, +0.0304]
+  STORED as-stored (mixed conv.) n=350  WR=55.7%  EV_gross=-0.0697R  EV_net=-0.0697R  PF_net=0.85  MaxDD_net=35.70R  95%CI_net=[-0.1683, +0.0296]
+  STORED net-corrected (per A0)  n=350  WR=55.7%  EV_gross=-0.0368R  EV_net=-0.0723R  PF_net=0.84  MaxDD_net=36.56R  95%CI_net=[-0.1711, +0.0270]
+  EV delta (stored as-is − canonical)      : -0.0000R
+  EV delta (stored net-corrected − canon.) : -0.0026R
+
+  row-level disagreement (canonical vs stored, join population n=350):
+    win/loss sign disagreements        : 0
+    |ΔR| > 0.25R disagreements        : 2
+    stored exit_price == replay exit   : 342 (exit price agreement rate)
+    disagreement concentration — era     : pre-boundary=0  post-boundary=2
+    disagreement concentration — source  : {"LIVE":2}
+    disagreement concentration — direction: {"BUY":1,"SELL":1}
+    disagreement concentration — status pair (canonical->stored):
+      ALL_TARGETS_HIT->WIN: 2
+
+  A2 READ: if sign disagreements are few and the net-corrected stored book is close to
+  canonical, the F-29-era repairs held; the as-stored book remains unquotable while
+  the gross-writer rows persist in it. Canonical wins where they diverge.
+
+  A2b — THE MISSING ROWS: replay-decided signals ABSENT from the stored join
+  (the quotable FULL book is n=446; the join book is n=350;
+   the difference is a POPULATION difference, not a label difference — measure it:)
+    MISSING-from-join (canonical) n= 99  WR=84.8%  EV_gross=+0.3518R  EV_net=+0.3131R  PF_net=2.99  MaxDD_net=3.57R  95%CI_net=[+0.1704, +0.4499]
+    by source     : {"BACKFILL":99}
+    by era        : pre-boundary=59  post-boundary=40
+    by status     : {"ALL_TARGETS_HIT":19,"SL_AFTER_BE":59,"SL_HIT":15,"PARTIAL_WIN_SL_HIT":6}
+    arithmetic    : FULL book = join part + missing part (n 446 = 347 + 99)
+
+====================================================================================================
+A4 — QUOTING RULE
+====================================================================================================
+  Only this script's output is quotable. Every future EV claim must re-run canonicalBook.ts.
+  Era claims must name the boundary (2026-07-16T10:51:28.481Z) and the cohort
+  (all sources vs post-boundary LIVE). Stored realized_r is NEVER quotable without stating
+  its era convention (gross before the 2026-08-17 net fix, net after — per A0 counts above).
+
+DONE (measurement only — nothing written, nothing shipped)
+

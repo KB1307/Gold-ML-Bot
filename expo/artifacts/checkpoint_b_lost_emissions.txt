@@ -1,0 +1,229 @@
+
+====================================================================================================
+ITEM 225 / CHECKPOINT B — THE TRUE COUNT OF LOST LIVE EMISSIONS
+====================================================================================================
+  run at        : 2026-08-26T07:46:08.096Z
+  window opens  : 2026-08-24T08:40:18Z (drift began: cfc2a0c put the Item 210/213 annotation
+                  columns into EVERY insert while they did not exist in production)
+  emitted_signals_v1 total rows : 467
+
+====================================================================================================
+B2 — WINDOW BOUNDARIES, PINNED FROM LIVE DATA (not a tilde)
+====================================================================================================
+  The annotation columns exist NOW, so the moment they began to be POPULATED bounds when
+  migration 011 became live. Two independent bounds, from the rows themselves:
+    FIRST row carrying an annotation value : 2026-08-24T16:27:35.643+00:00  (signal_1787588855643_059s68pqr)
+    LAST annotation-absent row in window   : 2026-08-26T05:49:30.536+00:00
+    rows in window WITHOUT annotations     : 8
+    annotated rows total                   : 12
+    third bound: verifySchemaContractLive.ts probed the LIVE schema at 2026-08-24T16:14Z
+    and found the columns ABSENT (that probe is what opened this investigation).
+
+  RESULTING INTERVAL for migration 011 going live: (2026-08-24T16:14:00Z, 2026-08-24T16:27:35.643+00:00]
+  Guard shipped 2026-08-24T16:55:33Z (68cc662) — AFTER that interval, i.e. the guard did not
+  cause the recovery; the migration did. The guard prevents the NEXT occurrence.
+
+====================================================================================================
+B1 — WITNESS CROSS-REFERENCE: telegram_outbox_v1
+====================================================================================================
+  outbox rows total : 86
+  columns           : id, signal_id, message, parse_mode, kind, status, attempts, last_error, created_at, next_attempt_at, expires_at, delivered_at, delivered_on_retry
+  rows created at/after 2026-08-24T08:40:18Z: 22
+    LOST: outbox witnesses signal_1787580401459_cpid69ppf at 2026-08-24T14:06:43.334197+00:00 but emitted_signals_v1 has NO such row
+          payload keys: id, signal_id, message, parse_mode, kind, status, attempts, last_error, created_at, next_attempt_at, expires_at, delivered_at, delivered_on_retry
+          message: 🔴 *SIGNAL ALERT* 🔴
+
+*SYMBOL:* XAUUSD
+
+*ACTION:* SELL
+
+*ENTRY ZONE:* 4662.6 - 4666.6
+
+*STOP LOSS:* 4672.6
+
+*TAKE PROFIT 1:* 4662.1
+*TAKE PROFIT 2:* 4659.6
+*TAKE PROFIT 3:* 4656.6
+    LOST: outbox witnesses signal_1787587872040_446kz8aab at 2026-08-24T16:11:14.004034+00:00 but emitted_signals_v1 has NO such row
+          payload keys: id, signal_id, message, parse_mode, kind, status, attempts, last_error, created_at, next_attempt_at, expires_at, delivered_at, delivered_on_retry
+          message: 🔴 *SIGNAL ALERT* 🔴
+
+*SYMBOL:* XAUUSD
+
+*ACTION:* SELL
+
+*ENTRY ZONE:* 4653.6 - 4657.6
+
+*STOP LOSS:* 4663.6
+
+*TAKE PROFIT 1:* 4653.1
+*TAKE PROFIT 2:* 4650.6
+*TAKE PROFIT 3:* 4647.6
+  outbox-witnessed emissions ABSENT from emitted_signals_v1: 2
+
+====================================================================================================
+B1 — WITNESS CROSS-REFERENCE: trade_outcomes_v1 orphans (outcome exists, emission row does not)
+====================================================================================================
+  trade_outcomes_v1 rows : 452
+  ORPHANS (no emission row): 3
+    signal_1787083581937_xr6mjtadq  ts=2026-08-18T20:14:03.981+00:00  dir=SELL  result=WIN  entry=4343.8  exit=4341.6  R=0.275
+    signal_1787580401459_cpid69ppf  ts=2026-08-24T14:16:40.673+00:00  dir=SELL  result=WIN  entry=4664.7  exit=4662.1  R=0.3291
+    signal_1787587872040_446kz8aab  ts=2026-08-24T16:56:06.677+00:00  dir=SELL  result=WIN  entry=4655.7  exit=4653.4  R=0.2911
+
+====================================================================================================
+B1 — WITNESS CROSS-REFERENCE: shadow_signals_v1
+====================================================================================================
+  shadow rows in window : 0
+  shadow rows naming a signal_id absent from emitted_signals_v1: 0
+
+====================================================================================================
+B3 — RECOVERABILITY OF EACH ORPHAN (restore only what a witness actually recorded)
+====================================================================================================
+  emitted_signals_v1 requires the LADDER to be a real record: direction, entry, sl, tp1-3,
+  confidence, emitted_at. An outcome row carries direction, entry_price, exit_price and
+  confidence but NOT sl/tp1/tp2/tp3. Reconstructing a ladder from an exit price would be
+  INVENTING the very fields the corpus measures — the F-29 error. So the test is whether a
+  witness holds the ladder VERBATIM.
+
+  ORPHAN signal_1787083581937_xr6mjtadq
+    outcome row     : dir=SELL entry=4343.8 exit=4341.6 R=0.275 ts=2026-08-18T20:14:03.981+00:00
+    outbox witness  : created_at=2026-08-18T20:06:22.384597+00:00  kind=ALERT  status=DELIVERED  delivered_at=2026-08-18T20:06:23.455+00:00
+    ladder parsed   : SELL entryZone=4341.8-4345.8 sl=4351.8 tp1=4341.3 tp2=4338.8 tp3=4335.8
+    cross-check     : direction AGREES with the outcome row; outcome entry_price 4343.8 falls inside the witnessed entry zone
+    VERDICT         : RECOVERABLE. Every field below was RECORDED by a witness:
+                      sl/tp1/tp2/tp3 + direction from the outbox message (written BEFORE
+                      delivery); entry from the outcome row's entry_price; emitted_at from
+                      the outbox created_at. confidence is NULL because NO witness recorded
+                      it — a NULL is honest, a guessed 0.72 would be fabrication.
+
+  ORPHAN signal_1787580401459_cpid69ppf
+    outcome row     : dir=SELL entry=4664.7 exit=4662.1 R=0.3291 ts=2026-08-24T14:16:40.673+00:00
+    outbox witness  : created_at=2026-08-24T14:06:43.334197+00:00  kind=ALERT  status=DELIVERED  delivered_at=2026-08-24T14:06:44.414+00:00
+    ladder parsed   : SELL entryZone=4662.6-4666.6 sl=4672.6 tp1=4662.1 tp2=4659.6 tp3=4656.6
+    cross-check     : direction AGREES with the outcome row; outcome entry_price 4664.7 falls inside the witnessed entry zone
+    VERDICT         : RECOVERABLE. Every field below was RECORDED by a witness:
+                      sl/tp1/tp2/tp3 + direction from the outbox message (written BEFORE
+                      delivery); entry from the outcome row's entry_price; emitted_at from
+                      the outbox created_at. confidence is NULL because NO witness recorded
+                      it — a NULL is honest, a guessed 0.72 would be fabrication.
+
+  ORPHAN signal_1787587872040_446kz8aab
+    outcome row     : dir=SELL entry=4655.7 exit=4653.4 R=0.2911 ts=2026-08-24T16:56:06.677+00:00
+    outbox witness  : created_at=2026-08-24T16:11:14.004034+00:00  kind=ALERT  status=DELIVERED  delivered_at=2026-08-24T16:11:15.074+00:00
+    ladder parsed   : SELL entryZone=4653.6-4657.6 sl=4663.6 tp1=4653.1 tp2=4650.6 tp3=4647.6
+    cross-check     : direction AGREES with the outcome row; outcome entry_price 4655.7 falls inside the witnessed entry zone
+    VERDICT         : RECOVERABLE. Every field below was RECORDED by a witness:
+                      sl/tp1/tp2/tp3 + direction from the outbox message (written BEFORE
+                      delivery); entry from the outcome row's entry_price; emitted_at from
+                      the outbox created_at. confidence is NULL because NO witness recorded
+                      it — a NULL is honest, a guessed 0.72 would be fabrication.
+
+====================================================================================================
+B3b — REPAIR (restores ONLY witnessed fields; never touches an outcome row)
+====================================================================================================
+  mode            : REPAIR (guarded insert)
+  repairable rows : 3 of 3 orphans
+    signal_1787083581937_xr6mjtadq -> {"signal_id":"signal_1787083581937_xr6mjtadq","emitted_at":"2026-08-18T20:06:22.384Z","direction":"SELL","entry":4343.8,"sl":4351.8,"tp1":4341.3,"tp2":4338.8,"tp3":4335.8,"confidence":null,"source":"LIVE"}
+      insert: FAILED — null value in column "confidence" of relation "emitted_signals_v1" violates not-null constraint
+    signal_1787580401459_cpid69ppf -> {"signal_id":"signal_1787580401459_cpid69ppf","emitted_at":"2026-08-24T14:06:43.334Z","direction":"SELL","entry":4664.7,"sl":4672.6,"tp1":4662.1,"tp2":4659.6,"tp3":4656.6,"confidence":null,"source":"LIVE"}
+      insert: FAILED — null value in column "confidence" of relation "emitted_signals_v1" violates not-null constraint
+    signal_1787587872040_446kz8aab -> {"signal_id":"signal_1787587872040_446kz8aab","emitted_at":"2026-08-24T16:11:14.004Z","direction":"SELL","entry":4655.7,"sl":4663.6,"tp1":4653.1,"tp2":4650.6,"tp3":4647.6,"confidence":null,"source":"LIVE"}
+      insert: FAILED — null value in column "confidence" of relation "emitted_signals_v1" violates not-null constraint
+  POST-REPAIR LIVE VERIFICATION (re-read from emitted_signals_v1):
+
+====================================================================================================
+B4 — BOOK IMPACT
+====================================================================================================
+  The canonical book decides n=448 signals this round. Adding 3 row(s) cannot move
+  EV materially (order 0.002R at this n). That is NOT the reason the count matters: a book
+  that is missing rows IT DOES NOT KNOW ABOUT has an unquantified hole, and the size of the
+  hole is only knowable by asking every witness. That is what this checkpoint does.
+
+DONE (read-only).
+
+
+====================================================================================================
+B3c — WHY THE REPAIR DID NOT LAND, AND WHY I DID NOT FORCE IT
+====================================================================================================
+  The guarded insert was attempted for all three orphans. All three failed, identically:
+
+    insert: FAILED — null value in column "confidence" of relation "emitted_signals_v1"
+            violates not-null constraint
+
+  THE FULL PERSISTED PAYLOADS WERE INSPECTED (scripts/probe_outbox_message.ts, printed in
+  full, not truncated). Every alert holds: direction, entry zone, stop loss, TP1, TP2, TP3.
+  NONE holds confidence. So the ladder is recoverable and the confidence is not.
+
+  THREE OPTIONS, AND THE CHOICE, ON FIRST PRINCIPLES (MINDSET rule 8):
+    (a) Invent a confidence (e.g. the 0.72 engine average) to satisfy the constraint.
+        REJECTED. confidence is a MEASURED field that gates emission and feeds every
+        confidence-vs-outcome analysis (including the r=-0.169 ranking-power finding). Writing
+        a plausible number into it would contaminate the exact column those analyses read.
+        This is the F-29 error precisely: fabricating a field to complete a repair.
+    (b) Drop the NOT NULL constraint so the rows can land with confidence = NULL.
+        REJECTED. The constraint is CORRECT: a live emission with no confidence is not a real
+        record, and loosening it would let a future broken write path insert confidence-less
+        rows silently forever. Trading a permanent integrity guarantee for three historical
+        rows is a bad trade, and it is post-hoc loosening of a constraint to fit a result.
+    (c) Leave the three emissions unrestored, record them as a KNOWN and QUANTIFIED hole, and
+        fix the WITNESS so the next occurrence is fully recoverable.
+        CHOSEN.
+
+  THE FORWARD FIX, SHIPPED THIS ROUND (services/telegramNotifier.ts, buildTelegramMessage):
+  the alert now carries a *CONFIDENCE:* line. telegram_outbox_v1 rows are written BEFORE
+  delivery, so from now on the outbox is a COMPLETE emission witness — direction, entry zone,
+  SL, TP1-3 AND confidence — and a future emission-write failure can be repaired from
+  recorded values alone, with nothing invented.
+
+====================================================================================================
+B5 — STARTUP SCHEMA ASSERTION: SHIPPED, AND ITS OUTPUT AGAINST THE LIVE SCHEMA
+====================================================================================================
+  SHIPPED: assertEmittedSchemaContract() in services/emittedSignalService.ts, invoked
+  fire-and-forget from app/_layout.tsx at boot (never awaited, never blocks, never throws into
+  the caller — it must not be able to stop the live capture it protects).
+
+  IT CANNOT GO STALE, WHICH IS THE WHOLE POINT. The Item 149 guard compared the DB against a
+  HAND-MAINTAINED column list, so when code and DB drifted together away from that list it
+  printed PASS for days while the Item 210/213 columns were being pruned from every insert.
+  This assertion derives its expected set from the write path's OWN toRow() keys (called on a
+  synthetic probe record) and compares them to the LIVE PostgREST column set. It has no list
+  of its own to fall behind.
+
+  RUN AGAINST THE LIVE SCHEMA (scripts/verifyB5SchemaAssertion.ts imports the SHIPPED function
+  — not a re-implementation, which would be the Item 149 mistake in a new costume):
+
+    [EmittedSignal] B5_SCHEMA_ASSERTION PASS — all 27 written columns exist in the live
+    schema; 3 live column(s) not written by this code: id, created_at, feature_schema_version
+
+    {
+      "ok": true,
+      "checkedAt": "2026-08-26T07:54:23.309Z",
+      "missingInDb": [],
+      "unwrittenInCode": ["id", "created_at", "feature_schema_version"],
+      "probeError": null
+    }
+
+  The three unwritten columns are correct and are NOT a failure: id and created_at are
+  database-generated, and feature_schema_version belongs to the outcome path, not the emission
+  path. Only missingInDb is treated as a failure, because only that direction silently loses
+  measurements at write time.
+
+====================================================================================================
+GATE G-B
+====================================================================================================
+  true count across ALL witnesses (outbox + orphan outcomes + shadow)              : PASS
+    -> the count is THREE, not two. Corrected this round.
+  window bounded with EXACT timestamps (migration-011 interval, not a tilde)        : PASS
+  recoverability determined per orphan, with the full payloads inspected            : PASS
+  repair shipped                                                                    : FAIL — blocked by a
+    CORRECT NOT NULL constraint on confidence, which no witness recorded. Not forced, not faked.
+  forward fix so the next loss IS recoverable (confidence in the outbox payload)    : PASS
+  book impact stated                                                                : PASS
+  schema assertion shipped AND its live output pasted                                : PASS
+
+  G-B = PASS WITH ONE FAILED SUB-GATE, reported as failed rather than reframed. The three
+  emissions remain a known, quantified, permanent hole in the corpus: signal_1787083581937_
+  xr6mjtadq (2026-08-18T20:06:22Z), signal_1787580401459_cpid69ppf (2026-08-24T14:06:43Z),
+  signal_1787587872040_446kz8aab (2026-08-24T16:11:14Z). All three are SELL, all three
+  resolved WIN in trade_outcomes_v1 (R = +0.275, +0.3291, +0.2911), so the hole is mildly
+  ADVERSE to the recorded book: the canonical replay never sees three small winners.

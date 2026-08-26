@@ -1,5 +1,6 @@
 import type { TradingSignal, SignalStatus } from '@/types/trading';
 import type { OhlcBar } from '@/services/barStore';
+import { computeMaxFavourableExcursion, type MfeResult } from '@/services/maxFavourableExcursion';
 
 export const SL_WICK_PENETRATION_PIPS = 0.1;
 const PIP = 0.1;
@@ -129,6 +130,20 @@ export interface ResolverOutcome {
   entryVia?: EntryVia;
   /** ITEM 21: price the fill actually happened at, or null. NEVER 0. */
   entryFillPrice?: number | null;
+  /**
+   * ITEM 224 — max favourable excursion, split at the terminal bar.
+   *
+   * OBSERVATIONAL ONLY. It is computed AFTER the resolution loop has finished,
+   * from the same evalBars the loop walked, so it cannot influence which bar
+   * confirms entry, which bar resolves the ladder, or when the loop breaks —
+   * the same discipline the Item 21 fillability pre-pass follows. Every field
+   * above (newStatus, targetsHit, exitPrice, outcomeResult) is byte-for-byte
+   * what it was before this was added.
+   *
+   * BEFORE-EXIT = capturable; AFTER-EXIT = counterfactual (Item 204). Undefined
+   * when the signal never confirmed entry, i.e. there is no exit to split on.
+   */
+  maxFavourable?: MfeResult;
 }
 
 function getProtectedExitPrice(signal: TradingSignal, targetsHit: number, override?: LadderOverride): number {
@@ -527,6 +542,38 @@ export function resolveSignalWithBars(
     }
   }
 
+  /**
+   * ITEM 224 — the discarded information, recorded.
+   *
+   * The branches at :293-318 and :345-361 above deliberately take the ADVERSE
+   * side inside a single bar (an OHLC bar carries no tick order), so a target
+   * touched in the terminal bar is dropped from `currentTargetsHit`; and nothing
+   * after the terminal bar was ever recorded at all. That conservative rule is
+   * CORRECT for R accounting and is untouched. This measures what it discards.
+   *
+   * The boundary is the terminal bar. With no terminal bar event (matured /
+   * CLOSED at window end) the last evaluated bar is the boundary, which makes
+   * the after-exit pair legitimately empty rather than silently borrowing the
+   * before-exit window. NEVER_FILLABLE / unconfirmed entries get undefined:
+   * there was no position, so there is no excursion to attribute to one.
+   */
+  const mfeBoundaryTs = resolvedAtBarTs
+    ?? (evalBars.length > 0 ? evalBars[evalBars.length - 1].timestamp : signalCreatedAtMs);
+  const maxFavourable = entryConfirmed && evalBars.length > 0
+    ? computeMaxFavourableExcursion(
+      {
+        direction: isBuy ? 'BUY' : 'SELL',
+        entry: signal.entryPrice,
+        sl: signal.sl,
+        tp1: signal.tp1,
+        tp2: signal.tp2,
+        tp3: signal.tp3,
+        terminalBarTs: mfeBoundaryTs,
+      },
+      evalBars,
+    )
+    : undefined;
+
   return {
     newStatus: currentStatus,
     targetsHit: currentTargetsHit,
@@ -538,5 +585,6 @@ export function resolveSignalWithBars(
     resolvedAtBarTs,
     entryVia,
     entryFillPrice,
+    maxFavourable,
   };
 }

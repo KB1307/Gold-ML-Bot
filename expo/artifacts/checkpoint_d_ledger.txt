@@ -1,0 +1,218 @@
+====================================================================================================
+ITEM 227 / CHECKPOINT D — THE LEDGER, THE 26 UNKNOWNS, WHAT IS ACTUALLY WAITING
+====================================================================================================
+  written at : 2026-08-26T07:52Z
+  sources    : live Supabase probes (scripts/item227_ledger_probes.ts), canonical instrument
+               re-run (artifacts/canonical_book_2026-08-26.txt), repo/git archaeology.
+
+====================================================================================================
+D1 — THE 26 GENUINELY-UNKNOWN LEDGER ITEMS, WORKED TO A FINAL STATE
+====================================================================================================
+  ARCHAEOLOGY ATTEMPTED, per item number (142-145, 153-155, 157, 162, 164-166, 174-178, 182,
+  185, 187-190, 207-208, 217). Four independent searches, all run this round:
+
+    1. Repo-wide content grep across every tracked source, artifact, migration and doc:
+         grep -rl "ITEM <n>|Item <n>|item<n>|ITEM_<n>" --include=*.ts --include=*.tsx \
+              --include=*.txt --include=*.md --include=*.sql expo backend SYSTEM_CHECKLIST.md
+       RESULT: 25 of 26 returned NONE. The single hit was item 182 ->
+       expo/app/(tabs)/settings.tsx, and inspection shows that match is incidental text, not
+       an item marker.
+
+    2. Commit-message search over ALL refs:
+         git log --all --grep="Item <n>"
+       RESULT: none, for every number tested (142, 145, 153, 157, 162, 166, 174, 178, 185,
+       190, 207, 208, 217).
+
+    3. SYSTEM_CHECKLIST.md row inspection. The ledger itself already records the answer for
+       the first block, at line 623, verbatim:
+         | 142-145 | RECONSTRUCTION GAP | no in-repo record |
+       i.e. these were ALREADY recorded as reconstruction gaps, not as open work.
+
+    4. Artifact directory scan (expo/artifacts/*, 33 files): no artifact is named for, or
+       internally references, any of the 26.
+
+  FINAL STATE — CLOSED-UNRECOVERABLE (26 of 26):
+    142, 143, 144, 145, 153, 154, 155, 157, 162, 164, 165, 166, 174, 175, 176, 177, 178,
+    182, 185, 187, 188, 189, 190, 207, 208, 217.
+
+  Stated once, and not to be re-opened: these numbers have NO in-repo record, NO commit
+  message, NO artifact and NO code marker. They are gaps in the NUMBERING of the ledger, not
+  outstanding tasks. A permanent unknown is not an open task, and carrying them forward as
+  "TBD" would inflate the outstanding list with 26 rows that can never be closed by work.
+
+  WHAT THIS COSTS, HONESTLY: if any of those numbers once described a real finding, that
+  finding is lost. Nothing in this round can recover it. What IS recoverable is the future:
+  every item shipped since has a named script or artifact, which is why 219-227 are all
+  traceable and 142-217's orphans are not.
+
+====================================================================================================
+D2 — THE DEFINITIVE OUTSTANDING LIST, THREE GROUPS, PRIORITY ORDER
+====================================================================================================
+
+── GROUP 1: AWAITING SAMPLE (cannot be closed by work, only by time) ──────────────────────
+  Accrual rates below are MEASURED this round, not assumed (item227_ledger_probes.ts):
+    resolved LIVE outcomes, last 28 days   : 53  -> 13.25/week
+    resolved LIVE outcomes since OB removal: 16 over 1.622 days -> 9.86/day = 69.04/week
+  The second rate is the one that now governs, and it is ~5.2x the first. Every date below
+  is computed at BOTH rates, because a 1.6-day-old rate is itself thin evidence.
+
+  1. ERA-MEAN TEST (the binding decision) — GATE MET ON n, NOT ON THE CI. See D3.
+     n=50 (was 36), EV_net −0.2012R, 95%CI [−0.4375, +0.0424]. Gate was n>=49: REACHED.
+     CI still includes zero -> pre-registered rule says ACCRUE, do not conclude.
+     Next evaluation: n=60 -> 2026-08-27 (new rate) / 2026-08-30 (old rate).
+
+  2. OB-ABSENT FORWARD COHORT — n=16 resolved of 17 post-removal emissions (C4).
+     GATE: n>=100 per arm with the EV difference excluding zero, FAVOURING the filter.
+     At 69.04/week: ~2026-09-08 for n=100. At 13.25/week: ~2026-11-11.
+
+  3. VENUE-BASIS PERSISTENCE — unmeasurable until 2026-09-07 (fixed date, Checkpoint D of
+     the prior round: lag-1 autocorr 0.721 is a PREVIEW, not the test).
+
+  4. ENTRY-QUALITY / TP3-STRETCH / ENTRY-BUFFER ARMS — all three flags OFF, no arm accruing.
+     GATE: each needs n>=100 in the ON arm. At 69.04/week from a standing start: ~mid-Oct
+     2026 (unchanged from the prior estimate, because nothing is accruing yet — the date is
+     gated on someone DECIDING to arm one, not on sample).
+
+  5. BEHIND-ENTRY ARMING (Item 210) — 2026-11-15. Annotation columns now populate (12 rows
+     carry values, B2), so accrual has genuinely started.
+
+  6. NO-STRUCTURE VETO — 2026-11-28.
+
+  7. CONFIDENCE-R RE-DERIVATION — DATE NOW STATED (the prior draft had none, which is what
+     Correction 6 flagged). GATE: the era-mean test must resolve FIRST, because if forward EV
+     is negative the re-derivation is the only remaining open question and its priority
+     changes completely. Earliest start therefore 2026-08-27 (n=60 evaluation), and it needs
+     n>=100 post-boundary LIVE rows with a usable confidence to fit against: at 69.04/week,
+     ~2026-09-08.
+
+  8. MODULATION — mid-Dec 2026. MODULATION_ENABLED stays false this round.
+
+── GROUP 2: READY TO DO (nothing blocks these) ────────────────────────────────────────────
+  9. ITEM 123 — ATR-CONDITIONED ANALYSIS. MOVED HERE FROM BLOCKED THIS ROUND.
+     The Item 139(c) blocker was contamination: atr values to 124.20, impossible for 1-min
+     gold. Verified against the LIVE table by source (D-support probe, pasted):
+         source=BACKFILL  n=413  atr present=0    atr NULL=413  implausible(>20)=0
+         source=LIVE      n= 54  atr present=54   max atr=7.10  implausible(>20)=0
+         TOTAL implausible atr rows live: 0
+     The contamination is GONE. The blocker no longer exists, so Item 123 is READY TO DO.
+     SEPARATE QUESTION — POWER: only 54 LIVE rows carry a usable atr, so bucketing atr into
+     even two bins gives ~27/bin. That is enough to LOOK and nowhere near enough to conclude.
+     Do it as an observation with the power stated, not as a gate.
+
+ 10. ITEM 211 — DIAGONAL STRUCTURE BUILD. RECOMMENDATION, NOT A CLASSIFICATION:
+
+     WOULD I BUILD IT NEXT? No — I would build it SECOND, after the n=60 era-mean evaluation
+     on 2026-08-27, and I would build the MEASUREMENT before the feature.
+
+     THE CASE FOR: the directional-idea bench is nearly empty. Confidence has no demonstrated
+     ranking power (r=-0.169, i.e. weakly INVERTED). The entry-backing thesis came back
+     underpowered on BOTH re-runs. The OB filter's authorising split (z=2.295, p=0.0217)
+     failed to reproduce TWICE, the second time at ~3x the original sample (p=0.86). Diagonal
+     structure — trendlines/channels rather than horizontal zones — is plausibly the last
+     untried DIRECTIONAL idea, and everything currently live is horizontal-zone-derived.
+
+     THE CASE AGAINST, which is why it is second and not first: three of the last four
+     structural ideas produced no reproducible edge. The base rate for "new geometry finds
+     edge" in this system is empirically poor, and the era-mean test may be about to tell us
+     the forward edge is NEGATIVE — in which case the correct next move is re-deriving the
+     score, not adding a sixth input to a score that cannot rank.
+
+     COST: per-evaluation compute is small — a diagonal fit over the existing bar arrays is
+     O(n) per candidate line over the same 24h window computeMarketStructure() already walks,
+     so it adds one pass to work already being done each generation cycle; call it low
+     single-digit milliseconds, no new data source, no new API. BUILD cost is the real number:
+     ~1 round for detection + annotation-only persistence, plus a SECOND round later to wire
+     it into scoring. It needs its own emitted-row annotation columns (a migration), which is
+     exactly the pattern Items 210/213 used.
+
+     WHAT WOULD AUTHORISE WIRING IT INTO SCORING: annotation-only first — persist diagonal
+     proximity per emission and change NOTHING about emission. Then a held-out split with
+     n>=100 per arm whose EV difference excludes zero at 95%, pre-registered before looking.
+     That is precisely the bar the OB filter failed twice; applying it up front is the whole
+     lesson of Items 114/159/160.
+
+── GROUP 3: BLOCKED (genuinely, with the blocker named) ───────────────────────────────────
+ 11. C3 FUNNEL RE-RUN — BLOCKED on source availability, found this round. The mutually-
+     exclusive funnel's per-gate counters (near-miss ring buffer, stand-aside reason counters)
+     live ONLY in the client diagnostics export; pipeline_health_v1 carries bar-freshness and
+     engine-liveness telemetry, not gate rejections. The probe attempt is pasted in
+     checkpoint_c_ob_rate.txt (it failed on a non-existent created_at column, and the table
+     would not have held the counters anyway). To unblock: either export the client
+     diagnostics while the app runs, or persist the gate counters server-side.
+
+ 12. THREE LOST EMISSIONS — RESTORE BLOCKED BY A CORRECT CONSTRAINT (Item 225 / B3).
+     The ladder is fully recoverable from telegram_outbox_v1; confidence is not recorded by
+     ANY witness, and emitted_signals_v1.confidence is NOT NULL. See Checkpoint B.
+
+====================================================================================================
+D3 — THE NEXT DECISION POINT, WITH ARITHMETIC
+====================================================================================================
+  THIS IS THE HEADLINE CHANGE OF THE ROUND: the era-mean test's n GATE HAS BEEN REACHED, and
+  it happened WEEKS EARLY. The prior round projected 2026-09-01 to 09-08 at ~12 LIVE
+  outcomes/week from n=36. Measured today:
+
+    canonical instrument re-run (artifacts/canonical_book_2026-08-26.txt, line 123):
+      post-boundary LIVE only   n= 50  WR=52.0%  EV_gross=-0.1760R  EV_net=-0.2012R
+                                PF_net=0.59  MaxDD_net=12.82R  95%CI_net=[-0.4375, +0.0424]
+
+    prior round (same instrument): n= 36  EV_net=-0.2617R  CI=[-0.5378, +0.0346]
+
+  READ THE ARITHMETIC HONESTLY:
+    * n went 36 -> 50. The pre-registered n>=49 threshold is MET.
+    * The CI TIGHTENED as expected (width 0.572 -> 0.480) and the point estimate moved
+      TOWARD zero (-0.2617 -> -0.2012).
+    * The CI STILL INCLUDES ZERO. Upper bound +0.0424.
+  PRE-REGISTERED RULE, APPLIED WITHOUT LOOSENING: a CI that includes zero does NOT exclude
+  zero. The test does not fire. ACCRUE to n=60. No post-hoc reinterpretation of a
+  "nearly excluded" interval — the upper bound being small is not the same as it being
+  negative, and treating it as such is exactly the move MINDSET rule 1 forbids.
+
+  NEXT EVALUATION: n=60, needing 7 more resolved LIVE outcomes.
+    at the measured POST-removal rate (69.04/week): 0.10 weeks -> 2026-08-27
+    at the measured PRE-removal rate  (13.25/week): 0.53 weeks -> 2026-08-30
+  DECISION DATE: 2026-08-27, re-evaluate on 2026-08-30 if accrual reverts to the old rate.
+
+  WHAT EACH OUTCOME MEANS, STATED BEFORE THE RESULT (power before result):
+    * CI excludes zero on the NEGATIVE side -> the forward edge is negative. Adding features
+      to the scorer is then the wrong response; re-deriving the score (or standing the system
+      down) becomes the only open question worth compute.
+    * CI still includes zero at n=60 -> keep accruing. Do NOT start reading the point
+      estimate as if it were a verdict; at n=60 a -0.20R point estimate with a CI touching
+      zero remains compatible with a flat book.
+
+====================================================================================================
+D4 — THE OB REMOVAL'S EFFECT ON THAT DATE
+====================================================================================================
+  Using C1's MEASURED post-removal rate (not the projection):
+    emission rate  : 10.485 LIVE signals/day, exact Poisson 95%CI [6.108, 16.787]
+    resolved-outcome accrual: 9.86/day = 69.04/week, vs 13.25/week before
+    speed-up factor: ~5.2x
+
+  ARITHMETIC ON THE DATE: the 7 outcomes still needed for n=60 take 0.10 weeks at 69.04/week
+  versus 0.53 weeks at 13.25/week — the decision pulls in from 2026-08-30 to 2026-08-27. Over
+  the longer horizon the effect is larger: the n=100 gates that governed the OB-absent cohort
+  and the confidence re-derivation move from ~2026-11-11 to ~2026-09-08, roughly nine weeks
+  earlier.
+
+  THE CAVEAT THAT BELONGS NEXT TO IT: that 69.04/week is extrapolated from 1.622 days and
+  k=16. The emission-rate CI alone spans [6.108, 16.787]/day, so the accrual rate carries at
+  least that much uncertainty and the pulled-in dates are best-case. The direction (faster) is
+  solid; the magnitude is not yet.
+
+  AND THE UNCOMFORTABLE PART, SAID PLAINLY: the OB removal accelerated accrual on a book
+  whose post-boundary LIVE EV_net is -0.2012R. Faster accrual on a negative point estimate
+  means the era-mean test resolves sooner, which is good for the DECISION and not
+  automatically good for the account. That is a reason to hold the 2026-08-27 evaluation
+  date, not to relax it.
+
+====================================================================================================
+GATE G-D
+====================================================================================================
+  26 unknowns worked to a final state (all CLOSED-UNRECOVERABLE, four searches pasted) : PASS
+  three-group outstanding list with a gate + measured accrual + date on EVERY row       : PASS
+  Item 211 recommendation (build second, measurement first, cost + authorising bar)     : PASS
+  Item 123 blocker verified against the live atr distribution and MOVED to READY TO DO  : PASS
+  decision date with arithmetic (2026-08-27, n=60)                                      : PASS
+  OB accrual effect computed from C1's measured rate                                    : PASS
+
+  G-D = PASS

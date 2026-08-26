@@ -41,6 +41,7 @@
 //   * Scratch trades (|R| < 0.15) are flagged, not silently dropped.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { computeEdgeMaxFavourableExcursion } from "./maxFavourableExcursion.ts";
 
 /**
  * BLOCK A / E-1 — realized_r must be NET of execution cost, not gross.
@@ -548,6 +549,20 @@ Deno.serve(async (req: Request) => {
       // never lands with an empty features object. When reconstruction is
       // impossible (insufficient pre-emission bars) the row carries an
       // EXPLICIT incomplete marker instead of a silently empty {}.
+      // ITEM 224: computed from the SAME bars the resolution used, split at the
+      // terminal bar the resolution returned.
+      const mfe = computeEdgeMaxFavourableExcursion(
+        {
+          direction: row.direction === "SELL" ? "SELL" : "BUY",
+          entry: Number(row.entry),
+          sl: Number(row.sl),
+          tp1: Number(row.tp1),
+          tp2: Number(row.tp2),
+          tp3: Number(row.tp3),
+          terminalBarTs: resolution.resolvedAtBarTs,
+        },
+        bars,
+      );
       const features = await computeLearningFeatures(client, emittedMs);
       if (features === null) {
         console.warn(`[Item169] features incomplete for ${row.signal_id.slice(-6)} — insufficient pre-emission bars; writing explicit marker`);
@@ -566,6 +581,18 @@ Deno.serve(async (req: Request) => {
         signal_duration_ms: resolution.resolvedAtBarTs - emittedMs,
         features: features ?? { featuresIncomplete: true, reason: "insufficient pre-emission bars", schemaVersion: 1 },
         feature_schema_version: 1,
+        // ITEM 224 — additive observational fields. The terminal status, result,
+        // exit_price, pnl and realized_r above are untouched: this resolver still
+        // takes the adverse side inside a bar (resolveFromBars checks the lock
+        // BEFORE the targets), and that conservative rule is deliberately kept.
+        // These four numbers only stop the discarded information being lost:
+        // BEFORE-EXIT is CAPTURABLE, AFTER-EXIT is COUNTERFACTUAL (Item 204).
+        // Same bar array and same pinned 8h window the resolution itself used,
+        // so the measurement basis cannot drift from the label basis.
+        max_favourable_target_reached_before_exit: mfe.targetReachedBeforeExit,
+        max_favourable_excursion_before_exit_r: mfe.excursionBeforeExitR,
+        max_favourable_target_after_exit: mfe.targetAfterExit,
+        max_favourable_excursion_after_exit_r: mfe.excursionAfterExitR,
       });
       resolved += 1;
     }

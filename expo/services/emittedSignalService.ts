@@ -200,6 +200,130 @@ const pruneRowToLiveColumns = (
   return { row: pruned, dropped };
 };
 
+// ── ITEM 225 / B5 — STARTUP SCHEMA ASSERTION (the complement of the A1 guard) ──
+//
+// The A1 write-path guard above keeps the ROW alive when a column is missing, by
+// dropping the FIELD. That is the right trade at write time, but it is SILENT:
+// the Item 210/213 columns were dropped from every insert for ~8 hours on
+// 2026-08-24 and the only trace was a console.warn nobody was watching, while
+// three live emissions went missing (Item 225: signal_1787083581937_xr6mjtadq,
+// signal_1787580401459_cpid69ppf, signal_1787587872040_446kz8aab).
+//
+// THE ITEM 149 FAILURE MODE, AVOIDED. The previous schema guard compared the DB
+// against a HAND-MAINTAINED column list, so when code and DB drifted together
+// away from that list it printed PASS for days. Here the expected set is derived
+// from `toRow()` ITSELF, by calling it on a synthetic probe record and taking its
+// keys. A column added to the code without the DB (or removed from the DB) is
+// therefore caught by construction — the assertion cannot go stale, because it
+// has no list of its own to fall behind.
+//
+// This is a READ plus logging only. It never blocks boot, never throws into the
+// caller, and never writes: a broken assertion must not be able to stop live
+// signal generation, which is the failure class it exists to protect.
+
+/** Result of the boot-time schema assertion, surfaced in the diagnostics export. */
+export interface EmittedSchemaAssertion {
+  ok: boolean;
+  checkedAt: string;
+  /** Columns toRow() writes that the LIVE table does not have — these get dropped at write time. */
+  missingInDb: string[];
+  /** Columns the LIVE table has that toRow() never writes — informational, not a failure. */
+  unwrittenInCode: string[];
+  /** Set when the probe itself could not run (offline, RLS, empty table). */
+  probeError: string | null;
+}
+
+let lastSchemaAssertion: EmittedSchemaAssertion | null = null;
+
+/** Read-only accessor for the diagnostics export. Null until the assertion runs. */
+export function getEmittedSchemaAssertion(): EmittedSchemaAssertion | null {
+  return lastSchemaAssertion;
+}
+
+/**
+ * A synthetic record used ONLY to enumerate toRow()'s key set. Never inserted.
+ * Every optional field is given a value so no key can be omitted by a `??` path.
+ */
+const SCHEMA_PROBE_RECORD: EmittedSignalRecord = {
+  signalId: '__schema_probe__',
+  emittedAt: 0,
+  direction: 'BUY',
+  entry: 0, sl: 0, tp1: 0, tp2: 0, tp3: 0,
+  confidence: 0,
+  rawConfidence: 0,
+  strengthDiff: 0,
+  slMultiplier: 0,
+  atr: 0,
+  regime: '',
+  sessionName: '',
+  hourUtc: 0,
+  htfTrend: '',
+  ltfTrend: '',
+  rsi: 0,
+  zoneMapAgeMinutes: 0,
+  srZonesSnapshot: null,
+  attentionScores: null,
+  nearestOppZoneBehindEntryPrice: 0,
+  nearestOppZoneBehindEntryType: 'SUPPORT',
+  nearestOppZoneBehindEntryDistAtr: 0,
+  drivingZoneTouches: 0,
+  source: 'LIVE',
+};
+
+/**
+ * Assert at startup that the LIVE emitted_signals_v1 column set can accept every
+ * field this code writes. Fire-and-forget: call it and do not await.
+ *
+ * Fails LOUDLY (console.error banner) rather than silently, because the silent
+ * version of this check is exactly what cost three live emissions.
+ */
+export async function assertEmittedSchemaContract(): Promise<EmittedSchemaAssertion> {
+  const checkedAt = new Date().toISOString();
+  const expected = Object.keys(toRow(SCHEMA_PROBE_RECORD));
+  const client = getEmittedClient();
+  if (!client) {
+    lastSchemaAssertion = { ok: false, checkedAt, missingInDb: [], unwrittenInCode: [], probeError: 'Supabase client unavailable (URL or anon key not configured)' };
+    console.warn('[EmittedSignal] B5_SCHEMA_ASSERTION SKIPPED — Supabase not configured; emission persistence is OFF entirely.');
+    return lastSchemaAssertion;
+  }
+  try {
+    // select('*') limit 1 is the same probe the write-path guard uses, so the
+    // assertion sees exactly what the guard will see.
+    const { data, error } = await client.from('emitted_signals_v1').select('*').limit(1);
+    if (error) {
+      lastSchemaAssertion = { ok: false, checkedAt, missingInDb: [], unwrittenInCode: [], probeError: error.message };
+      console.error(`[EmittedSignal] B5_SCHEMA_ASSERTION INCONCLUSIVE — live probe failed: ${error.message}. Treating as NOT verified.`);
+      return lastSchemaAssertion;
+    }
+    if (!data || data.length === 0) {
+      lastSchemaAssertion = { ok: false, checkedAt, missingInDb: [], unwrittenInCode: [], probeError: 'table empty — column set not observable via select *' };
+      console.warn('[EmittedSignal] B5_SCHEMA_ASSERTION INCONCLUSIVE — emitted_signals_v1 is empty, so its columns cannot be enumerated this way.');
+      return lastSchemaAssertion;
+    }
+    const live = new Set(Object.keys(data[0]));
+    const missingInDb = expected.filter(k => !live.has(k));
+    const unwrittenInCode = Array.from(live).filter(k => !expected.includes(k));
+    const ok = missingInDb.length === 0;
+    lastSchemaAssertion = { ok, checkedAt, missingInDb, unwrittenInCode, probeError: null };
+    if (!ok) {
+      console.error('='.repeat(78));
+      console.error('[EmittedSignal] B5_SCHEMA_ASSERTION FAILED — CODE WRITES COLUMNS THE LIVE DB LACKS');
+      console.error(`  missing in DB (${missingInDb.length}): ${missingInDb.join(', ')}`);
+      console.error('  Consequence: the A1 write-path guard will DROP these fields from every insert.');
+      console.error('  The ROW survives, so signal capture continues, but these measurements are being');
+      console.error('  lost RIGHT NOW. An unapplied migration is the likely cause (see Item 225).');
+      console.error('='.repeat(78));
+    } else {
+      console.log(`[EmittedSignal] B5_SCHEMA_ASSERTION PASS — all ${expected.length} written columns exist in the live schema${unwrittenInCode.length > 0 ? `; ${unwrittenInCode.length} live column(s) not written by this code: ${unwrittenInCode.join(', ')}` : ''}`);
+    }
+    return lastSchemaAssertion;
+  } catch (err: unknown) {
+    lastSchemaAssertion = { ok: false, checkedAt, missingInDb: [], unwrittenInCode: [], probeError: serializeError(err) };
+    console.error(`[EmittedSignal] B5_SCHEMA_ASSERTION ERROR: ${serializeError(err)}`);
+    return lastSchemaAssertion;
+  }
+}
+
 /**
  * Persist an emitted signal to emitted_signals_v1. Fire-and-forget: errors are
  * counted and logged, never propagated to the caller.

@@ -443,6 +443,33 @@ function buildTelegramMessage(signal: TradingSignal, numberOfTPs: 1 | 2 | 3 = 3)
     lines.push(`*TAKE PROFIT 3:* ${formatPrice(signal.tp3)}`);
   }
 
+  /**
+   * ITEM 225 (B3) — CONFIDENCE IN THE PERSISTED PAYLOAD.
+   *
+   * telegram_outbox_v1 rows are written BEFORE delivery, which made the outbox
+   * the ONLY surviving witness of three live emissions that never reached
+   * emitted_signals_v1 (signal_1787083581937_xr6mjtadq 2026-08-18T20:06Z,
+   * signal_1787580401459_cpid69ppf 2026-08-24T14:06Z,
+   * signal_1787587872040_446kz8aab 2026-08-24T16:11Z). The persisted alert held
+   * the whole ladder — direction, entry zone, SL, TP1-3 — so those rows were
+   * ALMOST restorable. They were not restorable, for exactly one reason:
+   * emitted_signals_v1.confidence is NOT NULL and NO witness had recorded the
+   * confidence. That constraint is CORRECT (a live emission with no confidence
+   * is not a real record), so the fix belongs here, in the witness, not there.
+   *
+   * Adding the line makes the outbox a COMPLETE emission witness going forward:
+   * the next time the emission write path breaks, the row can be rebuilt from
+   * recorded values alone with nothing invented. This is presentational for the
+   * human reader and load-bearing for the archaeology.
+   */
+  const confidencePct = Number.isFinite(signal.confidence)
+    ? Math.round(signal.confidence * 100)
+    : null;
+  if (confidencePct !== null) {
+    lines.push("");
+    lines.push(`*CONFIDENCE:* ${confidencePct}%`);
+  }
+
   return lines.join("\n");
 }
 

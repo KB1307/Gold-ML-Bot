@@ -1,0 +1,132 @@
+
+====================================================================================================
+ITEM 226 / CHECKPOINT C — THE REAL EMISSION RATE NOW THE OB FILTER IS GONE
+====================================================================================================
+  run at              : 2026-08-26T07:50:23.165Z
+  OB removal (EXACT)  : 2026-08-24T16:55:33Z  commit 68cc662
+  provenance          : git log -S "OB_FILTER_ENABLED = false" --format='%h %cI' -- expo/services/signalEngine.ts
+                        returned exactly ONE commit: 68cc662 2026-08-24T16:55:33Z.
+  NOTE                : that is the SAME commit as the Item 225 write-path guard, so the
+                        post-removal window and the post-guard window are identical.
+  previous round used : "~17:00Z" — off by ~4.5 min, and unpinned. Every number below
+                        derives from the exact instant instead.
+
+====================================================================================================
+C1 — ACTUAL LIVE EMISSION RATE SINCE THE EXACT REMOVAL INSTANT
+====================================================================================================
+  window              : 2026-08-24T16:55:33Z -> 2026-08-26T07:50:23.165Z
+  elapsed             : 1.6214 days (38.91 h)
+  emissions (ALL src) : 17
+  emissions (LIVE)    : 17   <- the rate-bearing count
+  observed rate       : 10.485 LIVE signals/day
+  exact Poisson 95%CI : [6.108, 16.787] signals/day  (count CI [9.903, 27.219] over 1.6214d)
+  POWER STATED FIRST  : with k=17 over 1.62 days the CI spans a factor of
+                        ~2.7; this is a WIDE interval and no rate inside it is excluded.
+
+  emission timestamps in the window (LIVE):
+    2026-08-24T20:22:56.597+00:00  signal_1787602976597_c9q2mvrjp  BUY conf=0.92
+    2026-08-24T22:35:28.681+00:00  signal_1787610928681_uwx2xmrb0  BUY conf=0.9
+    2026-08-25T00:06:19.467+00:00  signal_1787616379467_9x7n7gvsu  BUY conf=0.91
+    2026-08-25T03:15:17.55+00:00  signal_1787627717550_5v2xnhlob  SELL conf=0.93
+    2026-08-25T05:00:44.103+00:00  signal_1787634044103_73v90fvi2  SELL conf=0.92
+    2026-08-25T06:08:40.558+00:00  signal_1787638120558_jxtylnpa2  BUY conf=0.9
+    2026-08-25T06:25:21.579+00:00  signal_1787639121579_bjn2zv87k  BUY conf=0.92
+    2026-08-25T06:50:43.728+00:00  signal_1787640643728_6t3yudki9  BUY conf=0.93
+    2026-08-25T07:51:41.493+00:00  signal_1787644301493_hmn912dmm  SELL conf=0.9
+    2026-08-25T13:40:45.565+00:00  signal_1787665245565_jdm7hiv8j  SELL conf=0.9
+    2026-08-25T15:48:08.393+00:00  signal_1787672888393_97h23t5al  BUY conf=0.91
+    2026-08-25T19:46:42.805+00:00  signal_1787687202805_5xn5gf7q8  BUY conf=0.95
+    2026-08-25T22:36:16.715+00:00  signal_1787697376715_9gf8clmiq  BUY conf=0.91
+    2026-08-26T01:10:00.851+00:00  signal_1787706600851_bui2960z3  SELL conf=0.93
+    2026-08-26T05:49:30.536+00:00  signal_1787723370536_t0pw1g835  SELL conf=0.95
+    2026-08-26T07:25:07.782+00:00  signal_1787729107782_qs9eo3nlf  BUY conf=0.92
+    2026-08-26T07:42:35.534+00:00  signal_1787730155534_ns1gd2sxm  BUY conf=0.92
+
+====================================================================================================
+C2 — MEASURED vs PROJECTED (21.43/day), AND WHAT A MISS IMPLIES
+====================================================================================================
+  pre-removal measured : 2.71 signals/day
+  projected post-removal: 21.43 signals/day (the OB gate was modelled as the binding constraint)
+  ACTUAL post-removal  : 10.485 signals/day, exact Poisson 95%CI [6.108, 16.787]
+  is 21.43/day inside the CI? NO — the projection is EXCLUDED by this data
+  is 2.71/day  inside the CI? NO — the pre-removal rate is excluded
+
+  THE INHERITANCE, STATED PLAINLY. If 21.43/day is excluded, the miss is NOT an OB-specific
+  mistake. That projection came from treating the funnel's per-gate marginal cost as the
+  number of signals a gate would release if removed. Gates are NOT independent: removing
+  one exposes the next binding gate, so the marginal cost of EVERY gate in that funnel
+  inherits the same over-statement. Any future "removing gate X buys N signals/day" claim
+  from that funnel is suspect for the same reason — including the ones already recorded.
+
+====================================================================================================
+C3 — FUNNEL RE-RUN (mutually exclusive stages, must sum EXACTLY to attempts)
+====================================================================================================
+  pipeline_health_v1 unreadable: column pipeline_health_v1.created_at does not exist
+  FUNNEL STATUS: BLOCKED — the funnel stage counters live in the CLIENT diagnostics
+  export (near-miss ring buffer + stand-aside reason counters), which is not queryable
+  from a script. This checkpoint therefore CANNOT re-derive the mutually-exclusive
+  funnel from a live source, and I am not going to re-quote the previous run as if it
+  were fresh evidence. Reported as BLOCKED with the reason, per the CONTINUATION RULE.
+
+====================================================================================================
+C4 — POST-REMOVAL COHORT BOOK (resolvable subset only; the rest is PENDING by construction)
+====================================================================================================
+  post-removal LIVE emissions : 17
+  RESOLVED (non-scratch, R present): 16
+  PENDING                     : 1  (an 8h resolution window means recent emissions cannot be decided yet)
+    97_c9q2mvrjp  BUY  R_gross=0.2750  R_net=0.2500  storedR=0.2911
+    81_uwx2xmrb0  BUY  R_gross=0.2875  R_net=0.2625  storedR=0.2875
+    67_9x7n7gvsu  BUY  R_gross=1.0000  R_net=0.9750  storedR=1
+    50_5v2xnhlob  SELL  R_gross=-1.0000  R_net=-1.0250  storedR=-1
+    03_73v90fvi2  SELL  R_gross=-1.0000  R_net=-1.0250  storedR=-1
+    58_jxtylnpa2  BUY  R_gross=0.2875  R_net=0.2625  storedR=0.2875
+    79_bjn2zv87k  BUY  R_gross=-1.0000  R_net=-1.0250  storedR=-1
+    28_6t3yudki9  BUY  R_gross=-1.0000  R_net=-1.0250  storedR=-1
+    93_hmn912dmm  SELL  R_gross=0.2750  R_net=0.2500  storedR=0.2911
+    65_jdm7hiv8j  SELL  R_gross=1.0000  R_net=0.9750  storedR=1.0253
+    93_97h23t5al  BUY  R_gross=-1.0000  R_net=-1.0250  storedR=-1
+    05_5xn5gf7q8  BUY  R_gross=0.2750  R_net=0.2500  storedR=0.275
+    15_9gf8clmiq  BUY  R_gross=0.2750  R_net=0.2500  storedR=0.2911
+    51_bui2960z3  SELL  R_gross=0.2750  R_net=0.2500  storedR=0.2911
+    36_t0pw1g835  SELL  R_gross=0.2750  R_net=0.2500  storedR=0.2911
+    34_ns1gd2sxm  BUY  R_gross=0.2750  R_net=0.2500  storedR=0.2911
+  n=16  WR=68.8%  EV_gross=-0.0313R  EV_net=-0.0563R
+  POWER: at n=16 this cohort cannot support any EV claim. It is recorded as the
+  FIRST live evidence on the arm the filter used to suppress, and nothing more.
+
+====================================================================================================
+C5 — DEAD CONSTANT (resolved in code this round; see signalEngine.ts JSDoc above OB_FILTER_MODE)
+====================================================================================================
+  OB_FILTER_MODE = 'penalty' is UNREACHABLE while OB_FILTER_ENABLED = false.
+  Read sites, verified at line level:
+    signalEngine.ts:8845  if (OB_FILTER_MODE === 'reject')  <- nested inside
+    signalEngine.ts:8840  if (OB_FILTER_ENABLED) {          <- so unreachable today
+    signalEngine.ts:2910  getRuntimeConfigProbe()           <- REPORTS only, gates nothing
+  NEUTRALISATION CHECK: no floor, clamp or Math.max is applied to OB_FILTER_MODE or to
+  OB_ABSENT_CONFIDENCE_PENALTY on any read path — the penalty at :8854 is a plain
+  subtraction compared against the pre-existing absoluteConfidenceFloor. The constant is
+  not silently neutralised; it is simply not reached.
+  RESOLUTION: RETAINED deliberately (the documented re-enable criterion names
+  mode='reject', so the constant IS that path) with the JSDoc corrected to say so.
+
+DONE (read-only).
+
+
+====================================================================================================
+GATE G-C
+====================================================================================================
+  exact removal timestamp pinned from git (68cc662 2026-08-24T16:55:33Z, not "~17:00Z") : PASS
+  live rate + EXACT Poisson 95% CI, power stated before the result                       : PASS
+    -> 17 LIVE emissions / 1.6214 days = 10.485/day, CI [6.108, 16.787]/day
+  projection compared, inheritance question answered                                     : PASS
+    -> 21.43/day is EXCLUDED by the CI; so is the pre-removal 2.71/day. The removal DID
+       raise the rate ~3.9x, and the projection still over-stated it ~2.0x.
+  funnel re-run summing exactly to attempts                                              : BLOCKED
+    -> the per-gate counters exist ONLY in the client diagnostics export; pipeline_health_v1
+       holds bar-freshness/liveness telemetry, not gate rejections. Probe attempt pasted
+       above. NOT closed by re-quoting the previous run as if it were fresh evidence.
+  post-removal cohort book on the resolvable subset, rest labelled pending                : PASS
+    -> n=16 resolved, 1 pending; per-row R printed; power stated as insufficient for EV
+  dead constant resolved (retained + JSDoc corrected + neutralisation check)               : PASS
+
+  G-C = PASS WITH ONE BLOCKED SUB-GATE (C3), blocker named rather than worked around.

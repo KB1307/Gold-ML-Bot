@@ -7,6 +7,7 @@ import { createClient as createSupabaseClient, type SupabaseClient } from "@supa
 import { Platform } from "react-native";
 import { appendOutcome as appendOutcomeToStore, getAllOutcomes as getAllOutcomesFromStore, getOutcomeCount as getOutcomeCountFromStore, migrateLegacyOutcomesIfEmpty, pruneToCap as pruneOutcomeStoreToCap, pushOutcomesToRemote, hydrateFromRemote as hydrateLearningStoreFromRemote, getLearningCorpusStats, type StoredTradeOutcome } from "@/services/learningStore";
 import { resolveSignalWithBars } from "@/services/signalResolver";
+import type { MfeResult } from "@/services/maxFavourableExcursion";
 import type { OhlcBar } from "@/services/barStore";
 import { appendDiagnosticEvent } from "@/services/diagnosticEventStore";
 import { fetchTier0SRZones, recordTier0FallbackUse } from "@/services/srZoneTier0Service";
@@ -104,6 +105,17 @@ interface TradeOutcome {
    * that actually carry the wide fields instead of inferring it from undefined.
    */
   featureSchemaVersion?: number;
+  /**
+   * ITEM 224 — max favourable excursion, split at the terminal bar. Supplied by
+   * the CALLER from the resolver that produced this outcome, because the engine
+   * has no bars of its own at record time. Absent means "this path had no bars
+   * to measure", NOT "the excursion was zero" — the two must never collapse.
+   *
+   * OBSERVATIONAL: read by measurement scripts only. It feeds no gate, no score,
+   * no weight fitting and no ladder, so it cannot alter what the engine emits.
+   * BEFORE-EXIT is capturable; AFTER-EXIT is counterfactual (Item 204).
+   */
+  maxFavourable?: MfeResult;
 }
 
 interface IntermarketData {
@@ -806,6 +818,31 @@ const OB_FILTER_ENABLED = false;
  * RE-ENABLE criterion (unchanged): a held-out re-measurement with n≥100 per
  * arm whose OB-present vs OB-absent EV difference excludes zero at 95%,
  * FAVOURING the filter — then re-enable and set OB_FILTER_MODE='reject'. */
+/**
+ * ITEM 226 (C5) — THIS CONSTANT IS CURRENTLY DEAD, AND DELIBERATELY RETAINED.
+ *
+ * REACHABILITY, VERIFIED AT LINE LEVEL: the only read of OB_FILTER_MODE that can
+ * affect behaviour is at :8845 (`if (OB_FILTER_MODE === 'reject')`), which sits
+ * INSIDE `if (OB_FILTER_ENABLED)` at :8840. With OB_FILTER_ENABLED = false that
+ * whole block is unreachable, so the value 'penalty' has NO effect on emission
+ * today — neither the hard reject nor the 5pt OB_ABSENT_CONFIDENCE_PENALTY path
+ * can run. The only other read is getRuntimeConfigProbe() at :2910, which merely
+ * REPORTS the value into the diagnostics export and gates nothing.
+ *
+ * NEUTRALISATION CHECK (guardrail): there is no floor, clamp or Math.max applied
+ * to this constant or to OB_ABSENT_CONFIDENCE_PENALTY on any read path — the
+ * penalty is a plain subtraction at :8854 compared against the pre-existing
+ * absoluteConfidenceFloor. So the constant is not silently neutralised; it is
+ * simply not reached.
+ *
+ * WHY RETAIN RATHER THAN DELETE: the re-enable criterion documented immediately
+ * above explicitly names setting OB_FILTER_MODE='reject'. The constant IS that
+ * documented path, so deleting it would delete the shape of the decision and
+ * leave a criterion referring to something that no longer exists. What was
+ * wrong was the SILENCE — a live-looking 'penalty' value implying an active
+ * penalty. That is now stated here instead of being inferable only by reading
+ * two distant call sites.
+ */
 const OB_FILTER_MODE: 'reject' | 'penalty' = 'penalty';
 /** ITEM 160(c) — confidence penalty (percentage points) applied when no
  * nearby unmitigated OB exists. A candidate whose penalised confidence falls
@@ -7672,7 +7709,12 @@ class SignalGenerationEngine {
     }
   }
 
-  async recordTradeOutcome(signalId: string, entryPrice: number, exitPrice: number, result: 'WIN' | 'LOSS', features?: Partial<SignalLearningContext>, misleadingFeatures?: FeatureConfidence[], signalDuration?: number, confidence?: number, stopDistance?: number): Promise<void> {
+  /**
+   * ITEM 224: `maxFavourable` is the LAST parameter and fully optional, so every
+   * pre-existing call site keeps its exact behaviour and simply records the
+   * field as absent. Nothing else in this method changed.
+   */
+  async recordTradeOutcome(signalId: string, entryPrice: number, exitPrice: number, result: 'WIN' | 'LOSS', features?: Partial<SignalLearningContext>, misleadingFeatures?: FeatureConfidence[], signalDuration?: number, confidence?: number, stopDistance?: number, maxFavourable?: MfeResult): Promise<void> {
     const pnl = result === 'WIN' ? Math.abs(exitPrice - entryPrice) : -Math.abs(exitPrice - entryPrice);
     const normalizedConfidence = Math.max(0.42, Math.min(0.95, confidence ?? this.performanceMetrics.avgConfidence ?? 0.72));
     // ITEM 179(c) — bar-derived fallback when the caller dropped the learning
@@ -7775,6 +7817,9 @@ class SignalGenerationEngine {
       realizedR,
       isScratch,
       featureSchemaVersion: normalizedFeatures.schemaVersion,
+      // ITEM 224 — ADDITIVE. Every field above is computed exactly as before:
+      // result, pnl, realizedR and isScratch are untouched by this round.
+      maxFavourable,
     };
     
     // PHASE 2 (A2): remember confirmed stop-outs per direction. Direction is

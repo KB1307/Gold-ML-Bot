@@ -73,6 +73,21 @@ export interface StoredTradeOutcome {
   isScratch?: boolean;
   /** Feature-vector schema version of `features` (1 = legacy 6-scalar, 2 = wide). */
   featureSchemaVersion?: number;
+  /**
+   * ITEM 224 — max favourable excursion, split at the terminal bar. Written to
+   * the four additive trade_outcomes_v1 columns by toRemoteRow below.
+   *
+   * ABSENT IS NOT ZERO. A path with no bars to measure leaves this undefined and
+   * the columns go to NULL, which is what makes the A4 backfill's
+   * `.is(..., null)` guard a correct idempotency test. Writing 0 for "unknown"
+   * would silently make an unmeasured signal look like one that never moved.
+   */
+  maxFavourable?: {
+    targetReachedBeforeExit: number;
+    excursionBeforeExitR: number;
+    targetAfterExit: number;
+    excursionAfterExitR: number;
+  };
 }
 
 /** Outcomes queued for the remote corpus because a push failed (or was offline). */
@@ -417,6 +432,13 @@ function toRemoteRow(outcome: StoredTradeOutcome): Record<string, unknown> {
     features: outcome.features as Record<string, unknown> ?? {},
     misleading_features: (outcome.misleadingFeatures as Record<string, unknown>) ?? null,
     feature_schema_version: outcome.featureSchemaVersion ?? 1,
+    // ITEM 224 — additive observational columns. NULL when the recording path
+    // had no bars to measure (absent ≠ zero, see StoredTradeOutcome). Every
+    // label field above is written exactly as before; this cannot reach a label.
+    max_favourable_target_reached_before_exit: outcome.maxFavourable?.targetReachedBeforeExit ?? null,
+    max_favourable_excursion_before_exit_r: outcome.maxFavourable?.excursionBeforeExitR ?? null,
+    max_favourable_target_after_exit: outcome.maxFavourable?.targetAfterExit ?? null,
+    max_favourable_excursion_after_exit_r: outcome.maxFavourable?.excursionAfterExitR ?? null,
   };
 }
 

@@ -14,7 +14,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.5"
+    PostgrestVersion: "14.17"
   }
   public: {
     Tables: {
@@ -422,6 +422,10 @@ export type Database = {
           feature_schema_version: number
           features: Json
           is_scratch: boolean | null
+          max_favourable_excursion_after_exit_r: number | null
+          max_favourable_excursion_before_exit_r: number | null
+          max_favourable_target_after_exit: number | null
+          max_favourable_target_reached_before_exit: number | null
           misleading_features: Json | null
           pnl: number
           realized_r: number | null
@@ -441,6 +445,10 @@ export type Database = {
           feature_schema_version?: number
           features?: Json
           is_scratch?: boolean | null
+          max_favourable_excursion_after_exit_r?: number | null
+          max_favourable_excursion_before_exit_r?: number | null
+          max_favourable_target_after_exit?: number | null
+          max_favourable_target_reached_before_exit?: number | null
           misleading_features?: Json | null
           pnl: number
           realized_r?: number | null
@@ -460,6 +468,10 @@ export type Database = {
           feature_schema_version?: number
           features?: Json
           is_scratch?: boolean | null
+          max_favourable_excursion_after_exit_r?: number | null
+          max_favourable_excursion_before_exit_r?: number | null
+          max_favourable_target_after_exit?: number | null
+          max_favourable_target_reached_before_exit?: number | null
           misleading_features?: Json | null
           pnl?: number
           realized_r?: number | null

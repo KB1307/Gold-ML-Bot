@@ -9,6 +9,7 @@ import { AuthProvider } from "@/contexts/AuthContext";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { View, ActivityIndicator, Text, StyleSheet, LogBox, Platform } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
+import { assertEmittedSchemaContract } from "@/services/emittedSignalService";
 
 // Global uncaught error handler for diagnostics — catches module-level crashes
 // before the React error boundary can mount.
@@ -150,6 +151,18 @@ export default function RootLayout() {
   const [isClientReady, setIsClientReady] = useState<boolean>(Platform.OS !== 'web');
 
   useEffect(() => {
+    /**
+     * ITEM 225 / B5 — boot-time emission-schema assertion.
+     *
+     * Fire-and-forget by design: it must never delay or block boot, because the
+     * whole point is to protect live signal capture, not to gate it. It derives
+     * its expected column set from the write path's own toRow() keys and probes
+     * the LIVE table, so it cannot go stale the way the Item 149 hand-maintained
+     * inventory did (that guard printed PASS for days while three live emissions
+     * were being silently pruned).
+     */
+    void assertEmittedSchemaContract();
+
     const timer = setTimeout(() => {
       void SplashScreen.hideAsync();
     }, 100);

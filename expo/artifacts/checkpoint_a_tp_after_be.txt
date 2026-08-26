@@ -1,0 +1,170 @@
+
+====================================================================================================
+ITEM 224 / CHECKPOINT A — TP-AFTER-BE GAP: MFE FIELDS, PARITY, BACKFILL
+====================================================================================================
+  run at            : 2026-08-26T07:42:52.443Z
+  mode              : WRITE (guarded UPDATE)
+  pinned            : 8h window (Item 41a), safeBarStart=emitted+60s, fromScratch, gold_m1_bars via anon key
+
+====================================================================================================
+A2b — LIVE POSTGREST COLUMN PROBE OF trade_outcomes_v1 (AFTER migration 014 ran)
+====================================================================================================
+  WHY: migrations 010/011/012 sat unapplied for days while the code already wrote their
+  columns, and the Item 149 guard printed PASS against its own stale inventory. A migration
+  file in the repo is NOT a migration in the database. This asks the live schema directly.
+  live column count : 21
+    PRESENT  max_favourable_target_reached_before_exit
+    PRESENT  max_favourable_excursion_before_exit_r
+    PRESENT  max_favourable_target_after_exit
+    PRESENT  max_favourable_excursion_after_exit_r
+  named-column select: OK (PostgREST accepted all four names)
+  A2b VERDICT       : PASS — all four columns exist in the LIVE schema
+
+====================================================================================================
+A3 — PARITY FIXTURE ON SYNTHETIC BARS (client impl vs edge impl, EXACT equality)
+====================================================================================================
+  HONEST SCOPE: the two resolvers' TERMINAL LABELS legitimately differ on same-bar
+  ambiguity (client uses an open-distance heuristic at signalResolver.ts:293-318; the edge
+  resolver checks the lock BEFORE the targets at index.ts:410-470). That divergence class is
+  documented and is NOT fixed here. These four FIELDS are ordering-independent max/touched
+  scans, which is exactly why they CAN be made identical when the labels cannot.
+
+  PASS  BUY: TP2 touched in the TERMINAL bar (the discarded same-bar case)
+        client: before[t=2 r=1.1] after[t=3 r=1.5]
+        edge  : before[t=2 r=1.1] after[t=3 r=1.5]
+
+  PASS  SELL: TP3 only AFTER the exit (the Item 204 counterfactual case)
+        client: before[t=1 r=0.75] after[t=3 r=1.45]
+        edge  : before[t=1 r=0.75] after[t=3 r=1.45]
+
+  PASS  BUY: never moved favourably at all (0/0 must stay 0/0, no floor)
+        client: before[t=0 r=-0.05] after[t=0 r=0]
+        edge  : before[t=0 r=-0.05] after[t=0 r=0]
+
+  PASS  SELL: terminal bar is the LAST bar (after-exit side legitimately empty)
+        client: before[t=1 r=1] after[t=0 r=0]
+        edge  : before[t=1 r=1] after[t=0 r=0]
+
+  PASS  BUY: degenerate zero risk (entry == sl) must yield all zeros, not NaN/Infinity
+        client: before[t=0 r=0] after[t=0 r=0]
+        edge  : before[t=0 r=0] after[t=0 r=0]
+
+  A3 VERDICT: 5/5 fixtures agree EXACTLY  → PASS
+
+  corpus loaded: 467 emitted signals, 58348 bars (through 2026-08-26T07:41:00.000Z)
+  canonical fromScratch replay: 453 signals resolved
+
+====================================================================================================
+A3b — PARITY ON >=30 REAL RESOLVED SIGNALS (exact equality, disagreements by signal_id)
+====================================================================================================
+  WHY THIS AND NOT JUST THE FIXTURE: these two resolvers have diverged on REAL data before —
+  that is the entire reason a parity question exists. A synthetic pass alone would be the
+  weaker claim, so the same two implementations are run over real bars below.
+  real signals compared        : 448 (requirement: >=30)
+  exact-equality disagreements : 0
+  A3b VERDICT: PASS
+
+====================================================================================================
+A4 — BACKFILL OF THE FOUR COLUMNS (server-side atomic guard, four columns only)
+====================================================================================================
+  GATE: the UPDATE carries .is('max_favourable_target_reached_before_exit', null), so
+  POSTGRES enforces write-once atomically — the F-29-safe form of the Item 179(d)
+  .eq('features','{}') guard. Only the four new columns are in the payload; result,
+  realized_r, exit_price, pnl, ts and direction are unreachable from this script.
+
+  rows scanned (replay-decided)         : 453
+  rows UPDATED                : 95
+  skipped — column already non-null     : 345
+  skipped — no trade_outcomes_v1 row    : 12
+  skipped — no MFE (entry never filled) : 1
+  UPDATE failures                       : 0
+  POST-WRITE live verification: rows with a non-null before-exit target = 440   IDEMPOTENCY PROOF: re-running the guarded UPDATE over the first 25 rows touched 0 rows (must be 0)
+
+====================================================================================================
+A4b — SL_AFTER_BE EXITS: BEFORE-EXIT (CAPTURABLE) vs AFTER-EXIT (COUNTERFACTUAL)
+====================================================================================================
+  SL_AFTER_BE exits in the canonical replay: n=163
+
+  ── BEFORE EXIT — CAPTURABLE (what a different exit rule could actually have banked) ──
+     highest target touched at or before the terminal bar:
+       TP0 (none):   0  (0.0%)
+       TP1: 153  (93.9%)
+       TP2:   9  (5.5%)
+       TP3:   1  (0.6%)
+     reached TP2 or better BEFORE the exit: 10/163 (6.1%)
+     mean before-exit excursion: 0.6607R   max: 1.6308R
+
+  ── AFTER EXIT — COUNTERFACTUAL (position ALREADY CLOSED; Item 204 continuation only) ──
+     THIS IS NOT CAPTURABLE. It cannot be banked by any exit rule, because the trade was
+     already terminal when these levels printed. Never quote it as realisable P&L.
+       TP0 (none):   2  (1.2%)
+       TP1:  14  (8.6%)
+       TP2:  17  (10.4%)
+       TP3: 130  (79.8%)
+     reached TP2 or better AFTER the exit: 147/163 (90.2%)
+     mean after-exit excursion: 4.7228R   max: 19.9450R
+
+  whole-book before-exit target mix (n=448, all terminal types): {"0":170,"1":153,"2":31,"3":94}
+
+====================================================================================================
+A5 — WHAT THIS UNLOCKS (statement only; the lock question is NOT reopened on this data)
+====================================================================================================
+  The lock question (Items 202-204) closed EV-NEUTRAL on a properly paired replay, and this
+  round does not revisit that verdict. What changes is the INSTRUMENT: a per-signal MFE
+  column means any future exit-rule question can be asked with a SQL query over durable
+  per-signal facts instead of standing up an aggregate replay harness whose parameters have
+  to be re-pinned and re-argued each time. The before/after split is what makes that safe:
+  the capturable column can inform an exit rule; the counterfactual column can only ever
+  describe continuation.
+
+DONE — additive fields only. No terminal status, result or realized_r was read or written.
+
+
+====================================================================================================
+A1 — THE MECHANISM, QUOTED AT LINE LEVEL ON BOTH RESOLVERS
+====================================================================================================
+  CLIENT signalResolver.ts:293-318 — same-bar ambiguity, adverse side taken:
+      if (newTargetLevelThisBar !== null && slBreachedPreState) {
+        const targetDist = Math.abs(bar.open - newTargetLevelThisBar);
+        const slDist = Math.abs(bar.open - slBreachLevel);
+        if (slDist <= targetDist) {
+          ... currentStatus = 'SL_AFTER_BE';
+              currentTargetsHit = Math.max(currentTargetsHit, 1);   <- forced to 1
+              exitPrice = postTP1Lock; outcomeResult = 'WIN';
+          break;                                                     <- TP2/TP3 touch DISCARDED
+  CLIENT signalResolver.ts:345-361 — post-banking same-bar retrace ends the trade:
+      if (hasTP2After && entryHitAfter) { ... 'PARTIAL_WIN_SL_HIT' ... break; }
+      if (!hasTP2After && postLockHitAfter) { ... 'SL_AFTER_BE' ... break; }
+    Any HIGHER target touched later in that same bar is never recorded.
+  EDGE resolve-emitted-signals/index.ts:410-470 — lock checked BEFORE targets, every bar:
+      for (const bar of bars) {
+        ...
+        if (touched(bar, lockPrice)) { ... return { status: "SL_AFTER_BE", ... } }   <- returns first
+        if (touched(bar, Number(signal.tp3))) { ... }                               <- never reached
+    Same information loss, reached by a different route.
+  AND THE LARGER LOSS: everything after the terminal bar was never recorded at all. Item 204
+  measured 105/151 = 69.5% of SL_AFTER_BE exits reaching TP2+ later in the same 8h window — a
+  fact the corpus had no column to hold.
+
+  These branches are CORRECT for R accounting (one OHLC bar carries no tick order, so the
+  adverse assumption is the conservative one) and NOTHING about them changed this round. Only
+  four additive observational columns were added.
+
+====================================================================================================
+GATE G-A
+====================================================================================================
+  mechanism quoted at line level on BOTH resolvers                                  : PASS
+  migration 014 applied LIVE via runMigration + post-migration column probe pasted  : PASS
+    -> 4/4 columns PRESENT; PostgREST accepted all four names in a by-name select
+  four fields shipped on BOTH resolvers (client + edge, source cited both ways)     : PASS
+  parity on SYNTHETIC fixtures, exact equality                                      : PASS  5/5
+  parity on >=30 REAL resolved signals, exact equality                              : PASS  448 compared, 0 disagreements
+    -> also asserted the value the resolver ATTACHED equals a fresh compute: 0 disagreements
+  guarded backfill with a server-side atomic .is(..., null) filter                   : PASS
+    -> scanned 453, UPDATED 95 (345 already set by the first pass), 12 no outcome row,
+       1 no MFE (entry never filled), 0 failures; 440 rows now non-null live
+  idempotency proven by re-running the guarded UPDATE                                : PASS  0 rows touched
+  both distributions reported, after-exit labelled COUNTERFACTUAL in the artifact    : PASS
+  A5 unlock statement, lock question NOT reopened                                    : PASS
+
+  G-A = PASS

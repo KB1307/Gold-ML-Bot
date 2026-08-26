@@ -1957,7 +1957,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
               undefined,
               signalAge,
               undefined,
-              Math.abs(signal.entryPrice - signal.sl)
+              Math.abs(signal.entryPrice - signal.sl),
+              // ITEM 224: the resolver that produced this label also measured the
+              // excursion it discarded, over the SAME bars. Passed through, never
+              // recomputed here, so the label and the measurement cannot drift.
+              barResolution.maxFavourable
             ).catch(err => {
               console.error(`Failed to record catch-up outcome:`, err);
             });
@@ -2223,7 +2227,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             undefined,
             now - signalTs,
             undefined,
-            Math.abs(signal.entryPrice - signal.sl)
+            Math.abs(signal.entryPrice - signal.sl),
+            // ITEM 224: from the audit resolver's own bars (same window, same scan).
+            barOutcome.maxFavourable
           ).catch(err => console.error('Failed to record corrected WIN outcome:', err));
         } else if (originalOutcomeWasWin && newOutcomeIsLoss) {
           console.log(`   🧠 Submitting corrected LOSS outcome to learning engine (was false TP)`);
@@ -2236,7 +2242,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             undefined,
             now - signalTs,
             undefined,
-            Math.abs(signal.entryPrice - signal.sl)
+            Math.abs(signal.entryPrice - signal.sl),
+            // ITEM 224: from the audit resolver's own bars (same window, same scan).
+            barOutcome.maxFavourable
           ).catch(err => console.error('Failed to record corrected LOSS outcome:', err));
         } else if (!originalOutcomeWasLoss && newOutcomeIsLoss) {
           console.log(`   🧠 Submitting corrected LOSS outcome to learning engine`);
