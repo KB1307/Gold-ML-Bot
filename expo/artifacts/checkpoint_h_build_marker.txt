@@ -122,3 +122,47 @@ GATE G-H
   G-H = BLOCKED-ON-USER — an acceptable close under the checkpoint's own terms. Steps are above;
   the moment you paste an export showing a real SHA, the five-round-old marker chain is finally
   verified END TO END against the thing it exists to attribute: a real running bundle.
+
+====================================================================================================
+ADDENDUM (same round, ~2h after the above) — REAL-METRO SERVE TEST + A FOURTH REMOVAL CAUGHT
+====================================================================================================
+Executing the cache-clearing restart surfaced TWO things the offline proofs could not see:
+
+(1) THE RESTORE ITSELF HAD BEEN SILENTLY REVERTED AGAIN (FOURTH strip). When bundling began, the
+served iOS bundle still carried literal placeholders inside constants/buildMarker.ts module code.
+Reading babel.config.js back from disk showed bare presets — no plugin — although it was restored
+and proof-passed earlier this same round. Everything else shipped this round (telemetry labels,
+signalEngine provenance fields, diagnosticsExport AT/TRIGGER lines, artifacts, ledger rows) was
+verified INTACT; only babel.config.js had been externally rewritten. The plugin + DO-NOT-STRIP
+guard comment were re-applied.
+
+(2) SUBSTITUTION VERIFIED THROUGH REAL METRO (strongest evidence short of an on-device export).
+After re-restoring and restarting Metro with --clear, an actual dev bundle was fetched from the
+running server and inspected (all three fetches used platform=ios&dev=true via expo-router entry):
+
+    var BUILD_SHA = "464ae4b";
+    var BUILD_MARKED_AT = "2026-08-26T20:31:48.179Z";
+    },3172,[],"constants/buildMarker.ts")
+
+  -> fused into the SERVED bundle by real Metro through THIS config. A second post-cleanup restart
+     reproduced it (sha present, fresh stamp, temp instrumentation removed, no debug log output).
+
+Notes for accuracy:
+  * An initial grep concluded "SHA absent" because it searched for ac82d98 — a STALE sha; HEAD had
+    already advanced to 464ae4b via project sync. Lesson recorded: always read git rev-parse at
+    verification time, never carry it forward across turns.
+  * The only literal placeholder strings remaining in the served bundle are inside COMMENTS
+    (historical narrative text preserved in dev bundles); no code comparison or assignment against
+    the placeholders remains outside the sentinel detector, which ci_guard verified intact.
+  * getBuildSha() resolved correctly inside the Metro worker; the scoped filename check received
+    "/home/user/rork-app/expo/constants/buildMarker.ts" (confirmed while temporary debug logging
+    was active; since removed from the shipped config).
+
+STILL CLOSING: only your on-device export printing BUILD_SHA = <real sha> + fresh stamp closes
+G-H. The serve test above is one step stronger than transform-time proofs (it is evidence about a
+bundle a device can actually download) but it is still not an export.
+
+GATE G-H remains BLOCKED-ON-USER. Server status at close: fresh Metro running on :8081,
+babel.config.js restored (guard comment atop file), ci_guard_build_marker.ts PASSED (sentinel
+detector present, no bare-literal comparison). Next action is yours: reload app → trigger export →
+paste Build provenance.
