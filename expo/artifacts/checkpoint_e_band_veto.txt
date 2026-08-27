@@ -1,0 +1,41 @@
+CHECKPOINT E.1+E.2 — BAND-PROXIMITY VETO, CANONICAL (item234_band_veto.ts, 2026-08-27)
+Corpus: 481 emitted | 60,451 M1 bars (to 2026-08-27T19:46Z) | decided=447, coverage-excluded=32, null-snapshot=229
+PRE-STATED MDE: 2.80*sigma_p*sqrt(1/nv+1/nk); pre-run band +/-0.21..0.31R (sigma 1.0..1.5R, expected nv~185/nk~246)
+
+RESOLVER CONSOLE (individual signals):
+  signal_1787796956413_g776eza9i BUY entry=4640.4 tp1=4642.9 -> SL_HIT exit=4632.40 rNet=-1.0250R | veto-qualifying zone in band: YES price=4641.6 touches=36 rs=0.999 type=SUPPORT
+  (+2 more pasted in full run log /tmp/item234.log)
+
+HEADLINE SPLIT (touches>=10, rs>=0.5):
+  MDE realised: sigma_pooled=0.914R -> +/-0.3158R (n_v=80, n_k=367)
+  VETOED n= 80 WR=50.0% EV_net=-0.1825R total=-14.60R
+  KEPT   n=367 WR=64.6% EV_net=+0.0567R total=+20.81R
+  whole book n=447
+  BUY:  VETOED n=47 EV=-0.2735 | KEPT n=172 EV=+0.0925
+  SELL: VETOED n=33 EV=-0.0530 | KEPT n=195 EV=+0.0251
+  KEPT-VETOED diff +0.2392R; bootstrap 20k 95% CI [0.0112, 0.4632]
+  LIVE-source subset: VETOED n=56 WR50.0% EV-0.2052R | KEPT n=62 WR61.3% EV+0.1233R
+
+12-POINT GRID (touches x rs) — ALL 12 same-signed (KEPT>VETOED):
+  5/0.3: 84 vs 363, -0.1837 vs +0.0596, +0.2433
+  5/0.5: 83 vs 364, -0.1735 vs +0.0566, +0.2301
+  5/0.7: 81 vs 366, -0.1522 vs +0.0506, +0.2028
+  10/0.3: 81 vs 366, -0.1929 vs +0.0596, +0.2526
+  10/0.5: 80 vs 367, -0.1825 vs +0.0567, +0.2392
+  10/0.7: 78 vs 369, -0.1606 vs +0.0508, +0.2114
+  20/0.3: 75 vs 372, -0.2049 vs +0.0580, +0.2629
+  20/0.5: 74 vs 373, -0.1938 vs +0.0551, +0.2489
+  20/0.7: 72 vs 375, -0.1703 vs +0.0492, +0.2196
+  40 rows: see /tmp/item234.log (all KEPT>VETOED)
+
+AGREE/DISAGREE vs provisional slice (VETOED -0.2259 / KEPT +0.0427, n=128):
+  CANONICAL WINS: VETOED -0.1825R (delta +0.0434), KEPT +0.0567R (delta +0.0140).
+  AGREE in sign and separation robustness (12/12 grid), stronger than provisional on CI.
+  CAVEAT: 229 decided signals carry NO stored snapshot -> rule cannot fire -> counted in KEPT.
+
+E.2 GATE: VETOED EV 95% CI upper < 0? NO (upper ~ -0.1825+1.96*sigma_v/sqrt(80) > 0) | KEPT > whole book? YES | n_v >= 40? YES
+  -> GATE FAILS (leg 1). NOTHING SHIPS LIVE.
+  SHADOW SHIP: band_veto_would_fire + band_veto_zone_price write-only columns (migration 017)
+  + pushEmittedSignalRecord annotation. Live-write BLOCKED until migration applied.
+  REQUIRED n: need n_v ~ 97 (EV -0.1825, sigma_v ~ 0.91) -> at 17.9% fire rate ~ 542 more
+  decided snapshot-bearing signals (~ 990 total). Rerun item234 unchanged.

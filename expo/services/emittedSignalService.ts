@@ -382,9 +382,41 @@ export function pushEmittedSignalRecord(record: EmittedSignalRecord): void {
           const delta = Math.round((ann[ann.length - 1].c - base.c) * 100) / 100;
           row.agrees_with_prior_4h_move = safeRecord.direction === 'BUY' ? delta > 0 : delta < 0;
           row.prior_4h_move_delta = delta;
+          // ITEM I: pre_signal_drift — prior-4h close-vs-close drift $ figure
+          // (the basis the telemetry drift display reports), persisted at emission.
+          row.pre_signal_drift = delta;
+          // ITEM I: chase_position — entry position in the running intraday range
+          // (0=at low, 1=at high), close-based; NULL if range < $3. Forward labels
+          // for the at-extreme class instead of re-litigating in-sample trades.
+          const dayStartI = Date.UTC(new Date(ems).getUTCFullYear(), new Date(ems).getUTCMonth(), new Date(ems).getUTCDate());
+          const dayCloses = ann.filter(b => b.ts >= dayStartI).map(b => b.c);
+          if (dayCloses.length >= 30) {
+            const dHi = Math.max(...dayCloses), dLo = Math.min(...dayCloses);
+            row.chase_position = dHi - dLo >= 3 ? Math.round(((ann[ann.length - 1].c - dLo) / (dHi - dLo)) * 1000) / 1000 : null;
+          } else row.chase_position = null;
         } else {
           row.agrees_with_prior_4h_move = null;
           row.prior_4h_move_delta = null;
+          row.pre_signal_drift = null;
+          row.chase_position = null;
+        }
+        // ITEM I + E.2-SHADOW: snapshot-derived annotations (write-only; the E.2
+        // live gate FAILED 2026-08-27 — vetoed-cohort CI upper > 0 — so the band
+        // veto ships as observation ONLY, never a filter).
+        const snapZones = (Array.isArray(safeRecord.srZonesSnapshot) ? safeRecord.srZonesSnapshot : []) as { price: number; type?: string; touches?: number; reactionStrength?: number }[];
+        if (snapZones.length > 0) {
+          const opp = snapZones.filter(z => (safeRecord.direction === 'BUY' ? z.type === 'RESISTANCE' : z.type === 'SUPPORT')).length;
+          row.opposing_zone_fraction = Math.round((opp / snapZones.length) * 1000) / 1000;
+          const tp1d = Math.abs(Number(safeRecord.tp1) - Number(safeRecord.entry));
+          const blo = safeRecord.direction === 'BUY' ? Number(safeRecord.entry) - 1.0 : Number(safeRecord.entry) - tp1d;
+          const bhi = safeRecord.direction === 'BUY' ? Number(safeRecord.entry) + tp1d : Number(safeRecord.entry) + 1.0;
+          const hit = snapZones.find(z => Number(z.touches) >= 10 && Number(z.reactionStrength) >= 0.5 && Number(z.price) >= blo && Number(z.price) <= bhi);
+          row.band_veto_would_fire = !!hit;
+          row.band_veto_zone_price = hit ? Number(hit.price) : null;
+        } else {
+          row.opposing_zone_fraction = null;
+          row.band_veto_would_fire = null;
+          row.band_veto_zone_price = null;
         }
       } catch (annErr: unknown) {
         console.warn(`[EmittedSignal] A2 annotation unavailable -> NULL (write-only): ${annErr instanceof Error ? annErr.message : String(annErr)}`);

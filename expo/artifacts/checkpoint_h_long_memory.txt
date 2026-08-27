@@ -1,0 +1,29 @@
+CHECKPOINT H — LONG-MEMORY UNTAPPED ZONES (2026-08-27)
+
+H.1 QUOTES (backend/functions/refresh-sr-zones/index.ts):
+  :23   const LOOKBACK_HOURS = 24; // ITEM 99 ... (120h produced 9S/2R dense/overlapping; 24h more balanced)
+  :312-315 & :412-414  const decay = lastTouchTs > 0 ? Math.pow(0.5, ageHours / ZONE_STALENESS_HALF_LIFE_HOURS) : 1;  (half-life 18h, :27)
+  :460-462  zones.sort((a,b)=>b.reactionStrength-a.reactionStrength); return zones.slice(0,32);
+  21 Aug band in bar history: bars DO trade <=4572 early 21 Aug (min low 4508.8 @ 01:00Z); taps(low<=4572)
+  21Aug02:00Z->27Aug10:37Z = 390 bars, ALL on 2026-08-21 (paginated count) -> untouched 22 Aug..27 Aug 10:37Z. CONFIRMED untapped.
+  PROVENANCE DISAGREE: claimed formation 08:30-10:00Z 21 Aug has ZERO in-band bars (91-bar window), and
+  14:30-14:40Z 21 Aug has ZERO bars with low<=4572 — the claimed formation/reaction timestamps do NOT exist in
+  gold_m1_bars (band was traded ~01:00-02:00Z instead). Band identity plausible; timestamps DISAGREE.
+  Snapshot absence CONFIRMED: signal_1787827036666_8nihlv66j zones = 4579.9..4605.6 (16 zones);
+  4564-4572 ABSENT. LOOKBACK_HOURS=24 makes six-day-old levels structurally invisible.
+
+H.2 FIRST-RETEST STUDY (item236_long_memory.ts, gold_m1_bars ONLY, 69,551 bars, 2026-06-18..08-27):
+  Look-ahead discipline: level+qualification computable strictly before retest; outcomes retest bar onward.
+  Reaction events (M5 range>=2.5xATR14): see log | qualifying first retests (2-14d old, untouched since): n=8
+  PRE-STATED MDE: 2.80*sigma/sqrt(n) ~ $2-3 at n~100+ — realised n=8 -> MDE +/-18.25 vs effect 12.56: UNDERPOWERED (n=8).
+  favourable (trade direction): mean +$30.95 (sd 18.43) = +3.87R @ $8 risk | adverse mean $9.70
+  fav 95% CI [$18.18, $43.73]
+  CONTROL (n=2000 random same-corpus timestamps): fav mean $18.39, adv mean $17.77
+  diff fav (qualified-control) +$12.56 (control CI +/-0.76); MDE diff +/-18.28
+  by age: 2-4d n=3 fav $21.39 | 5-7d n=4 fav $37.35 | 11-13d n=1 fav $34.04
+  ITEM 99 RECONCILIATION: the two windows can both be right for different jobs — Item 99's 24h gate measured
+  short-horizon reversal persistence (dense recent map quality); this study measures ancient untapped reactivity.
+  Direction is positive (retests carry favourable excursion well above random), but n=8 cannot separate
+  "long memory is real" from "gold drifts". What settles it: forward annotation of qualified-level retests
+  (a long-memory candidate table feeding the SAME consumer) until n>=60 retests, then re-run item236.
+  NOTHING SHIPS THIS ROUND either way.

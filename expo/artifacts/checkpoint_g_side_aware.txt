@@ -1,0 +1,38 @@
+CHECKPOINT G — SIDE-AWARE ZONE ROLES (item235_side_aware.ts, 2026-08-27)
+
+G.1 QUOTES (live tree):
+  signalEngine.ts:4560  const isResistance = cluster.price > currentPrice;   <- spot-relative typing, no role memory
+  signalEngine.ts:4583-4597  touch/wick counters branch on isResistance (CURRENT type): a flip re-labels its own evidence
+  signalEngine.ts:696  const REJECTION_DIRECTED_ZONES_ENABLED = false;  (Item 191 flag OFF)
+  signalEngine.ts:~4367-4411 applyRejectionDirectedTyping(): computes rejectionsFromBelow/FromAbove (side!) with the
+    same wick test, direction-agnostic; re-types ONLY when flag on (tie -> legacy type). Counts stored on every
+    snapshot zone regardless of flag (confirmed live: 02:15Z zone 4641.6 stored 9 below / 13 above).
+  PARAGRAPH: Item 191's implementation, as built, DOES record rejection SIDE — rejectionsFromBelow/FromAbove are
+  persisted on every sr_zones_snapshot zone and survive in production rows — but (a) it computes them over the
+  engine's in-memory ~100-sample window, not 24h of bars, and (b) with the flag OFF it changes nothing: type stays
+  spot-relative and the touch/wick counters still branch on the current type. Side information exists and is stored;
+  it is simply never consulted.
+
+G.2 TEST 1 — 02:15:56Z zones, bars STRICTLY BEFORE 2026-08-27T02:15:56Z (68,493 bars, last 02:15:00Z):
+  4641.6: role=SUPPORT  rej_below=32 rej_above=59 break_down=39 (130 events)
+  4636.9: role=SUPPORT  34 / 73 / 25 (132)      4635.9: role=SUPPORT  35 / 70 / 17 (122)
+  4635.3: role=SUPPORT  25 / 65 / 27 (117)      4633.2: role=SUPPORT  17 / 62 / 14 (93)
+  DISAGREE with provisional offline run (RESISTANCE-behaving): this classifier's majority-rejection role reads
+  SUPPORT-behaving (rej-from-above majority + breaks DOWN). Label discrepancy is method-driven (my reference
+  method counts first-exit outcomes incl. breaks; window = full history vs 8h). Reported, not reconciled.
+G.2 TEST 2 — signal_1787827036666_8nihlv66j (SELL 4576.6), bars STRICTLY BEFORE 10:37:16.666Z (68,995 bars):
+  4583.2 stored RESISTANCE (191: 58/0) -> side-aware SUPPORT
+  4580.9 stored RESISTANCE (84/0)     -> SUPPORT      4579.9 stored SUPPORT (78/0) -> SUPPORT
+  4597.0 stored RESISTANCE (27/0)     -> SUPPORT      4598.3/4598.4 (13/0) -> RESISTANCE
+  4593.7/4605.6/4605.2/4592.4/4595.6/4604.4/4590.4/4594.9/4601.1/4602.7 -> SUPPORT (10 more)
+  Snapshot has 16 zones; 4564-4572 band PRESENT? NO — INVISIBLE.
+
+G.3 WHOLE-BOOK COUNTERFACTUAL (real resolver rNets, bars strictly before each emission):
+  PRE-STATED MDE: 2.80*sigma_p*sqrt(1/nf+1/ns); band +/-0.2..0.35R stated BEFORE results.
+  (a) veto verdict CHANGES for 33 of 218 snapshot-bearing decided signals.
+  (b) WOULD-FLIP  n= 33 WR=51.5% EV_net=-0.1854R | UNCHANGED n=185 WR=56.8% EV_net=-0.0305R
+      diff +0.1550R; boot 95% CI [-0.1805, 0.4857]; MDE realised +/-0.5110R — UNDERPOWERED.
+  (c) at-extreme/one-sided class: would-flip n=0 | unchanged n=4 EV=-0.2287R.
+      Side-aware typing does NOT touch the winning class's losing tail in this sample (n too small to matter).
+  NEXT-ROUND DECISION RULE: retype live only if FORWARD dual-annotation shows side-aware vetoed cohort EV CI
+  upper < 0 at n_v>=50 AND at-extreme class EV does not degrade beyond its current +EV. NO CODE SHIPS THIS ROUND.
