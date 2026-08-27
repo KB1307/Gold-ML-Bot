@@ -709,7 +709,7 @@ One prompt, one round, five checkpoints (A–E), each with a written artifact an
 | 244 | F.3 n=9 | emitted=481, outcomes=468, 9 new emissions since 26Aug 21:30Z (first 22:14:51Z) — B.3 pairs ~449/1,041; rerun item233 unchanged at ~1,041 |
 | 245 | J.1 CLOSED | live anon queries: all 7 annotation columns present on emitted_signals_v1 (7-row select OK); shadow_candidates_v1 exists (count=1), rows=0 |
 | 246 | J.2 BLOCKED | 0 emissions since migrations applied (none since 16:45Z) -> no post-fix annotated row yet; shadow rows need Item-C engine wiring (never shipped). BLOCKED on next real emission |
-| 247 | K.1 SHIPPED | chase_position corrected to day-start true-high/low OHLC method (emittedSignalService.ts annotation block); NULL if range<$3 or <30 bars; hash pending sync |
+| 247 | K.1 SHIPPED 6c98302 | chase_position corrected to day-start true-high/low OHLC method (emittedSignalService.ts annotation block, +35/−13 lines); NULL if range<$3 or <30 bars; sync commit confirmed to contain the K edits |
 | 248 | K.2 CLOSED (b) | telemetry drift = computeRecentDrift (signalEngine.ts:10564, fiveMinCandles = priceHistory-derived) -> priceHistory must not feed labels; pre_signal_drift stays gold_m1_bars 4h bar-close delta with explicit differs-from-telemetry comment |
 | 249 | K.3 CLOSED | read-nowhere grep: identifiers only in write site + migrations; gating/scoring paths EMPTY |
 | 250 | L MEASURED | era-clean E.1: VETOED n=80 -0.1825R / KEPT n=138 +0.0207R, diff +0.2032R CI [-0.0582,0.4609] (INCLUDES ZERO), MDE +/-0.3800R; grid 12/12 KEPT>V; required-n ~278 more (~496 total); no-snapshot cohort n=229 +0.0784R era 29Jun-16Jul named as the confound. Artifact `checkpoint_jklmno_correction_round.txt` |
