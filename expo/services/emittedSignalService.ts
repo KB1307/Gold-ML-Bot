@@ -382,17 +382,32 @@ export function pushEmittedSignalRecord(record: EmittedSignalRecord): void {
           const delta = Math.round((ann[ann.length - 1].c - base.c) * 100) / 100;
           row.agrees_with_prior_4h_move = safeRecord.direction === 'BUY' ? delta > 0 : delta < 0;
           row.prior_4h_move_delta = delta;
-          // ITEM I: pre_signal_drift — prior-4h close-vs-close drift $ figure
-          // (the basis the telemetry drift display reports), persisted at emission.
+          // ITEM K.2 (D5 correction) — DECISION (b): the telemetry drift figure is
+          // engine-internal — signalEngine.ts computeRecentDrift():
+          //   return last.close - first.open  over this.fiveMinCandles
+          // which derives from the priceHistory feed. The data-source rule forbids
+          // priceHistory from feeding labels, so pre_signal_drift is the
+          // gold_m1_bars prior-4h bar-close delta and DIFFERS from the telemetry
+          // drift display by construction. Stated here so no reader conflates them.
           row.pre_signal_drift = delta;
-          // ITEM I: chase_position — entry position in the running intraday range
-          // (0=at low, 1=at high), close-based; NULL if range < $3. Forward labels
-          // for the at-extreme class instead of re-litigating in-sample trades.
-          const dayStartI = Date.UTC(new Date(ems).getUTCFullYear(), new Date(ems).getUTCMonth(), new Date(ems).getUTCDate());
-          const dayCloses = ann.filter(b => b.ts >= dayStartI).map(b => b.c);
-          if (dayCloses.length >= 30) {
-            const dHi = Math.max(...dayCloses), dLo = Math.min(...dayCloses);
-            row.chase_position = dHi - dLo >= 3 ? Math.round(((ann[ann.length - 1].c - dLo) / (dHi - dLo)) * 1000) / 1000 : null;
+          // ITEM K.1 (D5 correction): chase_position — entry position in the TRUE
+          // intraday range, UTC day start 00:00Z -> emission, computed from
+          // gold_m1_bars highs/lows (not the 5h close-only window):
+          // position = (entry - dayLow) / (dayHigh - dayLow); NULL if range < $3
+          // or fewer than 30 bars. Forward labels for the at-extreme class.
+          const dayStartK = Date.UTC(new Date(ems).getUTCFullYear(), new Date(ems).getUTCMonth(), new Date(ems).getUTCDate());
+          const { data: dayBarsK } = await client.from('gold_m1_bars')
+            .select('timestamp, high, low')
+            .gte('timestamp', new Date(dayStartK).toISOString())
+            .lt('timestamp', new Date(ems).toISOString())
+            .order('timestamp', { ascending: true }).limit(1500);
+          const dayHiLo = ((dayBarsK ?? []) as { timestamp: string; high: number; low: number }[])
+            .map(b => ({ h: Number(b.high), l: Number(b.low) }));
+          if (dayHiLo.length >= 30) {
+            const dHi = Math.max(...dayHiLo.map(b => b.h)), dLo = Math.min(...dayHiLo.map(b => b.l));
+            row.chase_position = dHi - dLo >= 3
+              ? Math.round(((Number(safeRecord.entry) - dLo) / (dHi - dLo)) * 1000) / 1000
+              : null;
           } else row.chase_position = null;
         } else {
           row.agrees_with_prior_4h_move = null;

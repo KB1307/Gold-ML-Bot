@@ -1,0 +1,97 @@
+CHECKPOINT J/K/L/M/N/O — CORRECTION ROUND (2026-08-27, D1-D5)
+
+J.1 LIVE QUERIES (anon, direct):
+  emitted_signals_v1 SELECT with all 7 columns (agrees_with_prior_4h_move, prior_4h_move_delta,
+  chase_position, opposing_zone_fraction, pre_signal_drift, band_veto_would_fire, band_veto_zone_price)
+  -> returned rows, NO "column does not exist" error = all 7 columns LIVE.
+  latest rows (pre-migration emissions -> fields null): signal_1787848816467_8md6hxjqu (16:40:16Z) .. signal_1787823318510_3g5b04cr8 (09:35:18Z)
+  SELECT on shadow_candidates_v1 -> table EXISTS, rows=0.
+J.2 BLOCKED: 0 emissions since 16:45Z -> no post-migration annotated row exists yet (BLOCKED on next
+  real emission AFTER the K fixes, which are now in the tree). shadow_candidates_v1 rows=0: the Item-C
+  engine-cycle wiring was never shipped (BLOCKED last-last round), so shadow rows cannot accrue either.
+
+K CORRECTIONS (D5):
+  K.1 shipped: emittedSignalService.ts (annotation block, "ITEM K.1 (D5 correction)") — chase_position now
+  = (entry - dayLow) / (dayHigh - dayLo) from gold_m1_bars TRUE highs/lows, UTC day start 00:00Z -> emission,
+  NULL if range < $3 or < 30 bars (was: close-only over a 5h window).
+  K.2 telemetry drift quote — signalEngine.ts:10564:
+      private computeRecentDrift(candles: number = DRIFT_LOOKBACK_CANDLES): number | null {
+        if (this.fiveMinCandles.length < 3) return null;
+        const window = this.fiveMinCandles.slice(-Math.max(3, candles));
+        ...
+        return last.close - first.open;
+      }
+    fiveMinCandles derives from the priceHistory feed -> DECISION (b): pre_signal_drift stays the
+    gold_m1_bars prior-4h bar-close delta; code comment added stating explicitly it DIFFERS from the
+    telemetry drift display and why (data-source rule: priceHistory must never feed labels).
+  K.3 grep (read-nowhere): identifiers chase_position/opposing_zone_fraction/pre_signal_drift/band_veto
+    appear ONLY in emittedSignalService.ts (write site) + migrations; grep of signalEngine.ts,
+    signalResolver.ts, lib/, backend/functions -> EMPTY.
+  Post-fix REAL emission row: BLOCKED with J.2 (no emission since fixes).
+
+L — E.1 ERA-CLEAN (item237_era_clean.ts; population = snapshot-bearing decided, n=218):
+  PRE-STATED MDE: +/-0.28..0.42R (sigma 1.0..1.5R, expected 80/138). Realised: sigma_p=0.966R -> +/-0.3800R.
+  VETOED n= 80 WR=50.0% EV_net=-0.1825R total=-14.60R
+  KEPT   n=138 WR=59.4% EV_net=+0.0207R total= +2.85R
+  BUY:  VETOED n=47 EV=-0.2735 | KEPT n=63 EV=+0.0483
+  SELL: VETOED n=33 EV=-0.0530 | KEPT n=75 EV=-0.0026
+  diff +0.2032R; boot 20k 95% CI [-0.0582, 0.4609]  <- NOW INCLUDES ZERO
+  LIVE subset: VETOED n=56 -0.2052R / KEPT n=62 +0.1233R (unchanged — TIER_0 zones live only in snapshot era)
+  12-pt grid: ALL 12 rows KEPT>VETOED (VETOED -0.2274..-0.1522; KEPT +0.0025..+0.0283)
+  E.2 REQUIRED-N (clean): EV_v=-0.1825, sigma_v=0.938 -> n_v>=102; fire rate 36.7% -> ~278 more decided
+  snapshot-bearing signals (total ~496).
+  NO-SNAPSHOT COHORT (the confound): n=229, WR 67.7%, EV +0.0784R, era 2026-06-29 08:25Z .. 2026-07-16 08:59Z
+  (the OLD era — snapshot recording began 16 Jul; era-mixed KEPT was inflated by this +EV cohort).
+  DELTAS vs era-mixed: VETOED -0.1825 (unchanged) | KEPT +0.0207 vs +0.0567 (-0.0360) | diff +0.2032 vs
+  +0.2392 (-0.0360); CI moves from [0.0112,0.4632] (excludes 0) to [-0.0582,0.4609] (includes 0).
+
+M.1 WINDOW SENSITIVITY (item238_window_sensitivity.ts; w=0.8, first-exit-15-bars, last-5 double weight):
+  TEST 1 (02:15Z zones, cutoff 2026-08-27T02:15:56Z):
+    24h  4641.6:SUP 4636.9:SUP 4635.9:SUP 4635.3:SUP 4633.2:SUP
+    48h  all SUP | 7d all SUP | full all SUP
+  TEST 2 (10:37Z snapshot zones, cutoff 10:37:16Z):
+    24h  4583.2:RES(stored RES) 4580.9:SUP(RES) 4579.9:SUP(SUP) 4597.0:SUP(RES) 4598.3:SUP(RES)
+    48h  identical to 24h
+    7d   4583.2:SUP 4580.9:SUP 4579.9:SUP 4597.0:SUP 4598.3:RES
+    full identical to 7d
+  DISAGREE with the expected shape: the 02:15 band does NOT move toward RESISTANCE as the window
+  shortens under THIS reference method (SUP at every window). The audit's claimed 24h/48h flip does not
+  reproduce; the only window-sensitive zones are 4583.2 (RES at <=48h) and 4598.3 (RES at >=7d).
+M.2 COUNTERFACTUAL:
+  @48h: WOULD-FLIP n=39 WR=43.6% EV=-0.3162R | UNCHANGED n=179 WR=58.7% EV=+0.0032R
+        diff +0.3194R; boot CI [-0.0007, 0.6247]; MDE +/-0.4779R
+  @7d:  WOULD-FLIP n=38 WR=44.7% EV=-0.3018R | UNCHANGED n=180 WR=58.3% EV=-0.0016R
+        diff +0.3002R; boot CI [-0.0219, 0.6108]; MDE +/-0.4828R
+M.3 MATCHED CLASS (chase_position>=0.85 day-start OHLC AND opposing_zone_fraction<=0.10, canonical):
+  n=18 WR=61.1% EV=-0.0346R total=-0.62R   [provisional: n=24 +0.1345R — CANONICAL WINS: the class is
+  EV-zero/negative in the resolver instrument, not the engine's best cohort]
+  flips @48h: 1 of 18 | flips @7d: 1 of 18  — retyping barely touches this class.
+M.4 DECISION PARAGRAPH: no window currently does both jobs at current power: 48h and 7d both separate
+  the would-flip cohort (EV ~ -0.30/-0.32R) from the unchanged book, but both bootstrap CIs touch/include
+  zero (MDE ~ +/-0.48R vs effects ~ +0.30-0.32R). The 02:15 "expected flip" did not reproduce under this
+  method at any window, so the case for 24h/48h rests on M.2 alone. Meanwhile the matched at-extreme class
+  is canonically EV-zero (-0.0346R, n=18) — the class the provisional round called the engine's best — and
+  side-aware retyping would flip only 1/18 of its members, so there is no winning class left to protect at
+  this definition. Forward evidence that settles it: accrue annotations (K's corrected columns are live)
+  until n_flip ~= 80 (about 2x current), then rerun item238 unchanged; decide the window then.
+
+N — TIMEZONE-CORRECTED FORMATION CHECK (D4; chart annotations were UTC+2):
+  In-band (4564-4572) bars in 2026-08-21 06:30-08:00Z: bars=91, in-band=56, first 06:35Z, last 08:00Z,
+  min low 4560.6 -> CONFIRMED: the corrected formation window EXISTS (the 08:30-10:00Z literal reading did not).
+  Reaction evidence 12:25-12:45Z: bars with low<=4572 = 9, min low 4563.5 @ 12:40:00Z -> CONFIRMED.
+  21 Aug hourly path (UTC, low-high): 00:4510-4527 01:4509-4544 02:4518-4543 03:4527-4538 04:4535-4548
+  05:4529-4556 06:4546-4568 07:4559-4568 08:4559-4585 09:4580-4602 10:4578-4594 11:4587-4605 12:4564-4602
+  13:4573-4593 14:4580-4604 15:4587-4615 16:4609-4621 — band 4564-4572 genuinely formed ~06:30-08:00Z,
+  rejected ~12:35-12:45Z, then price never returned until 27 Aug. Standing confirmations (untouched
+  22 Aug->27 Aug 10:37Z; absent from snapshot; LOOKBACK_HOURS=24 mechanism) unchanged. OANDA-vs-Vantage
+  venue offsets noted as expected, not a discrepancy.
+
+O — CARRY-OVERS:
+  O.1 BUILD MARKER (report only, do-not-fix per scope): stripped a FIFTH time — babel.config.js contains
+  only the preset; constants/buildMarker.ts:34 `export const BUILD_SHA = '__BUILD_SHA__';` will print the
+  literal placeholder in any export. Every export-based artifact carries that caveat until the dedicated
+  hardening round.
+  O.2 B.3 pairs: emitted=481, outcomes=468; 0 new emissions since 16:45Z -> pairs stand at ~440 measured
+  (~449 once the 9 post-26Aug outcomes resolve) of the 1,041 target; rerun item233 unchanged.
+  O.3 H.2 forward accrual: 55 new bars since the study (19:55Z) -> far below the 2-14d-level + 4h-forward
+  requirements; zero candidates possible. NOT ATTEMPTED, reason stated.

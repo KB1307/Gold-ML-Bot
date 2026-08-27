@@ -216,4 +216,4 @@ async function main(): Promise<void> {
     return `  ${label.padEnd(26)} n=${String(n).padStart(4)}  WR=${isNaN(wr) ? ' - ' : wr.toFixed(1) + '%'}  EV_net=${(ev(vals) >= 0 ? '+' : '') + ev(vals).toFixed(4)}R`;
   }
 }
-main().catch((err: unknown) => { console.error(err instanceof Error ? err.stack ?? err.message : String(err)); process.exit(1); });
+if (import.meta.main) main().catch((err: unknown) => { console.error(err instanceof Error ? err.stack ?? err.message : String(err)); process.exit(1); });

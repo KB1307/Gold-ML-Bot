@@ -26,7 +26,7 @@ import { createClient } from '@supabase/supabase-js';
 import { readFileSync } from 'node:fs';
 
 interface Bar { timestamp: number; open: number; high: number; low: number; close: number }
-interface SnapZone { price: number; touches: number; reactionStrength: number; type?: string; source?: string }
+export interface SnapZone { price: number; touches: number; reactionStrength: number; type?: string; source?: string; tier?: string }
 interface SignalRow {
   signal_id: string; emitted_at: string; direction: string;
   entry: number; sl: number; tp1: number; tp2: number; tp3: number; confidence: number;
@@ -198,4 +198,4 @@ async function main(): Promise<void> {
   console.log(`  canonical  (this run)  : VETOED ${ev(g.v).toFixed(4)}R / KEPT ${ev(g.k).toFixed(4)}R -> delta_v ${(ev(g.v) - prov.v).toFixed(4)}, delta_k ${(ev(g.k) - prov.k).toFixed(4)}`);
   console.log(`  E.2 GATE: VETOED CI-upper < 0? ${boots[(boots.length * 0.975) | 0] < 0 ? 'YES' : 'NO'} | KEPT > whole-book? ${ev(g.k) > ev(dec) ? 'YES' : 'NO'} | n_v>=40? ${g.v.length >= 40 ? 'YES' : 'NO'}`);
 }
-main().catch((err: unknown) => { console.error(err instanceof Error ? err.stack ?? err.message : String(err)); process.exit(1); });
+if (import.meta.main) main().catch((err: unknown) => { console.error(err instanceof Error ? err.stack ?? err.message : String(err)); process.exit(1); });
