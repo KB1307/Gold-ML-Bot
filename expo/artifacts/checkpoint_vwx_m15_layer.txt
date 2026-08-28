@@ -1,0 +1,103 @@
+CHECKPOINT V/W/X — M15 STRUCTURAL ZONE LAYER + CONFIG DERIVATION (2026-08-28)
+
+INSTRUMENT SELF-AUDIT (recorded before any number):
+  v1 of services/m15ZoneLayer.ts had the rejection SIDES inverted (local-low+bounce-up
+  labelled "from-below"). The V.3 acceptance run caught it; fixed BEFORE any number was
+  recorded. All numbers below are from the fixed instrument (v2).
+
+V.1 — CANONICAL BUILDER: expo/services/m15ZoneLayer.ts (pre-stated rules in header):
+  M15 resample (>=10 M1 bars/bucket) | last 14 trading days (UTC date >= 48 M1 bars) |
+  ATR(14,M15) simple TR mean | rejection-from-below = 2-bar local HIGH + move-down
+  >= 2.0*ATR within 4 bars (RESISTANCE-making); from-above mirrored (SUPPORT-making) |
+  event usable only at close of its 4-bar confirmation | $2 bands anchored at band's
+  lowest member | kept at n>=2 | role = majority side; tie = NEUTRAL.
+V.2 — MIGRATION 019 (backend/migrations/019_m15_zone_annotations.sql):
+  m15_opposed boolean NULL, m15_endorsed boolean NULL, m15_zone_context jsonb NULL
+  (pattern of 017; NULL when bars insufficient — never defaulted).
+  Annotation block: emittedSignalService.ts (ITEM V block, after snapshot annotations;
+  16-day paginated gold_m1_bars fetch; self-heal upsert strips the fields until 019 is
+  applied — row preserved).
+  READ-NOWHERE GREP (gating/scoring paths): signalEngine.ts, signalResolver.ts, lib/,
+  backend/functions -> EMPTY = CLEAN. Annotation-only; zero live impact.
+  LIVE STATUS: SELECT signal_id,m15_opposed LIMIT 1 ->
+    "column emitted_signals_v1.m15_opposed does not exist" -> 019 NOT YET APPLIED.
+    First live annotated row: BLOCKED on user applying 019 + app running this code.
+
+V.3 — ACCEPTANCE (real builder; /tmp equivalent pasted verbatim):
+  ACCEPTANCE (a) — 02:15Z failure map (asOf=2026-08-27T02:15:56Z, tradingDays=14, zones=53)
+    ... 4629.4-4630.9 n=7 rb=4 ra=3 RESISTANCE | 4631.9-4633.5 n=3 rb=3 ra=0 RESISTANCE
+    | 4634.4-4636.3 n=2 rb=0 ra=2 SUPPORT | 4639.1-4640.8 n=3 rb=2 ra=1 RESISTANCE ...
+  (a) RESISTANCE-behaving zone overlapping 4633-4641: YES -> 4631.9-4633.5 (3v0)
+      and 4639.1-4640.8 (2v1). = PASS (matches provisional direction; live snapshot
+      says SUPPORT — the layer DISAGREES with the live snapshot, as designed).
+  ACCEPTANCE (b) — 10:37Z map (asOf=2026-08-27T10:37:16Z, tradingDays=14, zones=54)
+    No zone between 4530.5 and 4597.9.
+  (b) SUPPORT-behaving zone overlapping 4559-4572: NO -> FAIL.
+  DIVERGENCE ANALYSIS (honest): the provisional Python port found the 21-Aug band
+  (3v0, 2v0); the canonical instrument finds no events in 4559-4572 at all. The
+  port's event/touch internals were never specified; this instrument's pre-stated
+  rules (2-bar local extreme, 2*ATR(14,M15) within 4 bars, $2-band @ >=2 events, 14
+  trading days) do not clear on that band. NOT tuned post-hoc (MINDSET 1). What
+  reconciles it: the port's exact event rules. Until then the canonical layer ships
+  annotation-only with acceptance verdict (a) PASS / (b) FAIL on record.
+
+W — CANONICAL CONFIG DERIVATION (expo/scripts/item240_config_matrix.ts; era-clean
+  canonical population, real resolver; PRE-STATED MDE 2.80*sigma*sqrt(1/nr+1/nk)):
+  POPULATION: decided=448 | snapshot-bearing (CANONICAL)=219 | M15-evaluable=219 |
+  M15-insufficient(<14 trading days of bars)=95 | WHOLE-BOOK EV_net=-0.0523R
+  NAMED BLOCKER: the P-round momentum-fingerprint (fp) instrument is ABSENT from this
+  tree — no script, artifact, ledger row or engine constant defines it (greps empty;
+  migrations end at 017; no P/Q/R artifacts). The !fp conditioning CANNOT be applied;
+  configs below are UNCONDITIONED-ON-fp. A-D as literally defined = BLOCKED on fp.
+  CONFIG A snapshot-veto: removed n=81 EV=-0.1767 | kept n=138 EV=+0.0207 | retained 63.0%
+    diff +0.1974R; boot CI [-0.0597, 0.4534]; MDE +/-0.3778R
+  CONFIG B M15-veto:     removed n=80 EV=-0.0294 | kept n=139 EV=-0.0656 | retained 63.5%
+    diff -0.0362R; boot CI [-0.3038, 0.2390]; MDE +/-0.3788R
+  CONFIG C union:        removed n=127 EV=-0.0425 | kept n=92 EV=-0.0659 | retained 42.0%
+    diff -0.0234R; boot CI [-0.2727, 0.2312]; MDE +/-0.3695R
+  CONFIG D both-agree:   removed n=34 EV=-0.3314 | kept n=185 EV=-0.0011 | retained 84.5%
+    diff +0.3303R; boot CI [-0.0115, 0.6547]; MDE +/-0.5036R
+  D-CELL (34 members) listed signal-by-signal in the run log; deepest losers:
+    4x 4636-4638 cluster BUYs @-1.025 each (4386.1-4388.1 RES n=2), 4393-4402 cluster
+    BUYs @-1.025 (4397.5-4401.9 RES n=5-7), 4075.3-4076.8 SUPPORT SELL @-1.025.
+  Provisional D-cell (n=23 @ -0.563R) vs canonical (n=34 @ -0.3314R): same direction,
+    materially smaller; the provisional's extremity does NOT fully survive.
+
+W.2 — EXEMPTION INTERACTION (fp cohort unobtainable; M15-opposed direct):
+  M15-opposed BUY  n=49 WR=46.9% EV=-0.0350R | M15-opposed SELL n=31 WR=64.5% EV=-0.0204R
+  M15 ENDORSEMENT canonical check (provisional claimed -0.1808R):
+    endorsed     n= 94 WR=59.6% EV=-0.0322R
+    not endorsed n=125 WR=53.6% EV=-0.0675R
+    -> DISAGREE with the provisional: endorsed is BETTER than not-endorsed here; the
+    transfer warning (-0.115R on 8 fp-opposed) is NOT reproduced canonically.
+
+W.3 — PRE-REGISTERED SELECTION (fp caveat applies to ALL rows):
+  A: (i) PASS | (ii) FAIL (CIupper 0.4534 > 0) | (iii) FAIL (63.0% < 65%) -> fails
+  B: (i) FAIL | (ii) FAIL | (iii) FAIL (63.5%) -> fails
+  C: (i) FAIL | (ii) FAIL | (iii) FAIL (42.0%) -> fails
+  D: (i) PASS | (ii) FAIL (CIupper 0.6547 > 0) | (iii) PASS (84.5%) -> fails
+  VERDICT: no config is evaluable AS DEFINED (fp instrument absent); of the
+  unconditioned proxies, none satisfies all three criteria. Per the pre-registered
+  rule, THE CURRENTLY SHIPPED CONFIG STANDS and nothing changes live this round.
+  Forward evidence that settles it: the fp instrument's definition (one paragraph in
+  a P-round artifact) + forward m15_opposed accrual once 019 is applied.
+
+X — CARRY-OVERS:
+  X.1 P-round status: NO P-round script, artifact, ledger row or engine constant found
+    in this tree (greps: momentum fingerprint / fp_exempt / conditional veto — empty).
+    LIVE facts: shadow_candidates_v1 rows=0; PATH_TO_TARGET_VETO_ENABLED=true
+    (signalEngine.ts:652, Item 96) is the only live veto; band_veto_would_fire is
+    populated on exactly 2 rows (both true — the 23:34Z and 06:09Z Aug 27/28 SELLs);
+    forward abort-gate counter (n toward 30): not found — nothing accrues it.
+  X.2 Q annotation: retype_verdict_would_change -> "column emitted_signals_v1
+    .retype_verdict_would_change does not exist" -> 0 populated; migration absent.
+  X.3 Build marker: constants/buildMarker.ts:34 `export const BUILD_SHA = '__BUILD_SHA__';`
+    :37 '__BUILD_STAMP__'; babel.config.js rork-build-marker matches = 0 -> stripped
+    again (7th). Export-based artifacts carry the caveat.
+  X.4 B.3 pairs: emitted=483, outcomes=469 (+2 emitted since O round).
+  BONUS — K live-row proof CLOSED (last round's J.2): two post-K-fix annotated rows,
+    all five fields populated and plausible:
+    signal_1787873651603_15r66t5jg 2026-08-27T23:34:11Z SELL 4600: chase=0.448 opp=0.125
+    drift=-6.87 band_veto=true @4600.1 agrees=true
+    signal_1787897386936_u5161v55v 2026-08-28T06:09:46Z SELL 4580.1: chase=0.274 opp=0.063
+    drift=-14.08 band_veto=true @4578.2 agrees=true

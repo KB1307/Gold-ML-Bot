@@ -25,6 +25,7 @@
  */
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { buildM15Zones, m15OpposedHit, m15EndorsedHit, MEMORY_TRADING_DAYS } from './m15ZoneLayer';
 
 /** Provenance of a persisted emission. Recorded at write time, never inferred. */
 export type EmittedSignalSource = 'LIVE' | 'SIMULATION' | 'BACKFILL';
@@ -432,6 +433,44 @@ export function pushEmittedSignalRecord(record: EmittedSignalRecord): void {
           row.opposing_zone_fraction = null;
           row.band_veto_would_fire = null;
           row.band_veto_zone_price = null;
+        }
+        // ITEM V — M15 STRUCTURAL ZONE LAYER (write-only annotation, ZERO live
+        // impact). Canonical instrument: services/m15ZoneLayer.ts (M15, ~14
+        // trading days memory, strong-rejection events >= 2.0 x ATR(14,M15)
+        // within 4 bars, $2 bands, >= 2 rejections, side-typed at birth; events
+        // usable only after their 4-bar confirmation window). Computed from
+        // gold_m1_bars ONLY, strictly before emission. NULL when bars are
+        // insufficient — never defaulted. Until migration 019 is applied the
+        // self-heal upsert below strips these fields and retries (row
+        // preserved). Read by NOTHING in gating/scoring (grep-verifiable).
+        {
+          const m1: { ts: number; o: number; h: number; l: number; c: number }[] = [];
+          for (let o = 0; ; o += 1000) {
+            const { data: m15Page } = await client.from('gold_m1_bars')
+              .select('timestamp,open,high,low,close')
+              .gte('timestamp', new Date(ems - 16 * 86_400_000).toISOString())
+              .lt('timestamp', new Date(ems).toISOString())
+              .order('timestamp', { ascending: true }).range(o, o + 999);
+            for (const b of (m15Page ?? []) as { timestamp: string; open: string; high: string; low: string; close: string }[])
+              m1.push({ ts: new Date(b.timestamp).getTime(), o: +b.open, h: +b.high, l: +b.low, c: +b.close });
+            if ((m15Page?.length ?? 0) < 1000) break;
+          }
+          const built = m1.length >= 1000 ? buildM15Zones(m1, ems) : null;
+          if (!built || built.tradingDays < MEMORY_TRADING_DAYS) {
+            row.m15_opposed = null;
+            row.m15_endorsed = null;
+            row.m15_zone_context = null;
+          } else {
+            const dir = safeRecord.direction === 'SELL' ? 'SELL' : 'BUY';
+            const opp = m15OpposedHit(built.zones, dir, Number(safeRecord.entry), Number(safeRecord.tp1));
+            const end = m15EndorsedHit(built.zones, dir, Number(safeRecord.entry));
+            row.m15_opposed = opp !== null;
+            row.m15_endorsed = end !== null;
+            row.m15_zone_context = {
+              opposed: opp ? [{ price: opp.mid, n: opp.n, rb: opp.rb, ra: opp.ra, role: opp.role }] : [],
+              endorsed: end ? [{ price: end.mid, n: end.n, rb: end.rb, ra: end.ra, role: end.role }] : [],
+            };
+          }
         }
       } catch (annErr: unknown) {
         console.warn(`[EmittedSignal] A2 annotation unavailable -> NULL (write-only): ${annErr instanceof Error ? annErr.message : String(annErr)}`);
