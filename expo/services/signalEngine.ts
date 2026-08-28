@@ -1,6 +1,7 @@
 import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC, SignalLearningContext, DetectedSRZone } from "@/types/trading";
 import { pushShadowSellRecord, type ShadowSellRecord } from "@/services/shadowSignalService";
 import { pushEmittedSignalRecord } from "@/services/emittedSignalService";
+import { BAND_PROXIMITY_VETO_ENABLED, evaluateBandProximityVeto } from "@/services/bandProximityVeto";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { fetchHistoricalData, trpcClient } from "@/lib/trpc";
 import { createClient as createSupabaseClient, type SupabaseClient } from "@supabase/supabase-js";
@@ -9682,6 +9683,44 @@ class SignalGenerationEngine {
         this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'time-window-dedup: secondary backstop', {
           entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips,
         });
+        return null;
+      }
+    }
+
+    // ── ITEM P — BAND-PROXIMITY VETO (CONDITIONAL mode; services/bandProximityVeto.ts) ──
+    // Shipped 2026-08-28 by the pre-registered P.1 gate cascade on the canonical
+    // era-clean re-derivation (scripts/item241_fingerprint_conditional.ts, real
+    // resolver, n=223): GATE-1 PASS (conditional cohort EV_net -0.2008R < -0.10R,
+    // n=79, boot 95% CI [-0.3997, 0.0088]); GATE-2 PASS (fp-AND-vetoable
+    // +0.1924R > 0, n=4). Veto iff [E.1 band rule fires] AND NOT [fingerprint
+    // active]. All inputs are emission-time values from the same information set
+    // as the annotation columns (own sr_zones_snapshot, features.rsi,
+    // gold_m1_bars A.2 prior-4h move) — one information set, grep-verifiable.
+    // Suppressed candidates: NOT emitted, NOT Telegram'd, NOT in live history;
+    // written to shadow_candidates_v1 ('BAND_VETO_SUPPRESSED') and resolved
+    // through the ONE canonical instrument.
+    //
+    // P.3 ABORT GATE (verbatim): suppressed signals resolve through the
+    // canonical path (ONE instrument). At every forward n=30 decided suppressed
+    // signals: if their EV_net > 0, set the flag false next round and report;
+    // else the veto stands. No other condition modifies the flag.
+    if (BAND_PROXIMITY_VETO_ENABLED) {
+      const bandVeto = await evaluateBandProximityVeto({
+        client: this.getDailyOhlcSupabaseClient(),
+        direction: analysis.signalType,
+        entry: entryPriceWithSlippage,
+        sl,
+        tp1,
+        tp2,
+        tp3,
+        confidence: tier0AdjustedConfidence,
+        rsi: features.rsi,
+        zones: srZonesSnapshot,
+        nowMs: now,
+      });
+      if (bandVeto.fires) {
+        console.log(`🚫 REJECTED [BandProximityVeto/${bandVeto.mode}]: ${analysis.signalType} @ ${entryPriceWithSlippage.toFixed(1)} — qualifying zone ${bandVeto.qualifyingZone?.price} (touches=${bandVeto.qualifyingZone?.touches}, rs=${Number(bandVeto.qualifyingZone?.reactionStrength ?? 0).toFixed(3)}) in band; fingerprint=${bandVeto.fingerprintActive ? "ACTIVE (exempt)" : "not active"} -> suppressed as ${bandVeto.suppressedId}`);
+        console.log(`${"=".repeat(80)}\n`);
         return null;
       }
     }

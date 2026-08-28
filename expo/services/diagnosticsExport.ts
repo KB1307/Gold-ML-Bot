@@ -103,6 +103,14 @@ export interface DiagnosticsExportInput {
    */
   telegramOutbox?: TelegramOutboxSummaryInput | null;
   /**
+   * ITEM P: mutually-exclusive emission-funnel counters for the CONDITIONAL
+   * band-proximity veto (bandProximityVeto.getVetoFunnel()). generated ==
+   * emitted + suppressed; suppressed candidates are written to
+   * shadow_candidates_v1 and are never emitted/Telegram'd. Optional so older
+   * callers still compile; the section then reports NOT INSTRUMENTED.
+   */
+  vetoFunnel?: VetoFunnelInput | null;
+  /**
    * ITEM 12(d): durable learning-corpus hydration counters from
    * `learningStore.getLearningCorpusStats()`. The corpus READ is now a DIRECT
    * paginated Supabase read (it used to ride the 503-prone Rork backend), and an
@@ -930,6 +938,39 @@ function formatTelegramDeliverySection(
   return lines.join("\n");
 }
 
+interface VetoFunnelInput {
+  mode: string;
+  generated: number;
+  emitted: number;
+  suppressed: number;
+  lastSuppressedAt: number | null;
+  lastSuppressedId: string | null;
+}
+
+function formatVetoFunnelSection(f: VetoFunnelInput | null | undefined): string {
+  const lines: string[] = [];
+  lines.push("-- ITEM P: BAND-PROXIMITY VETO FUNNEL --");
+  if (!f) {
+    lines.push("NOT INSTRUMENTED - caller supplied no veto funnel summary.");
+    return lines.join("\n");
+  }
+  lines.push(`Mode: ${f.mode} (BAND_PROXIMITY_VETO_ENABLED = true)`);
+  lines.push(`Candidates reaching the confirmed-emission point: ${f.generated}`);
+  lines.push(`Emitted (rule silent or fingerprint-exempt):      ${f.emitted}`);
+  lines.push(`Suppressed by the veto:                           ${f.suppressed}`);
+  lines.push(`Last suppression: ${f.lastSuppressedAt ? safeDate(f.lastSuppressedAt) : "never"} (${f.lastSuppressedId ?? "-"})`);
+  lines.push("");
+  lines.push("Mutual exclusivity: generated == emitted + suppressed. A mismatch here");
+  lines.push("  means the funnel counters are broken and must be investigated.");
+  lines.push("Suppressed candidates are NEVER emitted / Telegram'd / in live history;");
+  lines.push("  they live in shadow_candidates_v1 ('BAND_VETO_SUPPRESSED') and resolve");
+  lines.push("  through the ONE canonical instrument.");
+  lines.push("P.3 ABORT GATE: at every forward n=30 decided suppressed signals, if their");
+  lines.push("  EV_net > 0 the flag is set false next round and reported; no other");
+  lines.push("  condition modifies the flag.");
+  return lines.join("\n");
+}
+
 export function buildDiagnosticsExportText(input: DiagnosticsExportInput): string {
   const sections = [
     DRULE,
@@ -962,6 +1003,8 @@ export function buildDiagnosticsExportText(input: DiagnosticsExportInput): strin
     formatDirectionalLayerSection(input.directionalLayerStats),
     "",
     formatTelegramDeliverySection(input.telegramDeliveryStats, input.telegramOutbox),
+    "",
+    formatVetoFunnelSection(input.vetoFunnel),
     "",
     DRULE,
     "END OF EXPORT",

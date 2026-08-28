@@ -1,0 +1,165 @@
+CHECKPOINT P/Q/R/S — CONDITIONAL BAND VETO SHIP + RETYPE ANNOTATION + BUILD-MARKER HARDENING (2026-08-28)
+
+════════════════════════════════════════════════════════════════════════════
+ITEM P.0 — CANONICAL RE-DERIVATION (scripts/item241_fingerprint_conditional.ts;
+era-clean canonical population, real resolver resolveSignalWithBars fromScratch;
+MDE/boot pre-stated, seed 20260828, generator identical to item237/240)
+════════════════════════════════════════════════════════════════════════════
+  POPULATION: decided=452 | snapshot-bearing (CANONICAL)=223 | whole-book EV_net=-0.0526R
+  fingerprint input coverage: rsi non-null 223/223 | prior-4h agreement computable 223/223 (A.2, >=150 bars)
+  fingerprint semantic: active ONLY when all three inputs affirmatively hold; NULL input -> NOT active
+
+  ===== P.0(a) FINGERPRINT COHORT =====
+  fingerprint (fp)                   n=  28  WR=64.3%  EV_net=+0.0371R  total=+1.04R
+  fp AND band-vetoable               n=   4  WR=75.0%  EV_net=+0.1924R  total=+0.77R
+
+  ===== P.0(b) CONDITIONAL-VETO COHORT (band rule fires AND fp NOT active) =====
+  CONDITIONAL: removed n=79 EV=-0.2008 | kept n=144 EV=0.0288 | retained 64.6%
+    removed-cohort mean-EV boot CI [-0.3997, 0.0088]; diff (kept-removed)=0.2295R;
+    boot CI [-0.0279, 0.4872]; MDE +/-0.3756R
+  CONDITIONAL kept book, both halves (median-emitted_at split):
+    kept first half        n= 72  WR=63.9%  EV_net=+0.0137R
+    kept second half       n= 72  WR=56.9%  EV_net=+0.0438R   (both halves positive)
+  removed cohort, both halves: first n=39 -0.1354R | second n=40 -0.2645R
+
+  ===== AGREE/DISAGREE vs PROVISIONAL SLICE =====
+  fp cohort (n/WR/EV)    provisional n=33 WR 75.8% +0.2331R | canonical n=28 WR 64.3% +0.0371R  -> DISAGREE (materially weaker)
+  fp AND vetoable        provisional 6 members +0.5491R 0 losers | canonical n=4 +0.1924R 3W/1L -> DISAGREE (weaker, no longer perfect)
+  conditional removed    provisional -0.3208R | canonical -0.2008R  -> DISAGREE (less extreme)
+  conditional kept       provisional +0.0812R | canonical +0.0288R  -> DISAGREE (smaller)
+  retained               provisional 62% | canonical 64.6%          -> AGREE (direction)
+
+  ===== P.1 GATE CASCADE (pre-registered thresholds) =====
+  GATE-1: conditional cohort EV_net -0.2008 < -0.10R -> PASS  (boot CI [-0.3997, 0.0088])
+  GATE-2: fp AND vetoable EV_net 0.1924 > 0 -> PASS  (n=4)
+  CASCADE: BOTH PASS -> ship CONDITIONAL veto
+
+  HONEST CAVEATS recorded with the ship: (1) GATE-2 rests on n=4; (2) the
+  removed-cohort CI grazes zero — this ship is a user-authorized cascade
+  decision, NOT a significance claim; (3) the fingerprint's canonical edge is
+  far smaller than the provisional slice claimed. The P.3 abort gate exists
+  precisely because of (1)-(3).
+
+════════════════════════════════════════════════════════════════════════════
+ITEM P.1 — SHIP (branch A, CONDITIONAL)
+════════════════════════════════════════════════════════════════════════════
+  Flag: expo/services/bandProximityVeto.ts:46  export const BAND_PROXIMITY_VETO_ENABLED = true;
+  Mode: :47  BAND_PROXIMITY_VETO_MODE = 'CONDITIONAL'
+  Veto site: expo/services/signalEngine.ts — ITEM P block inserted at the single
+  confirmed-emission return, BEFORE pushEmittedSignalRecord / before the signal
+  is returned to any caller -> a suppressed candidate is never emitted, never
+  Telegram'd (TradingContext.tsx:2872 / backgroundTaskService.ts:150 are
+  untouched and never see it), never in live history.
+  One information set: own sr_zones_snapshot + features.rsi + gold_m1_bars A.2
+  prior-4h move (identical method to the agrees_with_prior_4h_move annotation).
+  Shadow write: shadow_candidates_v1, candidate_name='BAND_VETO_SUPPRESSED',
+  full geometry + qualifying zone + fingerprint state in inputs jsonb
+  (migration 020 grants anon INSERT, pattern of 003).
+  Funnel: mutually-exclusive counters (AsyncStorage 'band_veto_funnel_v1'),
+  rendered as a new section in buildDiagnosticsExportText.
+
+ITEM P.3 — ABORT GATE (verbatim, in bandProximityVeto.ts header AND the
+signalEngine block): suppressed signals resolve through the canonical path (ONE
+instrument). At every forward n=30 decided suppressed signals: if their EV_net >
+0, set the flag false next round and report; else the veto stands. No other
+condition modifies the flag.
+
+════════════════════════════════════════════════════════════════════════════
+ITEM P.2 — LIVE PROOF
+════════════════════════════════════════════════════════════════════════════
+(a) Funnel counter in a REAL export (scripts/item243_funnel_export.ts calls the
+    REAL buildDiagnosticsExportText with the REAL getVetoFunnel() after
+    exercising the REAL veto logic with client=null — the module's null-guard
+    SKIPS the shadow write, so NO production row was fabricated):
+    ----- REAL EXPORT, FUNNEL SECTION -----
+    -- ITEM P: BAND-PROXIMITY VETO FUNNEL --
+    Mode: CONDITIONAL (BAND_PROXIMITY_VETO_ENABLED = true)
+    Candidates reaching the confirmed-emission point: 2
+    Emitted (rule silent or fingerprint-exempt):      1
+    Suppressed by the veto:                           1
+    Last suppression: 2026-08-28T18:42:17.301Z (shadow_bandveto_1787942537301_m1ngnf8)
+    Mutual exclusivity: generated == emitted + suppressed. [INVARIANT HOLDS]
+    P.3 ABORT GATE: at every forward n=30 decided suppressed signals, if their
+      EV_net > 0 the flag is set false next round and reported; no other
+      condition modifies the flag.
+    veto logic: case1 fires=true mode=CONDITIONAL zone=4601 fp=false |
+                case2 fires=false
+(b) GREP (i) — veto reads emission-time values only: the ONLY occurrence of
+    priceHistory/Yahoo/TwelveData in bandProximityVeto.ts is the header
+    prohibition comment (:27); the code path reads zones/rsi/A.2-bars only
+    (:254, :261, :268, :275 quoted in the log).
+(c) GREP (ii) — nothing else reads the flag:
+    bandProximityVeto.ts:46 (definition), signalEngine.ts:4 (import),
+    signalEngine.ts:9707 (the veto check), diagnosticsExport.ts:957 (export
+    string literal only). No scoring/gating/learning reader exists.
+(d) GREP (iii) — Telegram/history untouched for non-vetoed signals:
+    sendTelegramAlert call sites unchanged (TradingContext.tsx:2872,
+    backgroundTaskService.ts:150); bandProximityVeto.ts contains ZERO matches
+    for telegram / signal_history / persistSignalHistory.
+(e) First REAL suppressed row: BLOCKED-ON-MARKET — requires a real emission
+    while the app runs this code. shadow_candidates_v1 rows=0 (live count).
+
+════════════════════════════════════════════════════════════════════════════
+ITEM Q — RETYPE DUAL-ANNOTATION (no live change)
+════════════════════════════════════════════════════════════════════════════
+  Migration handed: backend/migrations/018_emitted_retype_annotation.sql
+    (retype_verdict_would_change boolean NULL; pattern of 017).
+  Write-site: expo/services/emittedSignalService.ts — ITEM Q block inside the
+  ITEM V annotation block (reuses the 16-day m1 fetch), after the M15 fields.
+  Method: 48h side-aware roles via the reference classifier VERBATIM-PORTED to
+  services/sideAwareRole.ts (item235 classifyZone: w=0.8, 15-bar first-exit,
+  last-5 double weight; the script keeps node:fs and cannot enter the Metro
+  bundle). Verdict = (48h-role verdict) !== (stored-type verdict), G.3 method;
+  NULL when no snapshot or <48h bar coverage — never defaulted.
+  PRE-REGISTERED PROMOTION GATE (verbatim in code): the retype may be proposed
+  live only when forward decided signals with retype_verdict_would_change=true
+  reach n>=80 AND that cohort's canonical EV_net 95% CI upper bound < 0. Until
+  then it is an observation, NOT a lever.
+  LIVE STATUS: SELECT ... retype_verdict_would_change -> "column
+  emitted_signals_v1.retype_verdict_would_change does not exist" -> migration
+  018 NOT YET APPLIED -> live row BLOCKED-ON-APPLY (self-heal strips the field
+  until then; row preserved).
+
+════════════════════════════════════════════════════════════════════════════
+ITEM R — BUILD-MARKER HARDENING (strip #7 found by the V/W/X round; guard
+named SIXTH-STRIP per the prompt's framing)
+════════════════════════════════════════════════════════════════════════════
+  R.1: babel.config.js restored VERBATIM from the last known-good commit
+  (9654019): scoped rork-build-marker plugin (file.includes("buildMarker")),
+  BUILD_SHA <- git rev-parse --short HEAD, BUILD_STAMP <- fresh ISO stamp.
+  R.2: SIXTH-STRIP GUARD added to ci_guard_duplicate_constants.ts main() —
+  babel.config.js missing the plugin registration or its scoping FAILS the
+  guard run (non-zero exit).
+  R.3 demonstration (real runs):
+    stripped state  (presets only, the historically observed 7th-strip form):
+      SIXTH-STRIP GUARD: babel.config.js is missing the rork-build-marker plugin registration.
+      RESULT: FAIL — 1 problem(s) in LIVE code.        EXIT=1
+    restored state:
+      --- SIXTH-STRIP GUARD (build-marker chain) ---
+        OK     babel.config.js registers the rork-build-marker plugin, scoped to buildMarker
+      RESULT: PASS — 24 single-source constant(s), ...   EXIT=0
+    ci_guard_build_marker.ts: "plugin defined, registered, scoped to buildMarker"
+      ... "✅ PASSED — plugin, placeholders, and sentinel detector intact."
+    Transform-time proof (scripts/probe_build_marker.ts through THIS config):
+      injected BUILD_SHA   = 8c04bc2
+      injected BUILD_STAMP = 2026-08-28T18:40:05.662Z
+  Runtime export line: BLOCKED-ON-REBUILD — the running bundle predates the
+  restore; the next app rebuild will print a resolved SHA (Metro cache makes
+  same-round runtime proof impossible; stated honestly).
+
+════════════════════════════════════════════════════════════════════════════
+ITEM S — STATUS (live queries, scripts/item242_round_status.ts, anon key)
+════════════════════════════════════════════════════════════════════════════
+  S.1: no row with m15_opposed populated yet -> BLOCKED-ON-EMISSION (019 IS
+    applied; the annotation code ships this round — the next real emission
+    annotates).
+  S.2: emitted=487  outcomes=474.
+  S.3: band_veto_would_fire populated=6 fired=4 -> observed rate 66.7%
+    (population tiny; annotation shipped with migration 017).
+  P: shadow_candidates_v1 rows=0 (no emission has run the veto yet).
+
+════════════════════════════════════════════════════════════════════════════
+VALIDATION: runChecks(expo) static checks GREEN (tsc/lint/structure, 0 errors).
+ON THE USER: apply migration 018 (Q column) and 020 (shadow insert policy) —
+"no DDL channel" is not a valid blocker per checkpoint discipline.
+════════════════════════════════════════════════════════════════════════════

@@ -295,6 +295,33 @@ function main(): void {
     console.log('');
   }
 
+  // ── ITEM R — SIXTH-STRIP GUARD (build-marker chain) ────────────────────────
+  // The rork-build-marker babel plugin has been silently stripped from
+  // babel.config.js repeatedly (prior strips verified by exports printing
+  // literal __BUILD_SHA__ — see artifacts/checkpoint_h_build_marker.txt and
+  // checkpoint_jklmno/vwx rounds). A strip kills build provenance for every
+  // later artifact. This guard makes the strip IMPOSSIBLE to miss: a
+  // babel.config.js without the plugin registration (or without its
+  // load-bearing scoping) FAILS THIS RUN with a non-zero exit.
+  try {
+    const babelSrc = readFileSync(join(__dirname, '..', 'babel.config.js'), 'utf8');
+    const hasPlugin = babelSrc.includes('rork-build-marker');
+    const isScoped = babelSrc.includes('file.includes("buildMarker")');
+    if (!hasPlugin || !isScoped) {
+      failures.push(
+        `SIXTH-STRIP GUARD: babel.config.js is missing the rork-build-marker plugin ${!hasPlugin ? 'registration' : 'scoping to the buildMarker module'}.\n` +
+          '      Restore the scoped plugin (see expo/scripts/ci_guard_build_marker.ts and expo/artifacts/checkpoint_h_build_marker.txt).\n' +
+          '      Until restored, every export prints literal __BUILD_SHA__ and build provenance is dead.',
+      );
+    } else {
+      console.log('--- SIXTH-STRIP GUARD (build-marker chain) ---');
+      console.log('  OK     babel.config.js registers the rork-build-marker plugin, scoped to buildMarker');
+      console.log('');
+    }
+  } catch {
+    failures.push('SIXTH-STRIP GUARD: expo/babel.config.js could not be read — refusing to pass silently.');
+  }
+
   if (warnings.length > 0) {
     console.log('--- WARN: SCRIPT VALUES DIVERGE FROM LIVE (does NOT fail the build) ---');
     console.log('  Scripts legitimately pin values for historical replay. Listed so a');

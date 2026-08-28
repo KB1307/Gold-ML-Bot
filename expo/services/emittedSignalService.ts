@@ -26,6 +26,7 @@
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { buildM15Zones, m15OpposedHit, m15EndorsedHit, MEMORY_TRADING_DAYS } from './m15ZoneLayer';
+import { classifyZone } from './sideAwareRole';
 
 /** Provenance of a persisted emission. Recorded at write time, never inferred. */
 export type EmittedSignalSource = 'LIVE' | 'SIMULATION' | 'BACKFILL';
@@ -470,6 +471,51 @@ export function pushEmittedSignalRecord(record: EmittedSignalRecord): void {
               opposed: opp ? [{ price: opp.mid, n: opp.n, rb: opp.rb, ra: opp.ra, role: opp.role }] : [],
               endorsed: end ? [{ price: end.mid, n: end.n, rb: end.rb, ra: end.ra, role: end.role }] : [],
             };
+          }
+
+          // ── ITEM Q — SIDE-AWARE RETYPE DUAL-ANNOTATION (write-only, observation
+          // ONLY; zero live impact). retype_verdict_would_change = true when the
+          // E.1 band-veto verdict computed with 48h side-aware roles differs from
+          // the verdict computed with stored types (G.3 method,
+          // scripts/item235_side_aware.ts; reference classifier verbatim-ported to
+          // services/sideAwareRole.ts: w=0.8, 15-bar first-exit, last-5 events
+          // double weight, 48h window, gold_m1_bars STRICTLY before emission —
+          // reusing the m1 bars fetched above). NULL when bars are insufficient or
+          // no snapshot — never defaulted. Until migration 018 is applied the
+          // self-heal upsert below strips this field and retries (row preserved).
+          // Read by NOTHING in gating/scoring (grep-verifiable).
+          //
+          // PRE-REGISTERED PROMOTION GATE (verbatim): the retype may be proposed
+          // live only when forward decided signals with
+          // retype_verdict_would_change=true reach n>=80 AND that cohort's
+          // canonical EV_net 95% CI upper bound < 0. Until then it is an
+          // observation, NOT a lever.
+          {
+            const qZones = snapZones as { price: number; type?: string; touches?: number; reactionStrength?: number }[];
+            const win48 = m1
+              .filter(b => b.ts >= ems - 48 * 3600_000 && b.ts < ems)
+              .map(b => ({ timestamp: b.ts, open: b.o, high: b.h, low: b.l, close: b.c }));
+            const covered48 = m1.length > 0 && m1[0].ts <= ems - 48 * 3600_000 && win48.length >= 60;
+            const qualifyingQ = (z: { touches?: number; reactionStrength?: number }): boolean => Number(z.touches) >= 10 && Number(z.reactionStrength) >= 0.5;
+            const inBandQ = (z: { price: number }): boolean => {
+              const tp1d = Math.abs(Number(safeRecord.tp1) - Number(safeRecord.entry));
+              return safeRecord.direction === 'BUY'
+                ? Number(z.price) >= Number(safeRecord.entry) - 1.0 && Number(z.price) <= Number(safeRecord.entry) + tp1d
+                : Number(z.price) <= Number(safeRecord.entry) + 1.0 && Number(z.price) >= Number(safeRecord.entry) - tp1d;
+            };
+            const dirQ: 'BUY' | 'SELL' = safeRecord.direction === 'SELL' ? 'SELL' : 'BUY';
+            if (qZones.length === 0 || !covered48) {
+              row.retype_verdict_would_change = null;
+            } else {
+              const legacyOpposes = qZones.some(z => qualifyingQ(z) && inBandQ(z) && ((dirQ === 'BUY' && z.type === 'RESISTANCE') || (dirQ === 'SELL' && z.type === 'SUPPORT')));
+              let awareOpposes = false;
+              for (const z of qZones) {
+                if (!qualifyingQ(z) || !inBandQ(z)) continue;
+                const { role } = classifyZone(win48, ems, Number(z.price));
+                if ((dirQ === 'BUY' && role === 'RESISTANCE') || (dirQ === 'SELL' && role === 'SUPPORT')) { awareOpposes = true; break; }
+              }
+              row.retype_verdict_would_change = awareOpposes !== legacyOpposes;
+            }
           }
         }
       } catch (annErr: unknown) {

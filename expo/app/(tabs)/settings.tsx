@@ -16,6 +16,7 @@ import {
 } from "@/services/telegramNotifier";
 import { signalEngine } from "@/services/signalEngine";
 import { buildDiagnosticsExportText } from "@/services/diagnosticsExport";
+import { getVetoFunnel } from "@/services/bandProximityVeto";
 import { publishDiagnosticsExport } from "@/services/diagnosticsExportStore";
 import { getRecentDiagnosticEvents } from "@/services/diagnosticEventStore";
 import {
@@ -381,6 +382,8 @@ export default function SettingsScreen() {
           ...signalEngine.getStandAsideTelemetry(),
         },
         telegramDeliveryStats: getTelegramDeliveryStats(),
+        // ITEM P: mutually-exclusive veto funnel (generated == emitted + suppressed).
+        vetoFunnel: getVetoFunnel(),
         telegramOutbox,
         // ITEM 12(d): durable corpus-hydration counters (rehydrated above).
         learningCorpusStats: getLearningCorpusStats(),
