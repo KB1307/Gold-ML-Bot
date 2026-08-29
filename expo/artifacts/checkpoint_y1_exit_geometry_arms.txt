@@ -1,0 +1,89 @@
+================================================================================
+ITEM Y.1 — REGIME-MAPPED EXIT GEOMETRY, CANONICAL THREE-ARM RE-DERIVATION
+run: 2026-08-29T09:58Z  |  script: scripts/item248_exit_geometry_arms.ts
+instrument: era-clean canonical population (n=224 decided, snapshot-bearing),
+REAL resolver fromScratch + computeRNet; gold_m1_bars via anon key ONLY
+MAP (verbatim): TREND (ADX(14,M5)>25) SL=3.5*ATR | MID (20..25) SL=$8.00 |
+RANGE (<20) SL=2.5*ATR; TP = 4.0 x SL-distance. M5 aggregated from M1 with the
+existing barIndicators instruments.
+NO LOOK-AHEAD (verified by printed windows): M5 bars from M1 with ts < ems,
+and any bucket whose CLOSE time is not strictly <= ems is dropped.
+  sample: first open 2026-06-29T08:25:00Z, LAST CLOSE 2026-07-16T10:50:00Z
+          (<= emitted 2026-07-16T10:51:28.481Z) — the last M5 bar closes BEFORE
+          the emission timestamp in every sampled window.
+Fill/resolution: stored entry all arms (the live fill); walks start at the first
+COMPLETED bar after emitted_at+60s; same-bar SL+TP -> STOP taken (conservative,
+stated). MDE BEFORE estimates; boot 20k seed 20260828.
+================================================================================
+POPULATION
+  era-clean canonical: n=224 (excluded: no-snapshot 254, undecided/no-coverage 10)
+  regime map available: 224 | unavailable: 0
+
+--------------------------------------------------------------------------------
+PER-ARM STATS (verbatim; each arm over its own decided subset)
+--------------------------------------------------------------------------------
+  ARM-1 live booked          n= 224  WR=56.7%  EV_net=-0.0512R  total=-11.47R
+  ARM-2 pure mapped          n= 221  WR=25.3%  EV_net=+0.2503R  total=+55.32R
+  ARM-3 hybrid               n= 221  WR=25.3%  EV_net=+0.1561R  total=+34.49R
+  ARM-1 longest losing streak / max drawdown: streak=7   maxDD=19.34R
+  ARM-2 longest losing streak / max drawdown: streak=23  maxDD=28.97R
+  ARM-3 longest losing streak / max drawdown: streak=23  maxDD=53.54R
+  (3 mapped-leg undecided: no TP/SL touch by the last bar.)
+
+--------------------------------------------------------------------------------
+PAIRED vs ARM-1 (n=221 with ALL arms decided; verbatim)
+--------------------------------------------------------------------------------
+  ARM-1 (paired subset)      n= 221  WR=56.1%  EV_net=-0.0554R  total=-12.24R
+  ARM-2 (paired subset)      n= 221  WR=25.3%  EV_net=+0.2503R  total=+55.32R
+  ARM-3 (paired subset)      n= 221  WR=25.3%  EV_net=+0.1561R  total=+34.49R
+  ARM-2 vs ARM-1:  MDE ±0.4501R (n=221)  <-- stated BEFORE point estimates
+    paired diff +0.3057R; boot CI [-0.2191, 0.9384]
+  ARM-3 vs ARM-1:  MDE ±0.6230R (n=221)  <-- stated BEFORE point estimates
+    paired diff +0.2115R; boot CI [-0.5896, 1.0990]
+
+--------------------------------------------------------------------------------
+PER-DIRECTION and PER-REGIME (paired subset; verbatim)
+--------------------------------------------------------------------------------
+  BUY:   n=111 | ARM-1 -0.0861R | ARM-2 +0.6500R | ARM-3 +0.8991R
+  SELL:  n=110 | ARM-1 -0.0243R | ARM-2 -0.1530R | ARM-3 -0.5937R
+  TREND: n=114 | ARM-1 -0.1151R | ARM-2 +0.2601R | ARM-3 +0.2876R
+  MID:   n=30  | ARM-1 +0.1346R | ARM-2 +0.3083R | ARM-3 +0.1908R
+  RANGE: n=77  | ARM-1 -0.0410R | ARM-2 +0.2133R | ARM-3 -0.0522R
+  (No separate live-source column was reported: emitted_signals_v1 rows carry no
+  live/backfill provenance column selectable via anon — the whole book IS the
+  live-emitted book; the only non-live rows were already excluded by the
+  era-clean population rule. Stated here per the checkpoint contract.)
+
+--------------------------------------------------------------------------------
+AGREE/DISAGREE vs PROVISIONAL (Python M5-dataset port; canonical wins)
+--------------------------------------------------------------------------------
+  holdout map vs uniform 1:4      provisional +0.1335R | canonical +0.2503R (ARM-2)  AGREE (direction)
+  17-month paired swap            provisional +0.0971R | canonical +0.3057R         AGREE (direction, larger)
+  live-like fix8/TP=0.7xSL worst  provisional -0.0567R | canonical ARM-1 -0.0554R   AGREE (strikingly close)
+  engine month map vs booked      provisional +0.6505R vs -0.0727R | canonical +0.2503R vs -0.0554R
+                                  AGREE (direction; heavy shrinkage toward the
+                                  17-month figure, exactly as pre-registered)
+
+--------------------------------------------------------------------------------
+READING (power-honest; nothing ships from this)
+--------------------------------------------------------------------------------
+  1. The interaction claim REPRODUCES in direction: the mapped geometry beats
+     the live booked book by +0.3057R paired on the engine's own timed entries,
+     positive in BUY (the book's weak side, -0.0861R live vs +0.6500R mapped)
+     and in TREND. BUT the 95% CI [-0.2191, +0.9384] INCLUDES ZERO (MDE ±0.45R)
+     — this is a hypothesis CONFIRMED IN DIRECTION, not a proven lever.
+  2. The reality constraint is REAL here too: mapped WR is 25.3% with a
+     23-loss streak and 28.97R max drawdown (hybrid worsens drawdown to 53.54R
+     because the live leg can stop while the mapped leg runs). The provisional
+     warning (22% WR, 40-loss streak, 83R DD on the proxy) carries over
+     qualitatively. A wholesale exit replacement is NOT proposed and must not
+     be built — this is why Y.2 is a write-only shadow ladder.
+  3. The SELL side DIVERGES: mapped geometry is WORSE than live for SELLs
+     (-0.1530R vs -0.0243R). The map was learned on a 68%-BUY window per the
+     prompt's own note; per-regime/direction shrinkage is exactly what forward
+     paired accrual (Y.2) exists to settle.
+  4. Y.2 ships the ANNOTATION ONLY (regime_at_emission / mapped_sl / mapped_tp
+     at emission, write-only) so the forward paired sample accrues from day one
+     under the pre-registered gate: n>=60 decided AND paired-diff 95% CI lower
+     bound > 0. Nothing changes live before that gate.
+================================================================================

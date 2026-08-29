@@ -1,0 +1,90 @@
+================================================================================
+ITEM BB — CONFIG MATRIX, FINGERPRINT-CONDITIONED (era-clean, real resolver)
+run: 2026-08-29T09:51Z + corrected re-run 09:57Z
+script: scripts/item246_config_matrix_fp.ts  |  gold_m1_bars via anon key ONLY
+instrument: era-clean canonical population n=224 decided (no-snapshot 254,
+undecided 10 excluded), REAL resolver fromScratch + computeRNet
+fingerprint: SHIPPED fingerprintActive() + opposingZoneFractionOfSnapshot()
+(bandProximityVeto.ts); prior-4h = A.2 method fresh from full 5h windows (the
+input path item241 used — Item CC audits the shipped FETCH truncation separately);
+M15 roles = the oracle (m15ZoneLayer.ts) on bars STRICTLY before emitted_at,
+>= 14 trading days (0 unavailable). Boot 20k seed 20260828; MDE BEFORE estimates.
+================================================================================
+  POPULATION: decided=224 | whole-book EV_net=-0.0512R
+  fingerprint input coverage: rsi 224/224 | prior-4h 224/224 | fingerprint ACTIVE 29
+
+  SCRIPT CORRECTION ON RECORD: the first automated pass applied criterion (ii)
+  with the kept-minus-removed DIFFERENCE CI; the written criterion is
+  "removed-cohort EV_net < -0.15R AND ITS CI upper bound < 0" — the removed
+  cohort's OWN mean-EV CI. Corrected in the script before any verdict was
+  recorded; the corrected re-run (quoted below) is authoritative. The config
+  TABLES were identical in both runs (same resolver output); only the
+  automated BB.2 verdict changed.
+
+--------------------------------------------------------------------------------
+BB.1 — THE FOUR CONFIGS (all AND fingerprint-NOT-active; verbatim)
+--------------------------------------------------------------------------------
+CONFIG A (snapshot band & !fp)  [SHIPPED]:  MDE ±0.3744R (n_removed=79, n_kept=145)
+  removed n=79 WR=49.4% EV=-0.2008R (mean CI [-0.3993, 0.0033]) total=-15.86R
+  kept    n=145 WR=60.7% EV=+0.0303R total=+4.39R | retained 64.7%
+  diff (kept-removed) +0.2310R; boot CI [-0.0277, 0.4905]
+  kept halves: H1 n=72 +0.0137R | H2 n=73 +0.0466R
+
+CONFIG B (M15 opposed & !fp):  MDE ±0.3830R (n_removed=72, n_kept=152)
+  removed n=72 WR=52.8% EV=-0.0527R (mean CI [-0.2901, 0.1855]) total=-3.80R
+  kept    n=152 WR=58.6% EV=-0.0505R total=-7.67R | retained 67.9%
+  diff +0.0023R; boot CI [-0.2750, 0.2728]
+  kept halves: H1 n=76 -0.0528R | H2 n=76 -0.0481R
+
+CONFIG C ((A-union) & !fp):  MDE ±0.3585R (n_removed=119, n_kept=105)
+  removed n=119 WR=53.8% EV=-0.0709R (mean CI [-0.2474, 0.1081]) total=-8.44R
+  kept    n=105 WR=60.0% EV=-0.0288R total=-3.03R | retained 46.9%
+  diff +0.0421R; boot CI [-0.2053, 0.2895]
+  kept halves: H1 n=52 +0.0092R | H2 n=53 -0.0662R
+
+CONFIG D ((A AND B) & !fp):  MDE ±0.5112R (n_removed=32, n_kept=192)
+  removed n=32 WR=40.6% EV=-0.3505R (mean CI [-0.6494, -0.0218]) total=-11.22R
+  kept    n=192 WR=59.4% EV=-0.0013R total=-0.25R | retained 85.7%
+  diff +0.3492R; boot CI [-0.0014, 0.6745]
+  kept halves: H1 n=96 -0.0615R | H2 n=96 +0.0589R
+
+  D-CELL: 32 signals listed signal-by-signal in the run log (all carry
+  m15Opp=true AND snapshot band rule fires AND fingerprint NOT active).
+  Notable: the 2026-08-18 BUY cluster (8 signals, 7 losers) and the
+  2026-08-03 BUY cluster (4 signals, 4 losers) dominate the cell's losses.
+
+--------------------------------------------------------------------------------
+BB.2 — PRE-REGISTERED SELECTION VERDICT (criteria unchanged; verbatim)
+--------------------------------------------------------------------------------
+  A (SHIPPED): FAILS -> (ii) removed-cohort mean-EV CI upper 0.0033 not < 0;
+                        (iii) retained 64.7% < 65%
+  B:           FAILS -> (ii) removed -0.0527 not < -0.15R
+  C:           FAILS -> (ii) removed -0.0709 not < -0.15R; (iii) retained 46.9% < 65%
+  D:           QUALIFIES
+  VERDICT: exactly one config qualifies — D, at 85.7% retained frequency.
+  D is therefore the pre-registered PROPOSAL for the NEXT round
+  (intersection: snapshot band rule AND M15-opposed, fingerprint not active).
+  NOTHING CHANGES LIVE THIS ROUND — the shipped veto (A) remains the live
+  configuration until a future round ships a change through its own gates.
+  Power honesty: D's removed cohort is n=32 (MDE ±0.5112R); its diff CI
+  [-0.0014, 0.6745] grazes zero. D qualifies on the pre-registered criteria;
+  the criteria were met, not re-litigated.
+
+--------------------------------------------------------------------------------
+BB.3 — M15 ENDORSED COHORT (canonical; verbatim)
+--------------------------------------------------------------------------------
+  endorsed (M15 map available): n=53 | not-endorsed: n=171 | unavailable: 0
+  MDE ±0.4209R (n_e=53, n_ne=171)  <-- stated BEFORE point estimates
+  endorsed    n=53 WR=62.3% EV=-0.1483R (mean CI [-0.3476, 0.0453])
+  not-endorsed EV=-0.0211R | diff -0.1271R
+  three-criteria test (treating "remove endorsed" as the candidate rule):
+    (i)   kept -0.0211 > whole -0.0512 -> PASS
+    (ii)  endorsed -0.1483 < -0.15R AND CI upper 0.0453 < 0 -> FAIL
+          (EV misses the -0.15R bar by 0.0017R AND the CI upper is positive)
+    (iii) retained 76.3% >= 65% -> PASS
+  VERDICT: endorsement does NOT clear the three criteria. It REMAINS BARRED
+  from buy-side scoring (standing position unchanged). Canonical numbers are
+  DIRECTIONALLY consistent with the provisional claim of harm (endorsed cohort
+  is the worse cohort here too: -0.1483R vs -0.0211R) but weaker than the
+  provisional -0.1808R and not significant (CI [-0.3476, +0.0453], MDE ±0.42R).
+================================================================================

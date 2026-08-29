@@ -1,0 +1,104 @@
+================================================================================
+ITEM FF — RECENCY-WEIGHTING DEFECT, QUANTIFIED (measure ONLY; no code change)
+run: 2026-08-29T09:43Z + 09:47Z  |  script: scripts/item245_recency_variants.ts
+instrument: era-clean canonical population, REAL resolver fromScratch + computeRNet
+corpus: 488 emitted | 70,991 gold_m1_bars to 2026-08-28T20:55Z (anon key only)
+================================================================================
+METHOD (frozen in the script header):
+  (a) AS SHIPPED : classifyZone's newest-first event list passed AS-IS to
+                   recencyWeightedScore (tail of newest-first = OLDEST 5 double-weighted)
+  (b) AS INTENDED: the SAME events REVERSED (oldest-first; tail = MOST RECENT 5)
+  Both scores through the canonical roleFromScore — no parallel semantics.
+  Zone set = the zones the E.1 band rule evaluates (touches>=10 AND rs>=0.5 in
+  the TP1-path band). Q boolean = the shipped ITEM Q annotation
+  (emittedSignalService.ts:495-525): awareOpposes !== legacyOpposes, with the
+  SAME 48h coverage rule. Boot 20k seed 20260828; MDE printed BEFORE estimates.
+
+  RUN CORRECTION ON RECORD: the FIRST run of this script used an overly strict
+  window-start coverage test (win48[0].ts <= winStart, unsatisfiable because
+  emissions are second-stamped) and returned 0 covered signals — an agent bug
+  in the measurement script, NOT an instrument result. Fixed to mirror the
+  shipped ITEM Q coverage rule (bars exist before the window start AND >= 60
+  bars in the 48h slice) and re-run. Only the corrected run is quoted below.
+
+POPULATION
+  era-clean canonical (snapshot-bearing decided): n=224
+    excluded: no-snapshot 254, undecided/no-coverage 10
+  signals with band-relevant zones & 48h coverage: 84
+
+--------------------------------------------------------------------------------
+FF.1 — VARIANT COMPARISON (verbatim)
+--------------------------------------------------------------------------------
+  zones classified (both variants, same events): 116
+  zones whose ROLE differs (a) vs (b): 11                      (9.5% of zones)
+  signals whose Q retype boolean FLIPS (q_a != q_b): 9 of 84   (10.7% of signals)
+  MARGIN distribution (a) AS SHIPPED:  |s|=0:7 |s|=1:4 |s|=2:18 |s|=3:8 ... |s|=37:1
+  MARGIN distribution (b) AS INTENDED: |s|=0:8 |s|=1:6 |s|=2:10 |s|=3:2 ... |s|=37:1
+  -> coin-flip roles (|score| = 1): (a) 4 of 116 | (b) 6 of 116
+  role mix (a): FLOOR 86 / UNTYPED 7 / CEILING 23
+  role mix (b): FLOOR 89 / UNTYPED 8 / CEILING 19
+  examples (verbatim):
+    sig=signal_1784316560521_oz9aughz2 zone=4003.7 (a)=CEILING(s=6) (b)=FLOOR(s=-1) n_events=24
+    Q-FLIP sig=...oz9aughz2 SELL rNet=-1.0513 legacy=true awareA=false awareB=true
+    sig=signal_1785854431006_rke6k0m6n zone=4081.8 (a)=CEILING(s=4) (b)=FLOOR(s=-5) n_events=11
+    Q-FLIP sig=...rke6k0m6n BUY rNet=+0.3291 legacy=false awareA=true awareB=false
+
+--------------------------------------------------------------------------------
+FF.2a — WINDOW SENSITIVITY under BOTH variants (item238's M.1 zone sets; verbatim)
+--------------------------------------------------------------------------------
+  TEST 1 (02:15Z zones, cutoff 02:15:56Z)
+    24h   4641.6: a=FLOOR b=FLOOR  4636.9: a=FLOOR b=FLOOR  4635.9: a=FLOOR b=FLOOR
+          4635.3: a=FLOOR b=CEIL <<DIFF  4633.2: a=FLOOR b=FLOOR
+    48h   all five: a=FLOOR b=FLOOR (identical)
+    7d    all five: a=FLOOR b=FLOOR (identical)
+    full  all five: a=FLOOR b=FLOOR (identical)
+  TEST 2 (10:37Z snapshot zones, cutoff 10:37:16Z)
+    all four windows: a and b IDENTICAL on every zone
+    (4583.2 CEIL both variants at 24h/48h; 4598.3 CEIL both at 7d/full)
+  -> the two variants diverge in exactly ONE cell of ten window-rows (4635.3 @24h).
+
+--------------------------------------------------------------------------------
+FF.2b — G.3 COUNTERFACTUAL at 48h, BOTH variants (MDE BEFORE estimates; verbatim)
+--------------------------------------------------------------------------------
+  (a) AS SHIPPED:  MDE ±0.5646R  (n_flip=41, n_unchanged=43, pooled sigma=0.9238R)
+     WOULD-FLIP n=41 WR=43.9% EV=-0.3196R | UNCHANGED n=43 WR=58.1% EV=-0.0404R
+     diff (unchanged-flip) +0.2793R; boot CI [-0.1077, 0.6589]
+  (b) AS INTENDED: MDE ±0.5703R  (n_flip=36, n_unchanged=48, pooled sigma=0.9238R)
+     WOULD-FLIP n=36 WR=38.9% EV=-0.4102R | UNCHANGED n=48 WR=60.4% EV=-0.0015R
+     diff (unchanged-flip) +0.4086R; boot CI [0.0187, 0.7870]
+
+--------------------------------------------------------------------------------
+FF.3 — RECOMMENDATION (recommendation only; NOT implemented this round)
+--------------------------------------------------------------------------------
+  1. DOES ANY PRIOR CONCLUSION CHANGE SIGN UNDER (b)? NO — every conclusion
+     KEEPS its sign and the two most load-bearing ones GET STRONGER:
+     - The G.3 would-flip cohort is the BAD cohort under both variants
+       ((a) -0.3196R, (b) -0.4102R); the unchanged book is ~EV-flat/positive in
+       both. Under (a) the separation's CI includes zero ([-0.1077, +0.6589]);
+       under (b) it EXCLUDES zero ([+0.0187, +0.7870]). The side-aware retype's
+       discrimination is therefore STRONGER with the weighting the comment
+       always claimed. (Power: MDE ±0.56-0.57R; the (b) CI barely clears zero —
+       treat as suggestive, not proven.)
+     - The window-sensitivity tables move in ONE cell of ten — no conclusion
+       in the M.1 table flips.
+  2. RECOMMENDED OPTION: correct the weighting to the intended direction
+     (most-recent-five) and restart Q's forward accrual. Invalidated rows:
+     ZERO — retype_verdict_would_change has NO stored rows yet (migration 018
+     applied 2026-08-29; no emission has run the annotation code since; the
+     S.1 first-annotated-row proof is still BLOCKED-ON-MARKET). Q's promotion
+     gate is accruing against NOTHING at this moment, so the reset cost of the
+     correction is exactly zero today and grows with every future emission.
+  3. Conditions attached (both must hold when the correction ships):
+     - The DEFECT-ON- RECORD comment in services/sideAwareRole.ts is replaced
+       by the correction note; the "last-5" comment finally becomes true.
+     - The golden fixtures gain a case that PINS the weighting direction (a
+       tie broken ONLY by which five events are double-weighted), so the
+       CI golden guard fails if the direction ever flips again. Without that
+       case the guard is direction-blind and the defect can silently return.
+  4. Not chosen: keeping (a) would require rewriting the comment to describe
+     weighting the OLDEST events, which no measured result supports — (a)'s
+     only advantage is inertia, and its discrimination is weaker. Dual columns
+     (annotating both variants forward) is the fallback if the user prefers
+     zero instrument change; the flip rate is 10.7% of signals, so both
+     columns would diverge on roughly 1 in 9 rows.
+================================================================================

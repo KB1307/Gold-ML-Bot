@@ -1,0 +1,75 @@
+================================================================================
+ITEM Y.2 — EXIT SHADOW LADDER SHIPPED (write-only; ZERO live behaviour change)
+run: 2026-08-29  |  scope: migration 021 + emission write-site + forward resolver
+================================================================================
+SHIPPED FILES (working tree at HEAD 706389e; Rork managed sync attaches the
+commit — no manual git flow in this environment):
+  1. backend/migrations/021_exit_geometry_annotations.sql
+     - ALTER TABLE public.emitted_signals_v1 ADD COLUMN IF NOT EXISTS
+       regime_at_emission text NULL, mapped_sl numeric NULL, mapped_tp numeric NULL
+     - COMMENT ON COLUMN for each (plain SQL literals; NO shell escapes — 020
+       lesson applied in-file; NO policies created — emitted_signals_v1's write
+       path already exists; no CREATE POLICY IF NOT EXISTS anywhere)
+     - 019 pattern; handed to the user to apply.
+  2. expo/services/emittedSignalService.ts — ITEM Y write-site inside the
+     existing annotation block (after ITEM Q, reusing the m1 fetch):
+     regime = ADX(14,M5) via aggregateBars/sealBarSeries/barADX/barATR on M5
+     buckets whose close time is strictly <= ems (NO LOOK-AHEAD); mapped_sl per
+     the verbatim map; mapped_tp = 4.0 x mapped_sl; NULL when bars are
+     insufficient — never defaulted. Zero live impact (byte-identical emission;
+     the A1 self-heal guard strips the fields until 021 is applied, row preserved).
+  3. expo/scripts/item248_exit_geometry_arms.ts — walkSingleTP EXPORTED (ONE
+     instrument for the paired ladder); main() guarded with import.meta.main.
+  4. expo/scripts/item249_exit_shadow_ladder.ts — forward paired resolver:
+     live outcome via REAL resolveSignalWithBars fromScratch + computeRNet;
+     mapped outcome via the imported walkSingleTP (verbatim, not
+     re-implemented) + computeRNet; appends paired rows to
+     shadow_candidates_v1 with candidate_name = 'EXIT_SHADOW_LADDER';
+     idempotent (skips signals already carrying a ladder row).
+     RUN INSTRUMENT: a bun script run from expo/ after each measurement round
+     (stated per the checkpoint contract; same cadence as item242 status runs).
+
+PRE-REGISTERED PROMOTION GATE — QUOTED FROM SHIPPED CODE
+  expo/services/emittedSignalService.ts (ITEM Y block):
+    "PRE-REGISTERED PROMOTION GATE (verbatim): a live exit change may be
+     proposed only when forward paired n >= 60 decided AND the chosen arm's
+     paired-difference 95% CI lower bound > 0. Until then it is observation
+     only."
+  backend/migrations/021_exit_geometry_annotations.sql carries the same gate
+  verbatim in its header; item249 prints it on every run.
+
+GATE ISOLATION — VERIFIED BY GREP (every query in the tree)
+  ALL shadow_candidates_v1 candidate_name filters in the tree are STRICT
+  .eq equality — never a range, prefix match, or name-omitted filter:
+    item249_exit_shadow_ladder.ts:82   .eq('candidate_name', 'EXIT_SHADOW_LADDER')   (exit gate, n of 60)
+    item249_exit_shadow_ladder.ts:126  insert candidate_name: 'EXIT_SHADOW_LADDER'
+    item250_round_status.ts:39         .eq('candidate_name', 'BAND_VETO_SUPPRESSED') (P.3 abort count)
+    item250_round_status.ts:43         .eq('candidate_name', 'BAND_VETO_SUPPRESSED') (newest row probe)
+    item250_round_status.ts:48         .eq('candidate_name', 'EXIT_SHADOW_LADDER')   (exit count, isolation check)
+  CONFIRMED: the P.3 abort counter counts ONLY candidate_name =
+  'BAND_VETO_SUPPRESSED' rows toward n=30; the exit promotion gate counts ONLY
+  candidate_name = 'EXIT_SHADOW_LADDER' rows toward n=60. One gate cannot
+  poison the other. Live counts at round close: BAND_VETO_SUPPRESSED = 0,
+  EXIT_SHADOW_LADDER = 0 (both gates accruing from zero).
+
+READ-NOWHERE GREP (read by NOTHING in gating/scoring)
+  rg 'regime_at_emission|mapped_sl|mapped_tp' over expo/**/*.ts -> 18 hits, ALL
+  in exactly two files: the write-site (services/emittedSignalService.ts:556-564)
+  and the forward resolver (scripts/item249_*, header/insert/select). ZERO
+  references in signalEngine.ts, signalResolver.ts, bandProximityVeto.ts,
+  directionalScoring.ts, or any scoring/gating path. The columns are
+  annotation-only.
+
+LIVE ANNOTATED ROW
+  BLOCKED-ON-APPLY: migration 021 not yet applied. item249 run (verbatim):
+    BLOCKED-ON-APPLY: migration 021 columns are not live yet (column
+    emitted_signals_v1.regime_at_emission does not exist)
+    Nothing to resolve; the annotation write-site will populate
+    regime_at_emission / mapped_sl / mapped_tp from the next emission after
+    021 is applied.
+  (The first item249 run exposed a second-order defect IN MY OWN script — the
+  BLOCKED-ON-APPLY detector's regex missed Postgres' "column ... does not
+  exist" message form and threw instead; fixed before recording, re-run above
+  is the clean path.) Additionally BLOCKED-ON-MARKET: no emission occurs until
+  the market reopens. Both blockers are the expected honest state.
+================================================================================

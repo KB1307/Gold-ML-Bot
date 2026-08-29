@@ -1,0 +1,109 @@
+================================================================================
+ITEM EE — BUILD MARKER: EIGHTH STRIP, MECHANISM INVESTIGATION
+run: 2026-08-29  |  tree: expo/  |  scope: babel.config.js restoration only
+================================================================================
+
+EE.1 — THE GUARD'S FIRST LIVE CATCH (run BEFORE any restoration; verbatim)
+  $ bun scripts/ci_guard_duplicate_constants.ts        (cwd = expo/)
+  EXIT=1
+  --- !!! GUARD FAILS !!! ---
+    SIXTH-STRIP GUARD: babel.config.js is missing the rork-build-marker plugin
+    registration.
+        Restore the scoped plugin (see expo/scripts/ci_guard_build_marker.ts and
+        expo/artifacts/checkpoint_h_build_marker.txt).
+        Until restored, every export prints literal __BUILD_SHA__ and build
+        provenance is dead.
+  RESULT: FAIL — 1 problem(s) in LIVE code.
+  NOTE (honest instrumentation caveat): this run was made from expo/, and the
+  guard's constant-scan roots are cwd-relative, so it printed "Live files: 0".
+  The SIXTH-STRIP check itself resolves babel.config.js via __dirname and is
+  cwd-INDEPENDENT — the catch is real, and was re-validated below with a full
+  scan from the project root after restoration. The file was NOT touched before
+  this run.
+
+EE.2 — RESTORATION
+  PROMPT DISCREPANCY, ON RECORD: the prompt names restore-source 7faa1a0 (and
+  strip-commit b136f08). NEITHER is a valid object in this repository
+  (`git cat-file -t 7faa1a0` -> "Not a valid object name"). The local
+  equivalents were identified from history and used instead:
+    strip commit (local) : 86de366 2026-08-29 08:33:54Z "Fix app crash that
+                           occurs when charts are removed from the page"
+                           (babel.config.js 79 -> 6 lines; its ONLY app changes
+                           were expo/app/_layout.tsx +10 and this deletion)
+  Restored verbatim (cp of `git show`, no hand edits) from 6ca74cc
+  ("Unify zone-side logic...", 2026-08-29 09:01:34Z), the most recent commit
+  holding the full file — verified BYTE-IDENTICAL to the 9654019 restoration:
+    cmp <(9654019) <(6ca74cc) -> IDENTICAL; 3724 bytes, 76 lines.
+
+  DIFF stripped(c953bf3) vs restored (stat): 70 insertions(+), 0 deletions(-)
+  (6-line preset-only file -> 76-line file with the guard comment block, the
+  scoped rorkBuildMarkerPlugin definition at :56/:60 and its registration.)
+
+  PASSING GUARD RUNS AFTER RESTORATION (verbatim tails):
+    from expo/:      RESULT: PASS (golden fixtures OK; cwd-relative scan = 0 files)
+    from repo root:  Live files      : 45
+                     RESULT: PASS — 24 single-source constant(s), 2
+                     parity-asserted, 12 script warning(s), across 45 live files.
+    EXIT=0 both. ZONE-SEMANTICS GOLDEN GUARD: 3 behavioural + 5 trade-relative
+    fixtures reproduced EXACTLY (incl. role_flip_recency -> CEILING_BEHAVING).
+
+EE.3 — MECHANISM (what was actually found; facts only)
+  STRIP COUNT CORRECTION: the prompt calls this the eighth strip. Local history
+  shows TWO further strip events since the seventh (86de366 at 08:33 and
+  c953bf3 at 09:16, see below); whether each platform sync produced a separate
+  commit is a counting convention — what is not in doubt is that the file is
+  stripped at HEAD and was restored by Item R the previous day.
+
+  DECISIVE FACTS (from git, quoted):
+    1. c953bf3 ("Adopt unified zone semantics and fix runtime error", 09:16:48)
+       has parent 6ca74cc, and 6ca74cc:expo/babel.config.js = 76 lines (full).
+       The c953bf3 DIFF ITSELF removes 70 lines, taking the committed 76-line
+       file back to the 6-line preset-only form. The plugin was COMMITTED at
+       09:01 and the very next commit reverted it — this cannot be a
+       working-tree accident; the revert is in the commit content.
+    2. 86de366 ("Fix app crash that occurs when charts are removed from the
+       page", 08:33:54) changed EXACTLY four files: two .rork/history/*.json
+       conversation logs, expo/app/_layout.tsx (+10 — the translation-DOM crash
+       fix), and expo/babel.config.js (−73, the full file). The deletion rode
+       along on a commit whose stated purpose was a one-file fix.
+    3. Both strip commits carry .rork/history/<…>_assistant.json payloads
+       (2,086 and 1,932 lines respectively) — i.e. they are Rork managed-sync
+       commits built from agent-conversation snapshots, not manual commits.
+    4. NO repo-resident tool writes babel.config.js. Search performed:
+       - rg "babel\.config" over *.{js,ts,json,sh,py} (whole repo, no
+         node_modules): 20 hits, ALL read-sites or comments —
+         services/diagnosticsExport.ts:504,509,531 (comments/warning text),
+         scripts/probe_build_marker.ts:9 (readFile for transform probe),
+         scripts/ci_guard_build_marker.ts:7,10,14,43,48,53,161,172 (guard),
+         scripts/ci_guard_duplicate_constants.ts:301-323 (SIXTH-STRIP guard),
+         constants/buildMarker.ts:6,25 (comments).
+       - rg "writeFile|writeFileSync|outputFile" filtered for "babel": ZERO
+         write-sites. (One rg invocation over the full tree exceeded the 60s
+         tool timeout; the filtered query above and the earlier full-pattern
+         grep both returned read-sites only.)
+    5. rork.json registers only the Expo and Backend apps; package.json has no
+       babel.config-generating script. No scaffold/template file exists in the
+       tree that emits a babel config.
+
+  FINDING (EE.3, stated to the evidence): NOT FOUND in-repo. No tool, template,
+  scaffold or script inside this repository rewrites babel.config.js. What the
+  history shows is that the reverts arrive INSIDE Rork managed-sync commits
+  (the platform's code-sync pipeline, external to the repo): each strip is a
+  sync commit whose content reverts the file to the 6-line preset-only form
+  while carrying unrelated one-file changes and conversation logs. That is an
+  observable description of the commits, not a read of the platform's code —
+  the rewriting step itself could not be inspected from inside the sandbox.
+  Search list: git log --all -- expo/babel.config.js (22 commits);
+  git show --stat on 86de366 / c953bf3 / 6ca74cc / 9654019; parentage checks
+  (`git log --format=%p`); repo-wide rg for babel.config write-sites; rork.json;
+  package.json scripts; .rork tree (history/, plans/, skills/).
+
+EE.4 — PROPOSAL
+  None implementable within the allowed scope. The mechanism, as far as the
+  repository can show it, lives in the platform's managed sync (outside the
+  repo), and no in-repo regeneration step exists to make marker-preserving.
+  The mitigation that works is the one that just fired: the SIXTH-STRIP GUARD
+  in scripts/ci_guard_duplicate_constants.ts (cwd-independent check), which
+  caught this strip on its first post-strip run. Recommendation: keep the
+  guard in the standard pre-report routine and re-run it after every sync.
+================================================================================

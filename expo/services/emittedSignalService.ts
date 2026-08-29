@@ -28,6 +28,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { buildM15Zones, m15OpposedHit, m15EndorsedHit, MEMORY_TRADING_DAYS } from './m15ZoneLayer';
 import { classifyZone } from './sideAwareRole';
 import { blockingRoleFor, roleFromLegacyType } from './zoneSemantics';
+import { aggregateBars, sealBarSeries, barADX, barATR } from './barIndicators';
 
 /** Provenance of a persisted emission. Recorded at write time, never inferred. */
 export type EmittedSignalSource = 'LIVE' | 'SIMULATION' | 'BACKFILL';
@@ -522,6 +523,45 @@ export function pushEmittedSignalRecord(record: EmittedSignalRecord): void {
                 if (role === blocking) { awareOpposes = true; break; }
               }
               row.retype_verdict_would_change = awareOpposes !== legacyOpposes;
+            }
+          }
+
+          // ── ITEM Y — REGIME-MAPPED EXIT GEOMETRY (write-only annotation, ZERO live
+          // impact). Regime map (verbatim): TREND (ADX(14,M5) > 25) SL = 3.5 x
+          // ATR(14,M5); MID (20..25) SL = $8.00; RANGE (< 20) SL = 2.5 x ATR(14,M5);
+          // TP = 4.0 x SL-distance. M5 is aggregated from gold_m1_bars STRICTLY
+          // before emission (NO LOOK-AHEAD: any M5 bucket whose close time is not
+          // <= ems is dropped) with the existing barIndicators instruments. NULL
+          // when bars are insufficient — never defaulted. Read by NOTHING in
+          // gating/scoring (grep-verifiable).
+          //
+          // PRE-REGISTERED PROMOTION GATE (verbatim): a live exit change may be
+          // proposed only when forward paired n >= 60 decided AND the chosen arm's
+          // paired-difference 95% CI lower bound > 0. Until then it is observation
+          // only. Forward paired rows are appended to shadow_candidates_v1 with
+          // candidate_name = 'EXIT_SHADOW_LADDER' (STRICT equality in every query —
+          // the P.3 abort counter counts ONLY candidate_name = 'BAND_VETO_SUPPRESSED'
+          // rows toward n=30; the exit gate counts ONLY EXIT_SHADOW_LADDER rows
+          // toward n=60; never a range, prefix match, or name-omitted filter).
+          {
+            const m1Strict = m1.filter(b => b.ts < ems);
+            const m5raw = m1Strict.length >= 60
+              ? aggregateBars(m1Strict.map(b => ({ timestamp: b.ts, open: b.o, high: b.h, low: b.l, close: b.c })), 5)
+              : [];
+            const m5 = m5raw.filter(b => b.timestamp + 5 * 60_000 <= ems);
+            const series = m5.length >= 29 ? sealBarSeries(m5) : null;
+            const adx = series ? barADX(series, 14) : null;
+            const atr = series ? barATR(series, 14) : null;
+            if (!series || !adx || !atr) {
+              row.regime_at_emission = null;
+              row.mapped_sl = null;
+              row.mapped_tp = null;
+            } else {
+              const regime = adx.adx > 25 ? 'TREND' : adx.adx >= 20 ? 'MID' : 'RANGE';
+              const slDist = regime === 'TREND' ? 3.5 * atr : regime === 'MID' ? 8.0 : 2.5 * atr;
+              row.regime_at_emission = regime;
+              row.mapped_sl = Math.round(slDist * 1000) / 1000;
+              row.mapped_tp = Math.round(4.0 * slDist * 1000) / 1000;
             }
           }
         }

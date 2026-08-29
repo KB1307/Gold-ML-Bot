@@ -1,0 +1,107 @@
+================================================================================
+ITEM CC — PRIOR-4H WINDOW TRUNCATION AUDIT (measure ONLY; NO patch this round)
+run: 2026-08-29T09:53Z  |  script: scripts/item247_prior4h_truncation.ts
+instrument: era-clean canonical population (n=224 decided, snapshot-bearing),
+real resolver fromScratch + computeRNet; gold_m1_bars via anon key ONLY
+================================================================================
+THE DEFECT (on record, services/bandProximityVeto.ts:143-158 + the identical A.2
+annotation block in emittedSignalService.ts): the 5h pre-emission window is
+fetched .order('timestamp',{ascending:true}).limit(250) — a 5h M1 window holds
+~300 bars, so the fetch returns the EARLIEST 250 and the window's "current" end
+sits tens of minutes BEFORE emission when coverage is dense.
+
+VARIANTS (endpoints stated exactly, frozen in the script header):
+  (a) AS SHIPPED : earliest-250 of [ems-5h, ems) (what .limit(250) returns);
+                   base = last kept bar with ts <= last.ts-4h (shipped loop);
+                   last = last KEPT bar; <150 bars -> NULL.
+  (b) CORRECTED  : full untruncated [ems-5h, ems); last = emission-adjacent bar
+                   (last bar strictly before ems); base = LAST bar with
+                   ts <= last.ts-4h; <150 bars -> NULL (same coverage rule).
+Fingerprint-ACTIVE uses the SHIPPED fingerprintActive() with identical rsi and
+opposing_zone_fraction — only `agrees` differs between arms. MDE before
+estimates; boot 20k seed 20260828.
+
+--------------------------------------------------------------------------------
+CC.1 — FLIPS AND GAP DISTRIBUTION (verbatim)
+--------------------------------------------------------------------------------
+  prior-4h computable: (a) 224/224 | (b) 224/224 | both 224
+  agrees_with_prior_4h_move FLIPS between (a) and (b): 42 of 224 (18.8%)
+  window-end-to-emission GAP under (a) [how stale the shipped "current" end is]:
+    exactly 0 min: 0 | <=5min: 12 | <=15min: 13 | <=30min: 14 | <=50min: 18
+    >50min: 206
+    min=0.0min  p25=50.2min  median=50.4min  p75=50.7min  p95=50.9min  max=51.0min
+  -> with dense coverage the shipped window ends ~50 minutes BEFORE emission
+     almost always (206/224). The predicted ~50-minute truncation is CONFIRMED
+     as the normal case, not an edge case.
+  FINGERPRINT-ACTIVE flips: 6 of 224 (2.7%). Direction is ONE-SIDED: every flip
+    is agreesA=false -> agreesB=true. fp active under (a) = 23 vs (b) = 29 —
+    the truncation KILLS agreement, so the LIVE veto exempts FEWER signals than
+    the corrected input would (it suppresses more).
+      flip signal_1787901324727_v0kinfsrt BUY rsi=62.9 opp=0.063 agreesA=false agreesB=true rNet=+0.2500
+      flip signal_1787672888393_97h23t5al BUY rsi=71.4 opp=0.063 agreesA=false agreesB=true rNet=-1.0250   (of 6 shown)
+
+--------------------------------------------------------------------------------
+CC.2 — GATES UNDER BOTH VARIANTS (MDE BEFORE estimates; verbatim)
+--------------------------------------------------------------------------------
+  (a) AS SHIPPED:
+    GATE-1: MDE ±0.3723R (n_removed=81, n_kept=143)
+      removed n=81 WR=50.6% EV=-0.1807R (mean CI [-0.3791, 0.0195]) | kept EV=+0.0221R
+      GATE-1 verdict: PASS
+    GATE-2: MDE ±1.5692R (n=3)   <- TINY n; read with MINDSET 7
+      n=3 WR=66.7% EV=-0.0685R | GATE-2 verdict: FAIL
+  (b) CORRECTED:
+    GATE-1: MDE ±0.3744R (n_removed=79, n_kept=145)
+      removed n=79 WR=49.4% EV=-0.2008R (mean CI [-0.3993, 0.0033]) | kept EV=+0.0303R
+      GATE-1 verdict: PASS
+    GATE-2: MDE ±1.2155R (n=5)   <- TINY n
+      n=5 WR=80.0% EV=+0.2039R | GATE-2 verdict: PASS
+  RECORDED P.0 (item241): GATE-1 -0.2008R n=79 | GATE-2 +0.1924R n=4.
+  The fresh (b) run reproduces GATE-1 EXACTLY (-0.2008R n=79) — confirming that
+  item241's canonical re-derivation measured on FULL-window (b-style) inputs.
+  (Fresh (b) GATE-2 is n=5 +0.2039R vs recorded n=4 +0.1924R: one extra member
+  from ordinary population drift — today's book is n=224 vs item241's n=223 —
+  not an instrument change.)
+
+--------------------------------------------------------------------------------
+SHIP-DECISION PROVENANCE, STATED PLAINLY
+--------------------------------------------------------------------------------
+  The gate that authorised the CONDITIONAL veto required BOTH gates to pass.
+  Under (b)-style inputs — the path used at measurement — both passed, and the
+  veto shipped. Under (a)-style inputs — the path that RUNS LIVE at emission —
+  GATE-2 FAILS (n=3, EV=-0.0685R; MDE ±1.57R). The ship decision would NOT have
+  been the same had the live input path been used at measurement time. The live
+  system also carries the bias into its stored annotations: every emission's
+  agrees_with_prior_4h_move is written from the truncated fetch (18.8% flip
+  rate vs corrected), and the fingerprint exempts ~26% fewer signals
+  (23 vs 29) than the corrected input would — the veto suppresses more than
+  its gate evidence supports. GATE-2's n (3-5) makes BOTH readings fragile
+  (MDE ±1.2-1.6R); this is a provenance defect finding, not a proof the veto
+  is bad.
+
+--------------------------------------------------------------------------------
+CC.3 — RECOMMENDATION (recommendation only; NOT implemented this round)
+--------------------------------------------------------------------------------
+  RECOMMENDED OPTION: correct the fetch (full untruncated window, or an
+  equivalent .limit after descending order with re-ascension) AND re-run the
+  FULL P.0 gate cascade next round BEFORE the veto continues. Reasons:
+  1. The measured-vs-live divergence is now quantified: GATE-2 flips PASS->FAIL
+     between the input the gates were measured on and the input that runs.
+     Continuing to run the veto on the (a) input while its authorising evidence
+     is (b)-based is a provenance violation the project has promised not to
+     carry (MINDSET 2/4).
+  2. The stored annotations are already biased: 18.8% of historical rows would
+     carry a different agrees_with_prior_4h_move under the corrected input,
+     ALL in the same direction (truncation kills agreement). Any future
+     measurement that reads those columns inherits the bias silently.
+  3. GATE-2's sample (n=3-5, MDE ±1.2-1.6R) cannot settle which variant is
+     RIGHT — only that the two are DIFFERENT. The cascade re-run is what makes
+     the continuation (or retraction) of the veto a measured decision.
+  Not chosen: "document as definition" would cement a ~50-minute-stale momentum
+  reading into the fingerprint's definition while the stored annotation columns
+  silently disagree with it; "correct annotations only" would leave the veto
+  reading one definition while the annotations carry another, with the
+  divergence documented but still live in the gating path.
+  Note for next round: the correction changes the fingerprint's definition, so
+  per the prompt's own rule it must go through the FULL P.0 cascade (GATE-1,
+  GATE-2, and the P.3 abort contract unchanged) before the veto continues.
+================================================================================
