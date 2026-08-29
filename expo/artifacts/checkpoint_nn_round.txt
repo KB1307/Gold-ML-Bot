@@ -1,0 +1,769 @@
+================================================================================
+ROUND NN/OO/QQ/RR/SS/TT — HOST CAUSE FIRST, LOCK FIX, VERIFY-AND-CLOSE, REPORT
+round close: 2026-08-29T22:1xZ  |  static validation: runChecks(expo) PASS (0 errors)
+scope honoured: NO refactors; band veto rule/thresholds/mode/flag UNTOUCHED;
+prior-4h window NOT patched; recency weighting NOT corrected; NOTHING changes
+live emission behaviour; NO new client-side reload/crash mitigation.
+================================================================================
+
+################################################################################
+# ITEM NN — RELOAD/503 HOST CAUSE: EVIDENCE, THEN A VERDICT (no client fixes)
+################################################################################
+
+NN.1a — TWO-ORIGIN CURLS, BODIES VERBATIM (re-run 2026-08-29T22:0xZ)
+
+  ORIGIN 1 — dev-rc77lvmdg2w595ubnei0z.rorktest.dev  (the hosted preview host)
+    GET /
+      HTTP 403 | content-type: text/html | bytes: 4344
+      body (first 300B, verbatim):
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Access Denied</title>
+            <style>
+                * {
+                    margin: 0;
+                    padding: 0;
+                    box-sizing: border-box;
+                }
+      HONESTY CORRECTION ON RECORD: the plan's expectation said "403 HTML
+      'Access Denied' openresty". The HTML and the "Access Denied" title ARE
+      confirmed verbatim above. The word "openresty" is NOT present in the
+      body — `grep -io openresty` over the saved body returned NOTHING. The
+      openresty attribution is WITHDRAWN as unevidenced; what is proven is a
+      4344-byte HTML "Access Denied" page.
+
+    GET /api/trpc/health
+      HTTP 503 | content-type: (EMPTY — header absent) | bytes: 0
+      body: (COMPLETELY EMPTY — od -c of the saved body produced only the
+             end-of-file offset 0000000, i.e. zero bytes)
+
+    GET /trpc/health
+      HTTP 503 | content-type: (EMPTY) | bytes: 0
+      body: (COMPLETELY EMPTY — zero bytes)
+
+  ORIGIN 2 — rc77lvmdg2w595ubnei0z-expo.rork.live  (the published web origin)
+    GET /
+      HTTP 200 | content-type: text/html; charset=UTF-8 | bytes: 15557
+      body (first 200B, verbatim):
+        <!DOCTYPE html><html lang="en"><head><meta charSet="utf-8"/><meta
+        name="viewport" content="width=device-width, initial-scale=1,
+        shrink-to-fit=no"/><meta http-equiv="X-UA-Compatible" content="IE=edge"/
+      -> the web app itself is served fine here.
+    GET /api/trpc/health
+      HTTP 404 | content-type: text/plain; charset=UTF-8 | bytes: 13
+      body (verbatim, complete): 404 Not Found
+
+  ORIGIN 3 — FUNCTIONS_URL
+    NOT REACHABLE AS A CHECK THIS PASS — stated honestly rather than reported.
+    $EXPO_PUBLIC_FUNCTIONS_URL expanded to an EMPTY STRING in the sandbox shell
+    (the private/public env split does not expose it to this process), so curl
+    returned: `curl: (3) URL rejected: No host part in the URL`, HTTP 000.
+    The plan's expected body ("no bundle deployed for this project") is
+    therefore NOT re-confirmed this pass and is NOT claimed. A separate probe of
+    the Supabase functions host returned HTTP 400 "Project not specified." —
+    that is a MALFORMED-REQUEST answer to a hand-built URL, NOT evidence about
+    bundle deployment, and is recorded as such.
+
+  RECONCILIATION WITH THE BROWSER ERROR (as instructed — no overclaiming):
+    The browser reports "JSON.parse: unexpected non-whitespace character after
+    JSON data". A ZERO-BYTE 503 body cannot produce that message — parsing "" 
+    throws "unexpected end of JSON input", a DIFFERENT error. The messages that
+    CAN produce it are the non-JSON TEXT/HTML bodies proven above: the 13-byte
+    "404 Not Found" (plain text) from the published origin and the 4344-byte
+    HTML "Access Denied". So: the empty-bodied 503s and the browser's JSON.parse
+    error are BOTH real, but they are NOT the same event — do not merge them.
+    Which of the two the app hit at any given moment is NOT established here.
+
+NN.1b — BACKEND DEPLOY/RUNTIME STATE (rork-agent logs backend, tail verbatim)
+    2026-08-29 21:59:39.071741330  [EconCalendar] FMP fetch failed (HTTP_ERROR
+      403), no cache available -> source: UNAVAILABLE. Detail: FMP HTTP 403
+    2026-08-29 21:59:38.599014803  [EconCalendar] FMP returned 403. Body:
+      { "Error Message": "Legacy Endpoint : Due to Legacy endpoints being no
+        longer supported - This endpoint is only available for legacy users who
+        have valid subscriptions prior August 31, 2025. ..." }
+    2026-08-29 21:59:38.146680894  [EconCalendar] FMP fetch failed (HTTP_ERROR
+      403), no cache available -> source: UNAVAILABLE.
+  READING: the backend PROCESS IS ALIVE and executing route handlers at
+  21:59:38-39Z — it is making outbound third-party calls and logging their
+  results. A dead or undeployed process emits no such lines. The FMP 403s are a
+  SEPARATE, UNRELATED upstream vendor problem (FMP retired the legacy endpoint
+  on 2025-08-31); they are NOT the 503 cause and are recorded here only because
+  they are what the tail contains.
+  THE PROCESS IS NOT THE FAILURE. The EDGE IN FRONT OF IT IS: every backend
+  route through the dev host answers 503 with zero bytes while the process
+  itself is demonstrably serving.
+
+NN.1c — METRO/HMR WEBSOCKET (stated plainly; NO inference)
+  This sandbox CANNOT observe the browser's HMR websocket. No tool here attaches
+  to the preview page's socket, and nothing in the repo records it. I therefore
+  make NO claim about whether the socket dropped.
+  WHAT WOULD SHOW IT (exact, for the user to capture): open the hosted preview
+  with the browser console open and watch the moments BEFORE a reload for a
+  websocket close/error line followed by the Expo dev-client issuing a full
+  location.reload(). That sequence — and only that — would establish the socket
+  as the reload trigger.
+
+NN.2 — VERDICT: OUT-OF-REPO
+  The reload/503 failure is NOT caused by application code in this repository.
+  The evidence, taken together:
+    - 59 real page loads recorded by the module-level recordBoot instrument,
+      with ZERO uncaught errors across 59 teardowns;
+    - ZERO location.reload / window.location writes anywhere in app code;
+    - a clean headless load on localhost (the same bundle, no hosted edge);
+    - the dev host answering 503 with a ZERO-BYTE body on ALL backend routes
+      (/api/trpc/* AND /trpc/*) while the backend process demonstrably serves
+      requests and logs them at the same wall-clock minute;
+    - the published origin serving the app at 200 but having NO backend route
+      at all (13-byte plain-text "404 Not Found").
+  One unhealthy platform edge in front of a healthy process explains the 503s
+  directly. Whether that SAME edge also drops the HMR socket that drives the
+  ~3.5s reload is PLAUSIBLE BUT NOT PROVEN from this sandbox (see NN.1c) —
+  stated as a hypothesis, not a finding.
+
+  ESCALATION TEXT FOR THE PLATFORM (combined, per the round's addition):
+    WHICH HOST: dev-rc77lvmdg2w595ubnei0z.rorktest.dev
+    WHICH SYMPTOMS (two, raised together as one platform-side report):
+      (1) EDGE 503: every backend route (/api/trpc/* and /trpc/*) returns HTTP
+          503 with a zero-byte body, while the project's backend process is
+          alive and logging served requests at the same minute. The published
+          origin (rc77lvmdg2w595ubnei0z-expo.rork.live) serves the app at 200
+          but exposes no backend route (plain-text 404). REQUEST: re-attach /
+          redeploy the backend bundle for this project, and check the preview
+          host's HMR websocket stability (the preview reloads about every 3.5s
+          with navigation type: reload).
+      NOTE ADDED AT ROUND CLOSE: symptom (2) below was OBSERVED HAPPENING
+      during this round — see TT.4 Step 3. The file was restored, validated,
+      and found re-stripped minutes later with no agent edit in between. That
+      raises the priority of (2) from "recurring" to "actively recurring on a
+      short cadence".
+      (2) CODE-SYNC REWRITING babel.config.js: the platform code-sync silently
+          strips the rork-build-marker babel plugin from expo/babel.config.js.
+          It has now been stripped and restored THREE times inside this single
+          round-cycle. Evidence is the failing guard run pasted under TT.4
+          below. REQUEST: investigate which sync process owns/rewrites that
+          file. Consequence while stripped: every diagnostics export carries
+          unsubstituted placeholders and is therefore unattributable to a build.
+    WHICH LOG: `rork-agent logs backend` shows the service healthy and serving
+    (tail quoted in NN.1b). The failure is at the platform edge in front of it.
+
+  ON THE INSTRUCTION "redeploy the backend bundle": I CANNOT DO THIS, and I am
+  not going to imply otherwise. No tool available to this agent deploys,
+  re-attaches, or restarts the platform's backend bundle or its edge routing —
+  that control plane sits outside this repository and outside the sandbox. This
+  is precisely why NN.2 is OUT-OF-REPO and why the request above is addressed to
+  the platform rather than executed here. Editing repo files cannot clear a
+  zero-byte 503 produced in front of a process that is already serving; any code
+  change I made in pursuit of it would be theatre, and MINDSET forbids it.
+  STATUS: BLOCKED — blocker named: no agent-accessible backend/edge deploy
+  control; requires platform action on the escalation text above.
+
+NN.3 — CONFIRMED NO-CHANGE
+  No new client-side reload or crash mitigation was written this round. The
+  previously shipped DOM guards stay exactly as they were. No proposals were
+  generated that would alter reload behaviour.
+
+################################################################################
+# ITEM OO — MULTIPLE GoTrueClient INSTANCES / LOCK CONTENTION
+################################################################################
+
+OO.1 — INVENTORY (grep-verified; WIDER than the round's own list)
+  Non-persisting clients (autoRefreshToken:false, persistSession:false) that
+  previously carried NO storageKey — 12 construction sites in app code:
+    services/signalEngine.ts:2448          (dailyOhlcSupabaseClient)   <- was MISSED by the list
+    services/signalEngine.ts:2573          (m5SupabaseClient)          <- was MISSED by the list
+    services/srZoneTier0Service.ts:219     (tier0Client)
+    services/telegramNotifier.ts:78        (outboxClient)
+    services/diagnosticsExportStore.ts:45  (storageClient)
+    services/emittedSignalService.ts:104   (emittedClient)
+    services/learningStore.ts:458          (pushClient)
+    services/learningStore.ts:713          (outcomesClient)
+    services/shadowSignalService.ts:101    (shadowClient)
+    services/appFeedBarCapture.ts:42       (captureClient)
+    lib/trpc.ts:453                        (supabaseOhlcClient)
+    lib/supabase.ts:84                     (createEphemeralSupabaseClient — per CALL, not memoized)
+  The ONLY persisting client, untouched and still the canonical key owner:
+    lib/supabase.ts:67-77
+      export const supabase: SupabaseClient | null = isSupabaseConfigured
+        ? createClient(supabaseUrl as string, supabaseAnonKey as string, {
+            auth: {
+              storage: AsyncStorage,
+              autoRefreshToken: true,
+              persistSession: true,
+              detectSessionInUrl: false,
+              flowType: "pkce",
+            },
+          })
+        : null;
+  Per-boot instance count: ~12 non-persisting + 1 persisting, ALL previously
+  sharing the one default storage key derived from the project URL.
+
+OO.2 — FIX APPLIED (storageKey ONLY; no consolidation, no ownership refactor)
+  All 12 sites now carry a distinct explicit storageKey (grep, verbatim):
+    lib/supabase.ts:90                storageKey: "rork-svc-ephemeral"
+    lib/trpc.ts:455                   storageKey: "rork-svc-ohlc"
+    services/appFeedBarCapture.ts:44  storageKey: "rork-svc-feed-capture"
+    services/diagnosticsExportStore.ts:47 storageKey: "rork-svc-diagnostics-export"
+    services/emittedSignalService.ts:105  storageKey: "rork-svc-emitted-signals"
+    services/learningStore.ts:460     storageKey: "rork-svc-learning-push"
+    services/learningStore.ts:715     storageKey: "rork-svc-learning-outcomes"
+    services/shadowSignalService.ts:103   storageKey: "rork-svc-shadow-signals"
+    services/signalEngine.ts:2451     storageKey: "rork-svc-signal-engine-daily-ohlc"
+    services/signalEngine.ts:2576     storageKey: "rork-svc-signal-engine-m5"
+    services/srZoneTier0Service.ts:221    storageKey: "rork-svc-sr-zone-tier0"
+    services/telegramNotifier.ts:80   storageKey: "rork-svc-telegram-outbox"
+  Residual check: non-persisting clients WITHOUT a storageKey = 0.
+
+OO.2a — SUFFICIENCY CHECK: **THE HEDGE FIRED. READ THIS BEFORE BELIEVING THE FIX.**
+  Installed version (expo/bun.lock:523,533): @supabase/supabase-js 2.99.3 with
+  @supabase/auth-js 2.99.3 — checked against the INSTALLED dist, not docs.
+
+  FACT 1 — the lock name IS derived from the storage key:
+    node_modules/@supabase/auth-js/dist/main/GoTrueClient.js:1300
+      return await this.lock(`lock:${this.storageKey}`, acquireTimeout, async () => {
+
+  FACT 2 — BUT in THIS version navigatorLock is GATED BEHIND persistSession:
+    node_modules/@supabase/auth-js/dist/main/GoTrueClient.js:136-142
+      if (settings.lock) { this.lock = settings.lock; }
+      else if (this.persistSession && isBrowser() && globalThis?.navigator?.locks) {
+          this.lock = locks_1.navigatorLock;
+      }
+      else { this.lock = lockNoOp; }
+
+  CONSEQUENCE, STATED PLAINLY AS THE PLAN REQUIRED:
+    Every one of the 12 clients I just fixed has persistSession:false, so in
+    2.99.3 each of them already resolved this.lock to **lockNoOp** — they take
+    NO Navigator lock at all. Therefore the storageKey change **DOES NOT and
+    CANNOT stop Navigator lock contention**, because those clients were never
+    contending for a Navigator lock in the first place. My pre-check claim that
+    "the fix IS sufficient for this version" was WRONG, and the hedge written
+    into the plan is what caught it.
+
+  WHAT THE FIX DOES ACHIEVE (real, but narrower than claimed):
+    It resolves the "Multiple GoTrueClient instances detected in the same
+    browser context ... may produce undefined behavior when used concurrently
+    under the same storage key" warning — GoTrueClient.js:113 raises that
+    warning per shared storageKey, and the keys are now distinct. Expect the
+    six warnings to collapse to at most one.
+
+  WHAT WOULD ACTUALLY ADDRESS THE LockAcquireTimeoutError (named, NOT shipped):
+    In 2.99.3 the ONLY client that can take a Navigator lock is the single
+    persisting client at lib/supabase.ts:67 (persistSession:true). A
+    NavigatorLockAcquireTimeoutError therefore originates there, from lock
+    holders in the SAME browser context on the SAME key — i.e. other tabs, or
+    reload-orphaned lock holders (and this preview reloads every ~3.5s, which
+    is an efficient way to orphan locks). The named remedy, still inside the OO
+    auth-only constraint, is to pass an explicit `lock` option on that one
+    persisting client — `processLock` (in-process queue, no Web Locks API) —
+    which is exactly the default Supabase itself later moved to for this class
+    of orphaned-lock deadlock. NOT SHIPPED THIS ROUND: it changes the auth
+    behaviour of the session-owning client and belongs in its own round with
+    its own before/after console evidence. Recorded as a PROPOSAL.
+
+OO.3 — EVIDENCE
+  BEFORE (user-captured, on record): six "Multiple GoTrueClient instances"
+  warnings + one LockAcquireTimeoutError.
+  AFTER: static validation only — runChecks(expo) PASS, 0 errors; grep proof
+  above. The cold-boot console (expected: warnings <= 1) is
+  **BLOCKED-ON-DEVICE** — this sandbox cannot produce a browser/device console.
+  Per OO.2a, the LockAcquireTimeoutError is NOT expected to disappear.
+
+OO.4 — HARD-CONSTRAINT PROOF
+  Only `auth:` option lines changed. Every edit inserted `storageKey: "..."`
+  into an existing auth object (plus an explanatory comment line). ZERO changes
+  to any query, table name, column list, filter, RLS-relevant call, or write
+  semantics anywhere in the 9 touched files. The data-source rule is intact: the
+  same tables are read the same way through the same anon key.
+
+################################################################################
+# ITEM QQ — COLUMN MEMO (verify-and-close; implemented, quoted from live tree)
+################################################################################
+
+QQ.1 — the memo and its use sites (services/emittedSignalService.ts)
+  :248  const sessionRejectedColumns = new Set<string>();
+  :404-405  pre-strip use — `if (sessionRejectedColumns.size > 0) { for (const col of sessionRejectedColumns) ...`
+  :654      learn use     — `sessionRejectedColumns.add(missing);`
+
+QQ.2 — SELF-CLEARING MECHANISM, VERBATIM
+  :183  const COLUMN_PROBE_TTL_MS = 5 * 60 * 1000;              <- TTL = 5 minutes
+  :186-214
+    const resolveEmittedTableColumns = async (client: SupabaseClient): Promise<Set<string> | null> => {
+      const now = Date.now();
+      if (emittedTableColumns && now - emittedTableColumnsProbedAt < COLUMN_PROBE_TTL_MS) {
+        return emittedTableColumns;
+      }
+      try {
+        const { data } = await client.from('emitted_signals_v1').select('*').limit(1);
+        if (data && data.length > 0) {
+          const freshColumns = new Set(Object.keys(data[0]));
+          emittedTableColumns = freshColumns;
+          emittedTableColumnsProbedAt = now;
+          // II.2 — SELF-CLEARING: drop any memoized rejected column the fresh live
+          // schema now contains (e.g. after migrations 018/021 landed mid-session).
+          if (sessionRejectedColumns.size > 0) {
+            for (const col of Array.from(sessionRejectedColumns)) {
+              if (freshColumns.has(col)) {
+                sessionRejectedColumns.delete(col);
+                console.log(`[EmittedSignal] A1_GUARD: column '${col}' now EXISTS in live schema — session memo entry cleared (self-healing, no restart needed)`);
+              }
+            }
+          }
+          return emittedTableColumns;
+        }
+      } catch {
+        // Fall through — probe failure is not fatal; the retry path below still guards.
+        // Cache and timestamp are left untouched, so the next write retries the probe.
+      }
+      return null;
+    };
+
+QQ.3 — UPDATED COMMENT, VERBATIM (:241-246)
+    II.2 (2026-08-29) — the memo is SELF-CLEARING: resolveEmittedTableColumns
+    re-probes the live schema on a stated TTL (COLUMN_PROBE_TTL_MS) and drops
+    any memoized entry the fresh schema now contains. Migrations 018/021 ARE
+    applied (verified live 2026-08-29), so a session that predates them no
+    longer strips regime_at_emission / mapped_sl / mapped_tp for its whole
+    life; a restart is no longer required to recover the columns.
+
+QQ.4 — RESTART ANSWER (explicit)
+  With the CURRENT working tree: **NO restart is needed before Monday's open.**
+  A session that memoized a column before the migration landed re-probes within
+  at most 5 minutes of the next write and drops the entry automatically.
+  With the PRE-ROUND code: a restart WAS required — the probe cache was
+  permanent for the process lifetime and the memo never cleared.
+
+################################################################################
+# ITEM RR — ANDROID BOOT CRASH (verify-and-close; fixes already in tree)
+################################################################################
+
+ATTRIBUTION CORRECTION ACCEPTED AND RECORDED: the unguarded call was NOT
+introduced by 7f8fb94 and NOT by the crash-fix work. It has been present since
+8db2e9e (2026-06-16), roughly 10 weeks. This sandbox's own pickaxe is
+consistent: `git log -S` names the 2026-06-16 commit locally and 7f8fb94 does
+not exist in local history. No further hunt. NOTE: the in-code comments at
+_layout.tsx:63 and :21 still cite "7f8fb94" and are now stale; correcting those
+comment strings is a PROPOSAL for a future round (comment-only, no behaviour).
+
+RR.1 — the fixed guard (app/_layout.tsx:60-64, verbatim)
+    // Web global handler. MM.1 — capability check, NOT existence: on React Native
+    // `window` IS defined (it aliases globalThis) but has no addEventListener, so
+    // `typeof window !== "undefined"` alone crashed Android boot before anything
+    // mounted (ITEM MM, introduced in 7f8fb94). Same pattern as :79 below.
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+
+RR.2 — try/catch wrapping the ENTIRE trap (app/_layout.tsx:18-22 and :93-103)
+    (function installGlobalErrorTrap() {
+      // MM.2 — an error handler that throws is worse than no handler. The ENTIRE
+      // trap install is wrapped so no failure here (unexpected runtime shape,
+      // missing API) can ever kill module evaluation or boot (ITEM MM, 7f8fb94).
+      try {
+    ... closing arm ...
+      } catch (trapInstallError) {
+        // MM.2 — never let the trap itself kill boot.
+        try {
+          console.warn(
+            "[GlobalTrap] install failed — boot continues without it:",
+            trapInstallError instanceof Error ? trapInstallError.message : String(trapInstallError),
+          );
+        } catch { /* console unavailable — nothing further we can do */ }
+      }
+    })();
+
+RR.3 — LoginScreen degrade (app/index.tsx:7-18, :54-58, verbatim)
+    // MM.3 — degrade gracefully: the auth context may be undefined (providers not
+    // mounted), so read it instead of destructuring — a property access on
+    // undefined here turned a provider failure into a full-screen crash.
+    const trading = useTrading();
+    const authUnavailable = !trading || typeof trading.login !== "function";
+    ...
+    const handleLogin = async () => {
+      if (authUnavailable) return;
+      await trading.login("demo_user");
+    ...
+    {authUnavailable && (
+      <Text style={styles.authErrorText}>
+        Sign-in is temporarily unavailable. Please restart the app.
+      </Text>
+    )}
+  NOTE ON RECORD: the file is app/index.tsx (the default-exported LoginScreen),
+  NOT app/auth/LoginScreen.tsx — a grep of app/auth returned no authUnavailable
+  hits. Recording the true path rather than the assumed one.
+
+RR.4 — WINDOW-GUARD SWEEP INVENTORY
+    app/_layout.tsx:57->64                FIXED (capability check; quoted above)
+    app/_layout.tsx:86                    already a capability check:
+        if (typeof globalThis !== "undefined" && typeof globalThis.addEventListener === "function")
+    services/goldWebSocketService.ts:65   already a capability check (list only)
+    lib/trpc.ts:51                        already a capability check (list only)
+    components/PriceChart.tsx             web-only paths; unreachable on native via
+                                          Platform.OS gates :638 / :787 (list only)
+    app/(tabs)/settings.tsx               triggerWebDownload behind a Platform.OS
+                                          call-path gate :438 / :440 (list only)
+    expo/scripts/*                        dev scripts, out of bundle (list only)
+
+RR.5 — expo-notifications Expo Go SDK 53 warning: benign. It requires a
+  development build; NO code change made or needed.
+
+RR.6 — DEVICE COLD BOOT: **BLOCKED-ON-DEVICE.** This is the user's to run; it
+  will not be closed on a simulator or by inference.
+  Static validation in its place: runChecks(expo) PASS — 0 tsc errors, 0 lint
+  errors, 0 project-structure errors.
+
+################################################################################
+# ITEM SS — MEASUREMENT REPORT (MDE BEFORE EVERY POINT ESTIMATE; CC FIRST)
+################################################################################
+
+--------------------------------------------------------------------------------
+SS.3 (FIRST — MOST CONSEQUENTIAL) — ITEM CC: PRIOR-4H FETCH TRUNCATION
+  source: artifacts/checkpoint_cc_prior4h_truncation.txt (run 2026-08-29T09:53Z,
+  scripts/item247_prior4h_truncation.ts, n=224 era-clean canonical)
+--------------------------------------------------------------------------------
+  THE HEADLINE: the gates that authorised the conditional veto were measured on
+  (b)-style inputs — the FULL untruncated 5h window. What RUNS LIVE at emission
+  is (a) — the earliest-250 truncated fetch. Under (a):
+
+    GATE-1: MDE ±0.3723R (n_removed=81, n_kept=143)   <- power stated first
+            removed n=81 WR=50.6% EV=-0.1807R (CI [-0.3791, 0.0195])
+            kept EV=+0.0221R                          -> PASS
+    GATE-2: MDE ±1.5692R (n=3)                        <- power stated first
+            n=3 WR=66.7% EV=-0.0685R                  -> **FAIL**
+
+  Under (b) — the path used at measurement time:
+    GATE-1: MDE ±0.3744R (n_removed=79, n_kept=145)
+            removed n=79 WR=49.4% EV=-0.2008R (CI [-0.3993, 0.0033]) -> PASS
+    GATE-2: MDE ±1.2155R (n=5)
+            n=5 WR=80.0% EV=+0.2039R                  -> PASS
+
+  => THE SHIP DECISION WOULD NOT HAVE BEEN THE SAME had the live input path been
+     used at measurement time. GATE-2 flips PASS -> FAIL between them.
+
+  SUPPORTING NUMBERS (verbatim):
+    agrees_with_prior_4h_move FLIPS (a) vs (b): 42 of 224 = 18.8%
+    window-end-to-emission GAP under (a): median 50.4min; 206 of 224 exceed
+      50min (min 0.0, p25 50.2, p75 50.7, p95 50.9, max 51.0)
+      -> the ~50-minute truncation is the NORMAL case, not an edge case.
+    fingerprint-ACTIVE flips: 6 of 224 = 2.7%, ONE-SIDED (every flip is
+      agreesA=false -> agreesB=true).
+    EXEMPTION DELTA, EXACT: fingerprint active under (a) = 23 vs (b) = 29. The
+      live truncated path exempts 6 FEWER signals (23/29 = ~26% fewer) than the
+      corrected input would — i.e. the live veto SUPPRESSES MORE than its gate
+      evidence supports.
+    GATE-1 exemption counts differ accordingly: (a) removed 81 / kept 143 vs
+      (b) removed 79 / kept 145.
+    Cross-check: fresh (b) reproduces item241's recorded GATE-1 EXACTLY
+      (-0.2008R, n=79), confirming item241 measured on full-window inputs.
+
+  POWER HONESTY: GATE-2's n is 3-5 with MDE ±1.2-1.6R. BOTH readings are
+  fragile. This is a PROVENANCE DEFECT finding — it does NOT prove the veto is
+  bad. Nothing was patched this round; the window stays as-is by pre-registration.
+
+--------------------------------------------------------------------------------
+SS.2 — ITEM BB: CONFIG MATRIX, FINGERPRINT-CONDITIONED
+  source: artifacts/checkpoint_bb_config_matrix_fp.txt (2026-08-29T09:51Z +
+  corrected re-run 09:57Z, scripts/item246_config_matrix_fp.ts, n=224)
+  population EV_net (whole book) = -0.0512R; fingerprint ACTIVE = 29
+--------------------------------------------------------------------------------
+  CONFIG A (snapshot band & !fp) [SHIPPED]: MDE ±0.3744R (n_rm=79, n_kept=145)
+    removed n=79 WR=49.4% EV=-0.2008R (CI [-0.3993, 0.0033]) total -15.86R
+    kept n=145 WR=60.7% EV=+0.0303R total +4.39R | retained 64.7%
+    diff +0.2310R, boot CI [-0.0277, 0.4905]
+  CONFIG B (M15 opposed & !fp): MDE ±0.3830R (n_rm=72, n_kept=152)
+    removed n=72 WR=52.8% EV=-0.0527R (CI [-0.2901, 0.1855])
+    kept n=152 WR=58.6% EV=-0.0505R | retained 67.9% | diff +0.0023R CI [-0.2750, 0.2728]
+  CONFIG C ((A-union) & !fp): MDE ±0.3585R (n_rm=119, n_kept=105)
+    removed n=119 WR=53.8% EV=-0.0709R (CI [-0.2474, 0.1081])
+    kept n=105 WR=60.0% EV=-0.0288R | retained 46.9% | diff +0.0421R CI [-0.2053, 0.2895]
+  CONFIG D ((A AND B) & !fp): MDE ±0.5112R (n_rm=32, n_kept=192)
+    removed n=32 WR=40.6% EV=-0.3505R (CI [-0.6494, -0.0218]) total -11.22R
+    kept n=192 WR=59.4% EV=-0.0013R | retained 85.7% | diff +0.3492R CI [-0.0014, 0.6745]
+
+  PRE-REGISTERED VERDICT (criteria unchanged):
+    A (SHIPPED): FAILS — (ii) removed-cohort CI upper 0.0033 not < 0;
+                          (iii) retained 64.7% < 65% floor
+    B: FAILS — (ii) -0.0527 not < -0.15R
+    C: FAILS — (ii) -0.0709 not < -0.15R; (iii) 46.9% < 65%
+    D: QUALIFIES — the ONLY config that does, at 85.7% retained.
+  IMPLICATION: D is the pre-registered PROPOSAL for the next round. NOTHING
+  CHANGES LIVE — the shipped config A remains live until a future round ships a
+  change through its own gates. Power honesty: D's removed cohort is n=32
+  (MDE ±0.5112R) and its diff CI [-0.0014, 0.6745] GRAZES ZERO.
+  BB.3 (M15 endorsed cohort): MDE ±0.4209R (n_e=53, n_ne=171); endorsed n=53
+  EV=-0.1483R (CI [-0.3476, 0.0453]) vs not-endorsed -0.0211R. Three-criteria:
+  (i) PASS, (ii) FAIL (misses -0.15R by 0.0017R AND CI upper positive),
+  (iii) PASS. Endorsement REMAINS BARRED from buy-side scoring — unchanged.
+
+--------------------------------------------------------------------------------
+SS.1 — ITEM FF: RECENCY-WEIGHTING DEFECT, QUANTIFIED
+  source: artifacts/checkpoint_ff_recency_variants.txt (2026-08-29T09:43/09:47Z,
+  scripts/item245_recency_variants.ts; 488 emitted, 70,991 bars to 2026-08-28T20:55Z)
+--------------------------------------------------------------------------------
+  population n=224 canonical; signals with band-relevant zones & 48h coverage: 84
+  zones classified (both variants, same events): 116
+  zones whose ROLE differs (a) vs (b): 11 of 116 = 9.5%
+  signals whose Q retype boolean FLIPS: 9 of 84 = 10.7%
+  MARGIN distributions:
+    (a) AS SHIPPED : |s|=0:7 |s|=1:4 |s|=2:18 |s|=3:8 ... |s|=37:1
+    (b) AS INTENDED: |s|=0:8 |s|=1:6 |s|=2:10 |s|=3:2 ... |s|=37:1
+    coin-flip roles (|score|=1): (a) 4 of 116 | (b) 6 of 116
+    role mix (a): FLOOR 86 / UNTYPED 7 / CEILING 23
+    role mix (b): FLOOR 89 / UNTYPED 8 / CEILING 19
+  ITEM238 WINDOW SENSITIVITY: the two variants diverge in exactly ONE cell of
+    ten window-rows (zone 4635.3 at 24h: a=FLOOR, b=CEILING). All other rows
+    across 24h/48h/7d/full in both tests are IDENTICAL.
+  G.3 COUNTERFACTUAL at 48h:
+    (a) AS SHIPPED : MDE ±0.5646R (n_flip=41, n_unchanged=43)
+        would-flip n=41 WR=43.9% EV=-0.3196R | unchanged n=43 EV=-0.0404R
+        diff +0.2793R, boot CI [-0.1077, 0.6589]  (INCLUDES zero)
+    (b) AS INTENDED: MDE ±0.5703R (n_flip=36, n_unchanged=48)
+        would-flip n=36 WR=38.9% EV=-0.4102R | unchanged n=48 EV=-0.0015R
+        diff +0.4086R, boot CI [0.0187, 0.7870]   (EXCLUDES zero)
+  SIGN-CHANGE VERDICT: **NO prior conclusion changes sign under (b).** Every
+  conclusion keeps its sign and the two load-bearing ones get STRONGER: the
+  would-flip cohort is the bad cohort under both variants, and the separation's
+  CI moves from including zero to excluding it. Treat as suggestive, not proven
+  (MDE ±0.56-0.57R; the (b) CI barely clears zero).
+  NOT CORRECTED THIS ROUND by pre-registration. Reset cost today is exactly
+  ZERO (retype_verdict_would_change has no stored rows yet) and grows with
+  every future emission.
+
+--------------------------------------------------------------------------------
+SS.4 — ITEM Y.1: REGIME-MAPPED EXIT GEOMETRY, THREE ARMS
+  source: artifacts/checkpoint_y1_exit_geometry_arms.txt (2026-08-29T09:58Z,
+  scripts/item248_exit_geometry_arms.ts, n=224; regime map available 224/224)
+--------------------------------------------------------------------------------
+  NO LOOK-AHEAD, VERIFIED BY PRINTED WINDOWS: M5 bars aggregated from M1 with
+  ts < ems, and any bucket whose CLOSE time is not strictly <= ems is dropped.
+  Sample window printed: first open 2026-06-29T08:25:00Z, LAST CLOSE
+  2026-07-16T10:50:00Z <= emitted 2026-07-16T10:51:28.481Z — the last M5 bar
+  closes BEFORE the emission timestamp in every sampled window.
+
+  PER-ARM:
+    ARM-1 live booked   n=224 WR=56.7% EV_net=-0.0512R total -11.47R
+    ARM-2 pure mapped   n=221 WR=25.3% EV_net=+0.2503R total +55.32R
+    ARM-3 hybrid        n=221 WR=25.3% EV_net=+0.1561R total +34.49R
+  LONGEST LOSING STREAK / MAX DRAWDOWN:
+    ARM-1 streak=7  maxDD=19.34R
+    ARM-2 streak=23 maxDD=28.97R
+    ARM-3 streak=23 maxDD=53.54R
+  PAIRED vs ARM-1 (n=221, all arms decided):
+    ARM-2 vs ARM-1: MDE ±0.4501R  <- stated first; paired diff +0.3057R,
+                    boot CI [-0.2191, 0.9384]  (INCLUDES ZERO)
+    ARM-3 vs ARM-1: MDE ±0.6230R  <- stated first; paired diff +0.2115R,
+                    boot CI [-0.5896, 1.0990]  (INCLUDES ZERO)
+  PER-DIRECTION: BUY n=111 ARM-1 -0.0861R | ARM-2 +0.6500R | ARM-3 +0.8991R
+                 SELL n=110 ARM-1 -0.0243R | ARM-2 -0.1530R | ARM-3 -0.5937R
+  PER-REGIME:    TREND n=114 -0.1151R / +0.2601R / +0.2876R
+                 MID   n=30  +0.1346R / +0.3083R / +0.1908R
+                 RANGE n=77  -0.0410R / +0.2133R / -0.0522R
+  READING: confirmed IN DIRECTION, not a proven lever — both paired CIs include
+  zero. The reality constraint is real: 25.3% WR, a 23-loss streak, and 28.97R
+  max DD (hybrid worsens DD to 53.54R). SELL side DIVERGES (mapped is worse).
+  A wholesale exit replacement is NOT proposed and must not be built.
+
+--------------------------------------------------------------------------------
+SS.5 — ITEM Y.2: GATE ISOLATION (strict candidate_name equality) — CONFIRMED
+  source: artifacts/checkpoint_y2_exit_shadow_ladder.txt + fresh item250 run
+--------------------------------------------------------------------------------
+  Every shadow_candidates_v1 filter in the tree is STRICT .eq equality — never a
+  range, prefix match, or name-omitted filter:
+    scripts/item249_exit_shadow_ladder.ts:82   .eq('candidate_name','EXIT_SHADOW_LADDER')  (exit gate, n of 60)
+    scripts/item249_exit_shadow_ladder.ts:126  insert candidate_name: 'EXIT_SHADOW_LADDER'
+    scripts/item250_round_status.ts:39         .eq('candidate_name','BAND_VETO_SUPPRESSED') (P.3 abort count)
+    scripts/item250_round_status.ts:43         .eq('candidate_name','BAND_VETO_SUPPRESSED') (newest row probe)
+    scripts/item250_round_status.ts:48         .eq('candidate_name','EXIT_SHADOW_LADDER')   (isolation check)
+  CONFIRMED: BAND_VETO_SUPPRESSED counts ONLY toward P.3 n=30;
+  EXIT_SHADOW_LADDER counts ONLY toward the n>=60 exit gate. One gate cannot
+  poison the other. Fresh run: BOTH counts are 0 — nothing to count yet.
+
+################################################################################
+# ITEM TT — LIVE STATUS (fresh item250 run this session)
+################################################################################
+
+TT.1 — First emission carrying all annotation columns:
+  **BLOCKED-ON-MARKET.** The newest emissions carry NULL on m15_opposed /
+  m15_endorsed / retype; the newest row predates the migrations' application and
+  no live emission has occurred since. Nothing to paste.
+
+TT.2 — First BAND_VETO_SUPPRESSED row + P.3 count (verbatim from item250):
+    DD.2 — BAND_VETO_SUPPRESSED shadow rows (P.3 abort gate; STRICT candidate_name equality)
+      count = 0 toward P.3 n=30 (filter: candidate_name = 'BAND_VETO_SUPPRESSED' AND NOTHING broader)
+      NO BAND_VETO_SUPPRESSED row yet — BLOCKED-ON-MARKET (no vetoed candidate since the veto shipped).
+      EXIT_SHADOW_LADDER rows (exit promotion gate, n of 60): 0 — isolation verified: counted with the STRICT opposite filter.
+  **BLOCKED-ON-MARKET.**
+
+TT.3 — Funnel counters vs the ~35% prediction (verbatim from item250):
+    DD.3 — funnel counters from a REAL diagnostics export (storage bucket, public object)
+      fetched latest.txt (943512 bytes); funnel-relevant lines:
+        Generated: 2026-08-27T18:26:49.860Z
+        generated: 2026-08-27T16:40:16.467Z    entry time: 18:40
+        ... (11 further generated/entry rows through 2026-08-26T14:05:37.545Z)
+  The latest REAL export (2026-08-27T18:26:49Z, 943,512 bytes) PREDATES the veto
+  ship, so the ~35% comparison cannot be made. **BLOCKED-ON-MARKET.**
+
+TT.4 — BUILD MARKER: STRIP EVIDENCE CAPTURED BEFORE RESTORING (as instructed)
+  STEP 1 — guard run on the CURRENTLY STRIPPED tree (babel.config.js = 6 lines,
+  no plugin). FAILING OUTPUT, VERBATIM:
+    ci_guard_build_marker — build-marker chain integrity check
+      self-test: all mutated fixtures correctly rejected (5/5)
+      ✗ babel.config.js: rorkBuildMarkerPlugin is gone — the plugin was removed again (cf. b1c7ca8, af7da4a on 2026-08-21).
+      ✗ babel.config.js: rorkBuildMarkerPlugin is not REGISTERED in the plugins array — a defined-but-unregistered plugin substitutes nothing.
+      ✗ babel.config.js: plugin is not SCOPED to the buildMarker module — an unscoped visitor rewrites the failure detector's own comparison literals in diagnosticsExport.ts (self-defusing detector).
+    ✗ ci_guard_build_marker FAILED — the build-marker chain is broken. Do not ship.
+  This is the THIRD such failing run inside one round-cycle — itself the
+  datapoint that the platform code-sync, not this repo, owns this file. Folded
+  into the combined platform escalation in NN.2.
+
+  STEP 2 — RESTORE. CORRECTION ON RECORD: the plan named "git blob fad0a9b" as
+  the canonical source. That is WRONG — fad0a9b is a COMMIT object, and its
+  babel.config.js is the 6-line STRIPPED version (restoring from it reproduced
+  the failure exactly, pasted during execution). The true canonical source is
+  12e1be5:expo/babel.config.js (76 lines, plugin defined + registered + scoped).
+  Restored from it; `git diff 12e1be5 -- expo/babel.config.js` is EMPTY
+  (byte-identical). Guard re-run, VERBATIM:
+      babel.config.js        : plugin defined, registered, scoped to buildMarker
+      constants/buildMarker  : both placeholder literals present
+      diagnosticsExport      : sentinel detector present, no bare-literal comparison
+    ✅ ci_guard_build_marker PASSED — plugin, placeholders, and sentinel detector intact.
+  ON RECORD: row-295/298 forensics identified the platform code-sync as the
+  writer; the strip WILL recur; the guard is the only defence; every export
+  produced while stripped is unattributable to a build.
+
+  STEP 3 — **THE STRIP RECURRED *DURING THIS ROUND*, MINUTES AFTER STEP 2.**
+  This is the single strongest datapoint the round produced, and it was
+  observed live rather than inferred. Sequence, all inside this session:
+    (i)   Step 2 restored the file to 76 lines; guard PASSED (output above).
+    (ii)  runChecks(expo) PASSED immediately after — 0 tsc / 0 lint / 0 structure.
+    (iii) A routine post-validation re-check of the same file found it back at
+          **6 lines**, plugin gone again. No agent turn edited it in between;
+          the only writes between (i) and (iii) were the artifact and
+          SYSTEM_CHECKLIST.md.
+    (iv)  Guard re-run on that re-stripped tree, VERBATIM:
+            self-test: all mutated fixtures correctly rejected (5/5)
+            ✗ babel.config.js: rorkBuildMarkerPlugin is gone — the plugin was removed again (cf. b1c7ca8, af7da4a on 2026-08-21).
+            ✗ babel.config.js: rorkBuildMarkerPlugin is not REGISTERED in the plugins array — a defined-but-unregistered plugin substitutes nothing.
+            ✗ babel.config.js: plugin is not SCOPED to the buildMarker module — an unscoped visitor rewrites the failure detector's own comparison literals in diagnosticsExport.ts (self-defusing detector).
+          ✗ ci_guard_build_marker FAILED — the build-marker chain is broken. Do not ship.
+    (v)   Restored AGAIN from 12e1be5:expo/babel.config.js — 76 lines,
+          `git diff 12e1be5 -- expo/babel.config.js` EMPTY (byte-identical).
+          Guard re-run, VERBATIM:
+            babel.config.js        : plugin defined, registered, scoped to buildMarker
+            constants/buildMarker  : both placeholder literals present
+            diagnosticsExport      : sentinel detector present, no bare-literal comparison
+          ✅ ci_guard_build_marker PASSED — plugin, placeholders, and sentinel detector intact.
+  COUNT FOR THIS ROUND-CYCLE: **FOUR strips, four restores** (not three). The
+  round's own hypothesis — that the writer is an external process on its own
+  cadence, not an agent action — is now supported by a strip that happened
+  while this agent was writing prose and touching no source file. The window
+  between restore and re-strip was on the order of minutes.
+  CONSEQUENCE FOR THE USER, STATED PLAINLY: the file is CORRECT at round close
+  (verified above), but it cannot be assumed correct at any later moment. Run
+  `bun scripts/ci_guard_build_marker.ts` from expo/ immediately before any build
+  whose provenance you intend to trust; if it fails, restore with
+  `git show 12e1be5:expo/babel.config.js > expo/babel.config.js`. Every export
+  produced from a stripped bundle prints unsubstituted placeholders and is
+  unattributable — that is the whole cost of this defect.
+
+TT.5 — CORPUS COUNTS (verbatim from item250):
+    DD.5 — corpus counts
+      emitted_signals_v1: 488
+      trade_outcomes_v1:  475
+      B.3 decided-pair count proxy: 475 of the required 1,041 (45.6%)
+      (proxy = resolved outcome rows; the B.3 gate counts decided PAIRS — item233
+       basis — so this is an UPPER BOUND, stated as such.)
+
+################################################################################
+# PRIOR-ROUND EXECUTED WORK (carried into this ledger; was never ledgered)
+################################################################################
+
+MARKET GATE + CIRCUIT BREAKER (services/goldWebSocketService.ts):
+    :36  // GG.3b — circuit breaker: after 5 consecutive failures, stop polling and
+    :41  const MARKET_GATE_CHECK_MS = 60000;
+    :135 console.log(`🔒 [GoldWS] Market CLOSED (was: ${previous}) — zero price fetches until next open (clock re-check every ${MARKET_GATE_CHECK_MS / 1000}s)`);
+    :317 // GG.3b — circuit breaker: after 5 consecutive failures stop polling and
+    :374 }, MARKET_GATE_CHECK_MS);
+  ITEM F COMPLIANCE: the gate/breaker touch ONLY the price-polling path
+  (priceHistory / entry timing). The five canonical tables are unaffected.
+
+KK — item251 ROLE-AWARE VETO (fresh run this session, verbatim tail):
+    role-aligned vs rest: MDE ±8.4971R (n_removed=21, n_kept=203) <- stated first
+      role-aligned n=21 WR=57.1% EV_net=-0.2058R mean-CI=[-0.5244, 0.1158]
+    untyped vs rest: MDE ±23.0167R (n_removed=3, n_kept=221) <- stated first
+      untyped n=3 WR=33.3% EV_net=-0.6046R mean-CI=[-1.0513, 0.2625]
+    role-unknown vs rest: MDE ±40.1586R (n_removed=0, n_kept=224)
+      role-unknown n=0 (nothing to estimate)
+    KK.3 — ROLE-AWARE vs SHIPPED ROLE-BLIND (BB.2 criterion unchanged):
+      ROLE-AWARE (opposed only): MDE ±4.8700R (n_rm=55, n_kept=169)
+        removed n=55 EV=-0.1768R | kept n=169 EV=-0.0103R | retained 75.4%
+        -> FAILS (ii): removed mean-CI upper 0.0904 not < 0
+      ROLE-AWARE (opposed+untyped): MDE ±4.7373R (n_rm=58, n_kept=166)
+        removed n=58 EV=-0.1989R | kept n=166 EV=+0.0004R | retained 74.1%
+        -> FAILS (ii): removed mean-CI upper 0.0558 not < 0
+      SHIPPED role-blind (reference): removed n=79 EV=-0.2008R | kept n=145
+        EV=+0.0303R | retained 64.7% -> FAILS (ii) and (iii)
+    VERDICT: NO role-aware variant clears the unchanged BB.2 criterion. Nothing
+    is proposed for shipping from KK. Measurement + pre-registration only.
+
+################################################################################
+# MANDATORY COMPLETION LEDGER  (permitted statuses only; missing row = failure)
+################################################################################
+
+ITEM  SUB   WHAT                                              STATUS
+----  ----  ------------------------------------------------  --------------------------------------------
+NN    1a    Two-origin curl bodies pasted verbatim            REPORTED (openresty claim WITHDRAWN as unevidenced)
+NN    1a'   FUNCTIONS_URL origin probe                        BLOCKED — blocker: env var empty in sandbox; URL rejected
+NN    1b    Backend deploy/runtime state from logs            REPORTED (process alive and serving 21:59:38-39Z)
+NN    1c    HMR websocket observation                         BLOCKED — blocker: sandbox cannot observe browser socket
+NN    2     Host-cause verdict                                VERDICT STATED — OUT-OF-REPO
+NN    2'    Backend bundle redeploy (user instruction)        BLOCKED — blocker: no agent-accessible deploy/edge control
+NN    2''   Combined platform escalation text (503 + babel)   REPORTED
+NN    3     No new client-side reload/crash mitigation        CONFIRMED NO-CHANGE
+OO    1     GoTrueClient inventory (12 sites, 2 missed found) MEASURED
+OO    2     Distinct storageKey on all 12 non-persisting      SHIPPED — working tree, 9 files, runChecks PASS
+OO    2a    Sufficiency check vs installed auth-js 2.99.3     CAUSE NAMED — hedge FIRED: storageKey does NOT
+                                                              stop lock contention (navigatorLock is gated behind
+                                                              persistSession at GoTrueClient.js:138); it DOES fix
+                                                              the shared-key warning. Remedy named, not shipped.
+OO    2b    processLock on the persisting client              NOT ATTEMPTED (proposal only; own round required)
+OO    3     Before/after console evidence                     BLOCKED-ON-DEVICE (after-console is the user's to capture)
+OO    4     Hard-constraint grep proof (auth-only)            CLOSED
+QQ    1     sessionRejectedColumns + use sites quoted         CLOSED
+QQ    2     Self-clearing TTL mechanism quoted (5 min)        CLOSED
+QQ    3     Updated comment quoted                            CLOSED
+QQ    4     Restart-before-Monday answer                      REPORTED — NO restart needed with current tree
+RR    -     Attribution correction (8db2e9e, not 7f8fb94)     CONFIRMED NO-CHANGE (accepted; local pickaxe consistent)
+RR    1     Capability guard quoted (_layout.tsx:64)          FIXED — in tree, quoted
+RR    2     try/catch around entire trap quoted               FIXED — in tree, quoted
+RR    3     LoginScreen degrade quoted (app/index.tsx)        FIXED — in tree, quoted (path corrected on record)
+RR    4     Window-guard sweep inventory                      CLOSED
+RR    5     expo-notifications Expo Go warning                CONFIRMED NO-CHANGE (benign; needs dev build)
+RR    6     Real-device cold boot                             BLOCKED-ON-DEVICE
+RR    6'    Static validation in its place                    CLOSED — runChecks(expo) PASS, 0 errors
+RR    7     Stale "7f8fb94" comment strings at :21/:63        NOT ATTEMPTED (comment-only proposal, future round)
+SS    3     CC report (delivered FIRST, MDE-first)            REPORTED — GATE-2 FAILS on the live input path
+SS    2     BB report (four configs, MDE-first)               REPORTED — only D qualifies; shipped A fails (iii)
+SS    1     FF report (MDE-first, sign-change verdict)        REPORTED — no conclusion changes sign
+SS    4     Y.1 report (three arms, MDE-first)                REPORTED — direction confirmed, both CIs include zero
+SS    5     Y.2 gate isolation                                CONFIRMED — strict .eq equality, both counts 0
+TT    1     First fully-annotated emission                    BLOCKED-ON-MARKET
+TT    2     First BAND_VETO_SUPPRESSED row / P.3 count        BLOCKED-ON-MARKET (count = 0 of 30)
+TT    3     Funnel counters vs ~35% prediction                BLOCKED-ON-MARKET (latest export predates the ship)
+TT    4     Strip evidence captured BEFORE restore            REPORTED — failing guard run pasted before restoring
+TT    4'    babel.config.js restored + guard PASS             FIXED — restored from 12e1be5 (fad0a9b correction
+                                                              on record); diff empty; guard PASSED
+TT    4''   **FOURTH strip observed LIVE mid-round**          REPORTED — file re-stripped minutes after the Step-2
+                                                              restore with no agent edit to it; failing guard run
+                                                              pasted; restored again from 12e1be5, diff empty,
+                                                              guard PASSED. Strongest evidence yet that an external
+                                                              process owns the file. Folded into the NN.2 escalation.
+TT    5     Corpus counts                                     MEASURED — emitted 488 / outcomes 475 / 45.6% proxy
+PRIOR GG.3b Market gate + circuit breaker (ITEM F proof)      SHIPPED — in tree, quoted, price path only
+PRIOR KK    item251 role-aware veto, fresh run                MEASURED — no variant clears BB.2; nothing proposed
+ROUND -     Static validation, final pass                     CLOSED — runChecks(expo) PASS (0/0/0)
+ROUND -     Round artifact + SYSTEM_CHECKLIST row 300         CLOSED
+
+SCOPE COMPLIANCE RESTATED: band veto rule/thresholds/mode/flag UNTOUCHED;
+prior-4h window NOT patched; recency weighting NOT corrected; no live emission
+behaviour changed; no new client-side reload/crash mitigation written.
+================================================================================
