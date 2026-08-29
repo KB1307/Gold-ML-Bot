@@ -82,6 +82,24 @@ function toDigest(error: unknown): FatalErrorDigest {
 }
 
 /**
+ * Ask the browser HOW this page load happened (web only). Navigation Timing's
+ * entry type distinguishes a full reload ("reload") from an in-site navigation
+ * ("navigate") — decisive for attributing a boot loop to an external reloader
+ * vs app-side navigation. Returns null on native / unsupported browsers.
+ */
+function getNavigationType(): string | null {
+  try {
+    if (typeof performance === "undefined" || typeof performance.getEntriesByType !== "function") {
+      return null;
+    }
+    const entries = performance.getEntriesByType("navigation") as Array<{ type?: string }> | undefined;
+    return entries && entries.length > 0 ? (entries[0]?.type ?? null) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Record a boot. Called once per page load, before React renders (web only).
  * Returns the stored state AFTER this boot is accounted for, including the
  * previous session's fatal digest if one was saved.
@@ -89,6 +107,7 @@ function toDigest(error: unknown): FatalErrorDigest {
 export function recordBoot(): StoredForensics {
   const prev = readState();
   const now = Date.now();
+  const navType = getNavigationType();
   const state: StoredForensics = { lastBootAt: now, cycleCount: 1, lastFatalError: prev.lastFatalError };
 
   if (prev.lastBootAt !== null) {
@@ -96,9 +115,11 @@ export function recordBoot(): StoredForensics {
     if (delta <= BOOT_LOOP_WINDOW_MS) {
       state.cycleCount = prev.cycleCount + 1;
       console.warn(
-        `[BootLoop] cycle #${state.cycleCount} — remounted ${delta}ms after previous`,
+        `[BootLoop] cycle #${state.cycleCount} — re-booted ${delta}ms after previous (navigation type: ${navType ?? "unknown"})`,
       );
     }
+  } else if (navType) {
+    console.log(`[BootForensics] first boot of session (navigation type: ${navType})`);
   }
 
   if (prev.lastFatalError) {

@@ -95,3 +95,38 @@ HONEST STATUS
 - RevenueCat stays dormant (row 297). Trading engine, signals, thresholds,
   veto rules, mode flags: untouched (grep-audited; only write-path error
   handling hardened).
+
+FOLLOW-UP ROUND (2026-08-29, post-application) — ledger row 299
+Migrations 018-021 ALL APPLIED by the user. PQRS self-heal churn suspect fully
+retired: emittedSignalService now writes regime_at_emission / mapped_sl /
+mapped_tp natively; no stripping needed (sessionRejectedColumns memo stays as
+harmless belt-and-braces).
+
+LIVE LOOP DATA (user screenshot of the row-298 failure panel):
+  "Boot loop detected (59 rapid re-boots) — no uncaught error captured."
+What that proves:
+1. recordBoot() is module-level — it runs once per ACTUAL page load.
+   59 cycles = 59 real page reloads, NOT in-app remounts.
+2. Zero uncaught errors digested across 59 teardowns: the reloader is NOT an
+   app-code crash. The panel firing correctly also validates the row-298
+   forensics pipeline end-to-end.
+3. Grep audit of app code: ZERO location.reload / window.location assignment
+   (only origin reads: goldWebSocketService.ts:65, lib/trpc.ts:51); the only
+   router.replace calls are user-initiated (login index.tsx:12, settings
+   logout settings.tsx:247, auth callback auth/callback.tsx:11). No navigation
+   loop exists in app code.
+CONCLUSION: the reloader sits OUTSIDE app code — consistent with the row-296
+environment-side preview-panel mutator class.
+
+SHIPPED (forensics v2): recordBoot() now reads the Navigation Timing entry
+type: `[BootLoop] cycle #N — re-booted Xms after previous (navigation type:
+reload|navigate)`; first clean boot logs `[BootForensics] first boot of
+session (navigation type: ...)`. runChecks(expo) PASS.
+
+NEXT (user):
+- Reload the preview and paste the [BootLoop] console lines (now show nav type).
+- DECISIVE EXPERIMENT: open the app URL in a standalone browser tab OUTSIDE
+  the preview panel. No loop there attributes the loop to the preview harness,
+  not the app.
+- If the loop persists, the [LoadOverlay] mode=... lines show whether each
+  cycle reaches context-unavailable (remount signature) or data-loading.
