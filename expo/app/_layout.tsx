@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect, useState } from "react";
+import { getBootLoopCycleCount, getLastFatalDigest } from "@/lib/bootForensics";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { TradingProvider, useTrading } from "@/contexts/TradingContext";
 import { SubscriptionProvider } from "@/contexts/SubscriptionContext";
@@ -10,6 +11,7 @@ import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { View, ActivityIndicator, Text, StyleSheet, LogBox, Platform } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { assertEmittedSchemaContract } from "@/services/emittedSignalService";
+import { recordBoot, recordFatalError } from "@/lib/bootForensics";
 
 // Global uncaught error handler for diagnostics — catches module-level crashes
 // before the React error boundary can mount.
@@ -40,6 +42,7 @@ import { assertEmittedSchemaContract } from "@/services/emittedSignalService";
       const originalHandler = utils.getGlobalHandler?.();
       utils.setGlobalHandler?.((error: unknown, isFatal?: boolean) => {
         logDetails("RN", error);
+        recordFatalError(error);
         if (originalHandler) {
           try { originalHandler(error, isFatal); } catch { /* must not throw */ }
         }
@@ -54,9 +57,13 @@ import { assertEmittedSchemaContract } from "@/services/emittedSignalService";
   if (typeof window !== "undefined") {
     window.addEventListener("error", (event: ErrorEvent) => {
       logDetails("WEB", event.error ?? event.message);
+      // Save the digest so the NEXT boot can report what killed this page —
+      // the reload loop dies before the error boundary can paint.
+      recordFatalError(event.error ?? event.message);
     });
     window.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {
       logDetails("WEB-unhandled", event.reason);
+      recordFatalError(event.reason);
     });
     console.log("[GlobalTrap] Registered web error listeners");
   }
@@ -112,26 +119,35 @@ if (Platform.OS === 'web') {
   // Installed once, before React renders, web-only.
   if (typeof Node !== "undefined") {
     type RemoveChildFn = (this: Node, child: Node) => Node;
+    type InsertBeforeFn = (this: Node, node: Node, ref: Node | null) => Node;
+    type AppendChildFn = (this: Node, node: Node) => Node;
     const proto = Node.prototype as unknown as {
       removeChild: RemoveChildFn;
+      insertBefore: InsertBeforeFn;
+      appendChild: AppendChildFn;
       __domRemoveChildGuard?: boolean;
     };
 
     if (!proto.__domRemoveChildGuard) {
       const originalRemoveChild: RemoveChildFn = proto.removeChild;
+      const originalInsertBefore: InsertBeforeFn = proto.insertBefore;
+      const originalAppendChild: AppendChildFn = proto.appendChild;
       let lastGuardLogAt = 0;
+      const warnRecovery = (op: string) => {
+        // Rate-limited diagnostics — never spam, never leak node contents.
+        const now = Date.now();
+        if (now - lastGuardLogAt > 5000) {
+          lastGuardLogAt = now;
+          console.warn(
+            `[DOMGuard] ${op} target was re-parented/detached behind React — recovering instead of crashing`,
+          );
+        }
+      };
 
       proto.__domRemoveChildGuard = true;
       proto.removeChild = function removeChildGuard(this: Node, child: Node): Node {
         if (child && child.parentNode !== this) {
-          // Rate-limited diagnostics — never spam, never leak node contents.
-          const now = Date.now();
-          if (now - lastGuardLogAt > 5000) {
-            lastGuardLogAt = now;
-            console.warn(
-              "[DOMGuard] removeChild target was re-parented/detached behind React — recovering instead of crashing",
-            );
-          }
+          warnRecovery("removeChild");
           if (child.parentNode) {
             return originalRemoveChild.call(child.parentNode, child);
           }
@@ -140,9 +156,48 @@ if (Platform.OS === 'web') {
         return originalRemoveChild.call(this, child);
       };
 
-      console.log("[DOMGuard] removeChild commit guard installed");
+      // insertBefore: the OTHER commit-phase insert React uses for new sibling
+      // subtrees. A node with NO parent is the normal fresh-node case — never
+      // intercepted. Only the pathological cases are recovered: the node being
+      // inserted still lives under a DIFFERENT parent (re-parented behind
+      // React's back), or the reference node is no longer a child of this node.
+      proto.insertBefore = function insertBeforeGuard(this: Node, node: Node, ref: Node | null): Node {
+        if (node && node.parentNode && node.parentNode !== this) {
+          warnRecovery("insertBefore");
+          try {
+            originalRemoveChild.call(node.parentNode, node);
+          } catch {
+            // Already detached between check and call — proceed.
+          }
+        }
+        if (ref && ref.parentNode !== this) {
+          // Reference node detached behind React's back — appending preserves
+          // the commit instead of throwing.
+          warnRecovery("insertBefore");
+          return originalAppendChild.call(this, node);
+        }
+        return originalInsertBefore.call(this, node, ref);
+      };
+
+      // appendChild: crashes with HierarchyRequestError when the node was
+      // re-parented so that it now CONTAINS the target parent. Treat the
+      // commit as complete instead of tearing the tree down.
+      proto.appendChild = function appendChildGuard(this: Node, node: Node): Node {
+        if (node && typeof node.contains === "function" && node.contains(this)) {
+          warnRecovery("appendChild");
+          return node;
+        }
+        return originalAppendChild.call(this, node);
+      };
+
+      console.log("[DOMGuard] removeChild/insertBefore/appendChild commit guards installed");
     }
   }
+
+  // Boot-cycle forensics — once per page load, before React renders. Detects
+  // rapid re-boots (the reload-loop signature) and replays the previous
+  // session's uncaught-error digest into the console.
+  recordBoot();
 }
 
 const queryClient = new QueryClient({
@@ -160,15 +215,33 @@ const queryClient = new QueryClient({
   },
 });
 
+let lastOverlayLogAt = 0;
+
 const LoadingOverlay = React.memo(() => {
   let isLoading = true;
+  let mode: "data" | "context" = "context";
   try {
     const ctx = useTrading();
     isLoading = ctx.isLoading;
+    mode = "data";
   } catch {
     // Trading context not ready yet — keep showing loading
   }
-  
+
+  // Overlay attribution: which mode is showing this overlay. "context" means
+  // TradingContext is not even mounted — a remount signature, not slow data.
+  useEffect(() => {
+    if (!isLoading) return;
+    const now = Date.now();
+    if (now - lastOverlayLogAt < 5000) return;
+    lastOverlayLogAt = now;
+    if (mode === "context") {
+      console.warn("[LoadOverlay] mode=context-unavailable (TradingContext not mounted — remount signature)");
+    } else {
+      console.log("[LoadOverlay] mode=data-loading (TradingContext.isLoading=true)");
+    }
+  }, [isLoading, mode]);
+
   if (!isLoading) return null;
   
   return (
@@ -240,6 +313,10 @@ export default function RootLayout() {
   }, []);
 
   if (!isClientReady) {
+    // Visible failure panel: after 3 rapid re-boots, stop flashing and show
+    // the saved error digest so the loop becomes observable.
+    const cycleCount = getBootLoopCycleCount();
+    const fatal = getLastFatalDigest();
     return (
       <GestureHandlerRootView style={{ flex: 1 }}>
         <View style={styles.bootContainer} testID="root-layout-boot-screen">
@@ -247,8 +324,31 @@ export default function RootLayout() {
             colors={["#050505", "#111827", "#050505"]}
             style={styles.bootGradient}
           >
-            <ActivityIndicator size="large" color="#FFD700" />
-            <Text style={styles.loadingText}>Preparing live trading workspace...</Text>
+            {cycleCount >= 3 ? (
+              <View style={styles.failurePanel} testID="boot-loop-failure-panel">
+                <Text style={styles.failureTitle}>
+                  Boot loop detected ({cycleCount} rapid re-boots)
+                </Text>
+                {fatal ? (
+                  <>
+                    <Text style={styles.failureText}>last session ended with:</Text>
+                    <Text style={styles.failureText}>{fatal.type}: {fatal.message}</Text>
+                    {fatal.firstStackLine ? (
+                      <Text style={styles.failureStack} numberOfLines={2}>{fatal.firstStackLine}</Text>
+                    ) : null}
+                  </>
+                ) : (
+                  <Text style={styles.failureText}>
+                    no uncaught error captured — check [BootLoop] / [GlobalTrap] console lines
+                  </Text>
+                )}
+              </View>
+            ) : (
+              <>
+                <ActivityIndicator size="large" color="#FFD700" />
+                <Text style={styles.loadingText}>Preparing live trading workspace...</Text>
+              </>
+            )}
           </LinearGradient>
         </View>
       </GestureHandlerRootView>
@@ -304,5 +404,31 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     gap: 16,
+  },
+  failurePanel: {
+    paddingHorizontal: 24,
+    paddingVertical: 20,
+    borderRadius: 12,
+    backgroundColor: "rgba(127, 29, 29, 0.35)",
+    borderWidth: 1,
+    borderColor: "#7f1d1d",
+    maxWidth: 340,
+    gap: 8,
+  },
+  failureTitle: {
+    fontSize: 15,
+    color: "#fca5a5",
+    fontWeight: "700" as const,
+    textAlign: "center",
+  },
+  failureText: {
+    fontSize: 13,
+    color: "#fecaca",
+    textAlign: "center",
+  },
+  failureStack: {
+    fontSize: 11,
+    color: "#f87171",
+    textAlign: "center",
   },
 });

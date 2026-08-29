@@ -1,0 +1,97 @@
+BOOT-LOOP FORENSICS ROUND — 2026-08-29
+Plan: "Fix the dashboard loading/reload loop" (.rork/plans/fix-the-dashboard-loading-reload-loop_1788032170542.plan.md)
+Ledger: row 298. Prior rounds: 296 (removeChild guard), 297 (RevenueCat dormancy).
+
+SYMPTOM (user, web preview)
+Dashboard flashes ~1s, then endless cycling of "Loading Trading Data..." +
+"Preparing live trading workspace...". Onset: immediately on load. No error text
+or blank flash between cycles — only the two loading screens. Started after the
+P,Q,R,S build round. Persisted past RC dormancy (row 297), so NOT RC-driven.
+
+STRUCTURAL FACTS (verified by read, prior round)
+- TradingContext isLoading starts true (line 673), only ever set false
+  (934 catch, 2620 post-load) — nothing in app code can re-raise it globally.
+- The boot screen ready-flag only resets on full root remount.
+- Both screens reappearing ⇒ the app re-boots in a full cycle: an uncaught
+  error tears the page down BEFORE the error boundary can paint, and the
+  preview panel reloads it.
+
+SHIPPED THIS ROUND
+1. Boot-cycle forensics — NEW lib/bootForensics.ts (web-only; native no-ops;
+   every access try/catch-wrapped, forensics can never throw):
+   - recordBoot() once per page load, before React renders: session-stored
+     timestamp + cycle counter; a re-boot within 15s logs
+     `[BootLoop] cycle #N — remounted Xms after previous`.
+   - recordFatalError() wired into ALL GlobalTrap channels (web window.error,
+     web unhandledrejection, RN ErrorUtils global handler): saves a digest
+     {type, message, first stack line, at} BEFORE the page dies.
+   - next boot prints `[BootForensics] previous session ended with: ...` —
+     the culprit names itself on the following run even if the loop continues.
+2. Visible failure panel — boot screen (app/_layout.tsx): at >= 3 rapid cycles
+   it stops flashing and renders testID="boot-loop-failure-panel" showing the
+   saved digest (title with cycle count, type+message, first stack line, or
+   "no uncaught error captured" if the teardown left nothing).
+3. Overlay attribution — LoadingOverlay now reports which mode fired,
+   rate-limited 1/5s: `[LoadOverlay] mode=data-loading (TradingContext.
+   isLoading=true)` vs `mode=context-unavailable (TradingContext not mounted —
+   remount signature)`. context-unavailable = remount signature.
+4. DOM guard extension (app/_layout.tsx, same install block + same
+   __domRemoveChildGuard marker, shared 1/5s rate limiter):
+   - insertBefore: fresh nodes (no parent) NEVER intercepted; pathological
+     cases recovered — node still parented elsewhere (detached from its actual
+     parent first) and reference node no longer a child (falls back to append).
+   - appendChild: HierarchyRequestError case (node now CONTAINS the target
+     parent after behind-the-back re-parenting) — commit treated as complete.
+   - Normal paths byte-identical: guard only intercepts what would throw.
+5. P,Q,R,S boot-path audit (timing clue; error-handling hardening ONLY —
+   veto flag/mode/thresholds/gates/semantics byte-identical):
+   - Scope finding: the annotation block runs at EMISSION TIME ONLY —
+     pushEmittedSignalRecord has exactly ONE caller (signalEngine.ts:9765).
+     It is NOT on the boot catch-up path.
+   - Emission annotation fetch (16-day gold_m1_bars paged loop) hardened:
+     each page gets 2 attempts; a page failing twice DISCARDS the partial
+     window (annotations resolve to NULL per the NULL-when-insufficient rule)
+     instead of computing labels from a truncated view; defensive page cap
+     (40 pages ≈ 2x the expected ~23).
+   - Self-heal upsert: added sessionRejectedColumns memo — columns rejected by
+     the live schema (MISSING_COLUMN_RE path; 018 retype + 021 exit-geometry
+     currently unapplied) are pre-stripped from every subsequent write instead
+     of re-burning the 5-attempt budget per emission. Same session lifetime as
+     the resolveEmittedTableColumns probe cache. Fields stripped are identical;
+     with >5 missing columns the ROW can no longer be lost on later writes.
+6. Mount-path audit (no changes required — findings recorded):
+   - PriceChart: local loading effect deps [isActive] (stable); handleLoadStart
+     guarded by initialLoadHandledRef/chartReadyRef/hasEverLoadedGlobal;
+     isLoading is chart-LOCAL state (does not drive the global overlay).
+   - TradingContext effects at 3354/3436/3553/3586 gate on isLoading (flips
+     once) and on useCallbacks whose dep arrays close over stable deps
+     (catchUpAndEvaluateSignals → [analyzeSignalWithHistoricalData,
+     fetchPriceHistory]; auditTerminalSLSignals → [analyzeSignalWithHistorical
+     Data, getAuditBars]; getAuditBars → []). No unstable-dep hardening needed.
+
+VALIDATION
+- runChecks(expo): PASS, 0 errors (after one TS annotation fix in
+  bootForensics.ts: `let type: string = typeof error`).
+- Headless driver (scripts/bisect_removechild_driver.ts, run planfix_loop,
+  chromium-headless-shell v1234 re-downloaded; syslibs libnss3 3.110-1+deb13u4
+  + libnspr4 4.36 rebuilt into ~/syslibs):
+  REMOVECHILD_REPRODUCED=false, crashCount=0, pageerror=0, navFails=[],
+  15/15 tab navigations OK (14 click + 1 URL fallback), boot 3.0s,
+  ZERO [BootLoop] cycles, DOM guard silent on the clean run.
+- Known environment noise only (NOT crashes): CORS from localhost:8081 to
+  dev-rc77lvmdg2w595ubnei0z.rorktest.dev trpc endpoints, goldprice.org,
+  api.frankfurter.app, one ERR_SSL_UNRECOGNIZED_NAME_ALERT (swissquote).
+
+HONEST STATUS
+- The reload loop's exact killer is still NOT identified from code reading;
+  this round makes it self-identifying: if the loop recurs in the real web
+  preview, the very next boot prints the killer's digest (console) and the
+  boot screen stops flashing to show it (failure panel). The remaining crash
+  CLASS (insertBefore/appendChild commit-phase DOM breakage from the
+  environment-side mutator proven in row 296) is now also guarded.
+- Migrations 018/020/021 remain unapplied and on the user to apply (handed;
+  row 293/294 discipline). Until then the emission write path now absorbs the
+  missing columns without churn and without losing rows.
+- RevenueCat stays dormant (row 297). Trading engine, signals, thresholds,
+  veto rules, mode flags: untouched (grep-audited; only write-path error
+  handling hardened).

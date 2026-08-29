@@ -204,6 +204,19 @@ const pruneRowToLiveColumns = (
   return { row: pruned, dropped };
 };
 
+/**
+ * Session memo of columns the LIVE schema rejected via the MISSING_COLUMN_RE
+ * self-heal below (boot-path audit, 2026-08-29). With migrations 018/021
+ * unapplied, every emission write re-discovered the same missing columns —
+ * burning all 5 self-heal attempts per write (and, with more than 5 missing,
+ * losing the ROW). Memoized columns are pre-stripped from every subsequent row
+ * so the fire-and-forget path stops error-churning. Same session lifetime as
+ * the resolveEmittedTableColumns probe cache; a restart (or the applied
+ * migration) clears it. Fields stripped are identical to what the self-heal
+ * would have stripped — measurement semantics unchanged.
+ */
+const sessionRejectedColumns = new Set<string>();
+
 // ── ITEM 225 / B5 — STARTUP SCHEMA ASSERTION (the complement of the A1 guard) ──
 //
 // The A1 write-path guard above keeps the ROW alive when a column is missing, by
@@ -357,6 +370,13 @@ export function pushEmittedSignalRecord(record: EmittedSignalRecord): void {
       if (dropped.length > 0) {
         console.warn(`[EmittedSignal] A1_GUARD: dropped ${dropped.length} column(s) absent from live schema: ${dropped.join(', ')} — ROW preserved`);
       }
+      // Pre-strip columns this session already saw rejected by the live schema
+      // (boot-path audit): avoids re-learning them through failed upserts.
+      if (sessionRejectedColumns.size > 0) {
+        for (const col of sessionRejectedColumns) {
+          if (col in row) delete row[col];
+        }
+      }
 
       // ── ITEM A.2 / CHECKPOINT A.2 — WRITE-ONLY fade annotation ────────────
       // PRE-REGISTERED FORWARD GATE (must never drift): the fade condition may be
@@ -449,15 +469,33 @@ export function pushEmittedSignalRecord(record: EmittedSignalRecord): void {
         // preserved). Read by NOTHING in gating/scoring (grep-verifiable).
         {
           const m1: { ts: number; o: number; h: number; l: number; c: number }[] = [];
-          for (let o = 0; ; o += 1000) {
-            const { data: m15Page } = await client.from('gold_m1_bars')
-              .select('timestamp,open,high,low,close')
-              .gte('timestamp', new Date(ems - 16 * 86_400_000).toISOString())
-              .lt('timestamp', new Date(ems).toISOString())
-              .order('timestamp', { ascending: true }).range(o, o + 999);
-            for (const b of (m15Page ?? []) as { timestamp: string; open: string; high: string; low: string; close: string }[])
+          // Paged-fetch hardening (boot-path audit): each page gets 2 attempts.
+          // A page that fails twice DISCARDS the partial window (m1.length = 0)
+          // so every annotation below resolves to NULL instead of being
+          // computed from a truncated 16-day view — "NULL when bars are
+          // insufficient, never defaulted". The page cap bounds the loop
+          // defensively (16 days of 1-min bars ≈ 23 pages; 40 is headroom).
+          const M15_MAX_PAGES = 40;
+          for (let o = 0; o < M15_MAX_PAGES * 1000; o += 1000) {
+            let m15Page: { timestamp: string; open: string; high: string; low: string; close: string }[] | null = null;
+            for (let pageAttempt = 0; pageAttempt < 2; pageAttempt++) {
+              const res = await client.from('gold_m1_bars')
+                .select('timestamp,open,high,low,close')
+                .gte('timestamp', new Date(ems - 16 * 86_400_000).toISOString())
+                .lt('timestamp', new Date(ems).toISOString())
+                .order('timestamp', { ascending: true }).range(o, o + 999);
+              if (!res.error && res.data) {
+                m15Page = res.data as { timestamp: string; open: string; high: string; low: string; close: string }[];
+                break;
+              }
+            }
+            if (!m15Page) {
+              m1.length = 0;
+              break;
+            }
+            for (const b of m15Page)
               m1.push({ ts: new Date(b.timestamp).getTime(), o: +b.open, h: +b.high, l: +b.low, c: +b.close });
-            if ((m15Page?.length ?? 0) < 1000) break;
+            if (m15Page.length < 1000) break;
           }
           const built = m1.length >= 1000 ? buildM15Zones(m1, ems) : null;
           if (!built || built.tradingDays < MEMORY_TRADING_DAYS) {
@@ -584,6 +622,7 @@ export function pushEmittedSignalRecord(record: EmittedSignalRecord): void {
         if (m && attempt < 5) {
           const missing = m[1];
           delete row[missing];
+          sessionRejectedColumns.add(missing);
           attempt += 1;
           console.warn(`[EmittedSignal] A1_GUARD: column '${missing}' rejected by live schema — dropped the FIELD, retrying (attempt ${attempt}/5). ROW preserved.`);
           continue;
