@@ -170,18 +170,44 @@ const toRow = (r: EmittedSignalRecord): Record<string, unknown> => ({
 const MISSING_COLUMN_RE = /Could not find the '([a-z0-9_]+)' column/i;
 
 let emittedTableColumns: Set<string> | null = null;
+let emittedTableColumnsProbedAt = 0;
 
-/** Fetch the live column set once per process (select * limit 1 → keys). */
+/**
+ * II.2 (2026-08-29) — the probe cache is no longer permanent: it refreshes at
+ * most this often via ONE cheap re-probe (select * limit 1 → keys). This is
+ * what makes sessionRejectedColumns self-clearing — a session that predates a
+ * migration stops stripping the migrated-in columns within one TTL, with no
+ * restart required.
+ */
+const COLUMN_PROBE_TTL_MS = 5 * 60 * 1000;
+
+/** Fetch the live column set (select * limit 1 → keys), refreshed on a TTL. */
 const resolveEmittedTableColumns = async (client: SupabaseClient): Promise<Set<string> | null> => {
-  if (emittedTableColumns) return emittedTableColumns;
+  const now = Date.now();
+  if (emittedTableColumns && now - emittedTableColumnsProbedAt < COLUMN_PROBE_TTL_MS) {
+    return emittedTableColumns;
+  }
   try {
     const { data } = await client.from('emitted_signals_v1').select('*').limit(1);
     if (data && data.length > 0) {
-      emittedTableColumns = new Set(Object.keys(data[0]));
+      const freshColumns = new Set(Object.keys(data[0]));
+      emittedTableColumns = freshColumns;
+      emittedTableColumnsProbedAt = now;
+      // II.2 — SELF-CLEARING: drop any memoized rejected column the fresh live
+      // schema now contains (e.g. after migrations 018/021 landed mid-session).
+      if (sessionRejectedColumns.size > 0) {
+        for (const col of Array.from(sessionRejectedColumns)) {
+          if (freshColumns.has(col)) {
+            sessionRejectedColumns.delete(col);
+            console.log(`[EmittedSignal] A1_GUARD: column '${col}' now EXISTS in live schema — session memo entry cleared (self-healing, no restart needed)`);
+          }
+        }
+      }
       return emittedTableColumns;
     }
   } catch {
     // Fall through — probe failure is not fatal; the retry path below still guards.
+    // Cache and timestamp are left untouched, so the next write retries the probe.
   }
   return null;
 };
@@ -206,14 +232,17 @@ const pruneRowToLiveColumns = (
 
 /**
  * Session memo of columns the LIVE schema rejected via the MISSING_COLUMN_RE
- * self-heal below (boot-path audit, 2026-08-29). With migrations 018/021
- * unapplied, every emission write re-discovered the same missing columns —
- * burning all 5 self-heal attempts per write (and, with more than 5 missing,
- * losing the ROW). Memoized columns are pre-stripped from every subsequent row
- * so the fire-and-forget path stops error-churning. Same session lifetime as
- * the resolveEmittedTableColumns probe cache; a restart (or the applied
- * migration) clears it. Fields stripped are identical to what the self-heal
- * would have stripped — measurement semantics unchanged.
+ * self-heal below. Memoized columns are pre-stripped from every subsequent row
+ * so the fire-and-forget path stops error-churning. Fields stripped are
+ * identical to what the self-heal would have stripped — measurement semantics
+ * unchanged.
+ *
+ * II.2 (2026-08-29) — the memo is SELF-CLEARING: resolveEmittedTableColumns
+ * re-probes the live schema on a stated TTL (COLUMN_PROBE_TTL_MS) and drops
+ * any memoized entry the fresh schema now contains. Migrations 018/021 ARE
+ * applied (verified live 2026-08-29), so a session that predates them no
+ * longer strips regime_at_emission / mapped_sl / mapped_tp for its whole
+ * life; a restart is no longer required to recover the columns.
  */
 const sessionRejectedColumns = new Set<string>();
 

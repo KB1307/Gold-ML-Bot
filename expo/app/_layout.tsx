@@ -16,6 +16,10 @@ import { recordBoot, recordFatalError } from "@/lib/bootForensics";
 // Global uncaught error handler for diagnostics — catches module-level crashes
 // before the React error boundary can mount.
 (function installGlobalErrorTrap() {
+  // MM.2 — an error handler that throws is worse than no handler. The ENTIRE
+  // trap install is wrapped so no failure here (unexpected runtime shape,
+  // missing API) can ever kill module evaluation or boot (ITEM MM, 7f8fb94).
+  try {
   const logDetails = (label: string, error: unknown) => {
     console.error(`[GlobalTrap] ${label}:`, typeof error);
     if (error instanceof Error) {
@@ -53,8 +57,11 @@ import { recordBoot, recordFatalError } from "@/lib/bootForensics";
     }
   }
 
-  // Web global handler
-  if (typeof window !== "undefined") {
+  // Web global handler. MM.1 — capability check, NOT existence: on React Native
+  // `window` IS defined (it aliases globalThis) but has no addEventListener, so
+  // `typeof window !== "undefined"` alone crashed Android boot before anything
+  // mounted (ITEM MM, introduced in 7f8fb94). Same pattern as :79 below.
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
     window.addEventListener("error", (event: ErrorEvent) => {
       logDetails("WEB", event.error ?? event.message);
       // Save the digest so the NEXT boot can report what killed this page —
@@ -82,6 +89,17 @@ import { recordBoot, recordFatalError } from "@/lib/bootForensics";
     }
   } catch {
     // globalThis.addEventListener not available
+  }
+  } catch (trapInstallError) {
+    // MM.2 — never let the trap itself kill boot.
+    try {
+      console.warn(
+        "[GlobalTrap] install failed — boot continues without it:",
+        trapInstallError instanceof Error ? trapInstallError.message : String(trapInstallError),
+      );
+    } catch {
+      // console unavailable — nothing further we can do
+    }
   }
 })();
 

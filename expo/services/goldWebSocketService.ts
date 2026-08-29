@@ -1,5 +1,7 @@
+import { isGoldMarketOpen } from './signalEngine';
+
 type PriceCallback = (price: number, source: string) => void;
-type ConnectionStatus = 'connected' | 'waiting_for_trade' | 'disconnected' | 'reconnecting';
+type ConnectionStatus = 'connected' | 'waiting_for_trade' | 'disconnected' | 'reconnecting' | 'unavailable';
 type StatusCallback = (status: ConnectionStatus) => void;
 
 interface ServiceState {
@@ -19,14 +21,24 @@ interface ServiceState {
   isPolling: boolean;
   restFallbackActive: boolean;
   backendBaseUrl: string;
+  gateState: 'unknown' | 'open' | 'closed';
+  breakerOpen: boolean;
+  breakerTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const POLL_INTERVAL_MS = 2000;
 const WATCHDOG_INTERVAL_MS = 6000;
 const STALE_THRESHOLD_MS = 15000;
 const BACKOFF_BASE_MS = 2000;
-const MAX_BACKOFF_MS = 30000;
+// GG.3b — backoff cap 60s (was 30s): the breaker's single-retry cadence.
+const MAX_BACKOFF_MS = 60000;
 const FETCH_TIMEOUT_MS = 8000;
+// GG.3b — circuit breaker: after 5 consecutive failures, stop polling and
+// surface ONE visible "price feed unavailable" status.
+const BREAKER_MAX_FAILURES = 5;
+// GG.3a — while the market is CLOSED the feed idles with ZERO fetches; this is
+// the wake-up re-check cadence (clock-only — no fetch, no duplicated hours math).
+const MARKET_GATE_CHECK_MS = 60000;
 
 const state: ServiceState = {
   priceCallbacks: new Set(),
@@ -45,6 +57,9 @@ const state: ServiceState = {
   isPolling: false,
   restFallbackActive: false,
   backendBaseUrl: '',
+  gateState: 'unknown',
+  breakerOpen: false,
+  breakerTimer: null,
 };
 
 function resolveBackendBaseUrl(): string {
@@ -99,6 +114,31 @@ function notifyStatus(status: ConnectionStatus): void {
   });
 }
 
+// GG.3a-FAILOPEN — the gate defaults to FETCHING when the market state is
+// unknown or the predicate throws: a false "closed" during live hours would
+// silently kill a whole session, which is far worse than console noise.
+function evaluateMarketGate(): 'open' | 'closed' {
+  try {
+    return isGoldMarketOpen() ? 'open' : 'closed';
+  } catch (gateError) {
+    console.warn(`⚠️ [GoldWS] Market gate unavailable — failing OPEN (fetch): ${gateError instanceof Error ? gateError.message : String(gateError)}`);
+    return 'open';
+  }
+}
+
+// GG.3b log discipline — market-gate lines emit once per STATE TRANSITION only.
+function handleGateTransition(gate: 'open' | 'closed'): void {
+  if (state.gateState === gate) return;
+  const previous = state.gateState;
+  state.gateState = gate;
+  if (gate === 'closed') {
+    console.log(`🔒 [GoldWS] Market CLOSED (was: ${previous}) — zero price fetches until next open (clock re-check every ${MARKET_GATE_CHECK_MS / 1000}s)`);
+    notifyStatus('disconnected');
+  } else {
+    console.log(`🔓 [GoldWS] Market OPEN (was: ${previous}) — price polling active`);
+  }
+}
+
 function getBackoffDelay(): number {
   if (state.consecutiveFailures <= 0) return POLL_INTERVAL_MS;
   const delay = Math.min(BACKOFF_BASE_MS * Math.pow(1.5, state.consecutiveFailures - 1), MAX_BACKOFF_MS);
@@ -112,17 +152,14 @@ async function fetchBackendLivePrice(): Promise<{ price: number; source: string 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
-    console.log(`🔄 [GoldWS] Fetching live price via backend proxy...`);
+    // GG.3b — no per-attempt logging (console flood); state transitions and the breaker log instead.
     const response = await fetch(url, {
       signal: controller.signal,
       headers: { 'Accept': 'application/json' },
     });
     clearTimeout(timeoutId);
 
-    if (!response.ok) {
-      console.warn(`⚠️ [GoldWS] Backend proxy HTTP ${response.status}`);
-      return null;
-    }
+    if (!response.ok) return null;
 
     const rawBody = await response.text();
     let data: unknown = null;
@@ -136,7 +173,6 @@ async function fetchBackendLivePrice(): Promise<{ price: number; source: string 
         try {
           data = JSON.parse(rawBody.slice(firstBrace, lastBrace + 1));
         } catch {
-          console.warn('⚠️ [GoldWS] Backend response parse failed');
           return null;
         }
       }
@@ -246,6 +282,14 @@ async function fetchBackendSpotPrice(): Promise<{ price: number; source: string 
 async function pollPrice(): Promise<void> {
   if (state.intentionallyClosed || state.isPolling) return;
 
+  // GG.3a — re-check the market gate before every fetch (cheap, sync, pure).
+  if (evaluateMarketGate() === 'closed') {
+    handleGateTransition('closed');
+    startPolling(); // swaps the 2s poll timer for the clock-only idle re-check
+    return;
+  }
+  handleGateTransition('open');
+
   state.isPolling = true;
   state.totalPolls += 1;
 
@@ -269,27 +313,46 @@ async function pollPrice(): Promise<void> {
     }
 
     state.consecutiveFailures += 1;
-    console.warn(`⚠️ [GoldWS] Backend poll failed (streak: ${state.consecutiveFailures})`);
 
+    // GG.3b — circuit breaker: after 5 consecutive failures stop polling and
+    // surface ONE visible "price feed unavailable" status; single retry after
+    // the 60s backoff cap.
+    if (state.consecutiveFailures >= BREAKER_MAX_FAILURES && !state.breakerOpen) {
+      state.breakerOpen = true;
+      notifyStatus('unavailable');
+      console.error(`⛔ [GoldWS] PRICE FEED UNAVAILABLE — breaker opened after ${state.consecutiveFailures} consecutive failures; retry in ${MAX_BACKOFF_MS / 1000}s`);
+      stopPolling();
+      stopWatchdog();
+      if (state.breakerTimer) clearTimeout(state.breakerTimer);
+      state.breakerTimer = setTimeout(() => {
+        state.breakerTimer = null;
+        if (state.intentionallyClosed) return;
+        console.log('🔁 [GoldWS] Breaker retry — price polling resumed');
+        state.breakerOpen = false;
+        state.consecutiveFailures = 0;
+        startPolling();
+      }, MAX_BACKOFF_MS);
+      return;
+    }
+
+    // GG.3b — no per-attempt logging (flood); UI status transitions carry state.
     if (state.consecutiveFailures >= 2) {
       state.restFallbackActive = true;
       notifyStatus('reconnecting');
 
-      console.log('🔄 [GoldWS] Attempting fallback via getSpotPrice...');
       const fallback = await fetchBackendSpotPrice();
       if (fallback && !state.intentionallyClosed) {
         notifyPrice(fallback.price, `🟠 ${fallback.source} (fallback)`);
         notifyStatus('connected');
-        console.log(`✅ [GoldWS] Fallback price: ${fallback.price} from ${fallback.source}`);
       }
     } else {
       if (state.lastPrice <= 0) {
         notifyStatus('waiting_for_trade');
       }
     }
-  } catch (error) {
+  } catch {
+    // GG.3b — no per-attempt logging; the failure counter + breaker carry state.
     state.consecutiveFailures += 1;
-    console.error('❌ [GoldWS] Poll error:', error);
   } finally {
     state.isPolling = false;
   }
@@ -297,6 +360,21 @@ async function pollPrice(): Promise<void> {
 
 function startPolling(): void {
   stopPolling();
+
+  // GG.3a — CLOSED market: zero fetches. Idle on a slow clock-only re-check;
+  // no backend poll, no spot fallback, no direct-API fallback while closed.
+  if (evaluateMarketGate() === 'closed') {
+    handleGateTransition('closed');
+    state.pollTimer = setInterval(() => {
+      if (state.intentionallyClosed) return;
+      if (evaluateMarketGate() === 'open') {
+        handleGateTransition('open');
+        startPolling();
+      }
+    }, MARKET_GATE_CHECK_MS);
+    return;
+  }
+  handleGateTransition('open');
 
   console.log(`🚀 [GoldWS] Starting backend-proxied price polling (interval=${POLL_INTERVAL_MS}ms)...`);
   notifyStatus('reconnecting');
@@ -325,28 +403,24 @@ function startWatchdog(): void {
   stopWatchdog();
 
   state.watchdogTimer = setInterval(() => {
-    if (state.intentionallyClosed) return;
+    if (state.intentionallyClosed || state.breakerOpen) return;
+
+    // GG.3a — while the market is closed there is nothing to watchdog; the
+    // poll timer is already the clock-only idle re-check.
+    if (evaluateMarketGate() === 'closed') {
+      handleGateTransition('closed');
+      startPolling();
+      return;
+    }
 
     const now = Date.now();
     const timeSinceLastPrice = state.lastTickTime > 0 ? now - state.lastTickTime : (state.startTime > 0 ? now - state.startTime : 0);
 
-    if (timeSinceLastPrice > STALE_THRESHOLD_MS && state.startTime > 0) {
-      console.warn(`⚠️ [GoldWS] No price for ${(timeSinceLastPrice / 1000).toFixed(1)}s — triggering immediate poll`);
-
-      if (state.consecutiveFailures > 3) {
-        stopPolling();
-        const backoff = getBackoffDelay();
-        console.log(`🔄 [GoldWS] Restarting polling with backoff ${(backoff / 1000).toFixed(1)}s after ${state.consecutiveFailures} failures`);
-
-        setTimeout(() => {
-          if (!state.intentionallyClosed) {
-            state.consecutiveFailures = Math.max(0, state.consecutiveFailures - 2);
-            startPolling();
-          }
-        }, backoff);
-        return;
-      }
-
+    // GG.3b — no per-fire logging (was: "No price for Xs — triggering immediate
+    // poll" every 6s = flood). The breaker owns repeated-failure backoff; the
+    // watchdog only forces an immediate poll when the price is stale and the
+    // failure streak is still below the breaker threshold.
+    if (timeSinceLastPrice > STALE_THRESHOLD_MS && state.startTime > 0 && state.consecutiveFailures < BREAKER_MAX_FAILURES) {
       void pollPrice();
     }
   }, WATCHDOG_INTERVAL_MS);
@@ -373,6 +447,12 @@ export const goldWebSocketService = {
     state.totalSuccesses = 0;
     state.restFallbackActive = false;
     state.backendBaseUrl = '';
+    state.gateState = 'unknown';
+    state.breakerOpen = false;
+    if (state.breakerTimer) {
+      clearTimeout(state.breakerTimer);
+      state.breakerTimer = null;
+    }
     console.log('🚀 [GoldWS] Starting XAU/USD price service via backend proxy (CORS-safe)...');
 
     startPolling();
@@ -381,6 +461,11 @@ export const goldWebSocketService = {
   stop(): void {
     console.log('🛑 [GoldWS] Stopping price service');
     state.intentionallyClosed = true;
+    if (state.breakerTimer) {
+      clearTimeout(state.breakerTimer);
+      state.breakerTimer = null;
+    }
+    state.breakerOpen = false;
     stopPolling();
     stopWatchdog();
     state.lastTickTime = 0;

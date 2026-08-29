@@ -1112,6 +1112,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         if (guidePriceRef.current <= 0 && !goldWebSocketService.isRestFallbackActive()) {
           setGuidePriceSource('🔴 Reconnecting...');
         }
+      } else if (status === 'unavailable') {
+        // GG.3b — one visible "price feed unavailable" surface for the breaker.
+        wsConnectedRef.current = false;
+        setGuidePriceSource('⛔ Price Feed Unavailable');
       }
     });
 

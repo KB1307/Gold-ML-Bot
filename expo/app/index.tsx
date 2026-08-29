@@ -4,11 +4,16 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useTrading } from "@/contexts/TradingContext";
 
 export default function LoginScreen() {
-  const { login } = useTrading();
+  // MM.3 — degrade gracefully: the auth context may be undefined (providers not
+  // mounted), so read it instead of destructuring — a property access on
+  // undefined here turned a provider failure into a full-screen crash.
+  const trading = useTrading();
+  const authUnavailable = !trading || typeof trading.login !== "function";
   const router = useRouter();
 
   const handleLogin = async () => {
-    await login("demo_user");
+    if (authUnavailable) return;
+    await trading.login("demo_user");
     router.replace("/(tabs)/dashboard" as any);
   };
 
@@ -46,6 +51,11 @@ export default function LoginScreen() {
           </View>
 
           <View style={styles.loginBox}>
+            {authUnavailable && (
+              <Text style={styles.authErrorText}>
+                Sign-in is temporarily unavailable. Please restart the app.
+              </Text>
+            )}
 
             <TouchableOpacity
               style={styles.loginButton}
@@ -139,6 +149,13 @@ const styles = StyleSheet.create({
     padding: 32,
     borderWidth: 1,
     borderColor: "rgba(255, 255, 255, 0.1)",
+  },
+  authErrorText: {
+    color: "#FF6B6B",
+    fontSize: 14,
+    textAlign: "center",
+    marginBottom: 16,
+    lineHeight: 20,
   },
     loginButton: {
     borderRadius: 12,

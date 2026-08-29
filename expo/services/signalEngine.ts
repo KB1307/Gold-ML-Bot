@@ -1106,6 +1106,46 @@ function isWithinDailyMarketClose(date: Date = new Date()): boolean {
   );
 }
 
+/**
+ * GG.3a — single source of truth for XAU/USD market hours, consumed by BOTH
+ * the dashboard indicator (getMarketOutlook) and the price-feed gate
+ * (goldWebSocketService). PURE SYNC, log-free, DB-free.
+ *
+ * Weekend coverage (NOT just the daily break):
+ *   - isSaturday: all of Saturday
+ *   - isFridayClose: Friday 21:00-23:59 UTC
+ *   - isSundayBeforeOpen: Sunday 00:00-21:59 UTC
+ *   - isDailyCloseBreak: 20:59-21:59 UTC every day (incl. Friday 20:59)
+ */
+export interface GoldMarketClock {
+  isMarketOpen: boolean;
+  isSaturday: boolean;
+  isFridayClose: boolean;
+  isSundayBeforeOpen: boolean;
+  isDailyCloseBreak: boolean;
+}
+
+export function getGoldMarketClock(now: Date = new Date()): GoldMarketClock {
+  const hour = now.getUTCHours();
+  const dayOfWeek = now.getUTCDay();
+  const isSaturday = dayOfWeek === 6;
+  const isFridayClose = dayOfWeek === 5 && hour >= 21;
+  const isSundayBeforeOpen = dayOfWeek === 0 && hour < 22;
+  const isDailyCloseBreak = isWithinDailyMarketClose(now);
+  return {
+    isMarketOpen: !isSaturday && !isFridayClose && !isSundayBeforeOpen && !isDailyCloseBreak,
+    isSaturday,
+    isFridayClose,
+    isSundayBeforeOpen,
+    isDailyCloseBreak,
+  };
+}
+
+/** Boolean convenience wrapper over getGoldMarketClock for the price-feed gate. */
+export function isGoldMarketOpen(now: Date = new Date()): boolean {
+  return getGoldMarketClock(now).isMarketOpen;
+}
+
 let intermarketHistory: IntermarketHistory = {
   dxyPrices: [],
   us10yYields: [],
@@ -10773,12 +10813,10 @@ class SignalGenerationEngine {
     const minute = now.getUTCMinutes();
     const dayOfWeek = now.getUTCDay();
     
-    const isSaturday = dayOfWeek === 6;
-    const isFridayClose = dayOfWeek === 5 && hour >= 21;
-    const isSundayBeforeOpen = dayOfWeek === 0 && hour < 22;
-    const isDailyCloseBreak = isWithinDailyMarketClose(now);
-    
-    const isMarketOpen = !isSaturday && !isFridayClose && !isSundayBeforeOpen && !isDailyCloseBreak;
+    // GG.3a — consume the single-source-of-truth clock (identical semantics:
+    // was isSaturday/isFridayClose/isSundayBeforeOpen/isDailyCloseBreak inline).
+    const clock = getGoldMarketClock(now);
+    const { isSaturday, isFridayClose, isSundayBeforeOpen, isDailyCloseBreak, isMarketOpen } = clock;
     
     console.log(`[MarketStatus] UTC ${dayOfWeek} ${hour}:${minute} | open=${isMarketOpen} | sat=${isSaturday} friClose=${isFridayClose} sunBefore=${isSundayBeforeOpen} dailyClose=${isDailyCloseBreak}`);
     
