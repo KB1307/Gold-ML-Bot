@@ -1,0 +1,54 @@
+═══════════════════════════════════════════════════════════════════════════
+WEB removeChild RUNTIME ERRORS — FIX SHIPPED (2026-08-29, post-bisect)
+═══════════════════════════════════════════════════════════════════════════
+
+USER REPORT: 7 runtime errors on the web preview, all
+  "Node.removeChild: The node to be removed is not a child of this node"
+fired from removeChildFromContainer during commitDeletionEffectsOnFiber /
+recursivelyTraverseDeletionEffects — i.e. React's COMMIT phase failing while
+unmounting a large subtree (tab screen).
+
+PRIOR EVIDENCE (checkpoint_ee_strip_mechanism_bisect.txt):
+- babel build-marker plugin bisected OUT (two cold runs, delta confined to two
+  marker literals). Crash reproduces for the user on the plugin-present AND
+  plugin-absent bundle.
+- translate=no guard (prior round) did NOT resolve — so the DOM mutation
+  behind React's back is NOT (only) a translation engine honoring translate=no;
+  browser extensions (Dark Reader/Grammarly class) and preview-harness DOM
+  processing do not honor it.
+
+IN-REPO DOM-MUTATION AUDIT (rg over app/ components/ contexts/ services/):
+- PriceChart.tsx: module-global persistent layer div + shared iframe appended
+  to document.body (both hand-created, never React-owned; React nodes are only
+  OBSERVED/measured). Not a React-owned-node re-parenter.
+- settings.tsx triggerWebDownload: hand-created <a>, anchor.remove() — safe.
+- _layout.tsx translate guard. Nothing else touches the DOM.
+⇒ No in-repo code re-parents or detaches a React-owned node; the mutation is
+  environment-side. The failure class is React crashing on ALREADY-corrupted
+  DOM state during commit.
+
+THE FIX (expo/app/_layout.tsx, web-only, installed once before React renders):
+A scoped Node.prototype.removeChild guard:
+- NORMAL case (child.parentNode === this): untouched original call — exact
+  previous behaviour, zero risk to correct paths.
+- PATHOLOGICAL case (child re-parented or detached behind React's back):
+  remove it from wherever it actually lives (or treat as already removed when
+  detached) and let the commit COMPLETE instead of crashing the whole tree.
+  Rate-limited console.warn (max 1 per 5s, no node contents) for diagnostics.
+Guard marker `__domRemoveChildGuard` prevents double-install.
+
+VALIDATION:
+- runChecks(expo): PASS (0 tsc/lint/structure errors).
+- Headless driver smoke (bisect_removechild_driver.ts, cold metro, 3 full tab
+  cycles exercising chart mount/unmount): REMOVECHILD_REPRODUCED=false,
+  crashCount=0, navFails=[], zero removeChild occurrences in console; only
+  external network noise (goldprice.org CORS, swissquote SSL).
+- [DOMGuard] install log expected at boot.
+
+HONEST STATUS:
+- The guard eliminates the ERROR CLASS (the 7 reported errors cannot throw
+  again — any environment-side DOM mutation is now recovered, not fatal).
+- The underlying environment-side mutator (which extension/harness step) is
+  NOT identified — it is outside the repo; the rate-limited [DOMGuard] warn
+  will now surface whether and how often it fires in the user's real preview.
+- babel.config.js remains the full 3724-byte form; build-marker chain intact.

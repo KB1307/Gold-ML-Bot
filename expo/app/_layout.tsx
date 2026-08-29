@@ -95,6 +95,54 @@ if (Platform.OS === 'web') {
     document.documentElement.setAttribute("translate", "no");
     document.documentElement.classList.add("notranslate");
   }
+
+  // Runtime-error fix (removeChild class) — commit-phase DOM guard.
+  //
+  // React's commit phase removes nodes with Node.removeChild(parent, child) and
+  // hard-crashes the whole tree with
+  //   "Node.removeChild: The node to be removed is not a child of this node"
+  // when any code re-parents or detaches a React-owned node behind its back
+  // (auto-translation that ignores translate=no, browser extensions such as
+  // Dark Reader/Grammarly, and preview-harness DOM processing all do this).
+  //
+  // This guard keeps the exact normal behaviour (parent === child.parentNode ->
+  // untouched original call) and ONLY intercepts the pathological case:
+  // the child is removed from wherever it actually lives, or treated as already
+  // removed when detached. The commit completes; the app never unmounts.
+  // Installed once, before React renders, web-only.
+  if (typeof Node !== "undefined") {
+    type RemoveChildFn = (this: Node, child: Node) => Node;
+    const proto = Node.prototype as unknown as {
+      removeChild: RemoveChildFn;
+      __domRemoveChildGuard?: boolean;
+    };
+
+    if (!proto.__domRemoveChildGuard) {
+      const originalRemoveChild: RemoveChildFn = proto.removeChild;
+      let lastGuardLogAt = 0;
+
+      proto.__domRemoveChildGuard = true;
+      proto.removeChild = function removeChildGuard(this: Node, child: Node): Node {
+        if (child && child.parentNode !== this) {
+          // Rate-limited diagnostics — never spam, never leak node contents.
+          const now = Date.now();
+          if (now - lastGuardLogAt > 5000) {
+            lastGuardLogAt = now;
+            console.warn(
+              "[DOMGuard] removeChild target was re-parented/detached behind React — recovering instead of crashing",
+            );
+          }
+          if (child.parentNode) {
+            return originalRemoveChild.call(child.parentNode, child);
+          }
+          return child;
+        }
+        return originalRemoveChild.call(this, child);
+      };
+
+      console.log("[DOMGuard] removeChild commit guard installed");
+    }
+  }
 }
 
 const queryClient = new QueryClient({
