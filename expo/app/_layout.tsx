@@ -85,6 +85,16 @@ if (Platform.OS === 'web') {
     'Cannot listen to the event from the provided iframe',
     'props.pointerEvents is deprecated',
   ]);
+
+  // Runtime-error guard: translation tools (Google Translate and similar browser
+  // features/extensions) rewrite the live DOM behind React's back, which makes
+  // React's commit phase crash with
+  // "removeChild: The node to be removed is not a child of this node".
+  // Opting the whole document out of translation keeps the DOM React-owned.
+  if (typeof document !== "undefined") {
+    document.documentElement.setAttribute("translate", "no");
+    document.documentElement.classList.add("notranslate");
+  }
 }
 
 const queryClient = new QueryClient({
