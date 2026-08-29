@@ -68,6 +68,7 @@
     "@types/react": "~19.1.10",
     "eslint": "9.31.0",
     "eslint-config-expo": "~10.0.0",
+    "playwright": "^1.62.1",
     "typescript": "~5.9.2"
   },
   "private": true

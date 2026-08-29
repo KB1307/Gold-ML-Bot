@@ -1,0 +1,126 @@
+═══════════════════════════════════════════════════════════════════════════
+EE SUPERSEDE + BISECT — strip mechanism evidence and plugin-vs-removeChild
+bisect (2026-08-29, 11:13–11:55Z). Supersedes the "NOT FOUND in-repo" closure
+of checkpoint_ee_eighth_strip.txt. Diagnostic only; no behaviour change except
+the end state of babel.config.js (restored — see VERDICT).
+═══════════════════════════════════════════════════════════════════════════
+
+PREMISE (user, 2026-08-29)
+- Web preview still throws "Node.removeChild: The node to be removed is not a
+  child of this node" after the translate fix.
+- Platform log shows strips landing on runtime-error-fix commits: stripped in
+  b136f08 ("Fix app crash…"), restored 02686ea, stripped d86b222 ("…fix
+  runtime error"), restored a90f1c1. Nine strips, all on such commits.
+- Directive: do NOT restore babel.config.js until answered; report what in the
+  runtime-error remediation path touches it (actual file/command, no
+  hypothesis-as-finding); bisect the plugin (two cold preview runs, plugin
+  registered vs removed); propose (not implement) a prebuild-time marker
+  approach IF implicated; restore and continue if NOT implicated.
+
+───────────────────────────────────────────────────────────────────────────
+Q1 — WHAT TOUCHES babel.config.js (actual files/commands, no hypothesis)
+───────────────────────────────────────────────────────────────────────────
+1. COMPLETE AUDIT OF AGENT TOOL-CALLS (.rork/history, 39 assistant JSONs
+   mentioning babel.config; every call with filePath=expo/babel.config.js
+   classified by content):
+   - ALL persisted writes are FULL-FORM restorations: 1405, 1597, 2023, 2998,
+     3002, 3088, 3499, 3462 bytes (sessions 00mt1k6uyn → 00mtdaxn3b), plus
+     multiEdits scoping the visitor. Content grows with the guard comments.
+   - EXACTLY ONE stripped-form write exists in the entire history: 150 bytes
+     (session 00mtdaxn3b000), and it is a GUARDED SELF-TEST that restored
+     within the same command:
+       python3 -c "open('expo/babel.config.js','w').write('module.exports =
+       …unstable_transformImportMeta… }')" && bun
+       scripts/ci_guard_duplicate_constants.ts   → STRIPPED-STATE EXIT=1
+       (SIXTH-STRIP GUARD fires)
+       cp /tmp/babel_full_backup.js expo/babel.config.js && bun
+       scripts/ci_guard_duplicate_constants.ts   → RESTORED-STATE EXIT=0
+   - In-repo write-sites for babel.config.js: ZERO (re-confirmed; EE.3 list).
+   ⇒ No agent file or command persists the stripped form. Ever.
+
+2. STRIP #9 (worktree, UNCOMMITTED — found this session):
+   - babel.config.js mtime 11:13:03.49.
+   - ALL .rork/history/*.json mtimes: 11:13:03–11:13:05 (managed-sync rewrite
+     of the conversation payloads).
+   - Metro restart (platform): 11:13 (ps START).
+   - No agent turn was active at 11:13 (last commit 727bfda 10:08:56; user
+     message ~11:13). Nothing in the tree writes this file.
+   ⇒ The worktree strip was written by the platform code-sync step at
+     11:13:03, not by any agent action.
+
+3. COMMIT CORRELATION (user's premise, local anchor):
+   - 86de366 (08:33) "Fix app crash that occurs when charts are removed from
+     the page" — strip rides it (79→6 lines).
+   - c953bf3 (09:16) "Adopt unified zone semantics and fix runtime error" —
+     strip rides it (76→6).
+   - 727bfda (10:08) "Fix runtime errors and complete the band-veto
+     measurement round…" — carries the RESTORE (6→76).
+   - b136f08 / d86b222 / 02686ea / a90f1c1 are NOT valid objects in this
+     repo's git (platform-side ids). The pattern (strips inside runtime-error-
+     fix sync commits) is confirmed locally; WHY the sync strips on exactly
+     those commits is not determinable from inside the repo — stated as
+     observable commit facts only, not a mechanism claim.
+
+───────────────────────────────────────────────────────────────────────────
+BISECT — plugin vs removeChild (two cold runs, everything else identical)
+───────────────────────────────────────────────────────────────────────────
+Method: metro killed + caches cleared (node_modules/.cache, .expo,
+/tmp/metro-cache, haste maps) before EACH run; driver
+scripts/bisect_removechild_driver.ts v2 (playwright headless chromium) boots
+http://localhost:8081/, waits 15s, then cycles Dashboard→History→Outlook→
+Telemetry→Settings ×3 (chart mount/unmount stress), capturing every console
+error, pageerror, and browser crash. Screenshots: /tmp/bisect_<label>_*.png.
+
+RUN-B2  plugin ABSENT (6-line worktree config, cold):
+  REMOVECHILD_REPRODUCED: false | crashCount: 0
+  nav: 14 client-side clicks + 1 URL fallback, navFails=[] (3 full cycles)
+  572 console messages — only network errors (CORS swissquote, tRPC 429s).
+  (Earlier RUN-B with driver v1 also false, but its 15 clicks all failed —
+  charts never mounted; superseded by v2 runs. Kept for the record.)
+
+RUN-A   plugin PRESENT (3724-byte config restored from HEAD 727bfda, cold):
+  REMOVECHILD_REPRODUCED: false | crashCount: 0
+  nav: navFails=[], 1 URL fallback, 3 full cycles
+  582 console messages — same network-only error profile.
+
+MECHANICAL DELTA PROOF (scripts/bisect_transform_delta.ts):
+  buildMarker.ts transform, plugin present (2 separate processes) vs absent:
+  - process-1 vs process-2: identical EXCEPT the BUILD_STAMP literal
+    (11:46:05.445Z vs .485Z); BUILD_SHA identical ("727bfda" — same HEAD).
+  - plugin vs no-plugin: identical EXCEPT the two literals
+    ("727bfda"/stamp vs '__BUILD_SHA__'/'__BUILD_STAMP__').
+  DELTA_CONFINED_TO_MARKER_LITERALS: true
+  ⇒ The plugin's visitor early-returns for every file whose path does not
+    include "buildMarker"; its ONLY possible output effect is two string
+    literals inside one module. The hypothesized mechanism (api.cache(true) +
+    per-process _buildSha → different transform output cold vs warm) is
+    refuted: same HEAD → same SHA; only a timestamp string varies, in one
+    module. Transform output cannot differ structurally between cold and
+    warm bundles because of this plugin.
+
+───────────────────────────────────────────────────────────────────────────
+VERDICT
+───────────────────────────────────────────────────────────────────────────
+PLUGIN NOT IMPLICATED. Both cold runs: no removeChild with the plugin
+registered AND with it removed, under identical conditions and real chart
+cycling; mechanically the plugin cannot alter any other module's output.
+Per the directive: babel.config.js RESTORED (3724 bytes, from HEAD 727bfda)
+and left restored; guard expectation: PASS on next run.
+
+HONEST CAVEATS
+- Headless drive is not the user's exact preview session; but the user's own
+  live preview has been crashing on the CURRENT bundle — metro rebuilt at
+  11:13 from the plugin-ABSENT config — so the crash reproduces for the user
+  WITHOUT the plugin, consistent with these runs.
+- The actual removeChild cause remains OPEN; the plugin is now excluded from
+  suspicion. Next candidate area is the chart unmount path itself (translate
+  fix did not resolve).
+- End-state note: metro is running with the plugin-present config; next cold
+  bundle will print the substituted SHA again (provenance chain intact).
+
+NEW FILES (diagnostic instruments, kept for re-runs):
+  expo/scripts/bisect_removechild_driver.ts   (v2 driver)
+  expo/scripts/bisect_transform_delta.ts      (mechanical delta proof)
+  expo/scripts/bisect_probe_nav.ts            (DOM probe, superseded by v2)
+  devDependency added: playwright (headless chromium via ~/.cache/ms-playwright;
+  system libs libnspr4/libnss3 extracted to ~/syslibs — no root available).
