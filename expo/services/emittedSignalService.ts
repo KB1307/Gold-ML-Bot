@@ -100,8 +100,9 @@ const getEmittedClient = (): SupabaseClient | null => {
     return null;
   }
 
+  // OO.2 — distinct storageKey: ends the shared-key "Multiple GoTrueClient instances" warning.
   emittedClient = createClient(url, anonKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
+    auth: { autoRefreshToken: false, persistSession: false, storageKey: "rork-svc-emitted-signals" },
   });
   return emittedClient;
 };

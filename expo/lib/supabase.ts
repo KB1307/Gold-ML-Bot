@@ -85,6 +85,9 @@ export function createEphemeralSupabaseClient(): SupabaseClient {
     auth: {
       autoRefreshToken: false,
       persistSession: false,
+      // OO.2 — distinct storageKey: keeps the per-call ephemeral clients off the
+      // canonical key (the canonical key belongs to the persisting `supabase`).
+      storageKey: "rork-svc-ephemeral",
       detectSessionInUrl: false,
       flowType: "pkce",
     },

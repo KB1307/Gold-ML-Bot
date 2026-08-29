@@ -42,8 +42,9 @@ let storageClient: SupabaseClient | null = null;
 function getStorageClient(): SupabaseClient | null {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
   if (!storageClient) {
+    // OO.2 — distinct storageKey: ends the shared-key "Multiple GoTrueClient instances" warning.
     storageClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      auth: { autoRefreshToken: false, persistSession: false },
+      auth: { autoRefreshToken: false, persistSession: false, storageKey: "rork-svc-diagnostics-export" },
     });
   }
   return storageClient;

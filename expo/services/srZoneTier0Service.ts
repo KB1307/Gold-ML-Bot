@@ -216,8 +216,9 @@ function getTier0Client(): SupabaseClient | null {
   const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !anonKey) return null;
+  // OO.2 — distinct storageKey: ends the shared-key "Multiple GoTrueClient instances" warning.
   tier0Client = createClient(url, anonKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
+    auth: { autoRefreshToken: false, persistSession: false, storageKey: "rork-svc-sr-zone-tier0" },
   });
   return tier0Client;
 }

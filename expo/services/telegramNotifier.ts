@@ -75,8 +75,9 @@ function getOutboxClient(): SupabaseClient | null {
     return null;
   }
   if (!outboxClient) {
+    // OO.2 — distinct storageKey: ends the shared-key "Multiple GoTrueClient instances" warning.
     outboxClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      auth: { autoRefreshToken: false, persistSession: false },
+      auth: { autoRefreshToken: false, persistSession: false, storageKey: "rork-svc-telegram-outbox" },
     });
   }
   return outboxClient;

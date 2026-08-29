@@ -2446,7 +2446,9 @@ class SignalGenerationEngine {
       return null;
     }
     this.dailyOhlcSupabaseClient = createSupabaseClient(url, anonKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
+      // OO.2 — distinct storageKey: ends the shared-key "Multiple GoTrueClient
+      // instances" warning; each client owns its own storage namespace/lock name.
+      auth: { autoRefreshToken: false, persistSession: false, storageKey: "rork-svc-signal-engine-daily-ohlc" },
     });
     return this.dailyOhlcSupabaseClient;
   }
@@ -2570,7 +2572,8 @@ class SignalGenerationEngine {
       return null;
     }
     this.m5SupabaseClient = createSupabaseClient(url, anonKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
+      // OO.2 — distinct storageKey (see daily-ohlc comment above).
+      auth: { autoRefreshToken: false, persistSession: false, storageKey: "rork-svc-signal-engine-m5" },
     });
     return this.m5SupabaseClient;
   }
