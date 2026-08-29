@@ -18,10 +18,23 @@ import { computeRNet } from '../lib/evCompute';
 import type { TradingSignal, SignalStatus } from '../types/trading';
 import { createClient } from '@supabase/supabase-js';
 import { readFileSync } from 'node:fs';
+import { classifyZone } from '../services/sideAwareRole';
+import { blockingRoleFor, roleFromLegacyType } from '../services/zoneSemantics';
+
+/**
+ * PORTED (canonical-semantics round): this script previously carried its OWN
+ * copy of `classifyZone`, and services/sideAwareRole.ts carried a second copy.
+ * Two copies of a side classifier is exactly the divergence risk this round
+ * exists to remove, so the local copy is DELETED and the service (now backed by
+ * services/zoneSemantics.ts) is imported and re-exported. The method, the
+ * thresholds and the weighting are unchanged — only the duplication is gone.
+ * Role vocabulary is canonical: CEILING_BEHAVING / FLOOR_BEHAVING / UNTYPED.
+ */
+export { classifyZone };
 
 interface Bar { timestamp: number; open: number; high: number; low: number; close: number }
 interface SnapZone { price: number; touches: number; reactionStrength: number; type?: string; rejectionsFromBelow?: number; rejectionsFromAbove?: number }
-const W = 0.8, OUTCOME_BARS = 15;
+
 
 function loadEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -34,41 +47,6 @@ function loadEnv(): Record<string, string> {
   return env;
 }
 const lb = (bars: Bar[], t: number): number => { let lo = 0, hi = bars.length; while (lo < hi) { const m = (lo + hi) >> 1; if (bars[m].timestamp < t) lo = m + 1; else hi = m; } return lo; };
-
-interface TouchEv { label: 'REJ_FROM_BELOW' | 'REJ_FROM_ABOVE' | 'BREAK_UP' | 'BREAK_DOWN'; ts: number }
-
-/** Reference classifier over bars STRICTLY BEFORE cutoff. */
-export function classifyZone(bars: Bar[], cutoffMs: number, zPrice: number): { role: 'SUPPORT' | 'RESISTANCE' | 'NEUTRAL'; events: TouchEv[] } {
-  const events: TouchEv[] = [];
-  let i = lb(bars, cutoffMs) - 1;
-  if (i < 1) return { role: 'NEUTRAL', events };
-  let inside = Math.abs(bars[i].close - zPrice) < W;
-  for (; i >= 1; i--) {
-    const b = bars[i], prev = bars[i - 1];
-    const insideNow = Math.abs(b.close - zPrice) < W || (b.low - W < zPrice && b.high + W > zPrice && Math.min(Math.abs(b.high - zPrice), Math.abs(b.low - zPrice)) < W);
-    if (!inside && insideNow) {
-      const fromBelow = prev.close < zPrice - W;
-      let j = i; let outcome: 'REJ_FROM_BELOW' | 'REJ_FROM_ABOVE' | 'BREAK_UP' | 'BREAK_DOWN' | null = null;
-      for (let k = 0; k < OUTCOME_BARS && j - k >= 0; k++) {
-        const bb = bars[j - k];
-        if (bb.close > zPrice + W) { outcome = fromBelow ? 'BREAK_UP' : 'REJ_FROM_ABOVE'; break; }
-        if (bb.close < zPrice - W) { outcome = fromBelow ? 'REJ_FROM_BELOW' : 'BREAK_DOWN'; break; }
-      }
-      events.push({ label: outcome ?? (fromBelow ? 'REJ_FROM_BELOW' : 'REJ_FROM_ABOVE'), ts: b.timestamp });
-    }
-    inside = insideNow;
-  }
-  let rejB = 0, rejA = 0;
-  const n = events.length;
-  for (let idx = 0; idx < n; idx++) {
-    const e = events[idx];
-    const weight = idx >= n - 5 ? 2 : 1; // last-5-events double weight (list is newest-first)
-    if (e.label === 'REJ_FROM_BELOW') rejB += weight;
-    else if (e.label === 'REJ_FROM_ABOVE') rejA += weight;
-  }
-  const role = rejB > rejA ? 'RESISTANCE' : rejA > rejB ? 'SUPPORT' : 'NEUTRAL';
-  return { role, events };
-}
 
 function mulberry32(seed: number): () => number { let a = seed >>> 0; return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + 0x6d2b79f5 * (t ^ (t >>> 15))) | 0; return ((t ^ (t >>> 16)) >>> 0) / 4294967296; }; }
 
@@ -109,9 +87,9 @@ async function main(): Promise<void> {
   console.log(`\n${line}\nG.2 TEST 1 — 02:15:56Z signal zones | bar cutoff STRICTLY BEFORE ${new Date(t1Cutoff).toISOString()} (${t1Bars.length} bars, last ${new Date(t1Bars[t1Bars.length - 1].timestamp).toISOString()})\n${line}`);
   for (const zp of [4641.6, 4636.9, 4635.9, 4635.3, 4633.2]) {
     const { role, events } = classifyZone(t1Bars, t1Cutoff, zp);
-    const rejB = events.filter(e => e.label === 'REJ_FROM_BELOW').length;
-    const rejA = events.filter(e => e.label === 'REJ_FROM_ABOVE').length;
-    const bu = events.filter(e => e.label === 'BREAK_UP').length, bd = events.filter(e => e.label === 'BREAK_DOWN').length;
+    const rejB = events.filter(e => e.label === 'REJECTED_APPROACH_FROM_BELOW').length;
+    const rejA = events.filter(e => e.label === 'REJECTED_APPROACH_FROM_ABOVE').length;
+    const bu = events.filter(e => e.label === 'BROKE_THROUGH_FROM_BELOW').length, bd = events.filter(e => e.label === 'BROKE_THROUGH_FROM_ABOVE').length;
     console.log(`  zone ${zp.toFixed(1)}: role=${role}  rej_from_below=${rejB} rej_from_above=${rejA} break_up=${bu} break_down=${bd} (n_events=${events.length})`);
   }
 
@@ -164,12 +142,13 @@ async function main(): Promise<void> {
   const flipped: number[] = []; const same: number[] = [];
   for (const b of dec) {
     if (!b.zones) continue;
-    const legacyOpposes = b.zones.some(z => qualifying(z) && inBand(b, z) && ((b.dir === 'BUY' && z.type === 'RESISTANCE') || (b.dir === 'SELL' && z.type === 'SUPPORT')));
+    const blocking = blockingRoleFor(b.dir);
+    const legacyOpposes = b.zones.some(z => qualifying(z) && inBand(b, z) && roleFromLegacyType(z.type) === blocking);
     let awareOpposes = false;
     for (const z of b.zones) {
       if (!qualifying(z) || !inBand(b, z)) continue;
       const { role } = classifyZone(bars, b.ems, z.price);
-      if ((b.dir === 'BUY' && role === 'RESISTANCE') || (b.dir === 'SELL' && role === 'SUPPORT')) { awareOpposes = true; break; }
+      if (role === blocking) { awareOpposes = true; break; }
     }
     if (awareOpposes !== legacyOpposes) { flips++; flipIds.push(b.id); flipped.push(b.rNet!); }
     else same.push(b.rNet!);

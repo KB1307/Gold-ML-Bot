@@ -103,7 +103,7 @@ async function main(): Promise<void> {
     if (built && built.tradingDays >= 14) {
       const dir = sig.type as 'BUY' | 'SELL';
       const o = m15OpposedHit(built.zones, dir, +s.entry, +s.tp1);
-      const e = m15EndorsedHit(built.zones, dir, +s.entry);
+      const e = m15EndorsedHit(built.zones, dir, +s.entry, +s.tp1);
       m15Opp = o !== null; m15End = e !== null;
       m15Zone = o ? `${o.lo.toFixed(1)}-${o.hi.toFixed(1)} ${o.role} n=${o.n} rb=${o.rb} ra=${o.ra}` : (e ? `endorse ${e.lo.toFixed(1)}-${e.hi.toFixed(1)}` : '-');
     } else m15Insufficient += 1;

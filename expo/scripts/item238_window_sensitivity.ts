@@ -9,6 +9,7 @@
 import { resolveSignalWithBars } from '../services/signalResolver';
 import { computeRNet } from '../lib/evCompute';
 import { classifyZone } from './item235_side_aware';
+import { blockingRoleFor, roleFromLegacyType, type ZoneRole } from '../services/zoneSemantics';
 import type { SnapZone } from './item234_band_veto';
 import type { TradingSignal, SignalStatus } from '../types/trading';
 import { createClient } from '@supabase/supabase-js';
@@ -21,8 +22,8 @@ function mulberry32(seed: number): () => number { let a = seed >>> 0; return () 
 const lb = (bars: Bar[], t: number): number => { let lo = 0, hi = bars.length; while (lo < hi) { const m = (lo + hi) >> 1; if (bars[m].t < t) lo = m + 1; else hi = m; } return lo; };
 const ev = (v: number[]): number => v.reduce((x, y) => x + y, 0) / v.length;
 
-/** side-aware role within a bounded window ending at cutoff. */
-function classifyWindow(bars: Bar[], cutoff: number, windowMs: number | null, price: number): string {
+/** side-aware role within a bounded window ending at cutoff (canonical vocabulary). */
+function classifyWindow(bars: Bar[], cutoff: number, windowMs: number | null, price: number): ZoneRole {
   const start = windowMs === null ? 0 : cutoff - windowMs;
   const sub = bars.slice(lb(bars, start), lb(bars, cutoff)).map(b => ({ timestamp: b.t, open: b.o, high: b.h, low: b.l, close: b.c }));
   return classifyZone(sub, cutoff, price).role;
@@ -61,7 +62,7 @@ async function main(): Promise<void> {
     const zones = label.startsWith('TEST 1') ? [4641.6, 4636.9, 4635.9, 4635.3, 4633.2].map(p => ({ price: p })) : z2.filter(z => [4583.2, 4580.9, 4579.9, 4597, 4598.3].includes(Number(z.price))).map(z => ({ price: Number(z.price), type: z.type }));
     const cut = label.startsWith('TEST 1') ? t1Cutoff : c2;
     for (const w of WINDOWS) {
-      const roles = zones.map(z => `${Number(z.price).toFixed(1)}:${classifyWindow(bars, cut, w.ms, Number(z.price)).replace('RESISTANCE', 'RES').replace('SUPPORT', 'SUP')}${z.type ? ` (stored ${(z.type as string).slice(0, 3)})` : ''}`).join('  ');
+      const roles = zones.map(z => `${Number(z.price).toFixed(1)}:${classifyWindow(bars, cut, w.ms, Number(z.price)).replace('CEILING_BEHAVING', 'CEIL').replace('FLOOR_BEHAVING', 'FLOOR')}${z.type ? ` (stored ${(z.type as string).slice(0, 3)})` : ''}`).join('  ');
       console.log(`  ${w.label.padEnd(5)} ${roles}`);
     }
   }
@@ -93,12 +94,12 @@ async function main(): Promise<void> {
   for (const w of [WINDOWS[1], WINDOWS[2]]) {
     const flipped: number[] = []; const same: number[] = []; const ids: string[] = [];
     for (const b of dec) {
-      const legacyOpposes = b.zones!.some(z => qualifying(z) && inBand(b, z) && ((b.dir === 'BUY' && z.type === 'RESISTANCE') || (b.dir === 'SELL' && z.type === 'SUPPORT')));
+      const legacyOpposes = b.zones!.some(z => qualifying(z) && inBand(b, z) && roleFromLegacyType(z.type) === blockingRoleFor(b.dir));
       let awareOpposes = false;
       for (const z of b.zones!) {
         if (!qualifying(z) || !inBand(b, z)) continue;
         const role = classifyWindow(bars, b.ems, w.ms, z.price);
-        if ((b.dir === 'BUY' && role === 'RESISTANCE') || (b.dir === 'SELL' && role === 'SUPPORT')) { awareOpposes = true; break; }
+        if (role === blockingRoleFor(b.dir)) { awareOpposes = true; break; }
       }
       if (awareOpposes !== legacyOpposes) { flipped.push(b.rNet!); ids.push(b.id); } else same.push(b.rNet!);
     }
@@ -128,7 +129,7 @@ async function main(): Promise<void> {
     if (dHi - dLo < 3) continue;
     const cp = (b.entry - dLo) / (dHi - dLo);
     const z = b.zones!;
-    const opp = z.filter(zz => (b.dir === 'BUY' ? zz.type === 'RESISTANCE' : zz.type === 'SUPPORT')).length / z.length;
+    const opp = z.filter(zz => roleFromLegacyType(zz.type) === blockingRoleFor(b.dir)).length / z.length;
     if (cp >= 0.85 && opp <= 0.10) members.push(b);
   }
   console.log(`\nM.3 MATCHED at-extreme class (chase_position>=0.85 day-start OHLC AND opposing_zone_fraction<=0.10):`);

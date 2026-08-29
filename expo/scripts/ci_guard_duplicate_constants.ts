@@ -59,6 +59,7 @@
 
 import { readdirSync, readFileSync, statSync } from 'fs';
 import { join, relative } from 'path';
+import { verifyAgainstGolden } from '../services/zoneSemantics';
 
 /** Roots that contain LIVE code. Item 130 added the two backend roots. */
 const LIVE_ROOTS: readonly string[] = [
@@ -320,6 +321,47 @@ function main(): void {
     }
   } catch {
     failures.push('SIXTH-STRIP GUARD: expo/babel.config.js could not be read — refusing to pass silently.');
+  }
+
+  // ── ZONE-SEMANTICS GOLDEN GUARD ────────────────────────────────────────────
+  // services/zoneSemantics.ts is the single source of truth for zone side and
+  // trade-relative semantics. The words support/resistance conflate three
+  // independent concepts and have already produced FOUR defects here, including
+  // an M15 implementation that labelled "local low then bounce up" as a
+  // rejection-FROM-BELOW (inverted) while running perfectly. That class of bug
+  // is INVISIBLE at runtime, so it must be caught mechanically.
+  //
+  // The golden fixtures pin all 3 behavioural cases and all 5 trade-relative
+  // cases. `role_flip_recency` is the decisive one: raw counts tie 2-2 and only
+  // correct side semantics PLUS recency weighting yield CEILING_BEHAVING, so a
+  // port with the classic inversion cannot pass it. A failure here FAILS THE RUN
+  // exactly like the sixth-strip guard above — no zone-derived number may be
+  // reported from a tree whose semantics are backwards.
+  try {
+    const goldenPath = join(__dirname, '..', 'services', 'zone_semantics_golden.json');
+    const golden = JSON.parse(readFileSync(goldenPath, 'utf8')) as Parameters<typeof verifyAgainstGolden>[0];
+    const goldenFailures = verifyAgainstGolden(golden);
+    if (goldenFailures.length > 0) {
+      failures.push(
+        `ZONE-SEMANTICS GOLDEN GUARD: ${goldenFailures.length} fixture mismatch(es) in services/zoneSemantics.ts.\n` +
+          goldenFailures.map((f) => `      ${f}`).join('\n') +
+          '\n      A mismatch means zone ROLES ARE BACKWARDS or the trade-relative mapping\n' +
+          '      has a sign error. Every zone-derived number in this tree is void until fixed.',
+      );
+    } else {
+      console.log('--- ZONE-SEMANTICS GOLDEN GUARD (services/zoneSemantics.ts) ---');
+      console.log(
+        `  OK     ${golden.cases.length} behavioural + ${golden.tradeRelativeCases.length} trade-relative fixtures reproduced EXACTLY`,
+      );
+      for (const c of golden.cases) console.log(`           case ${c.name.padEnd(20)} -> ${c.expectedRole}`);
+      for (const t of golden.tradeRelativeCases) console.log(`           rel  ${t.name.padEnd(20)} -> ${t.expected}`);
+      console.log('');
+    }
+  } catch (err: unknown) {
+    failures.push(
+      `ZONE-SEMANTICS GOLDEN GUARD: could not run the golden check — refusing to pass silently. ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   if (warnings.length > 0) {

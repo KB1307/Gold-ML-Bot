@@ -27,6 +27,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { buildM15Zones, m15OpposedHit, m15EndorsedHit, MEMORY_TRADING_DAYS } from './m15ZoneLayer';
 import { classifyZone } from './sideAwareRole';
+import { blockingRoleFor, roleFromLegacyType } from './zoneSemantics';
 
 /** Provenance of a persisted emission. Recorded at write time, never inferred. */
 export type EmittedSignalSource = 'LIVE' | 'SIMULATION' | 'BACKFILL';
@@ -422,7 +423,8 @@ export function pushEmittedSignalRecord(record: EmittedSignalRecord): void {
         // veto ships as observation ONLY, never a filter).
         const snapZones = (Array.isArray(safeRecord.srZonesSnapshot) ? safeRecord.srZonesSnapshot : []) as { price: number; type?: string; touches?: number; reactionStrength?: number }[];
         if (snapZones.length > 0) {
-          const opp = snapZones.filter(z => (safeRecord.direction === 'BUY' ? z.type === 'RESISTANCE' : z.type === 'SUPPORT')).length;
+          const oppBlocking = blockingRoleFor(safeRecord.direction === 'SELL' ? 'SELL' : 'BUY');
+          const opp = snapZones.filter(z => roleFromLegacyType(z.type) === oppBlocking).length;
           row.opposing_zone_fraction = Math.round((opp / snapZones.length) * 1000) / 1000;
           const tp1d = Math.abs(Number(safeRecord.tp1) - Number(safeRecord.entry));
           const blo = safeRecord.direction === 'BUY' ? Number(safeRecord.entry) - 1.0 : Number(safeRecord.entry) - tp1d;
@@ -464,7 +466,7 @@ export function pushEmittedSignalRecord(record: EmittedSignalRecord): void {
           } else {
             const dir = safeRecord.direction === 'SELL' ? 'SELL' : 'BUY';
             const opp = m15OpposedHit(built.zones, dir, Number(safeRecord.entry), Number(safeRecord.tp1));
-            const end = m15EndorsedHit(built.zones, dir, Number(safeRecord.entry));
+            const end = m15EndorsedHit(built.zones, dir, Number(safeRecord.entry), Number(safeRecord.tp1));
             row.m15_opposed = opp !== null;
             row.m15_endorsed = end !== null;
             row.m15_zone_context = {
@@ -507,12 +509,17 @@ export function pushEmittedSignalRecord(record: EmittedSignalRecord): void {
             if (qZones.length === 0 || !covered48) {
               row.retype_verdict_would_change = null;
             } else {
-              const legacyOpposes = qZones.some(z => qualifyingQ(z) && inBandQ(z) && ((dirQ === 'BUY' && z.type === 'RESISTANCE') || (dirQ === 'SELL' && z.type === 'SUPPORT')));
+              // The STORED snapshot type is legacy vocabulary written by the
+              // engine; it is translated into canonical roles rather than
+              // compared with a hand-written direction mapping. Both sides of
+              // the comparison therefore use the SAME blocking-role rule.
+              const blocking = blockingRoleFor(dirQ);
+              const legacyOpposes = qZones.some(z => qualifyingQ(z) && inBandQ(z) && roleFromLegacyType(z.type) === blocking);
               let awareOpposes = false;
               for (const z of qZones) {
                 if (!qualifyingQ(z) || !inBandQ(z)) continue;
                 const { role } = classifyZone(win48, ems, Number(z.price));
-                if ((dirQ === 'BUY' && role === 'RESISTANCE') || (dirQ === 'SELL' && role === 'SUPPORT')) { awareOpposes = true; break; }
+                if (role === blocking) { awareOpposes = true; break; }
               }
               row.retype_verdict_would_change = awareOpposes !== legacyOpposes;
             }

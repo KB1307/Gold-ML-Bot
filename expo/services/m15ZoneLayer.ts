@@ -28,20 +28,47 @@
  *     while it sits within $2 of the band's lowest member; else new band.
  *   - A UTC date counts as a trading day if it has >= 48 M1 bars (gold is
  *     closed ~Fri 22:00Z -> Sun 23:00Z, so partial Sun/Fri sessions count).
- *   - Role ties (rb === ra) are NEUTRAL and can neither oppose nor endorse.
+ *   - Role ties (rb === ra) are UNTYPED and can neither oppose nor endorse.
  *
  * Data-source rule: input is gold_m1_bars ONLY (never priceHistory / Yahoo /
  * TwelveData). Zero live impact: this layer is annotation-only; it is read by
  * NOTHING in emission, gating or scoring (grep-verifiable).
+ *
+ * ── PORTED TO CANONICAL SEMANTICS (services/zoneSemantics.ts) ───────────────
+ * This file no longer decides what a side MEANS or which role blocks which
+ * direction. Its DETECTION RULE (2-bar local extreme + 2.0*ATR(14,M15)
+ * move-away within 4 bars, $2 bands, >=2 events) is unchanged and remains its
+ * own pre-registered measurement choice; but:
+ *   - event sides are named with `rejectionEvent()` (named by WHERE PRICE CAME
+ *     FROM — the mnemonic that prevents the historical inversion),
+ *   - the role is derived by `roleFromRejectionCounts()`,
+ *   - opposition/endorsement are decided by `zoneRelation()`.
+ * Role vocabulary is now CEILING_BEHAVING / FLOOR_BEHAVING / UNTYPED. The
+ * banned words (support/resistance/isResistance) do not appear in zone logic
+ * below. Annotation payloads therefore carry the canonical role strings.
  */
+
+import {
+  type ZoneRole,
+  type ApproachEvent,
+  type ZoneInterval,
+  rejectionEvent,
+  roleFromRejectionCounts,
+  zoneRelation,
+} from './zoneSemantics';
 
 export interface M1Bar { ts: number; o: number; h: number; l: number; c: number }
 export interface M15Bar { ts: number; o: number; h: number; l: number; c: number }
-export interface RejectionEvent { price: number; side: 'below' | 'above'; ts: number; usableTs: number }
+/** `event` is the canonical side name; `side` is kept as the raw came-from tag. */
+export interface RejectionEvent { price: number; side: 'BELOW' | 'ABOVE'; event: ApproachEvent; ts: number; usableTs: number }
 export interface M15Zone {
   lo: number; hi: number; mid: number;
-  n: number; rb: number; ra: number;
-  role: 'RESISTANCE' | 'SUPPORT' | 'NEUTRAL';
+  n: number;
+  /** rb = rejections of an approach FROM BELOW (ceiling evidence). */
+  rb: number;
+  /** ra = rejections of an approach FROM ABOVE (floor evidence). */
+  ra: number;
+  role: ZoneRole;
   lastUsableTs: number;
 }
 
@@ -100,13 +127,15 @@ export function detectRejectionEvents(m15: M15Bar[]): RejectionEvent[] {
     let awayUp = -Infinity, awayDn = Infinity;
     for (let j = i + 1; j <= i + CONFIRM_BARS; j++) { awayUp = Math.max(awayUp, m15[j].h); awayDn = Math.min(awayDn, m15[j].l); }
     const usableTs = m15[i + CONFIRM_BARS].ts + M15_MS;
-    // Rejection-FROM-BELOW (RESISTANCE-making): local HIGH, then a strong move DOWN away.
+    // Price rallied INTO the level FROM BELOW and was rejected back down:
+    // local HIGH, then a strong move DOWN away. => ceiling evidence.
     if (m15[i].h >= Math.max(m15[i - 1].h, m15[i - 2].h) && m15[i].h - awayDn >= MOVE_AWAY_ATR * a) {
-      events.push({ price: m15[i].h, side: 'below', ts: m15[i].ts, usableTs });
+      events.push({ price: m15[i].h, side: 'BELOW', event: rejectionEvent('BELOW'), ts: m15[i].ts, usableTs });
     }
-    // Rejection-FROM-ABOVE (SUPPORT-making): local LOW, then a strong move UP away.
+    // Price fell INTO the level FROM ABOVE and was rejected back up:
+    // local LOW, then a strong move UP away. => floor evidence.
     if (m15[i].l <= Math.min(m15[i - 1].l, m15[i - 2].l) && awayUp - m15[i].l >= MOVE_AWAY_ATR * a) {
-      events.push({ price: m15[i].l, side: 'above', ts: m15[i].ts, usableTs });
+      events.push({ price: m15[i].l, side: 'ABOVE', event: rejectionEvent('ABOVE'), ts: m15[i].ts, usableTs });
     }
   }
   return events;
@@ -125,12 +154,12 @@ export function clusterZones(events: RejectionEvent[]): M15Zone[] {
   const zones: M15Zone[] = [];
   for (const b of bands) {
     if (b.length < MIN_EVENTS) continue;
-    const rb = b.filter(e => e.side === 'below').length;
-    const ra = b.filter(e => e.side === 'above').length;
+    const rb = b.filter(e => e.event === 'REJECTED_APPROACH_FROM_BELOW').length;
+    const ra = b.filter(e => e.event === 'REJECTED_APPROACH_FROM_ABOVE').length;
     zones.push({
       lo: b[0].price, hi: b[b.length - 1].price, mid: (b[0].price + b[b.length - 1].price) / 2,
       n: b.length, rb, ra,
-      role: rb > ra ? 'RESISTANCE' : ra > rb ? 'SUPPORT' : 'NEUTRAL',
+      role: roleFromRejectionCounts(rb, ra),
       lastUsableTs: Math.max(...b.map(e => e.usableTs)),
     });
   }
@@ -150,22 +179,24 @@ export function buildM15Zones(bars: M1Bar[], asOfMs: number): { zones: M15Zone[]
   return { zones: clusterZones(usable), tradingDays: window.tradingDays };
 }
 
+const asInterval = (z: M15Zone): ZoneInterval => ({ lo: z.lo, hi: z.hi, role: z.role });
+
 /**
- * M15 path opposition — SAME path geometry as the band veto:
- * BUY band [entry-1.0, entry+|tp1-entry|], mirrored SELL; an
- * opposing-role (RESISTANCE for BUY) zone overlapping the band opposes.
+ * M15 path opposition — the path geometry and the blocking-role mapping are
+ * BOTH delegated to `zoneRelation()`, which is the same geometry the band veto
+ * uses (BUY path [entry-1.0, entry+|tp1-entry|], mirrored for SELL). No sign
+ * or role mapping is re-derived here.
  */
 export function m15OpposedHit(zones: M15Zone[], dir: 'BUY' | 'SELL', entry: number, tp1: number): M15Zone | null {
-  const tp1d = Math.abs(tp1 - entry);
-  const blo = dir === 'BUY' ? entry - 1.0 : entry - tp1d;
-  const bhi = dir === 'BUY' ? entry + tp1d : entry + 1.0;
-  const want = dir === 'BUY' ? 'RESISTANCE' : 'SUPPORT';
-  return zones.find(z => z.role === want && z.lo <= bhi && z.hi >= blo) ?? null;
+  return zones.find(z => zoneRelation(dir, entry, tp1, asInterval(z)) === 'OPPOSED') ?? null;
 }
 
-/** M15 endorsement: an agreeing-role zone within $3 of the entry (interval distance). */
-export function m15EndorsedHit(zones: M15Zone[], dir: 'BUY' | 'SELL', entry: number): M15Zone | null {
-  const want = dir === 'BUY' ? 'SUPPORT' : 'RESISTANCE';
+/**
+ * M15 endorsement: an ALIGNED-relation zone within $3 of the entry (interval
+ * distance). The agreeing-role mapping comes from `zoneRelation()`; only the
+ * proximity constraint is this layer's own.
+ */
+export function m15EndorsedHit(zones: M15Zone[], dir: 'BUY' | 'SELL', entry: number, tp1: number): M15Zone | null {
   const dist = (z: M15Zone): number => Math.max(z.lo - entry, 0, entry - z.hi);
-  return zones.find(z => z.role === want && dist(z) <= ENDORSE_DISTANCE) ?? null;
+  return zones.find(z => zoneRelation(dir, entry, tp1, asInterval(z)) === 'ALIGNED' && dist(z) <= ENDORSE_DISTANCE) ?? null;
 }

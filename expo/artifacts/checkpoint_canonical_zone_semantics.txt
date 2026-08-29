@@ -1,0 +1,205 @@
+================================================================================
+CANONICAL ZONE SEMANTICS ROUND — adopt zoneSemantics.ts as the single source of
+truth; port m15ZoneLayer / sideAwareRole / measurement scripts; wire the golden
+check into the CI guard; re-run V.3 acceptance through the ported instrument.
+run: 2026-08-29  |  tree: expo/  |  static checks: GREEN (0 tsc / 0 lint / 0 structure)
+================================================================================
+
+SCOPE / DISCIPLINE
+  Vocabulary + duplication removal ONLY. No detection rule, threshold, window or
+  weight was changed. Every instrument keeps its own PRE-REGISTERED measurement
+  choices; what is now shared is (1) what a side MEANS and (2) which role blocks
+  which direction. Equivalence to the pre-port tree is PROVEN below, not asserted
+  (MINDSET 2/3).
+
+--------------------------------------------------------------------------------
+1. ADOPTION — services/zoneSemantics.ts is now the single source of truth
+--------------------------------------------------------------------------------
+  INSTALLED: expo/services/zoneSemantics.ts        (canonical module)
+             expo/services/zone_semantics_golden.json (3 behavioural + 5 trade-relative fixtures)
+
+  Shared derivation primitives added to the module so that NOTHING re-derives a
+  role or a direction mapping locally:
+    roleFromScore(score)                    >0 CEILING, <0 FLOOR, 0 UNTYPED
+    roleFromRejectionCounts(rb, ra)         plain-count role
+    recencyWeightedScore(events, win, wgt)  the exact buildZoneRole scoring
+    rejectionEvent(cameFrom) / breakthroughEvent(cameFrom)   side naming
+    blockingRoleFor(dir) / agreeingRoleFor(dir)              direction mapping
+    roleFromLegacyType(storedType)          READ-ONLY bridge for historical rows
+  buildZoneRole() and zoneRelation() were refactored to call these, so the golden
+  fixtures police the same code path every consumer uses.
+
+  IMPORT GREP (A) — every zone-role instrument now imports the canonical module:
+    scripts/ci_guard_duplicate_constants.ts:62   verifyAgainstGolden
+    scripts/item238_window_sensitivity.ts:12     blockingRoleFor, roleFromLegacyType, ZoneRole
+    scripts/item239_m15_acceptance.ts:18         blockingRoleFor
+    scripts/item235_side_aware.ts:22             blockingRoleFor, roleFromLegacyType
+    scripts/item244_semantics_port_equivalence.ts:20  roleFromLegacyType, ZoneRole
+    services/emittedSignalService.ts:30          blockingRoleFor, roleFromLegacyType
+    services/sideAwareRole.ts:39                 (canonical primitives)
+    services/m15ZoneLayer.ts:58                  (canonical primitives)
+
+  RESIDUAL-DERIVATION GREP (B) — pattern
+    "rb > ra | ra > rb | rejB > rejA | rejA > rejB | === 'RESISTANCE' | === 'SUPPORT'"
+  over the ported instruments returns ONLY three lines, all inside
+  services/zoneSemantics.ts itself (its own doc comment at :93 and the legacy
+  read-bridge at :151-152). Every other instrument: EMPTY = CLEAN.
+
+  DUPLICATE-CLASSIFIER GREP (C) — "export function classifyZone" across the tree
+  returns EXACTLY ONE definition: services/sideAwareRole.ts:67.
+  scripts/item235_side_aware.ts previously held a SECOND copy; it is deleted and
+  the script now imports + re-exports the service copy, so the divergence risk is
+  structurally gone rather than policed by review.
+
+--------------------------------------------------------------------------------
+2. PORTS (behaviour-preserving)
+--------------------------------------------------------------------------------
+  services/m15ZoneLayer.ts
+    - events named via rejectionEvent('BELOW'|'ABOVE') — named by WHERE PRICE
+      CAME FROM, the mnemonic that prevents the historical inversion;
+    - role via roleFromRejectionCounts(rb, ra);
+    - m15OpposedHit / m15EndorsedHit now DELEGATE to zoneRelation() — the path
+      geometry and the BUY/SELL mapping are no longer hand-derived here.
+      m15EndorsedHit gained a tp1 parameter (zoneRelation needs the path);
+      call sites updated: emittedSignalService.ts, item240_config_matrix.ts.
+    - vocabulary: CEILING_BEHAVING / FLOOR_BEHAVING / UNTYPED.
+  services/sideAwareRole.ts
+    - detection rule, w=0.8, 15-bar first-exit, last-5 weighting: UNCHANGED;
+    - labels are canonical ApproachEvent strings; role via the shared scorer.
+  services/emittedSignalService.ts
+    - E.1 opposing_zone_fraction and the ITEM Q dual-annotation now compare
+      roleFromLegacyType(storedType) against blockingRoleFor(dir), so BOTH sides
+      of the retype comparison use the SAME blocking rule.
+  scripts: item235 (classifier deleted, imports service), item238, item239,
+    item240 ported; no local direction mapping remains in any of them.
+
+--------------------------------------------------------------------------------
+3. CI GUARD — golden check wired, FAILS THE RUN (as specified)
+--------------------------------------------------------------------------------
+  expo/scripts/ci_guard_duplicate_constants.ts now loads
+  services/zone_semantics_golden.json and calls verifyAgainstGolden(); any
+  mismatch is pushed into `failures` — the same array as the SIXTH-STRIP GUARD —
+  so the process exits 1. A read/parse error also fails (never passes silently).
+
+  RUN (verbatim):
+    --- SIXTH-STRIP GUARD (build-marker chain) ---
+    --- ZONE-SEMANTICS GOLDEN GUARD (services/zoneSemantics.ts) ---
+      OK     3 behavioural + 5 trade-relative fixtures reproduced EXACTLY
+               case ceiling_single       -> CEILING_BEHAVING
+               case floor_single         -> FLOOR_BEHAVING
+               case role_flip_recency    -> CEILING_BEHAVING     <- the decisive case
+               rel  buy_blocked_by_ceiling -> OPPOSED
+               rel  buy_supported_by_floor -> ALIGNED
+               rel  sell_blocked_by_floor  -> OPPOSED
+               rel  sell_ceiling_behind    -> ALIGNED
+               rel  untyped_never_opposes  -> NEUTRAL
+    RESULT: PASS — 24 single-source constant(s), 2 parity-asserted,
+            12 script warning(s), across 45 live files.        EXIT=0
+
+  INCIDENTAL FINDING — SEVENTH STRIP OF THE BUILD MARKER.
+  The FIRST run of the widened guard FAILED, and not on the golden check:
+    SIXTH-STRIP GUARD: babel.config.js is missing the rork-build-marker plugin
+    registration.                                   RESULT: FAIL — 1 problem(s)
+  expo/babel.config.js was a 6-line file with no plugin, and `git show
+  HEAD:expo/babel.config.js` showed the strip had reached HEAD (commit 86de366),
+  i.e. this is the SEVENTH removal, not a working-tree accident. Restored
+  verbatim from 9654019 (3724 bytes, plugin scoped to "buildMarker" at :56/:60,
+  registered at :74). The guard was the only thing that caught it.
+
+--------------------------------------------------------------------------------
+4. V.3 ACCEPTANCE — RE-RUN THROUGH THE PORTED INSTRUMENT
+--------------------------------------------------------------------------------
+  scripts/item239_m15_acceptance.ts, real builder, real gold_m1_bars (anon key).
+
+  FIRST re-run returned (a)=FAIL (b)=FAIL. Diagnosed BEFORE reporting: the
+  script's own assertions still searched for the retired literals 'RESISTANCE' /
+  'SUPPORT', which no longer exist, so `.find()` matched nothing. That FAIL was an
+  UN-PORTED ASSERTION, not a measurement. Assertions ported to
+  blockingRoleFor('BUY'|'SELL') so they can never drift from the instrument again.
+
+  ACCEPTANCE (a) — 02:15Z map (asOf=2026-08-27T02:15:56Z, tradingDays=14, zones=53)
+    4629.4-4630.9  n=7  rb=4 ra=3  CEILING_BEHAVING
+    4631.9-4633.5  n=3  rb=3 ra=0  CEILING_BEHAVING
+    4634.4-4636.3  n=2  rb=0 ra=2  FLOOR_BEHAVING
+    4639.1-4640.8  n=3  rb=2 ra=1  CEILING_BEHAVING
+    (a) CEILING_BEHAVING zone overlapping 4633-4641: YES -> 4631.9-4633.5 n=3 rb=3 ra=0
+        opposed-hit probe (02:15 BUY entry 4636.6 tp1 4643.9): 4639.1-4640.8 CEILING_BEHAVING
+        endorsed-hit probe: 4634.4-4636.3 FLOOR_BEHAVING
+  ACCEPTANCE (b) — 10:37Z map (asOf=2026-08-27T10:37:16Z, tradingDays=14, zones=54)
+    (b) FLOOR_BEHAVING zone overlapping 4559-4572: NO -> FAIL
+        (no zone of any role between 4530.5 and 4597.9 — no events there at all)
+  VERDICT: (a)=PASS  (b)=FAIL
+
+  ZONE-FOR-ZONE IDENTITY WITH THE PRE-PORT RUN: the (a) map is unchanged from
+  checkpoint_vwx_m15_layer.txt — same bands, same n, same rb/ra, same roles under
+  the legacy->canonical mapping (RESISTANCE==CEILING_BEHAVING,
+  SUPPORT==FLOOR_BEHAVING). 53 and 54 zones respectively, as before.
+
+--------------------------------------------------------------------------------
+5. THE 21-AUG BAND DIVERGENCE — SETTLED BY MEASUREMENT
+--------------------------------------------------------------------------------
+  QUESTION: the provisional offline Python port found the 4559-4572 band on 21-Aug
+  (3v0, 2v0); the canonical M15 instrument finds nothing there. Two disagreeing
+  instruments, previously left open.
+
+  SETTLED, and the answer is NOT a side inversion:
+    - the canonical module now passes all 8 golden fixtures INCLUDING
+      role_flip_recency, which ONLY a correctly-sided + recency-weighted
+      implementation can pass (raw counts tie 2-2 there). An inverted port
+      cannot produce that result;
+    - the M15 layer, re-run through the ported code, reproduces its pre-port map
+      zone-for-zone, so the port did not move the answer either;
+    - (b) still FAILS for a STRUCTURAL reason, visible in the map: the instrument
+      records NO event anywhere between 4530.5 and 4597.9. This is not a
+      mislabelled role — there is nothing to label.
+  CONCLUSION: the divergence is a genuine DETECTION-RULE disagreement (the
+  canonical rule requires a 2-bar local extreme plus a >= 2.0*ATR(14,M15) move-away
+  within 4 bars, clustered into $2 bands at >= 2 events over 14 trading days; the
+  Python port's event internals were never specified), NOT a side-semantics defect.
+  The side-semantics hypothesis is now EXCLUDED by the golden fixtures. Nothing was
+  tuned to make (b) pass (MINDSET 1); (b) remains FAIL on record.
+
+--------------------------------------------------------------------------------
+6. PORT EQUIVALENCE — PROVEN, NOT ASSERTED (scripts/item244_semantics_port_equivalence.ts)
+--------------------------------------------------------------------------------
+  Method: the PRE-PORT classifier (verbatim copy of services/sideAwareRole.ts at
+  git 8c04bc2, frozen in the harness) vs the LIVE ported classifier, over the same
+  real bars, compared through the legacy->canonical mapping.
+
+  FINAL RUN (verbatim):
+    bars: 70991 (2026-06-18T13:39:00Z -> 2026-08-28T20:55:00Z)
+    V.4a SIDE-AWARE CLASSIFIER
+      grid: 1511 levels x 12 cutoffs = 18132 comparisons
+      role distribution (ported): UNTYPED=9398 FLOOR_BEHAVING=7765 CEILING_BEHAVING=969
+      MISMATCHES: 0
+    V.4b M15 LAYER
+      2026-08-27T02:15:56Z: zones=53 tradingDays=14 | FLOOR=24 CEILING=20 UNTYPED=9
+      2026-08-27T10:37:16Z: zones=54 tradingDays=14 | FLOOR=23 CEILING=21 UNTYPED=10
+    VERDICT: EQUIVALENT — the port changed vocabulary and removed duplication,
+             and changed NO number.
+
+  DEFECT FOUND BY THIS HARNESS (and deliberately NOT fixed this round):
+  the FIRST equivalence run reported MISMATCHES: 479 / 18132 (2.6%). Cause: the
+  pre-port classifier builds its event list NEWEST-FIRST (the scan walks backwards
+  from the cutoff) and then weights `idx >= n - 5`, i.e. the TAIL of a
+  newest-first list = the OLDEST five events — while its own comment claims
+  "last-5 events double weight", i.e. the most RECENT five. The instrument has
+  therefore ALWAYS weighted the oldest five events, contrary to its documentation.
+  My port had reversed the list (implementing what the comment said), which
+  silently changed a pre-registered instrument mid-round. That was reverted: the
+  port now reproduces the existing behaviour bit-for-bit (0 mismatches) and the
+  discrepancy is recorded in-code at services/sideAwareRole.ts as a DEFECT ON
+  RECORD. Correcting the weighting direction changes what every Q number MEANS
+  (Q's retype measurement and its n>=80 promotion gate were pre-registered against
+  THIS instrument), so it is a MEASURED change for a future round, not a
+  drive-by fix (MINDSET 1 + 5).
+
+--------------------------------------------------------------------------------
+7. STATUS OF EVERYTHING ELSE (unchanged this round)
+--------------------------------------------------------------------------------
+  Migrations 018 + 020 still NOT APPLIED (user's to apply); 019 APPLIED.
+  Q live row: BLOCKED-ON-APPLY. P.2 first real suppressed row: BLOCKED-ON-MARKET.
+  S.1: BLOCKED-ON-EMISSION. R runtime export line: BLOCKED-ON-REBUILD.
+  This round shipped NO gating/scoring change: the M15 layer and the retype field
+  remain annotation-only and are read by nothing in emission, gating or scoring.
+================================================================================
