@@ -168,11 +168,12 @@ export default function PaywallScreen() {
           Alert.alert("No Purchases", "No active subscriptions found to restore.");
         }
       }
-    } catch {
+    } catch (e: any) {
+      const msg = e?.message || "Failed to restore purchases.";
       if (Platform.OS === "web") {
-        alert("Failed to restore purchases.");
+        alert(msg);
       } else {
-        Alert.alert("Error", "Failed to restore purchases. Please try again.");
+        Alert.alert("Error", msg);
       }
     }
   };

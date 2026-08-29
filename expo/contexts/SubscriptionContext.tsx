@@ -10,7 +10,22 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useAuth } from "@/contexts/AuthContext";
 
-function getRCToken() {
+/**
+ * REVENUECAT DORMANT SWITCH (user directive, 2026-08-29 — "disable it until
+ * further notice"). When true, the SDK is never configured and everything
+ * below gates off `apiKey` being falsy: no network calls at boot or anywhere
+ * else (no more offerings/customer-info "operation was aborted" errors), no
+ * identity sync. Subscription state resolves instantly to free-tier defaults
+ * and the paywall falls back to its static pricing. Re-enable by flipping
+ * this to false — all SDK wiring is intentionally left in place.
+ */
+const REVENUECAT_DORMANT = true;
+
+function getRCToken(): string | undefined {
+  if (REVENUECAT_DORMANT) {
+    return undefined;
+  }
+
   if (__DEV__ || Platform.OS === "web") {
     return process.env.EXPO_PUBLIC_REVENUECAT_TEST_API_KEY;
   }
@@ -19,7 +34,7 @@ function getRCToken() {
     ios: process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY,
     android: process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY,
     default: process.env.EXPO_PUBLIC_REVENUECAT_TEST_API_KEY,
-  });
+  }) as string | undefined;
 }
 
 const apiKey = getRCToken();
@@ -31,6 +46,8 @@ if (apiKey) {
   } catch (e: unknown) {
     console.warn("[RC] RevenueCat init failed (non-fatal):", e instanceof Error ? e.message : String(e));
   }
+} else if (REVENUECAT_DORMANT) {
+  console.log("[RC] Dormant — all RevenueCat activity disabled until re-enabled");
 } else {
   console.warn("[RC] No RevenueCat API key found");
 }
@@ -162,6 +179,18 @@ export const [SubscriptionProvider, useSubscription] = createContextHook(() => {
     },
   });
 
+  // Hold mutateAsync in a ref so the effect deps stay STABLE. The object
+  // returned by useMutation has a NEW identity on every render, and having it
+  // in the deps re-ran this effect on every render — after a failed sync the
+  // lastSyncedUserIdRef guard never latched, so each re-run scheduled another
+  // sync whose pending/error state change re-rendered the provider, which
+  // re-ran the effect again: an unbounded sync/re-render loop (the RC-driven
+  // loading/remount churn seen 2026-08-29). While REVENUECAT_DORMANT this
+  // effect exits early on !apiKey; the ref fix guarantees the loop cannot
+  // return when the switch is flipped back on.
+  const syncIdentityMutateRef = useRef(syncCustomerIdentityMutation.mutateAsync);
+  syncIdentityMutateRef.current = syncCustomerIdentityMutation.mutateAsync;
+
   useEffect(() => {
     if (!apiKey || isLoadingSession) {
       return;
@@ -175,15 +204,15 @@ export const [SubscriptionProvider, useSubscription] = createContextHook(() => {
     console.log(
       `[RC] Scheduling identity sync for user=${targetUserId ?? "anonymous"}`
     );
-    void syncCustomerIdentityMutation
-      .mutateAsync(targetUserId)
+    void syncIdentityMutateRef
+      .current(targetUserId)
       .then(() => {
         lastSyncedUserIdRef.current = targetUserId;
       })
       .catch((error) => {
         console.error("[RC] Identity sync attempt failed:", error);
       });
-  }, [isLoadingSession, syncCustomerIdentityMutation, user?.id]);
+  }, [apiKey, isLoadingSession, user?.id]);
 
   const purchaseMutation = useMutation({
     mutationFn: async (pkg: PurchasesPackage) => {
