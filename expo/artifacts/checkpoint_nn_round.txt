@@ -767,3 +767,122 @@ SCOPE COMPLIANCE RESTATED: band veto rule/thresholds/mode/flag UNTOUCHED;
 prior-4h window NOT patched; recency weighting NOT corrected; no live emission
 behaviour changed; no new client-side reload/crash mitigation written.
 ================================================================================
+
+================================================================================
+ADDENDUM (post-round, user directive): RESTART + CACHE CLEAR EXECUTED;
+TWO OF MY OWN PRIOR CLAIMS CORRECTED; REDEPLOY STILL BLOCKED BUT NOW FOR A
+NAMED, PROVEN REASON.
+================================================================================
+
+CORRECTION 1 — "no agent-accessible deploy channel exists" was WRONG.
+  `rork-agent cloudflare deploy` EXISTS ("Bundle functions/index.ts and deploy
+  it to the per-project Cloudflare hosting Worker"). I did not enumerate the
+  CLI before asserting its absence last round. Withdrawn.
+  It nevertheless CANNOT run here, for two independently verified reasons:
+    (i)  INPUT ABSENT. Default -d is /home/user/rork-app; the deploy input is
+         <dir>/functions/index.ts:
+           ls: cannot access '/home/user/rork-app/functions/index.ts': No such file or directory
+         There is no root functions/ dir at all. rork.json declares two apps:
+         "expo" (react-native) and "backend" (supabase) — NO cloudflare app.
+         backend/functions/* are SUPABASE edge functions (refresh-sr-zones,
+         resolve-emitted-signals, send-telegram-alert), a different runtime with
+         a different deploy path; they are not this command's input.
+    (ii) CREDENTIAL ABSENT. Verbatim: `error: required option '--auth-token <token>' not specified`.
+         Sandbox env exposes RORK_API_URL, RORK_FORCE_DEV_LOG, RORK_LOGS_TOKEN
+         only — no deploy token. RORK_LOGS_TOKEN is a read-only logs credential;
+         using it as a deploy token would be a guess, and I did not try it.
+  So "no bundle deployed for this project" is CONSISTENT with the repo: this
+  project never had a Cloudflare functions bundle to deploy. Redeploying it is
+  not a thing this repo can do — the hosted backend is run by the platform.
+
+CORRECTION 2 — the dev server WAS observable and IS agent-restartable.
+  Last round I treated the dev server as out of reach. It was not: pid 1540
+  `expo start --max-workers 6`, LISTEN *:8081. Withdrawn.
+  NOTE ON RECORD: the process that was running was bare `expo start`, NOT the
+  `bunx rork start -p rc77lvmdg2w595ubnei0z` declared in expo/package.json.
+
+EXECUTED (user directive):
+  1. Killed pids 1539/1540 (verified gone).
+  2. Cleared: expo/.expo, expo/node_modules/.cache, /tmp/metro-*, /tmp/haste-map-*,
+     /tmp/react-*, /tmp/metro-cache (re-ls confirms .expo and node_modules/.cache absent).
+  3. Restarted with the package.json command + --clear:
+     `bunx rork start -p rc77lvmdg2w595ubnei0z --clear`  (pids 1977/1986)
+     Log: "Starting Metro Bundler" / "Bundler cache is empty, rebuilding" /
+          "Waiting on http://localhost:8081".
+
+DEV SERVER CONFIRMED UP (verbatim):
+  ss: LISTEN 0 511 *:8081
+  curl http://localhost:8081/status  ->  packager-status:running
+  curl http://localhost:8081/        ->  HTTP 200 text/html 1301B
+
+BACKEND CONFIRMED UP (verbatim, rork-agent logs backend, AFTER the restart):
+  2026-08-29 23:35:00.612059265  [GOLD-HISTORY] Fetching bars from 2026-08-28T17:48:15.209Z to 2026-08-29T01:48:15.209Z
+  2026-08-29 23:35:00.612086035  [GOLD-HISTORY] Skipping TwelveData (spot) -- in quota cooldown for 843s more
+  2026-08-29 23:35:00.612092838  [GOLD-HISTORY] TwelveData (spot) unavailable, falling back to Yahoo GC=F
+  (FMP 403 = unrelated vendor legacy-endpoint retirement, recorded not blamed.)
+
+HEALTH ROUTE RESPONSES (the thing asked for), AFTER restart + cache clear:
+  localhost:8081/               -> HTTP 200 | ct=text/html            | 1301B  | <!DOCTYPE html>...
+  localhost:8081/api            -> HTTP 200 | ct=text/html            | 1301B  | <!DOCTYPE html>...
+  localhost:8081/api/trpc/health-> HTTP 200 | ct=text/html            | 1301B  | <!DOCTYPE html>...
+  localhost:8081/trpc/health    -> HTTP 200 | ct=text/html            | 1301B  | <!DOCTYPE html>...
+  dev-...rorktest.dev/          -> HTTP 403 | ct=text/html            | 4344B  | Access Denied
+  dev-...rorktest.dev/api/trpc/health -> HTTP 503 | ct=(absent)       | 0B     | (empty)
+  ...-expo.rork.live/           -> HTTP 200 | ct=text/html;charset=UTF-8 | 15557B
+  ...-expo.rork.live/api/trpc/health  -> HTTP 404 | ct=text/plain     | 13B    | 404 Not Found
+
+STATED PLAINLY: THE RESTART DID NOT FIX IT. Not one health route returns JSON.
+The 503 and the 404 are byte-for-byte what they were before the restart.
+
+NEW IN-REPO FINDING (from the local probe, and it is the JSON.parse mechanism):
+  `find expo/app -name "*+api*"` returns NOTHING. There are ZERO Expo Router API
+  route files. Nothing in expo/app or expo/lib imports or mounts
+  expo/backend/hono.ts; the only reference to the backend anywhere in app code is
+  a TYPE-ONLY import (lib/trpc.ts:6 `import type { AppRouter } from "@/backend/trpc/app-router"`),
+  which is erased at compile time and mounts nothing.
+  CONSEQUENCE, verified above: every /api/trpc/* path on the dev server falls
+  through to the SPA and returns the 1301-byte index.html with HTTP 200.
+  A tRPC client parsing that HTML as JSON throws EXACTLY
+  "JSON.parse: unexpected non-whitespace character after JSON data" — the
+  browser error from the earlier rounds. The zero-byte 503 never could produce
+  it; this HTML fallback does. That specific symptom is IN-REPO after all, and
+  my NN reconciliation is superseded on this point.
+  The hosted backend that the logs show alive is served by the PLATFORM at a
+  separate origin, not by this dev server — which is why the process can be
+  healthy while every route in front of it is 503/404/HTML.
+  NOT SHIPPED THIS TURN (no directive to write app code, and the reload cause is
+  not yet proven to be this): the in-repo remedy would be an Expo Router API
+  route (expo/app/api/[...trpc]+api.ts) exporting handlers that delegate to the
+  Hono app, plus "web": { "output": "server" } in app.json so API routes are
+  served at all. That is a real code change with real blast radius and belongs
+  in its own round with its own evidence.
+
+RELOAD LOOP: still NOT attributed to a fix. The restart + full cache clear did
+not change any route's response, so a stale Metro cache was NOT the cause. The
+~3.5s reload remains unexplained by anything I have proven; the HMR socket is
+still unobservable from this sandbox.
+
+--------------------------------------------------------------------------------
+STRIP #5 — SECOND LIVE RECURRENCE INSIDE THE SAME SESSION
+--------------------------------------------------------------------------------
+While the SYSTEM_CHECKLIST row for the restart work was being written (no agent
+edit to babel.config.js in that window), the file was found back at 6 lines.
+Guard on the stripped tree, VERBATIM:
+  x babel.config.js: rorkBuildMarkerPlugin is gone - the plugin was removed again (cf. b1c7ca8, af7da4a on 2026-08-21).
+  x babel.config.js: rorkBuildMarkerPlugin is not REGISTERED in the plugins array - a defined-but-unregistered plugin substitutes nothing.
+  x babel.config.js: plugin is not SCOPED to the buildMarker module - an unscoped visitor rewrites the failure detector's own comparison literals in diagnosticsExport.ts (self-defusing detector).
+  x ci_guard_build_marker FAILED - the build-marker chain is broken. Do not ship.
+Restored from 12e1be5:expo/babel.config.js -> 76 lines; `git diff 12e1be5` EMPTY;
+guard re-run, VERBATIM:
+  babel.config.js        : plugin defined, registered, scoped to buildMarker
+  constants/buildMarker  : both placeholder literals present
+  diagnosticsExport      : sentinel detector present, no bare-literal comparison
+  OK ci_guard_build_marker PASSED - plugin, placeholders, and sentinel detector intact.
+
+RUNNING COUNT THIS ROUND-CYCLE: FIVE strips, five restores. TWO of them (#4, #5)
+were observed live, minutes apart, with no agent write to the file in between -
+one of them within minutes of a metro restart. The external-writer conclusion no
+longer rests on history forensics alone; it was watched happening twice.
+STANDING INSTRUCTION FOR THE USER: run `bun scripts/ci_guard_build_marker.ts`
+from expo/ immediately before any build whose provenance must be trusted; if it
+fails, `git show 12e1be5:expo/babel.config.js > expo/babel.config.js`.
