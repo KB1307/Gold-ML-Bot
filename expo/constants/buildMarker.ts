@@ -3,10 +3,11 @@
  *
  * The Item 74 marker was a hand-edited constant and sat six days stale
  * ("43bf752, set 2026-08-14") while the running bundle contained Item 109+.
- * These two exports are PLACEHOLDER string literals that babel.config.js
- * replaces at TRANSFORM time with the git SHA of the working tree and the
- * build timestamp. The marker now changes whenever the bundle is rebuilt from
- * a different tree, with nobody remembering to edit anything.
+ * These two exports are PLACEHOLDER string literals that the dedicated
+ * metro.build-marker-transformer.js replaces at TRANSFORM time with the git
+ * SHA of the working tree and the build timestamp. The marker now changes
+ * whenever the bundle is rebuilt from a different tree, without relying on
+ * babel.config.js (a platform-owned file that code-sync normalizes).
  *
  * Caveat, stated honestly: Metro's transform cache keys on file content, so
  * the first build after a new commit should clear the cache (`expo start -c`)
@@ -23,12 +24,11 @@
 // export's literal placeholders to Metro transform-cache staleness. The
 // git-proven root cause: the rork-build-marker plugin was absent from
 // babel.config.js entirely — removed a second time that day by af7da4a
-// (17:44Z) — so no transform could substitute at all. The plugin is now
-// restored SCOPED to this module only (it no longer rewrites the failure
-// detector's own comparison literals in diagnosticsExport.ts), enforced
-// mechanically by expo/scripts/ci_guard_build_marker.ts. This comment still
-// changes the file's content hash, forcing any older cached transform of
-// this module to be re-created through the restored, scoped plugin.
+// (17:44Z) — so no transform could substitute at all. As of the preview-path
+// repair, substitution is SCOPED to this module in the dedicated Metro
+// transformer and mechanically enforced by ci_guard_build_marker.ts. This
+// comment keeps the module's content hash distinct from the old Babel-plugin
+// era so Metro cannot reuse that stale transform.
 
 /** Git SHA of the tree this bundle was built from (babel-injected at build). */
 export const BUILD_SHA = '__BUILD_SHA__';

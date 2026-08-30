@@ -1511,7 +1511,8 @@ async function fetchBackendPriceWithRetry(maxRetries: number = 4): Promise<{ pri
 }
 
 async function fetchBackendDirectHttp(): Promise<{ price: number; source: string } | null> {
-  const baseUrl = process.env.EXPO_PUBLIC_RORK_API_BASE_URL;
+  const baseUrl = process.env.EXPO_PUBLIC_RORK_FUNCTIONS_URL
+    ?? process.env.EXPO_PUBLIC_RORK_API_BASE_URL;
   if (!baseUrl) return null;
 
   try {

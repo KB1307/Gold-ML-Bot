@@ -2,6 +2,7 @@ import { z } from "zod";
 import { createTRPCRouter, publicProcedure } from "../create-context";
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "@/src/integrations/supabase/types";
+import { readRuntimeEnv } from "../../runtimeEnv";
 
 /**
  * DURABLE LEARNING MEMORY (server side).
@@ -27,8 +28,8 @@ const FEATURE_SCHEMA_VERSION = 2;
 const MAX_PULL_ROWS = 500;
 
 function getServiceRoleClient() {
-  const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const url = readRuntimeEnv("EXPO_PUBLIC_SUPABASE_URL");
+  const serviceKey = readRuntimeEnv("SUPABASE_SERVICE_ROLE_KEY");
   if (!url || !serviceKey) return null;
   return createClient<Database>(url, serviceKey, {
     auth: { autoRefreshToken: false, persistSession: false },

@@ -1,6 +1,7 @@
 import { createTRPCRouter, publicProcedure } from "../create-context";
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "@/src/integrations/supabase/types";
+import { readRuntimeEnv } from "../../runtimeEnv";
 
 /**
  * Server-side S/R zone computation + durable persistence (Option A).
@@ -63,8 +64,8 @@ export interface ServerSRZone {
 }
 
 function getServiceRoleClient() {
-  const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const url = readRuntimeEnv("EXPO_PUBLIC_SUPABASE_URL");
+  const serviceKey = readRuntimeEnv("SUPABASE_SERVICE_ROLE_KEY");
   if (!url || !serviceKey) {
     return null;
   }

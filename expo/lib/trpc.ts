@@ -42,7 +42,14 @@ const normalizeBaseUrl = (url: string): string => {
 
 const getBaseUrlCandidates = (): string[] => {
   const candidates: string[] = [];
+  const functionsBaseUrl = process.env.EXPO_PUBLIC_RORK_FUNCTIONS_URL;
   const configuredBaseUrl = process.env.EXPO_PUBLIC_RORK_API_BASE_URL;
+
+  // The project-owned Functions Worker is the stable backend contract. Keep the
+  // legacy dev origin as a fallback while its edge route remains available.
+  if (functionsBaseUrl) {
+    candidates.push(normalizeBaseUrl(functionsBaseUrl));
+  }
 
   if (configuredBaseUrl) {
     candidates.push(normalizeBaseUrl(configuredBaseUrl));
@@ -56,7 +63,7 @@ const getBaseUrlCandidates = (): string[] => {
 
   if (uniqueCandidates.length === 0) {
     throw new Error(
-      "Rork did not set EXPO_PUBLIC_RORK_API_BASE_URL, please use support",
+      "Rork did not set EXPO_PUBLIC_RORK_FUNCTIONS_URL or EXPO_PUBLIC_RORK_API_BASE_URL, please use support",
     );
   }
 

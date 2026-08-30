@@ -296,31 +296,29 @@ function main(): void {
     console.log('');
   }
 
-  // ── ITEM R — SIXTH-STRIP GUARD (build-marker chain) ────────────────────────
-  // The rork-build-marker babel plugin has been silently stripped from
-  // babel.config.js repeatedly (prior strips verified by exports printing
-  // literal __BUILD_SHA__ — see artifacts/checkpoint_h_build_marker.txt and
-  // checkpoint_jklmno/vwx rounds). A strip kills build provenance for every
-  // later artifact. This guard makes the strip IMPOSSIBLE to miss: a
-  // babel.config.js without the plugin registration (or without its
-  // load-bearing scoping) FAILS THIS RUN with a non-zero exit.
+  // ── BUILD-MARKER TRANSFORM GUARD ──────────────────────────────────────────
+  // Platform code-sync owns babel.config.js and repeatedly restores its canonical
+  // six-line template. The marker transform therefore lives in a dedicated Metro
+  // transformer. This guard fails if Metro stops registering that transformer or
+  // if its exact constants/buildMarker.ts scoping is relaxed.
   try {
-    const babelSrc = readFileSync(join(__dirname, '..', 'babel.config.js'), 'utf8');
-    const hasPlugin = babelSrc.includes('rork-build-marker');
-    const isScoped = babelSrc.includes('file.includes("buildMarker")');
-    if (!hasPlugin || !isScoped) {
+    const metroSrc = readFileSync(join(__dirname, '..', 'metro.config.js'), 'utf8');
+    const transformerSrc = readFileSync(join(__dirname, '..', 'metro.build-marker-transformer.js'), 'utf8');
+    const registered = metroSrc.includes('require.resolve("./metro.build-marker-transformer")');
+    const delegatesToRork = transformerSrc.includes('require("@rork-ai/toolkit-sdk/metro-transformer")');
+    const isScoped = transformerSrc.includes('normalized.endsWith("/constants/buildMarker.ts")');
+    if (!registered || !delegatesToRork || !isScoped) {
       failures.push(
-        `SIXTH-STRIP GUARD: babel.config.js is missing the rork-build-marker plugin ${!hasPlugin ? 'registration' : 'scoping to the buildMarker module'}.\n` +
-          '      Restore the scoped plugin (see expo/scripts/ci_guard_build_marker.ts and expo/artifacts/checkpoint_h_build_marker.txt).\n' +
-          '      Until restored, every export prints literal __BUILD_SHA__ and build provenance is dead.',
+        'BUILD-MARKER GUARD: the dedicated Metro marker transformer is missing, unregistered, or imprecisely scoped.\n' +
+          '      See expo/scripts/ci_guard_build_marker.ts. Build provenance is invalid until restored.',
       );
     } else {
-      console.log('--- SIXTH-STRIP GUARD (build-marker chain) ---');
-      console.log('  OK     babel.config.js registers the rork-build-marker plugin, scoped to buildMarker');
+      console.log('--- BUILD-MARKER TRANSFORM GUARD ---');
+      console.log('  OK     Metro registers the dedicated transformer, delegates to Rork, and scopes it to constants/buildMarker.ts');
       console.log('');
     }
   } catch {
-    failures.push('SIXTH-STRIP GUARD: expo/babel.config.js could not be read — refusing to pass silently.');
+    failures.push('BUILD-MARKER GUARD: Metro config or marker transformer could not be read — refusing to pass silently.');
   }
 
   // ── ZONE-SEMANTICS GOLDEN GUARD ────────────────────────────────────────────

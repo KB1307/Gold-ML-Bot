@@ -1,6 +1,7 @@
 import * as z from "zod";
 
 import { createTRPCRouter, publicProcedure } from "../create-context";
+import { readRuntimeEnv } from "../../runtimeEnv";
 
 // 🌐 Telegram destinations. These are not secrets (chat IDs are meaningless
 // without the bot token), so they can safely live here. The bot token itself
@@ -12,7 +13,7 @@ const TELEGRAM_CHAT_IDS = [
 ];
 
 function getTelegramBotToken(): string | null {
-  const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
+  const token = readRuntimeEnv("TELEGRAM_BOT_TOKEN")?.trim();
   return token && token.length > 0 ? token : null;
 }
 

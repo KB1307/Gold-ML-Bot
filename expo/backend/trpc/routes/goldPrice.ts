@@ -1,5 +1,6 @@
 import { createTRPCRouter, publicProcedure } from "../create-context";
 import * as z from "zod";
+import { readRuntimeEnv } from "../../runtimeEnv";
 
 let goldPriceCache: { price: number; source: string; timestamp: number } | null = null;
 let livePriceCache: { price: number; source: string; timestamp: number } | null = null;
@@ -37,7 +38,7 @@ function normalizeApiKey(value: string | undefined): string | null {
 }
 
 function getFinnhubRuntimeConfig(): RuntimeApiKeyConfig {
-  const privateApiKey = normalizeApiKey(process.env.FINNHUB_API_KEY);
+  const privateApiKey = normalizeApiKey(readRuntimeEnv("FINNHUB_API_KEY"));
   if (privateApiKey) {
     return {
       apiKey: privateApiKey,
@@ -45,7 +46,7 @@ function getFinnhubRuntimeConfig(): RuntimeApiKeyConfig {
     };
   }
 
-  const publicApiKey = normalizeApiKey(process.env.EXPO_PUBLIC_FINNHUB_API_KEY);
+  const publicApiKey = normalizeApiKey(readRuntimeEnv("EXPO_PUBLIC_FINNHUB_API_KEY"));
   if (publicApiKey) {
     return {
       apiKey: publicApiKey,
@@ -60,21 +61,21 @@ function getFinnhubRuntimeConfig(): RuntimeApiKeyConfig {
 }
 
 function getTiingoApiKey(): string | null {
-  const publicApiKey = normalizeApiKey(process.env.EXPO_PUBLIC_TIINGO_API_KEY);
-  const privateApiKey = normalizeApiKey(process.env.TIINGO_API_KEY);
+  const publicApiKey = normalizeApiKey(readRuntimeEnv("EXPO_PUBLIC_TIINGO_API_KEY"));
+  const privateApiKey = normalizeApiKey(readRuntimeEnv("TIINGO_API_KEY"));
   return publicApiKey || privateApiKey || null;
 }
 
 function getMetalPriceApiKey(): string | null {
-  return normalizeApiKey(process.env.METALPRICE_API_KEY);
+  return normalizeApiKey(readRuntimeEnv("METALPRICE_API_KEY"));
 }
 
 function getGoldApiIoKey(): string | null {
-  return normalizeApiKey(process.env.GOLDAPI_IO_KEY);
+  return normalizeApiKey(readRuntimeEnv("GOLDAPI_IO_KEY"));
 }
 
 function getMetalsDevApiKey(): string | null {
-  return normalizeApiKey(process.env.METALS_DEV_KEY);
+  return normalizeApiKey(readRuntimeEnv("METALS_DEV_KEY"));
 }
 
 function shouldSkipApi(apiName: string): boolean {
@@ -890,7 +891,7 @@ export const goldPriceRouter = createTRPCRouter({
       }
 
       async function fetchTwelveDataHistory(): Promise<HistBar[]> {
-        const apiKey = normalizeApiKey(process.env.EXPO_PUBLIC_TWELVEDATA_API_KEY);
+        const apiKey = normalizeApiKey(readRuntimeEnv("EXPO_PUBLIC_TWELVEDATA_API_KEY"));
         if (!apiKey) {
           console.log('[GOLD-HISTORY] TwelveData key not configured');
           return [];

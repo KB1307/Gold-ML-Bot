@@ -1,4 +1,5 @@
 import { createTRPCRouter, publicProcedure } from "../create-context";
+import { readRuntimeEnv } from "../../runtimeEnv";
 
 /**
  * Real economic calendar backed by FMP (financialmodelingprep.com), replacing
@@ -65,7 +66,7 @@ const GOLD_RELEVANT_EVENT_PATTERNS = [
 ];
 
 function getFmpApiKey(): string | null {
-  const key = process.env.FMP_API_KEY?.trim();
+  const key = readRuntimeEnv("FMP_API_KEY")?.trim();
   return key && key.length > 0 ? key : null;
 }
 

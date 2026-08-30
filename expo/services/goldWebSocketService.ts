@@ -65,7 +65,8 @@ const state: ServiceState = {
 function resolveBackendBaseUrl(): string {
   if (state.backendBaseUrl.length > 0) return state.backendBaseUrl;
 
-  const configured = process.env.EXPO_PUBLIC_RORK_API_BASE_URL;
+  const configured = process.env.EXPO_PUBLIC_RORK_FUNCTIONS_URL
+    ?? process.env.EXPO_PUBLIC_RORK_API_BASE_URL;
   if (configured) {
     const trimmed = configured.trim().replace(/\/+$/, '');
     state.backendBaseUrl = trimmed.endsWith('/api/trpc')
