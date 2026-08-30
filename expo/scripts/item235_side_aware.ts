@@ -62,7 +62,7 @@ async function main(): Promise<void> {
   const all: { signal_id: string; emitted_at: string; direction: string; entry: number; sl: number; tp1: number; tp2: number; tp3: number; confidence: number; sr_zones_snapshot: SnapZone[] | string | null }[] = [];
   for (let o = 0; ; o += 1000) {
     const { data, error } = await client.from('emitted_signals_v1')
-      .select('signal_id,emitted_at,direction,entry,sl,tp1,tp2,tp3,confidence,sr_zones_snapshot')
+      .select('signal_id,emitted_at,direction,entry,sl,tp1,tp2,tp3,confidence,sr_zones_snapshot').or("closed_market_emission.is.null,closed_market_emission.eq.false")
       .order('emitted_at', { ascending: true }).range(o, o + 999);
     if (error) throw new Error(`signals: ${error.message}`);
     all.push(...(data ?? []) as typeof all);

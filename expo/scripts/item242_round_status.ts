@@ -15,13 +15,13 @@ async function main(): Promise<void> {
   console.log(`run at: ${new Date().toISOString()}`);
 
   // S.2 — pair counts
-  const { count: emitted } = await client.from('emitted_signals_v1').select('signal_id', { count: 'exact', head: true });
+  const { count: emitted } = await client.from('emitted_signals_v1').select('signal_id', { count: 'exact', head: true }).or("closed_market_emission.is.null,closed_market_emission.eq.false");
   const { count: outcomes } = await client.from('trade_outcomes_v1').select('signal_id', { count: 'exact', head: true });
   console.log(`S.2 B.3 pairs: emitted=${emitted} outcomes=${outcomes}`);
 
   // S.1 — first M15-annotated row
   const { data: m15, error: m15err } = await client.from('emitted_signals_v1')
-    .select('signal_id,emitted_at,direction,entry,m15_opposed,m15_endorsed,m15_zone_context')
+    .select('signal_id,emitted_at,direction,entry,m15_opposed,m15_endorsed,m15_zone_context').or("closed_market_emission.is.null,closed_market_emission.eq.false")
     .not('m15_opposed', 'is', null)
     .order('emitted_at', { ascending: false })
     .limit(3);
@@ -34,13 +34,13 @@ async function main(): Promise<void> {
   }
 
   // S.3 — band rule fire rate
-  const { data: bv } = await client.from('emitted_signals_v1').select('band_veto_would_fire');
+  const { data: bv } = await client.from('emitted_signals_v1').select('band_veto_would_fire').or("closed_market_emission.is.null,closed_market_emission.eq.false");
   const populated = (bv ?? []).filter((r: { band_veto_would_fire: unknown }) => r.band_veto_would_fire !== null && r.band_veto_would_fire !== undefined);
   const fired = populated.filter((r: { band_veto_would_fire: unknown }) => r.band_veto_would_fire === true);
   console.log(`S.3 band_veto_would_fire: populated=${populated.length} fired=${fired.length} rate=${populated.length ? ((100 * fired.length / populated.length)).toFixed(1) + '%' : 'n/a'}`);
 
   // Q — column status
-  const { data: q, error: qerr } = await client.from('emitted_signals_v1').select('signal_id,retype_verdict_would_change').limit(1);
+  const { data: q, error: qerr } = await client.from('emitted_signals_v1').select('signal_id,retype_verdict_would_change').or("closed_market_emission.is.null,closed_market_emission.eq.false").limit(1);
   if (qerr) console.log(`Q live check: ERROR -> ${qerr.message} -> migration 018 NOT YET APPLIED (write-site self-heal strips the field until then)`);
   else console.log(`Q live check: column EXISTS; sample=${JSON.stringify(q)}`);
 

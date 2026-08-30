@@ -1,0 +1,326 @@
+================================================================================
+ROUND UU/VV/WW/XX — CONTAINMENT FAILURE: A SIGNAL WAS EMITTED INTO A CLOSED
+MARKET. SHIP A REAL MARKET GATE; FIND WHAT UNLOCKED IT; QUARANTINE; GUARD.
+Round executed 2026-08-30 (Saturday, market closed). Mindset 1-8 + checkpoint
+discipline accepted. Scope honoured: band veto rule/thresholds/mode/flag
+untouched; prior-4h window NOT patched; recency weighting NOT corrected; no
+client-side reload mitigation written; ITEM F untouched (proven below).
+runChecks(expo): PASS (0 tsc / 0 lint / 0 structure) after all edits.
+babel.config.js: found STRIPPED AGAIN post-round (6 lines); restored from
+12e1be5 (76 lines, diff empty); ci_guard_build_marker PASSED at close.
+================================================================================
+
+--------------------------------------------------------------------------------
+UU.1 — VERIFY THE FAULT IN THE CURRENT TREE (done BEFORE any code was written)
+--------------------------------------------------------------------------------
+Line-number correction: the emission guard has MOVED from the audited :8433 to
+:8476 (drift from rounds after the audit). Quotes are from the CURRENT tree.
+
+(a) The emission-path guard that rejected ONLY the daily close
+    (services/signalEngine.ts :8476-8481, pre-fix verbatim):
+      if (isWithinDailyMarketClose()) {
+        const nowDate = new Date();
+        console.log(`❌ REJECTED: Daily market-close break (22:59-23:59 UTC+2 / 20:59-21:59 UTC). No signals during this hour. Current UTC ${...}`);
+        console.log(`${'='.repeat(80)}\n`);
+        return null;
+      }
+
+(b) isWithinDailyMarketClose() in full (:1092-1107):
+      const MARKET_CLOSE_WINDOW_UTC = {
+        startMinuteOfDay: 20 * 60 + 59, // 20:59 UTC = 22:59 UTC+2
+        endMinuteOfDay: 21 * 60 + 59, // 21:59 UTC = 23:59 UTC+2
+      };
+      function isWithinDailyMarketClose(date: Date = new Date()): boolean {
+        const minuteOfDayUTC = date.getUTCHours() * 60 + date.getUTCMinutes();
+        return (
+          minuteOfDayUTC >= MARKET_CLOSE_WINDOW_UTC.startMinuteOfDay &&
+          minuteOfDayUTC <= MARKET_CLOSE_WINDOW_UTC.endMinuteOfDay
+        );
+      }
+
+(c) The full weekend-aware predicate (:1128-1147) — and a NOTE: the wrapper
+    isGoldMarketOpen ALREADY EXISTED for the price-feed gate; only the emission
+    path lacked it:
+      export function getGoldMarketClock(now: Date = new Date()): GoldMarketClock {
+        const hour = now.getUTCHours();
+        const dayOfWeek = now.getUTCDay();
+        const isSaturday = dayOfWeek === 6;
+        const isFridayClose = dayOfWeek === 5 && hour >= 21;
+        const isSundayBeforeOpen = dayOfWeek === 0 && hour < 22;
+        const isDailyCloseBreak = isWithinDailyMarketClose(now);
+        return {
+          isMarketOpen: !isSaturday && !isFridayClose && !isSundayBeforeOpen && !isDailyCloseBreak,
+          ...
+        };
+      }
+      export function isGoldMarketOpen(now: Date = new Date()): boolean {
+        return getGoldMarketClock(now).isMarketOpen;
+      }
+
+(d) EVERY consumer of isMarketOpen (grep across app/ contexts/ components/ lib/
+    services/) — CORRECTION TO THE PROMPT'S PREMISE: NOT all consumers are UI.
+      app/(tabs)/dashboard.tsx :341, :344, :346, :374, :619   -> UI (label/banner)
+      app/(tabs)/outlook.tsx   :43, :50, :55, :57, :60        -> UI (label)
+      contexts/TradingContext.tsx :653 (memo compare), :2800 (log),
+                                  :2818 `if (!outlook.isMarketOpen) { ... return; }`
+                                  -> A REAL GATE on the FOREGROUND path
+                                  (checkAndGenerateSignal), NOT merely a label.
+      services/signalEngine.ts :1136 (definition), :10821-10848 (getMarketOutlook)
+      => The foreground path WAS gated; the engine-level generateSignal gate was
+         NOT, and the OTHER generateSignal caller had NO gate at all:
+         services/backgroundTaskService.ts:142
+           await signalEngine.updateCurrentPrice();
+           const signal = await signalEngine.generateSignal(settings, accountBalance, history);
+         (expo-background-fetch; fires whenever the OS schedules it — weekends
+         included.) The containment hole is therefore: engine gate absent +
+         background path ungated. Fault CONFIRMED; UU.2 built.
+
+--------------------------------------------------------------------------------
+UU.2 — ONE PREDICATE, TWO CONSUMERS (shipped, working tree; hash assigned by the
+managed sync at next commit — diff + line numbers are the evidence of record)
+--------------------------------------------------------------------------------
+The shared predicate ALREADY EXISTED (getGoldMarketClock / isGoldMarketOpen,
+:1128-:1147) — no new session/hours math was written. Changes (git diff hunks
+@@ -1675 +23 and @@ -8473 +33, signalEngine.ts ONLY):
+
+1. Mutually-exclusive market-gate rejection funnel (:1678-1700):
+     private marketGateRejections: {
+       saturday: number; fridayClose: number; sundayBeforeOpen: number;
+       dailyBreak: number; failSafe: number;
+     } = { saturday: 0, fridayClose: 0, sundayBeforeOpen: 0, dailyBreak: 0, failSafe: 0 };
+   + getMarketGateRejectionCounts() (:1698).
+   DEVIATION STATED: the band veto persists its counter as shadow_candidates_v1
+   rows because vetoes are RARE; market-closed rejections fire on EVERY attempt
+   during closed hours — a DB row per attempt would spam the shadow table. The
+   counters are process-lifetime in-memory (same discipline as
+   signalGenerationAttempts :1677) AND greppable via the reject log line.
+2. The emission guard (:8505-8540) now consumes the shared predicate:
+     let marketClock: GoldMarketClock;
+     try {
+       marketClock = getGoldMarketClock();                      // <- :8510
+       if (typeof marketClock?.isMarketOpen !== "boolean") { throw ... }
+     } catch (gateErr) { ... return null; }                      // UU.3
+     if (!marketClock.isMarketOpen) {
+       const closedAs = marketClock.isSaturday ? "SATURDAY"
+         : marketClock.isFridayClose ? "FRIDAY_CLOSE"
+         : marketClock.isSundayBeforeOpen ? "SUNDAY_BEFORE_OPEN" : "DAILY_BREAK";
+       this.marketGateRejections[...]++;                        // <- mutually exclusive
+       console.log(`❌ REJECTED: MARKET_CLOSED — condition=${closedAs}. ...`);  // :8534
+       return null;
+     }
+3. isWithinDailyMarketClose is now called ONLY inside getGoldMarketClock
+   (grep: :1101 definition, :1134 call; every other hit is prose in comments).
+4. getMarketOutlook already consumed the clock (GG.3a, :10821-10822) —
+   behaviour byte-identical, untouched.
+
+--------------------------------------------------------------------------------
+UU.3 — FAIL-SAFE DIRECTION (stated AND proven live)
+--------------------------------------------------------------------------------
+Quote (:8514-8522): if the clock throws OR returns a non-boolean, the emission
+path REJECTS:
+  console.log(`❌ REJECTED: MARKET_GATE_FAILSAFE — market clock threw or returned a
+  non-boolean (${...}). Default: STAND-ASIDE (reject). No signal is emitted while
+  the market state is unknown.`);  ...  return null;
+DEFAULT = REJECT — deliberately the OPPOSITE of the price path's fail-open
+(goldWebSocketService evaluateMarketGate returns 'open' on throw). An unknown
+state must never emit a trade.
+LIVE PROOF: getGoldMarketClock temporarily mutated to `throw new Error("UU.3
+FORCED THROW (test)")`; real generateSignal called with the clock forced to
+Saturday 12:00 UTC — verbatim output:
+  ❌ REJECTED: MARKET_GATE_FAILSAFE — market clock threw or returned a non-boolean
+  (UU.3 FORCED THROW (test)). Default: STAND-ASIDE (reject). ...
+  RESULT: null (rejected)
+  FUNNEL: {"saturday":0,"fridayClose":0,"sundayBeforeOpen":0,"dailyBreak":0,"failSafe":1}
+File restored after the proof; ci_guard_market_gate PASSED again.
+
+--------------------------------------------------------------------------------
+UU.4 — FORCED-CLOCK TEST (the real generateSignal, six injected instants)
+--------------------------------------------------------------------------------
+Clock injection (stated): the gate's clock is read via getGoldMarketClock(),
+whose default parameter evaluates `new Date()` AT CALL TIME — the runner
+replaces the GLOBAL Date constructor + static now() with a subclass fixed to
+each instant, then calls the REAL signalEngine.generateSignal(). No engine code
+modified. (bun cannot parse react-native's Flow entry; the ONLY bridge is a Bun
+runtime plugin stubbing the react-native/AsyncStorage boundary — same documented
+pattern as item57_realbar_replay_harness.ts.)
+minConfidence forced to 1 (100%) so the open-market case exercises full
+evaluation with zero possibility of emitting anything.
+Full verbatim log: expo/artifacts/uu4_forced_clock_output.log. Condensed:
+  SATURDAY  12:00Z (2026-08-29) -> ❌ REJECTED: MARKET_CLOSED — condition=SATURDAY
+  SUNDAY    12:00Z (2026-08-30) -> ❌ REJECTED: MARKET_CLOSED — condition=SUNDAY_BEFORE_OPEN
+  FRIDAY    23:00Z (2026-08-28) -> ❌ REJECTED: MARKET_CLOSED — condition=FRIDAY_CLOSE
+  SUNDAY    21:00Z (2026-08-30) -> ❌ REJECTED: MARKET_CLOSED — condition=SUNDAY_BEFORE_OPEN
+  MONDAY    12:00Z (2026-08-31) -> NO rejection; normal evaluation ran
+            (backend price fetch attempts → the known edge 503/HTML failures →
+            "No valid price available yet - cannot generate signal" — the gate
+            PASSED; the abort is the price-validity check, as designed)
+  TUESDAY   21:15Z (2026-09-01) -> ❌ REJECTED: MARKET_CLOSED — condition=DAILY_BREAK
+  Funnel totals: {"saturday":1,"fridayClose":1,"sundayBeforeOpen":2,"dailyBreak":1,"failSafe":0}
+Five closed rejections with named conditions; Monday evaluated normally. EXPECTED
+BEHAVIOUR CONFIRMED on all six.
+
+--------------------------------------------------------------------------------
+UU.5 — ITEM F UNTOUCHED
+--------------------------------------------------------------------------------
+git diff scope proof: signalEngine.ts hunks are ONLY @@ -1675 (counter field)
+and @@ -8473 (guard). ITEM F sites unchanged:
+  :1857  private static readonly BAR_MAX_AGE_M5_MS = 15 * 60 * 1000;
+  :2674  ═══ ITEM F1 — THE BAR SERIES ═══
+  :5316  ═══ ITEM F — RE-SOURCED DIRECTIONAL LAYER ═══
+  :5356  ⚠️ [ITEM F] M5 bar series unavailable or stale — directional features
+         are NULL; the engine will stand aside rather than score on ticks.
+  :2855-2875 recordStandAsideReason (stand-aside telemetry)
+The market gate is an ADDITIONAL, EARLIER guard; ITEM F's stand-aside order,
+thresholds and NULL-feature semantics are untouched. The stand-aside path is
+UNREACHABLE during closed markets now (gate returns first), which is strictly
+stricter, never looser.
+
+--------------------------------------------------------------------------------
+VV — WHAT UNLOCKED IT (regression evidence, no speculation)
+--------------------------------------------------------------------------------
+VV.1 CAUSE NAMED (mechanism) + PREMISE CORRECTION:
+  - The two most recent rounds' commits (daf40c1 23:20 "stopping price-path
+    failures", a3a2649 23:30) changed NO price-path code: git diff 12e1be5..4f3c645
+    for goldWebSocketService.ts / TradingContext.tsx is EMPTY; their signalEngine
+    and lib/trpc hunks are OO.2 storageKey lines ONLY (quoted in the diff).
+    The premise "the most recent round unlocked weekend emissions" is therefore
+    NOT supported by the repo diff.
+  - The last real price-path change was 12e1be5 (2026-08-29 21:33): GG.3a added
+    the market-hours gate to goldWebSocketService (while CLOSED the feed idles
+    with ZERO fetches, status 'disconnected') and GG.3b the circuit breaker.
+  - The price-availability mechanism that CAN serve a closed-market price is
+    MONTHS old (f503b29/ab07d96, 2026-03-24): signalEngine's fetch cascade —
+      :1610-1615 cached price < 10 min: "Using cached price (Ns old)"
+      :1617-1624 stale cached price, ANY AGE, UNCAPPED: "Using stale cached price"
+      :1626-1629 last-known-good: "Using last known good price"
+    and the freshness predicate that decides "fresh" is FETCH-AGE, not MARKET
+    recency: :462 EXTERNAL_PRICE_MAX_AGE_MS = 15000; :2210 hasFreshExternalPrice
+    = cachedGoldPrice !== null && (now - lastFetchTime) < 15s; :8600
+    livePriceAgeMs < EXTERNAL_PRICE_MAX_AGE_MS. A Saturday fetch that RETURNS
+    the vendor's Friday last-close is "fresh" by construction. The backend spot
+    endpoint (vendors) serves the last close on weekends, so once the backend
+    price path was repaired (earlier rounds), a closed-market price became
+    generation-usable. That is the named mechanism.
+  - CANNOT ESTABLISH from repo+DB: WHICH source served the user's reported
+    weekend emission (no such row exists in the corpus — see WW.1). What would
+    settle it: the device console lines of that emission ("📊 Price set to X
+    from Y" / "⚠️ Using stale cached price (Ns old)") or the app's AsyncStorage
+    signal_history export.
+VV.2 The specific reported emission: CANNOT ESTABLISH (absent from the corpus).
+  The freshness mechanics are fully quoted above; note id 903 (the only
+  weekend-adjacent BUY) was emitted 2026-08-28T20:00:13.766Z — 59m47s BEFORE
+  the Friday 21:00 UTC close, an OPEN-market emission with entry 4458.9 (not
+  the 4454 close). Its value is NOT the defect; nothing about it is flagged.
+VV.3 ITEM F pass/bypass for that emission: CANNOT ESTABLISH — no row exists to
+  inspect; the M5 staleness predicate is quoted (BAR_MAX_AGE_M5_MS = 15 min,
+  :1857; recordStandAsideReason :2855-2875). What would settle: device console
+  [ITEM F] / stand-aside lines for that instant. Retroactive risk is now closed
+  by construction: no future closed-market emission can exist (UU gate).
+
+--------------------------------------------------------------------------------
+WW — QUARANTINE (nothing deleted)
+--------------------------------------------------------------------------------
+WW.1 CLOSED — scan (scripts/ww_closed_market_scan.ts, read-only, evaluated every
+  row with the REAL getGoldMarketClock): 488 rows scanned; CLOSED-MARKET
+  EMISSIONS: 0. No signal_id/emitted_at/direction/entry/source rows to list —
+  the list is EMPTY. Cross-check (scripts/ww_scan2_columns_and_recent.ts): the
+  ONLY row since Friday 20:00 UTC is id 903 (open-market, quoted above); the
+  outbox newest is id 107, created_at 2026-08-28T20:00:14.167596+00:00, status
+  DELIVERED (Friday). NOTHING was emitted or delivered Saturday/Sunday into any
+  persisted store. The user's reported weekend BUY is NOT in emitted_signals_v1,
+  telegram_outbox_v1, trade_outcomes_v1, or shadow_candidates_v1.
+WW.2 MIGRATION HANDED — backend/migrations/022_closed_market_emission_quarantine.sql:
+  ADD COLUMN IF NOT EXISTS closed_market_emission boolean NULL + COMMENT +
+  UPDATE ... SET TRUE WHERE <the exact getGoldMarketClock window predicate in
+  SQL> AND closed_market_emission IS NOT TRUE. ADD-only, no CREATE POLICY IF NOT
+  EXISTS, no shell escapes, NOTHING destructive, NO deletions. With 0 flagged
+  rows the UPDATE matches 0 rows TODAY; it ships so any future closed-market
+  row is flaggable and excludable by the same predicate. NULL (pre-022 rows) is
+  treated as NOT flagged via "IS NOT TRUE".
+WW.3 SHIPPED — exclusion predicate
+  .or("closed_market_emission.is.null,closed_market_emission.eq.false")
+  (i.e. NOT TRUE) inserted after EVERY emitted_signals_v1 .select() in the
+  canonical populations: 16 scripts, 20 select-sites — item201b, item214,
+  item228, item235, item237 (era-clean book), item238, item240, item241,
+  item242 (x4), item245, item246, item247, item248 (exit-geometry arms),
+  item249 (exit shadow ladder), item250 (x2), item251, plus canonicalBook.ts.
+  Grep proof: 16 files carry the filter; 0 unfiltered emitted_signals_v1 select
+  sites remain. Count excluded TODAY: 0 (no flagged rows exist). NOTE: scripts
+  require migration 022 applied first (the filter references the new column);
+  run order stated in the migration header.
+WW.4 CLOSED — with 0 flagged signals, NONE reached Telegram, trade_outcomes_v1,
+  or shadow_candidates_v1 (nothing to name). The corpus rows that DID reach all
+  three (e.g. id 903: outbox 107 DELIVERED + outcomes row WIN +0.2911R) are
+  open-market rows and are correctly NOT flagged.
+
+--------------------------------------------------------------------------------
+XX — LABEL/LOCK DIVERGENCE + REGRESSION GUARD
+--------------------------------------------------------------------------------
+XX.1 CLOSED — the paragraph: The dashboard read the FULL predicate
+  (getMarketOutlook -> getGoldMarketClock.isMarketOpen, rendered CLOSED at
+  dashboard.tsx:374/:619 and outlook.tsx:57) while the ENGINE's generateSignal
+  read only the daily-break slice (isWithinDailyMarketClose, :8476 pre-fix), and
+  the background emission path read NO predicate at all
+  (backgroundTaskService.ts:142). One additional nuance the audit corrected: the
+  FOREGROUND path was already gated on the full predicate
+  (TradingContext.tsx:2818), so the divergence was label-vs-engine PLUS
+  gated-path-vs-ungated-path, not simply UI-vs-engine. UU.2 removes the
+  divergence BY CONSTRUCTION: one exported predicate (getGoldMarketClock /
+  isGoldMarketOpen), two consumers (dashboard/outlook via getMarketOutlook; the
+  emission guard), and ci_guard_market_gate fails the build if the emission path
+  ever stops consuming it. If the engine says CLOSED, the label cannot say OPEN,
+  and vice versa.
+XX.2 SHIPPED — scripts/ci_guard_market_gate.ts (sixth-strip/golden guard
+  pattern): asserts (1) emission consumes `marketClock = getGoldMarketClock();`,
+  (2) the named-condition reject log exists, (3) the MARKET_GATE_FAILSAFE
+  stand-aside exists, (4) after comment-strip EXACTLY 2 occurrences of
+  isWithinDailyMarketClose( (definition + the single clock-internal call —
+  duplicate-constant class), (5) isGoldMarketOpen remains exported for the
+  price-feed gate. Self-tests 3/3 (correct gate accepted; gated-off fixture and
+  duplicate-constant fixture rejected). Runs pasted:
+  PASS (current tree):
+    self-test: correct gate accepted, gated-off + duplicate-constant fixtures rejected (3/3)
+    signalEngine.ts        : emission path consumes getGoldMarketClock; rejection + fail-safe logs present
+    daily-close slice      : exactly one bare isWithinDailyMarketClose() call (inside getGoldMarketClock)
+    price-feed gate export : isGoldMarketOpen exported for goldWebSocketService
+    ✅ ci_guard_market_gate PASSED — the weekend market gate is wired to the shared predicate.
+    exit=0
+  FAIL (emission temporarily pointed away from the shared predicate — verbatim):
+    ✗ signalEngine.ts: emission path does not consume the shared predicate: 'marketClock = getGoldMarketClock();' not found in generateSignal — the weekend gate has regressed (this is exactly how the 2026-08-29/30 closed-market emission happened).
+    ✗ ci_guard_market_gate FAILED — the market gate has regressed. Do not ship.
+    exit=1
+  RESTORED -> PASS again (exit=0). File restored byte-identical (backup cp).
+
+--------------------------------------------------------------------------------
+HOUSEKEEPING
+--------------------------------------------------------------------------------
+- babel.config.js was found STRIPPED AGAIN after the round's edits (6 lines) —
+  restored from 12e1be5 (76 lines, git diff empty); ci_guard_build_marker PASSED
+  at close. Sixth strip observed across two sessions; the external writer
+  conclusion stands.
+- runChecks(expo): PASS (0/0/0) after all edits including the 16-script WW.3 edit.
+- Read-only DB discipline: both WW scans never wrote; data-source rule obeyed
+  (anon-key reads of emitted_signals_v1/trade_outcomes_v1/shadow_candidates_v1/
+  telegram_outbox_v1 only).
+
+================================================================================
+MANDATORY COMPLETION LEDGER (permitted statuses only)
+================================================================================
+| Item | Status | Evidence |
+|------|--------|----------|
+| UU.1 | CLOSED | Guard quote (pre-fix :8476-8481 daily-only), isWithinDailyMarketClose :1092-1107, full predicate :1128-1147, consumer grep (dashboard/outlook UI; TradingContext:2818 real foreground gate; backgroundTaskService:142 UNGATED — premise corrected), fault CONFIRMED in current tree |
+| UU.2 | SHIPPED (working tree; hash assigned by managed sync) | signalEngine.ts :1678-1700 funnel + :8505-8540 guard consuming getGoldMarketClock (:8510), named-condition log :8534; getMarketOutlook consumer unchanged :10821; isWithinDailyMarketClose confined to the clock (grep :1101/:1134); runChecks PASS |
+| UU.3 | CLOSED | Fail-safe branch quoted (:8514-8522); DEFAULT=REJECT stated; LIVE forced-throw proof: REJECTED MARKET_GATE_FAILSAFE, RESULT null, funnel failSafe:1; restored + guard PASS |
+| UU.4 | CLOSED | Six forced-clock outputs in artifacts/uu4_forced_clock_output.log: SATURDAY/SUNDAY_BEFORE_OPEN/FRIDAY_CLOSE/SUNDAY_BEFORE_OPEN/normal-evaluation(Monday)/DAILY_BREAK; funnel totals {"saturday":1,"fridayClose":1,"sundayBeforeOpen":2,"dailyBreak":1,"failSafe":0}; injection method stated (global Date subclass, evaluated at call time) |
+| UU.5 | CLOSED | git diff hunks confined to @@ -1675 and @@ -8473; ITEM F sites quoted unchanged (:1857 15-min threshold, :2674, :5316, :5356, :2855-2875) |
+| VV.1 | CAUSE NAMED (mechanism) | Recent rounds' price-path diffs EMPTY except OO storageKeys (quoted); last price-path change = GG.3a/b in 12e1be5; availability mechanism = uncapped stale-cache/last-known-good fallback (:1610-1629, shipped 2026-03-24) + fetch-age freshness (:462, :2210, :8600) serving vendor last-close on weekends; premise correction on record; what would settle the specific link: device console of that emission |
+| VV.2 | CANNOT ESTABLISH | The reported weekend emission is absent from the corpus (WW.1); freshness mechanics fully quoted; id 903 (weekend-adjacent BUY) was OPEN-market 2026-08-28T20:00:13Z, entry 4458.9, 59m47s before close. Settle with: device console price-source lines / AsyncStorage signal_history export |
+| VV.3 | CANNOT ESTABLISH | No weekend row exists to inspect; M5 staleness predicate quoted (BAR_MAX_AGE_M5_MS=15min :1857, recordStandAsideReason :2855-2875); retroactive risk closed by construction (UU gate) |
+| WW.1 | CLOSED | ww_closed_market_scan.ts: 488 rows scanned with the REAL getGoldMarketClock; closed-market emissions = 0; cross-check scan2: only id 903 since Friday 20:00Z (open-market, quoted); NOTHING persisted Sat/Sun |
+| WW.2 | MIGRATION HANDED | backend/migrations/022_closed_market_emission_quarantine.sql (ADD COLUMN IF NOT EXISTS + COMMENT + UPDATE with the exact shared-predicate windows; matches 0 rows today; nothing destructive; no deletions) |
+| WW.3 | SHIPPED (working tree) | Exclusion predicate .or("closed_market_emission.is.null,closed_market_emission.eq.false") on 20 select-sites across 16 scripts incl. item237 era-clean book, item249 exit shadow ladder, item250 P.3/funnel status, item2xx set + canonicalBook.ts; 0 unfiltered sites (grep); excluded count = 0 today; run-order note (022 first) in migration header |
+| WW.4 | CLOSED | 0 flagged signals exist -> none reached telegram_outbox_v1 / trade_outcomes_v1 / shadow_candidates_v1 (nothing to name); the only weekend-adjacent row (id 903) that DID reach all three is open-market and correctly unflagged |
+| XX.1 | CLOSED | Label/lock divergence paragraph (above): UI read the full predicate, engine read only the daily slice, background path read none; foreground was already gated (TradingContext:2818) — divergence removed by construction via the single shared predicate + guard |
+| XX.2 | SHIPPED (working tree) | scripts/ci_guard_market_gate.ts; self-tests 3/3; PASS run pasted (exit=0), FAIL run pasted (emission pointed away from shared predicate; exit=1), restore -> PASS; guards the five regression surfaces incl. the duplicate-constant class |
+
+BLOCKED-ON-MARKET/DEVICE: none this round. BLOCKED: none — every checkpoint closed.

@@ -54,7 +54,7 @@ async function main(): Promise<void> {
   const rows: Row[] = [];
   for (let o = 0; ; o += 1000) {
     const { data, error } = await client.from('emitted_signals_v1')
-      .select('signal_id,emitted_at,direction,entry,sl,tp1,tp2,tp3,confidence,regime_at_emission,mapped_sl,mapped_tp')
+      .select('signal_id,emitted_at,direction,entry,sl,tp1,tp2,tp3,confidence,regime_at_emission,mapped_sl,mapped_tp').or("closed_market_emission.is.null,closed_market_emission.eq.false")
       .not('mapped_sl', 'is', null)
       .order('emitted_at', { ascending: true }).range(o, o + 999);
     if (error) {

@@ -1676,6 +1676,29 @@ class SignalGenerationEngine {
   private lastMarketRegime: MarketRegime | null = null;
   private signalGenerationAttempts: number = 0;
   /**
+   * UU — mutually-exclusive market-gate rejection funnel (COUNTERS ONLY, no
+   * scoring effect). Exactly ONE bucket increments per generation attempt
+   * rejected by the market gate: saturday / fridayClose / sundayBeforeOpen /
+   * dailyBreak name the closing condition (same precedence order as the reject
+   * log), failSafe counts clock-throw / non-boolean stand-asides (UU.3).
+   * Process-lifetime, like signalGenerationAttempts. The band veto persists its
+   * counter as shadow rows because vetoes are rare; market-closed rejections
+   * fire on EVERY attempt during closed hours, so these stay in-memory and are
+   * greppable via the "REJECTED: MARKET_CLOSED — condition=" log line.
+   */
+  private marketGateRejections: {
+    saturday: number;
+    fridayClose: number;
+    sundayBeforeOpen: number;
+    dailyBreak: number;
+    failSafe: number;
+  } = { saturday: 0, fridayClose: 0, sundayBeforeOpen: 0, dailyBreak: 0, failSafe: 0 };
+
+  /** UU — read access to the market-gate rejection funnel for diagnostics. */
+  getMarketGateRejectionCounts(): { saturday: number; fridayClose: number; sundayBeforeOpen: number; dailyBreak: number; failSafe: number } {
+    return { ...this.marketGateRejections };
+  }
+  /**
    * F6 criterion 4 telemetry (COUNTERS ONLY — no scoring effect).
    * `directionalStandAsideChecks` counts every time the generation path asked
    * whether the bar layer was usable; `directionalStandAsideCount` counts how
@@ -8473,9 +8496,42 @@ class SignalGenerationEngine {
     console.log(`📊 SIGNAL GENERATION ATTEMPT #${this.signalGenerationAttempts}`);
     console.log(`${'='.repeat(80)}`);
     
-    if (isWithinDailyMarketClose()) {
+    // UU — MARKET GATE (containment fix). Previously this path rejected ONLY
+    // the daily-close break (isWithinDailyMarketClose), while the weekend-aware
+    // predicate (getGoldMarketClock.isMarketOpen, :1136) was consumed only by
+    // the dashboard label (getMarketOutlook) and the price-feed gate. A BUY was
+    // emitted into the closed weekend market of 2026-08-29/30 through exactly
+    // this gap (backgroundTaskService.ts:142 calls generateSignal with no
+    // market gate of its own). Both consumers now share ONE predicate —
+    // getGoldMarketClock / isGoldMarketOpen (:1128-:1147). NO second
+    // session/hours calculation exists anywhere.
+    let marketClock: GoldMarketClock;
+    try {
+      marketClock = getGoldMarketClock();
+      if (typeof marketClock?.isMarketOpen !== "boolean") {
+        throw new Error(`non-boolean isMarketOpen: ${String(marketClock?.isMarketOpen)}`);
+      }
+    } catch (gateErr) {
+      // UU.3 FAIL-SAFE: an unknown market state must NEVER emit a trade. This
+      // is deliberately the OPPOSITE of the price path's fail-safe (which
+      // defaults to fetching): when the clock throws or returns a non-boolean,
+      // the engine STANDS ASIDE and emits nothing. DEFAULT = REJECT.
+      this.marketGateRejections.failSafe++;
+      console.log(`❌ REJECTED: MARKET_GATE_FAILSAFE — market clock threw or returned a non-boolean (${gateErr instanceof Error ? gateErr.message : String(gateErr)}). Default: STAND-ASIDE (reject). No signal is emitted while the market state is unknown.`);
+      console.log(`${'='.repeat(80)}\n`);
+      return null;
+    }
+    if (!marketClock.isMarketOpen) {
+      const closedAs = marketClock.isSaturday
+        ? "SATURDAY"
+        : marketClock.isFridayClose
+          ? "FRIDAY_CLOSE"
+          : marketClock.isSundayBeforeOpen
+            ? "SUNDAY_BEFORE_OPEN"
+            : "DAILY_BREAK";
+      this.marketGateRejections[closedAs === "SATURDAY" ? "saturday" : closedAs === "FRIDAY_CLOSE" ? "fridayClose" : closedAs === "SUNDAY_BEFORE_OPEN" ? "sundayBeforeOpen" : "dailyBreak"]++;
       const nowDate = new Date();
-      console.log(`❌ REJECTED: Daily market-close break (22:59-23:59 UTC+2 / 20:59-21:59 UTC). No signals during this hour. Current UTC ${nowDate.getUTCHours()}:${String(nowDate.getUTCMinutes()).padStart(2, '0')}`);
+      console.log(`❌ REJECTED: MARKET_CLOSED — condition=${closedAs}. Market gate (weekend-aware, shared predicate getGoldMarketClock) blocks all signal generation while the gold market is closed. Current UTC ${nowDate.getUTCHours()}:${String(nowDate.getUTCMinutes()).padStart(2, '0')}`);
       console.log(`${'='.repeat(80)}\n`);
       return null;
     }

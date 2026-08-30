@@ -20,7 +20,7 @@ async function main(): Promise<void> {
   // ── DD.1 ──
   console.log('\nDD.1 — annotation columns on the newest emissions');
   const { data: newest, error: e1 } = await client.from('emitted_signals_v1')
-    .select('signal_id,emitted_at,m15_opposed,m15_endorsed,retype_verdict_would_change')
+    .select('signal_id,emitted_at,m15_opposed,m15_endorsed,retype_verdict_would_change').or("closed_market_emission.is.null,closed_market_emission.eq.false")
     .order('emitted_at', { ascending: false }).limit(5);
   if (e1) {
     if (/does not exist|PGRST204|42703/i.test(e1.message)) console.log(`  BLOCKED-ON-APPLY residual: ${e1.message}`);
@@ -71,7 +71,7 @@ async function main(): Promise<void> {
 
   // ── DD.5 — counts ──
   console.log('\nDD.5 — corpus counts');
-  const { count: emitted, error: e5a } = await client.from('emitted_signals_v1').select('signal_id', { count: 'exact', head: true });
+  const { count: emitted, error: e5a } = await client.from('emitted_signals_v1').select('signal_id', { count: 'exact', head: true }).or("closed_market_emission.is.null,closed_market_emission.eq.false");
   const { count: outcomes, error: e5b } = await client.from('trade_outcomes_v1').select('signal_id', { count: 'exact', head: true });
   console.log(`  emitted_signals_v1: ${e5a ? 'ERROR ' + e5a.message : emitted}`);
   console.log(`  trade_outcomes_v1:  ${e5b ? 'ERROR ' + e5b.message : outcomes}`);

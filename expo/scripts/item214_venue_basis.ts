@@ -86,7 +86,7 @@ async function main(): Promise<void> {
   for (;;) {
     const { data, error } = await supabase
       .from('emitted_signals_v1')
-      .select('signal_id, emitted_at, direction, entry, tp1, sl, source')
+      .select('signal_id, emitted_at, direction, entry, tp1, sl, source').or("closed_market_emission.is.null,closed_market_emission.eq.false")
       .order('emitted_at', { ascending: true })
       .range(from, from + page - 1);
     if (error) throw error;

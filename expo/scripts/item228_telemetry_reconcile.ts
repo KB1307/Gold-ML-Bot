@@ -60,7 +60,7 @@ async function main(): Promise<void> {
 
   const { data, error } = await client
     .from('emitted_signals_v1')
-    .select('signal_id, emitted_at, direction, confidence')
+    .select('signal_id, emitted_at, direction, confidence').or("closed_market_emission.is.null,closed_market_emission.eq.false")
     .order('emitted_at', { ascending: true });
   if (error) { console.error(`BLOCKER: emitted_signals_v1 read failed: ${error.message}`); process.exit(1); }
   const rows = (data ?? []) as EmittedRow[];

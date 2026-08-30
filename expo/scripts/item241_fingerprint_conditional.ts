@@ -91,7 +91,7 @@ async function main(): Promise<void> {
 
   const all: Row[] = [];
   for (let o = 0; ; o += 1000) {
-    const { data, error } = await client.from('emitted_signals_v1').select('signal_id,emitted_at,direction,entry,sl,tp1,tp2,tp3,confidence,rsi,sr_zones_snapshot').order('emitted_at', { ascending: true }).range(o, o + 999);
+    const { data, error } = await client.from('emitted_signals_v1').select('signal_id,emitted_at,direction,entry,sl,tp1,tp2,tp3,confidence,rsi,sr_zones_snapshot').or("closed_market_emission.is.null,closed_market_emission.eq.false").order('emitted_at', { ascending: true }).range(o, o + 999);
     if (error) throw new Error(String(error.message));
     all.push(...(data ?? []) as Row[]);
     if ((data?.length ?? 0) < 1000) break;

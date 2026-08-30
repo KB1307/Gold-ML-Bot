@@ -1,0 +1,103 @@
+UU.4 FORCED-CLOCK MARKET-GATE PROOF — real generateSignal, six injected instants
+
+### CASE: SATURDAY 12:00 UTC — expected: REJECT condition=SATURDAY
+### injected clock = 2026-08-29T12:00:00.000Z (getUTCDay=6 0=Sun..6=Sat)
+
+================================================================================
+📊 SIGNAL GENERATION ATTEMPT #1
+================================================================================
+❌ REJECTED: MARKET_CLOSED — condition=SATURDAY. Market gate (weekend-aware, shared predicate getGoldMarketClock) blocks all signal generation while the gold market is closed. Current UTC 12:00
+================================================================================
+
+### generateSignal returned: null (no signal)
+### wall time 0.0s
+### funnel after case: {"saturday":1,"fridayClose":0,"sundayBeforeOpen":0,"dailyBreak":0,"failSafe":0}
+
+### CASE: SUNDAY 12:00 UTC (before open) — expected: REJECT condition=SUNDAY_BEFORE_OPEN
+### injected clock = 2026-08-30T12:00:00.000Z (getUTCDay=0 0=Sun..6=Sat)
+
+================================================================================
+📊 SIGNAL GENERATION ATTEMPT #2
+================================================================================
+❌ REJECTED: MARKET_CLOSED — condition=SUNDAY_BEFORE_OPEN. Market gate (weekend-aware, shared predicate getGoldMarketClock) blocks all signal generation while the gold market is closed. Current UTC 12:00
+================================================================================
+
+### generateSignal returned: null (no signal)
+### wall time 0.0s
+### funnel after case: {"saturday":1,"fridayClose":0,"sundayBeforeOpen":1,"dailyBreak":0,"failSafe":0}
+
+### CASE: FRIDAY 23:00 UTC (after Friday close) — expected: REJECT condition=FRIDAY_CLOSE
+### injected clock = 2026-08-28T23:00:00.000Z (getUTCDay=5 0=Sun..6=Sat)
+
+================================================================================
+📊 SIGNAL GENERATION ATTEMPT #3
+================================================================================
+❌ REJECTED: MARKET_CLOSED — condition=FRIDAY_CLOSE. Market gate (weekend-aware, shared predicate getGoldMarketClock) blocks all signal generation while the gold market is closed. Current UTC 23:00
+================================================================================
+
+### generateSignal returned: null (no signal)
+### wall time 0.0s
+### funnel after case: {"saturday":1,"fridayClose":1,"sundayBeforeOpen":1,"dailyBreak":0,"failSafe":0}
+
+### CASE: SUNDAY 21:00 UTC (1h before open) — expected: REJECT condition=SUNDAY_BEFORE_OPEN
+### injected clock = 2026-08-30T21:00:00.000Z (getUTCDay=0 0=Sun..6=Sat)
+
+================================================================================
+📊 SIGNAL GENERATION ATTEMPT #4
+================================================================================
+❌ REJECTED: MARKET_CLOSED — condition=SUNDAY_BEFORE_OPEN. Market gate (weekend-aware, shared predicate getGoldMarketClock) blocks all signal generation while the gold market is closed. Current UTC 21:00
+================================================================================
+
+### generateSignal returned: null (no signal)
+### wall time 0.0s
+### funnel after case: {"saturday":1,"fridayClose":1,"sundayBeforeOpen":2,"dailyBreak":0,"failSafe":0}
+
+### CASE: MONDAY 12:00 UTC (market OPEN) — expected: NO rejection — normal evaluation
+### injected clock = 2026-08-31T12:00:00.000Z (getUTCDay=1 0=Sun..6=Sat)
+
+================================================================================
+📊 SIGNAL GENERATION ATTEMPT #5
+================================================================================
+🔍 Signal Status Check:
+   Active Signals: 0
+🔄 Backend price fetch attempt 1/3...
+🌐 [tRPC] GET https://dev-rc77lvmdg2w595ubnei0z.rorktest.dev/api/trpc/goldPrice.getSpotPrice?input=%7B%22json%22%3Anull%2C%22meta%22%3A%7B%22values%22%3A%5B%22undefined%22%5D%2C%22v%22%3A1%7D%7D (attempt 1/1)
+⚠️ Backend fetch attempt 1 failed: Unable to transform response from server
+   Cold start detected - retrying in 1000ms (attempt 1/3)...
+🔄 Backend price fetch attempt 2/3...
+🌐 [tRPC] GET https://dev-rc77lvmdg2w595ubnei0z.rorktest.dev/api/trpc/goldPrice.getSpotPrice?input=%7B%22json%22%3Anull%2C%22meta%22%3A%7B%22values%22%3A%5B%22undefined%22%5D%2C%22v%22%3A1%7D%7D (attempt 1/1)
+⚠️ Backend fetch attempt 2 failed: Unable to transform response from server
+   Cold start detected - retrying in 2000ms (attempt 2/3)...
+🔄 Backend price fetch attempt 3/3...
+🌐 [tRPC] GET https://dev-rc77lvmdg2w595ubnei0z.rorktest.dev/api/trpc/goldPrice.getSpotPrice?input=%7B%22json%22%3Anull%2C%22meta%22%3A%7B%22values%22%3A%5B%22undefined%22%5D%2C%22v%22%3A1%7D%7D (attempt 1/1)
+⚠️ Backend fetch attempt 3 failed: Unable to transform response from server
+🔄 Trying direct HTTP fallback to backend...
+⚠️ Direct HTTP fallback returned 503
+🔄 Backend unavailable after retries, trying direct client-side sources...
+🌐 Web platform: trying CORS-friendly APIs...
+🌐 Web fallback: trying frankfurter...
+⚠️ Client metals.live failed: Unable to connect. Is the computer able to access the url?
+🌐 Web fallback: trying exchangerate...
+⚠️ No price data available yet, waiting for first successful fetch...
+⚠️ Invalid price received (0), keeping previous price: 0
+❌ REJECTED: No valid price available yet - cannot generate signal
+================================================================================
+
+### generateSignal returned: null (no signal)
+### wall time 4.0s
+### funnel after case: {"saturday":1,"fridayClose":1,"sundayBeforeOpen":2,"dailyBreak":0,"failSafe":0}
+
+### CASE: TUESDAY 21:15 UTC (daily break) — expected: REJECT condition=DAILY_BREAK
+### injected clock = 2026-09-01T21:15:00.000Z (getUTCDay=2 0=Sun..6=Sat)
+
+================================================================================
+📊 SIGNAL GENERATION ATTEMPT #6
+================================================================================
+❌ REJECTED: MARKET_CLOSED — condition=DAILY_BREAK. Market gate (weekend-aware, shared predicate getGoldMarketClock) blocks all signal generation while the gold market is closed. Current UTC 21:15
+================================================================================
+
+### generateSignal returned: null (no signal)
+### wall time 0.0s
+### funnel after case: {"saturday":1,"fridayClose":1,"sundayBeforeOpen":2,"dailyBreak":1,"failSafe":0}
+
+UU.4 COMPLETE — funnel totals: {"saturday":1,"fridayClose":1,"sundayBeforeOpen":2,"dailyBreak":1,"failSafe":0}

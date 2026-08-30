@@ -219,7 +219,7 @@ async function main(): Promise<void> {
   console.log('\n── 201(d) CPI/NFP HEURISTIC WINDOWS (signalEngine.ts:5324-5360) — canonical split ──');
   const emitted: EmittedRow[] = [];
   for (let page = 0; page < 60; page++) {
-    const { data, error } = await supabase.from('emitted_signals_v1').select('signal_id, emitted_at').order('emitted_at', { ascending: true }).range(page * 1000, page * 1000 + 999);
+    const { data, error } = await supabase.from('emitted_signals_v1').select('signal_id, emitted_at').or("closed_market_emission.is.null,closed_market_emission.eq.false").order('emitted_at', { ascending: true }).range(page * 1000, page * 1000 + 999);
     if (error) throw new Error(error.message);
     const batch = (data ?? []) as EmittedRow[];
     emitted.push(...batch);
