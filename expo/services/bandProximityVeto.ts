@@ -39,6 +39,7 @@
  * fingerprint state in inputs jsonb) and accrue the forward book for the abort
  * gate. The write is fire-and-forget: it can never block or alter generation.
  */
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 /** P.3 abort-gate switch: the ONLY condition that may set this false is the
@@ -163,12 +164,10 @@ let funnel: BandVetoFunnel = { mode: BAND_PROXIMITY_VETO_MODE, generated: 0, emi
 let funnelLoaded = false;
 
 async function storage(): Promise<{ getItem: (k: string) => Promise<string | null>; setItem: (k: string, v: string) => Promise<void> } | null> {
-  try {
-    const mod = (await import('@react-native-async-storage/async-storage')) as { default: { getItem: (k: string) => Promise<string | null>; setItem: (k: string, v: string) => Promise<void> } };
-    return mod.default;
-  } catch {
-    return null;
-  }
+  // Keep this import static. A lazy Metro request for this already-bundled module
+  // can be answered by a hosted preview fallback with the entry bundle, whose
+  // evaluation would recursively start the application again.
+  return AsyncStorage;
 }
 
 async function persistFunnel(): Promise<void> {
