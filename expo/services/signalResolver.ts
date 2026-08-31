@@ -158,6 +158,19 @@ function getProtectedExitPrice(signal: TradingSignal, targetsHit: number, overri
   return signal.entryPrice;
 }
 
+/**
+ * SETTINGS TOGGLE — the per-signal Breakeven policy. The policy is FROZEN onto
+ * the signal at emission time (breakevenPolicy, stamped by TradingContext when
+ * the signal is created). A signal WITHOUT the stamp — every signal emitted
+ * before the toggle existed — is ALWAYS resolved with breakeven protection ON.
+ * Consequence: flipping the Settings toggle can never re-resolve or rewrite the
+ * outcome of an already-emitted signal, so historical performance metrics are
+ * immutable; only signals emitted after the change follow the new setting.
+ */
+export function getSignalBreakevenPolicy(signal: TradingSignal): boolean {
+  return typeof signal.breakevenPolicy === "boolean" ? signal.breakevenPolicy : true;
+}
+
 export function resolveSignalWithBars(
   signal: TradingSignal,
   bars: OhlcBar[],
@@ -166,14 +179,6 @@ export function resolveSignalWithBars(
     logPrefix?: string;
     fromScratch?: boolean;
     evalNowMs?: number;
-    /**
-     * SETTINGS TOGGLE — the Breakeven function. Default true = live behaviour
-     * exactly as shipped. When FALSE the ORIGINAL SL applies at every stage:
-     * a stop hit after TP1/TP2 resolves as a plain SL_HIT LOSS at the original
-     * SL instead of the protected exit. Banking (TP1/TP2/TP3 partials) is NOT
-     * gated — only the SL replacement is. Omit for live behaviour.
-     */
-    breakevenEnabled?: boolean;
     /** Offline ladder-sweep hook only (ITEM D). Omit for live behaviour. */
     ladder?: LadderOverride;
   } = {},
@@ -189,9 +194,12 @@ export function resolveSignalWithBars(
   // authoritative remote bars (Yahoo / TwelveData) so those false wins/losses get corrected.
   const fromScratch = opts.fromScratch === true;
 
-  // SETTINGS TOGGLE — breakeven protection is ACTIVE unless explicitly disabled
-  // (opts.breakevenEnabled === false). Every gate below reads this one flag.
-  const breakevenActive = opts.breakevenEnabled !== false;
+  // SETTINGS TOGGLE — the Breakeven policy is read FROM THE SIGNAL (frozen at
+  // emission), never from live caller options. Past signals without the stamp
+  // always resolve with protection ON (their original behaviour), so a Settings
+  // flip can never rewrite a past outcome or the metrics computed from it.
+  // Every gate below reads this one flag.
+  const breakevenActive = getSignalBreakevenPolicy(signal);
 
   const signalCreatedAtMs = signal.createdAt ?? new Date(signal.timestamp).getTime();
   const safeBarStart = signalCreatedAtMs + 60 * 1000;

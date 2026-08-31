@@ -97,6 +97,15 @@ export interface TradingSignal {
   createdAt?: number;
   breakevenReached?: boolean;
   breakevenTime?: string;
+  /**
+   * SETTINGS TOGGLE — the Breakeven policy FROZEN onto this signal at emission
+   * time (stamped by TradingContext when the signal is created). The resolver
+   * derives its behaviour from THIS field, so flipping the Settings toggle later
+   * can never re-resolve or rewrite the outcome of an already-emitted signal —
+   * past performance metrics are immutable. Absent (pre-toggle signals) = the
+   * original always-protected behaviour.
+   */
+  breakevenPolicy?: boolean;
   trailingSLPrice?: number;
   trailingSLLevel?: 'ENTRY' | 'TP1' | 'TP2';
   learningContext?: SignalLearningContext;
@@ -453,8 +462,9 @@ export interface Settings {
    * a protected trade cannot lose. Off: the ORIGINAL SL applies at every stage —
    * a stop hit after TP1/TP2 resolves as a plain SL_HIT LOSS at the original SL.
    * Banking (TP1/TP2/TP3 partials) is unaffected — only the SL replacement is
-   * gated. Read by the live monitor and every resolveSignalWithBars call in
-   * TradingContext (services/signalResolver opts.breakevenEnabled).
+   * gated. Stamped onto every NEW signal at emission (TradingSignal.breakevenPolicy);
+   * the resolver reads the per-signal stamp, so changing this only affects signals
+   * emitted afterwards — past signals and their recorded outcomes are never rewritten.
    */
   breakevenEnabled: boolean;
   maxSLPips: number;

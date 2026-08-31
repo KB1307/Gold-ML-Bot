@@ -15,7 +15,7 @@ import {
 } from "@/services/backgroundTaskService";
 import { subscribeToChartPrice, subscribeToChartHeartbeat } from "@/services/chartPriceBridge";
 import { ensureBarStoreReady, ingestTickAllTimeframes, upsertBars, getBars, getBarStoreStats, pruneOldBars, getLatestBarTimestamp, type OhlcBar } from "@/services/barStore";
-import { resolveSignalWithBars, getPostTP1LockPrice as computePostTP1LockPrice, POST_TP1_PROFIT_LOCK_R } from "@/services/signalResolver";
+import { resolveSignalWithBars, getSignalBreakevenPolicy, getPostTP1LockPrice as computePostTP1LockPrice, POST_TP1_PROFIT_LOCK_R } from "@/services/signalResolver";
 import { sendTelegramAlert } from "@/services/telegramNotifier";
 import { appendDiagnosticEvent, pruneOldDiagnosticEvents, ensureDiagnosticEventStoreReady, type DiagnosticEventType } from "@/services/diagnosticEventStore";
 import { supabase } from "@/lib/supabase";
@@ -80,7 +80,8 @@ const DEFAULT_SETTINGS: Settings = {
   // protected trade cannot lose. Off: the ORIGINAL SL applies at every stage — a
   // stop hit after TP1/TP2 resolves as a plain SL_HIT LOSS at the original SL.
   // Banking (TP1/TP2/TP3 partials) is unaffected — only the SL replacement is
-  // gated. Read by the live monitor and every resolveSignalWithBars call here.
+  // gated. Stamped onto every NEW signal at emission (breakevenPolicy); past
+  // signals are never re-resolved under a new setting.
   breakevenEnabled: true,
   maxSLPips: 90,
   // ITEM 82 R3 / A16 — allowShortSignals default flipped FALSE -> TRUE.
@@ -679,9 +680,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(true);
   const [signalHistory, setSignalHistory] = useState<TradingSignal[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
-  // SETTINGS TOGGLE — the Breakeven function. A ref (not a closure) because the
-  // live monitor and the catch-up resolvers are useCallbacks with stable deps;
-  // the sync effect below means a toggle applies from the very next evaluated bar.
+  // SETTINGS TOGGLE — the Breakeven function. The ref's ONLY job now is to
+  // stamp the policy onto NEWLY EMITTED signals (breakevenPolicy at the
+  // generateSignal ingestion point below); resolution always reads the
+  // per-signal stamp, so a toggle flip never rewrites past outcomes.
   const breakevenEnabledRef = useRef<boolean>(DEFAULT_SETTINGS.breakevenEnabled);
   useEffect(() => {
     breakevenEnabledRef.current = settings.breakevenEnabled;
@@ -1327,9 +1329,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     let tp1HitTime: number | null = null;
     let breakevenReached = signal.breakevenReached || false;
     let breakevenTime = signal.breakevenTime;
-    // SETTINGS TOGGLE — read live via the ref so a Settings toggle applies to
-    // the very next evaluated bar without recreating this callback.
-    const breakevenActive = breakevenEnabledRef.current;
+    // SETTINGS TOGGLE — the policy is FROZEN on the signal at emission
+    // (breakevenPolicy). Signals emitted before the toggle existed carry no
+    // stamp and stay always-protected, so the live toggle can never rewrite a
+    // past outcome here either.
+    const breakevenActive = getSignalBreakevenPolicy(signal);
 
     // CRITICAL FIX: Filter out bars that overlap the signal creation time.
     // A 1-minute bar with timestamp 11:08:00 covers 11:08:00 - 11:08:59. If the
@@ -1913,7 +1917,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           logPrefix: `   [Resolver ${signal.id.slice(-6)}]`,
           fromScratch: resolveFromScratch,
           evalNowMs: now,
-          breakevenEnabled: breakevenEnabledRef.current,
         });
         // STEP 2 (GC=F/spot investigation): durable, fire-and-forget record of
         // which real bar source/instrument fed this resolution decision, so a
@@ -2061,7 +2064,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       fromScratch: true,
       evalNowMs: Date.now(),
       logPrefix: `   [Audit-probe ${signal.id.slice(-6)}]`,
-      breakevenEnabled: breakevenEnabledRef.current,
     });
     const resolutionTs = probe.resolvedAtBarTs;
     const primaryResolvesTerminal = resolutionTs != null;
@@ -2187,7 +2189,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       const barOutcome = resolveSignalWithBars(signal, bars, {
         logPrefix: `   [Audit ${signal.id.slice(-6)}]`,
-        breakevenEnabled: breakevenEnabledRef.current,
         // The manual/force audit fetches authoritative remote bars and may need
         // to UNDO a falsely-recorded terminal (e.g. an ALL_TARGETS_HIT banked
         // off a phantom spike when price never reached TP1). Forward-seeded
@@ -2898,6 +2899,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       syncSignalPriceFromEngine();
       
       if (signal) {
+        // SETTINGS TOGGLE — freeze the Breakeven policy onto THIS signal at
+        // emission. The resolver derives its behaviour from this stamp, so
+        // flipping the toggle later can never re-resolve or rewrite the outcome
+        // of any already-emitted signal (past performance metrics are immutable;
+        // only signals emitted after the change follow the new setting).
+        signal.breakevenPolicy = breakevenEnabledRef.current;
+
         // Telegram alert — fired FIRST, before any processing.
         // The fetch is truly fire-and-forget (no await), so the message
         // dispatches to Telegram in <100ms. Gated by the dedicated notifier

@@ -764,14 +764,18 @@ export default function SettingsScreen() {
                   +0.35R profit lock and the post-TP2 entry-level stop in BOTH
                   resolution paths (the live monitor in TradingContext and the
                   canonical services/signalResolver). Off = the original SL
-                  applies at every stage. Banking is unaffected. */}
+                  applies at every stage. Banking is unaffected. The policy is
+                  FROZEN per signal at emission — flipping this only affects
+                  signals emitted afterwards; past outcomes are never rewritten. */}
               <View style={styles.switchRow}>
                 <View style={styles.switchInfo}>
                   <Text style={styles.switchLabel}>Breakeven Protection</Text>
                   <Text style={styles.switchHelper}>
                     On: after TP1 the stop locks at +0.35R and after TP2 at entry — a
                     protected trade cannot lose. Off: the original SL stays until TP3
-                    or SL (a stop hit can be a full loss again).
+                    or SL (a stop hit can be a full loss again). Applies to signals
+                    emitted after the change — past signals keep their original
+                    policy and their recorded outcomes are never rewritten.
                   </Text>
                 </View>
                 <Switch
