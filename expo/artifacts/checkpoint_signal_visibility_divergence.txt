@@ -1,0 +1,108 @@
+CHECKPOINT — SIGNAL VISIBILITY DIVERGENCE: MT5 executes but app never shows it (and vice versa)
+User request, 2026-08-31, ~20:00Z. Investigation only; NOTHING changed live.
+
+──────────────────────────────────────────────────────────────────────────────
+1. THE PIPELINE AS IT ACTUALLY IS
+──────────────────────────────────────────────────────────────────────────────
+MT5 executes trades it receives as TELEGRAM ALERTS (telegramNotifier.ts — "the
+downstream MT5 executor"). One emission projects into THREE legs with
+DIFFERENT durability:
+
+  Leg 1 ALERT       sendTelegramAlert → INSERT telegram_outbox_v1 (durable)
+                    → Edge Function send-telegram-alert → api.telegram.org
+                    → pg_cron drain retries every minute until DELIVERED or
+                    AGED_OUT (10-min TTL). CRASH-PROOF: survives app death.
+  Leg 2 SERVER ROW  signalEngine.ts:10088 pushEmittedSignalRecord →
+                    emitted_signals_v1. Fire-and-forget. Dies with the process.
+  Leg 3 LOCAL UI    TradingContext: alert fired FIRST (:2914), then
+                    setSignalHistory → persistSignalHistory → AsyncStorage
+                    'signal_history'. `void flushHistoryWrite()` — fire-and-
+                    forget. Dies with the process.
+  Leg 4 EXECUTION   Telegram → MT5 EA. NO ack, NO telemetry. Unobservable.
+
+Recovery path that exists: Item 194 reconcileHistoryFromServer
+(TradingContext:850-900, called at boot :2616, both branches) backfills local
+history from emitted_signals_v1 (7-day window, newest-200) — but ONLY if Leg 2
+landed. Nothing reconciles from Leg 1. Nothing observes Leg 4.
+
+──────────────────────────────────────────────────────────────────────────────
+2. HARD EVIDENCE (Supabase direct, anon key, pasted)
+──────────────────────────────────────────────────────────────────────────────
+Outbox LIFETIME (111 rows):
+  {"PROBE:AGED_OUT": 1, "PROBE:DELIVERED": 3, "ALERT:DELIVERED": 107}
+  → ZERO alert rows ever PENDING-stuck, ZERO ALERT:AGED_OUT, zero lost.
+
+14-day window (2026-08-17T00:00Z → 2026-08-31T20:00Z):
+  outbox rows 79 (ALL DELIVERED) | emitted_signals_v1 rows 76 (all source=LIVE)
+  ALERTED but NOT in emitted_signals_v1: 3
+    68  signal_1787587872040_446kz8aab  DELIVERED  2026-08-24T16:11:14Z
+    67  signal_1787580401459_cpid69ppf  DELIVERED  2026-08-24T14:06:43Z
+    44  signal_1787083581937_xr6mjtadq  DELIVERED  2026-08-18T20:06:22Z
+    (= exactly the three ITEM 225 witness cases)
+  RECORDED but with NO outbox row (never alerted): 0
+
+2026-08-31 today (4 signals): outbox ↔ emitted 1:1, all DELIVERED
+    108  olbf8kacb  07:46:30  BUY  4447.5  conf .92
+    109  f0vgz8bxt  14:41:57  SELL 4434.4  conf .93
+    110  qnql740dk  19:35:59  BUY  4441.7  conf .92
+    111  ekszhbsv8  19:47:03  BUY  4445.0  conf .92
+  Outbox row created ~0.44s AFTER emission (111: created 19:47:03.822574 vs
+  emitted_at 19:47:03.383) — the app process was alive and the chain fired.
+
+──────────────────────────────────────────────────────────────────────────────
+3. VERDICT — DIRECTION A: "MT5 executed, app never showed it"
+──────────────────────────────────────────────────────────────────────────────
+ROOT CAUSE: the alert leg is the only crash-proof leg. Emission order is
+  server-row (fire-and-forget) → alert (durable) → local history (fire-and-
+  forget). If the app process dies/reloads between the alert landing in the
+  outbox and the two record writes landing, the drain still DELIVERS the alert
+  → MT5 executes — while BOTH records are gone. The 3 pasted cases prove this
+  happened 3 times in 14 days. Because their emitted_signals_v1 row never
+  landed, the Item 194 boot reconcile has NOTHING to backfill from → those
+  signals are permanently invisible in the app. (They predate ITEM 225(B3):
+  the witness message carried no CONFIDENCE, and emitted_signals_v1.confidence
+  is NOT NULL — documented unrestorable. B3 added CONFIDENCE to the message so
+  the NEXT such row is fully restorable.)
+
+For emissions whose server row DID land (today's 4): the next app boot
+backfills them into history automatically. "Not even in history" for those is
+therefore a timing/viewing state: (a) the app has not completed a clean boot
+since — the hosted preview reload-loop class (the superseded repair's last
+open item: verify the next managed public sourceHash); or (b) the user is
+looking at a DIFFERENT device/browser than the one that emitted (each has its
+own AsyncStorage; the boot reconcile self-heals within 7 days).
+
+──────────────────────────────────────────────────────────────────────────────
+4. VERDICT — DIRECTION B: "app shows a signal, MT5 never executed it"
+──────────────────────────────────────────────────────────────────────────────
+In 14 days there are ZERO app-side gaps: every one of the 76 emissions got an
+outbox row and ALL 79 rows are DELIVERED (Telegram accepted them). The old
+silent-loss era (ITEM 6: Rork backend flapped 503, 2.4s retry, error
+swallowed) is gone; historical pre-outbox signals still sitting in the app's
+AsyncStorage history can legitimately have never alerted — but going forward,
+any "in app, not on MT5" is DOWNSTREAM OF DELIVERY:
+  - The alert carries ENTRY ZONE = entry ± $2.0; the derived aging measurement
+    (measureAlertAgingHorizon) says only ~59.7% of alerts are still price-
+    executable at +10m, ~76% at +5m. The outbox deliberately ages alerts at
+    10 min rather than deliver stale ones.
+  - The EA applies its own zone/staleness/session/position filters — the
+    system has NO ack, so an EA skip is indistinguishable from silence.
+So Direction B is an observability gap, not a delivery gap (post-outbox era).
+
+──────────────────────────────────────────────────────────────────────────────
+5. PROPOSALS (nothing enacted; emission behaviour untouched)
+──────────────────────────────────────────────────────────────────────────────
+P-1 (closes Direction A permanently): extend Item 194 reconcileHistoryFromServer
+    to ALSO read telegram_outbox_v1 as last-resort witness: kind='ALERT' rows
+    whose signal_id is in NEITHER local history NOR emitted_signals_v1 get
+    reconstructed into local history (post-B3 rows carry the complete ladder +
+    CONFIDENCE — nothing invented). Pre-B3 rows stay unrestorable (NOT NULL),
+    rendered as "ALERT-ONLY (witness incomplete)" if surfaced at all.
+P-2 (closes Direction B observability): EA-side ack — the EA POSTs an
+    execution/ack per alert (even a one-column "seen/acted/skipped" table), OR
+    minimum step: render the outbox↔emitted diff (recorded-not-alerted count,
+    must stay 0) in the diagnostics export.
+P-3 (immediate, user-side): restart the app on the fixed bundle — today's 4
+    signals backfill into history via Item 194 at next boot.
+
+STATUS: MEASURED / CAUSE NAMED / VERDICT STATED / REPORTED. No code changed.
