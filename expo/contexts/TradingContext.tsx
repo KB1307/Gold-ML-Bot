@@ -75,6 +75,13 @@ const DEFAULT_SETTINGS: Settings = {
   // branch active in production. Default is now FALSE, matching what was measured.
   // Still fully toggleable from Settings — this flips the DEFAULT, not the feature.
   useDynamicSL: false,
+  // SETTINGS TOGGLE — the Breakeven function. On (default): after TP1 the
+  // effective stop is the +0.35R profit lock and after TP2 the entry level, so a
+  // protected trade cannot lose. Off: the ORIGINAL SL applies at every stage — a
+  // stop hit after TP1/TP2 resolves as a plain SL_HIT LOSS at the original SL.
+  // Banking (TP1/TP2/TP3 partials) is unaffected — only the SL replacement is
+  // gated. Read by the live monitor and every resolveSignalWithBars call here.
+  breakevenEnabled: true,
   maxSLPips: 90,
   // ITEM 82 R3 / A16 — allowShortSignals default flipped FALSE -> TRUE.
   // The 17 Aug live signal WAS a SELL (4387.4), so the persisted value is
@@ -397,6 +404,7 @@ function sanitizeSettings(settings: Settings): Settings {
     useDynamicSL: typeof settings.useDynamicSL === 'boolean' ? settings.useDynamicSL : DEFAULT_SETTINGS.useDynamicSL,
     enableTelegramNotifier: typeof settings.enableTelegramNotifier === 'boolean' ? settings.enableTelegramNotifier : DEFAULT_SETTINGS.enableTelegramNotifier,
     allowShortSignals: typeof settings.allowShortSignals === 'boolean' ? settings.allowShortSignals : DEFAULT_SETTINGS.allowShortSignals,
+    breakevenEnabled: typeof settings.breakevenEnabled === 'boolean' ? settings.breakevenEnabled : DEFAULT_SETTINGS.breakevenEnabled,
   };
 }
 
@@ -671,6 +679,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(true);
   const [signalHistory, setSignalHistory] = useState<TradingSignal[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  // SETTINGS TOGGLE — the Breakeven function. A ref (not a closure) because the
+  // live monitor and the catch-up resolvers are useCallbacks with stable deps;
+  // the sync effect below means a toggle applies from the very next evaluated bar.
+  const breakevenEnabledRef = useRef<boolean>(DEFAULT_SETTINGS.breakevenEnabled);
+  useEffect(() => {
+    breakevenEnabledRef.current = settings.breakevenEnabled;
+  }, [settings.breakevenEnabled]);
   const [marketOutlook, setMarketOutlook] = useState<MarketOutlook | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [performanceMetrics, setPerformanceMetrics] = useState<PerformanceMetrics>(DEFAULT_METRICS);
@@ -1312,6 +1327,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     let tp1HitTime: number | null = null;
     let breakevenReached = signal.breakevenReached || false;
     let breakevenTime = signal.breakevenTime;
+    // SETTINGS TOGGLE — read live via the ref so a Settings toggle applies to
+    // the very next evaluated bar without recreating this callback.
+    const breakevenActive = breakevenEnabledRef.current;
 
     // CRITICAL FIX: Filter out bars that overlap the signal creation time.
     // A 1-minute bar with timestamp 11:08:00 covers 11:08:00 - 11:08:59. If the
@@ -1390,13 +1408,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
           console.log(`      Bar Low: ${bar.low.toFixed(1)} <= Original SL: ${signal.sl.toFixed(1)}`);
 
-          if (currentTargetsHit >= 2) {
+          if (breakevenActive && currentTargetsHit >= 2) {
             currentStatus = "PARTIAL_WIN_SL_HIT";
             currentTargetsHit = Math.max(currentTargetsHit, 2);
             exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
             outcomeResult = 'WIN';
             console.log(`      ✅ Managed runner protected after TP2 - closing as partial win at breakeven-weighted exit ${exitPrice.toFixed(1)}`);
-          } else if (breakevenReached || currentTargetsHit >= 1) {
+          } else if (breakevenActive && (breakevenReached || currentTargetsHit >= 1)) {
             currentStatus = "SL_AFTER_BE";
             currentTargetsHit = Math.max(currentTargetsHit, 1);
             exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
@@ -1439,14 +1457,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           currentTargetsHit = 1;
           exitPrice = signal.tp1;
           tp1HitTime = bar.timestamp;
-          breakevenReached = true;
-          breakevenTime = new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+          if (breakevenActive) {
+            breakevenReached = true;
+            breakevenTime = new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+          }
           
           console.log(`      ⚖️ BREAKEVEN INDICATOR: Notifier triggered at entry ${signal.entryPrice.toFixed(1)} (indicator only, trade stays open)`);
           console.log(`      🧠 Trade continues to TP3 (${signal.tp3.toFixed(1)}) or original SL (${signal.sl.toFixed(1)}) for ML learning`);
         }
 
-        if (currentTargetsHit >= 2 && bar.low <= signal.entryPrice && currentTargetsHit < 3) {
+        if (breakevenActive && currentTargetsHit >= 2 && bar.low <= signal.entryPrice && currentTargetsHit < 3) {
           currentStatus = "PARTIAL_WIN_SL_HIT";
           currentTargetsHit = Math.max(currentTargetsHit, 2);
           exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
@@ -1464,13 +1484,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
           console.log(`      Bar High: ${bar.high.toFixed(1)} >= Original SL: ${signal.sl.toFixed(1)}`);
 
-          if (currentTargetsHit >= 2) {
+          if (breakevenActive && currentTargetsHit >= 2) {
             currentStatus = "PARTIAL_WIN_SL_HIT";
             currentTargetsHit = Math.max(currentTargetsHit, 2);
             exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
             outcomeResult = 'WIN';
             console.log(`      ✅ Managed runner protected after TP2 - closing as partial win at breakeven-weighted exit ${exitPrice.toFixed(1)}`);
-          } else if (breakevenReached || currentTargetsHit >= 1) {
+          } else if (breakevenActive && (breakevenReached || currentTargetsHit >= 1)) {
             currentStatus = "SL_AFTER_BE";
             currentTargetsHit = Math.max(currentTargetsHit, 1);
             exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
@@ -1513,14 +1533,16 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           currentTargetsHit = 1;
           exitPrice = signal.tp1;
           tp1HitTime = bar.timestamp;
-          breakevenReached = true;
-          breakevenTime = new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+          if (breakevenActive) {
+            breakevenReached = true;
+            breakevenTime = new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+          }
           
           console.log(`      ⚖️ BREAKEVEN INDICATOR: Notifier triggered at entry ${signal.entryPrice.toFixed(1)} (indicator only, trade stays open)`);
           console.log(`      🧠 Trade continues to TP3 (${signal.tp3.toFixed(1)}) or original SL (${signal.sl.toFixed(1)}) for ML learning`);
         }
 
-        if (currentTargetsHit >= 2 && bar.high >= signal.entryPrice && currentTargetsHit < 3) {
+        if (breakevenActive && currentTargetsHit >= 2 && bar.high >= signal.entryPrice && currentTargetsHit < 3) {
           currentStatus = "PARTIAL_WIN_SL_HIT";
           currentTargetsHit = Math.max(currentTargetsHit, 2);
           exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
@@ -1891,6 +1913,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           logPrefix: `   [Resolver ${signal.id.slice(-6)}]`,
           fromScratch: resolveFromScratch,
           evalNowMs: now,
+          breakevenEnabled: breakevenEnabledRef.current,
         });
         // STEP 2 (GC=F/spot investigation): durable, fire-and-forget record of
         // which real bar source/instrument fed this resolution decision, so a
@@ -2038,6 +2061,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       fromScratch: true,
       evalNowMs: Date.now(),
       logPrefix: `   [Audit-probe ${signal.id.slice(-6)}]`,
+      breakevenEnabled: breakevenEnabledRef.current,
     });
     const resolutionTs = probe.resolvedAtBarTs;
     const primaryResolvesTerminal = resolutionTs != null;
@@ -2163,6 +2187,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       const barOutcome = resolveSignalWithBars(signal, bars, {
         logPrefix: `   [Audit ${signal.id.slice(-6)}]`,
+        breakevenEnabled: breakevenEnabledRef.current,
         // The manual/force audit fetches authoritative remote bars and may need
         // to UNDO a falsely-recorded terminal (e.g. an ALL_TARGETS_HIT banked
         // off a phantom spike when price never reached TP1). Forward-seeded

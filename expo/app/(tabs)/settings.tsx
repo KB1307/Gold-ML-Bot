@@ -147,6 +147,7 @@ export default function SettingsScreen() {
   const [slPips, setSlPips] = useState<string>(settings.slPips.toString());
   const [maxSLPips, setMaxSLPips] = useState<string>(settings.maxSLPips.toString());
   const [useDynamicSL, setUseDynamicSL] = useState<boolean>(settings.useDynamicSL);
+  const [breakevenEnabled, setBreakevenEnabled] = useState<boolean>(settings.breakevenEnabled);
   const [minConfidence, setMinConfidence] = useState<string>((settings.minConfidence * 100).toFixed(0));
   const [numberOfTPs, setNumberOfTPs] = useState<1 | 2 | 3>(settings.numberOfTPs);
 
@@ -179,6 +180,7 @@ export default function SettingsScreen() {
     setSlPips(settings.slPips.toString());
     setMaxSLPips(settings.maxSLPips.toString());
     setUseDynamicSL(settings.useDynamicSL);
+    setBreakevenEnabled(settings.breakevenEnabled);
     setMinConfidence((settings.minConfidence * 100).toFixed(0));
     setNumberOfTPs(settings.numberOfTPs);
   }, [settings]);
@@ -204,6 +206,7 @@ export default function SettingsScreen() {
       slPips: parseFloat(slPips) || settings.slPips,
       maxSLPips: Math.min(90, parseFloat(maxSLPips) || settings.maxSLPips),
       useDynamicSL,
+      breakevenEnabled,
       minConfidence: normalizedMinConfidence,
       numberOfTPs,
       allowShortSignals: settings.allowShortSignals,
@@ -753,6 +756,29 @@ export default function SettingsScreen() {
                   onValueChange={setUseDynamicSL}
                   trackColor={{ false: "#333", true: "rgba(239, 68, 68, 0.3)" }}
                   thumbColor={useDynamicSL ? "#ef4444" : "#666"}
+                  ios_backgroundColor="#333"
+                />
+              </View>
+
+              {/* SETTINGS TOGGLE — the Breakeven function. Gates the post-TP1
+                  +0.35R profit lock and the post-TP2 entry-level stop in BOTH
+                  resolution paths (the live monitor in TradingContext and the
+                  canonical services/signalResolver). Off = the original SL
+                  applies at every stage. Banking is unaffected. */}
+              <View style={styles.switchRow}>
+                <View style={styles.switchInfo}>
+                  <Text style={styles.switchLabel}>Breakeven Protection</Text>
+                  <Text style={styles.switchHelper}>
+                    On: after TP1 the stop locks at +0.35R and after TP2 at entry — a
+                    protected trade cannot lose. Off: the original SL stays until TP3
+                    or SL (a stop hit can be a full loss again).
+                  </Text>
+                </View>
+                <Switch
+                  value={breakevenEnabled}
+                  onValueChange={setBreakevenEnabled}
+                  trackColor={{ false: "#333", true: "rgba(34, 197, 94, 0.3)" }}
+                  thumbColor={breakevenEnabled ? "#22c55e" : "#666"}
                   ios_backgroundColor="#333"
                 />
               </View>

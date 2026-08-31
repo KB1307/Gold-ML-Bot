@@ -447,6 +447,16 @@ export interface Settings {
   maxRiskPercentage: number;
   useKellyCriterion: boolean;
   useDynamicSL: boolean;
+  /**
+   * SETTINGS TOGGLE — the Breakeven function (default true). On: after TP1 the
+   * effective stop is the +0.35R profit lock, and after TP2 the entry level, so
+   * a protected trade cannot lose. Off: the ORIGINAL SL applies at every stage —
+   * a stop hit after TP1/TP2 resolves as a plain SL_HIT LOSS at the original SL.
+   * Banking (TP1/TP2/TP3 partials) is unaffected — only the SL replacement is
+   * gated. Read by the live monitor and every resolveSignalWithBars call in
+   * TradingContext (services/signalResolver opts.breakevenEnabled).
+   */
+  breakevenEnabled: boolean;
   maxSLPips: number;
   /**
    * SELL suppression toggle (default false). When false, qualifying SELL

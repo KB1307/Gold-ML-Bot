@@ -166,6 +166,14 @@ export function resolveSignalWithBars(
     logPrefix?: string;
     fromScratch?: boolean;
     evalNowMs?: number;
+    /**
+     * SETTINGS TOGGLE — the Breakeven function. Default true = live behaviour
+     * exactly as shipped. When FALSE the ORIGINAL SL applies at every stage:
+     * a stop hit after TP1/TP2 resolves as a plain SL_HIT LOSS at the original
+     * SL instead of the protected exit. Banking (TP1/TP2/TP3 partials) is NOT
+     * gated — only the SL replacement is. Omit for live behaviour.
+     */
+    breakevenEnabled?: boolean;
     /** Offline ladder-sweep hook only (ITEM D). Omit for live behaviour. */
     ladder?: LadderOverride;
   } = {},
@@ -180,6 +188,10 @@ export function resolveSignalWithBars(
   // never actually reached TP1. The manual/force audit uses fromScratch against
   // authoritative remote bars (Yahoo / TwelveData) so those false wins/losses get corrected.
   const fromScratch = opts.fromScratch === true;
+
+  // SETTINGS TOGGLE — breakeven protection is ACTIVE unless explicitly disabled
+  // (opts.breakevenEnabled === false). Every gate below reads this one flag.
+  const breakevenActive = opts.breakevenEnabled !== false;
 
   const signalCreatedAtMs = signal.createdAt ?? new Date(signal.timestamp).getTime();
   const safeBarStart = signalCreatedAtMs + 60 * 1000;
@@ -196,7 +208,7 @@ export function resolveSignalWithBars(
       signal.status === 'TP2_HIT' ||
       signal.status === 'TP3_HIT' ||
       signal.status === 'ALL_TARGETS_HIT');
-  let breakevenReached = fromScratch ? false : (signal.breakevenReached || false);
+  let breakevenReached = breakevenActive ? (fromScratch ? false : (signal.breakevenReached || false)) : false;
   let breakevenTime = fromScratch ? undefined : signal.breakevenTime;
   let resolvedAtBarTs: number | undefined;
 
@@ -268,10 +280,10 @@ export function resolveSignalWithBars(
     // Post-TP1: trailing 0.35R profit lock replaces the original SL.
     // Post-TP2: entry-level protective stop (existing behaviour).
     const origSlHit = isBuy ? bar.low <= slTriggerPrice : bar.high >= slTriggerPrice;
-    const lockHit = hasTP1 && !hasTP2
+    const lockHit = breakevenActive && hasTP1 && !hasTP2
       ? (isBuy ? bar.low <= postTP1Lock : bar.high >= postTP1Lock)
       : false;
-    const entryHitAfterTP2 = hasTP2
+    const entryHitAfterTP2 = breakevenActive && hasTP2
       ? (isBuy ? bar.low <= signal.entryPrice : bar.high >= signal.entryPrice)
       : false;
 
@@ -302,8 +314,13 @@ export function resolveSignalWithBars(
       newTargetLevelThisBar = signal.tp1;
     }
 
-    const slBreachedPreState = (!hasTP1 && origSlHit) || (hasTP1 && !hasTP2 && lockHit) || (hasTP2 && entryHitAfterTP2);
-    const slBreachLevel = hasTP2 ? signal.entryPrice : (hasTP1 ? postTP1Lock : slTriggerPrice);
+    // Breakeven disabled: the ONLY stop is the original SL, at every stage.
+    const slBreachedPreState = breakevenActive
+      ? (!hasTP1 && origSlHit) || (hasTP1 && !hasTP2 && lockHit) || (hasTP2 && entryHitAfterTP2)
+      : origSlHit;
+    const slBreachLevel = breakevenActive
+      ? (hasTP2 ? signal.entryPrice : (hasTP1 ? postTP1Lock : slTriggerPrice))
+      : slTriggerPrice;
 
     if (newTargetLevelThisBar !== null && slBreachedPreState) {
       const targetDist = Math.abs(bar.open - newTargetLevelThisBar);
@@ -312,12 +329,12 @@ export function resolveSignalWithBars(
       if (slDist <= targetDist) {
         // SL-side level sits closer to open -> assume it was hit first; the
         // target reached later in this same bar never actually banks.
-        if (hasTP2) {
+        if (hasTP2 && breakevenActive) {
           currentStatus = 'PARTIAL_WIN_SL_HIT';
           currentTargetsHit = Math.max(currentTargetsHit, 2);
           exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
           outcomeResult = 'WIN';
-        } else if (hasTP1) {
+        } else if (hasTP1 && breakevenActive) {
           currentStatus = 'SL_AFTER_BE';
           currentTargetsHit = Math.max(currentTargetsHit, 1);
           exitPrice = postTP1Lock;
@@ -337,7 +354,7 @@ export function resolveSignalWithBars(
       currentTargetsHit = newTargetsHitThisBar;
       exitPrice = newTargetLevelThisBar;
       currentStatus = newTargetsHitThisBar === 3 ? 'ALL_TARGETS_HIT' : newTargetsHitThisBar === 2 ? 'TP2_HIT' : 'TP1_HIT';
-      if (newTargetsHitThisBar === 1) {
+      if (newTargetsHitThisBar === 1 && breakevenActive) {
         breakevenReached = true;
         breakevenTime = new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
       }
@@ -350,10 +367,10 @@ export function resolveSignalWithBars(
       }
 
       const hasTP2After = newTargetsHitThisBar >= 2;
-      const postLockHitAfter = !hasTP2After
+      const postLockHitAfter = breakevenActive && !hasTP2After
         ? (isBuy ? bar.low <= postTP1Lock : bar.high >= postTP1Lock)
         : false;
-      const entryHitAfter = hasTP2After
+      const entryHitAfter = breakevenActive && hasTP2After
         ? (isBuy ? bar.low <= signal.entryPrice : bar.high >= signal.entryPrice)
         : false;
 
@@ -375,17 +392,28 @@ export function resolveSignalWithBars(
         console.log(`${prefix} ⚖️ Same bar: also retraced to profit lock after banking TP1 → SL_AFTER_BE @ ${exitPrice.toFixed(1)}`);
         break;
       }
+      // Breakeven disabled: the runner answers to the ORIGINAL SL in this same
+      // bar too — the banked TP stands in the ladder record, but the terminal
+      // exit is the original stop (no protection existed).
+      if (!breakevenActive && (isBuy ? bar.low <= slTriggerPrice : bar.high >= slTriggerPrice)) {
+        currentStatus = 'SL_HIT';
+        exitPrice = signal.sl;
+        outcomeResult = 'LOSS';
+        resolvedAtBarTs = bar.timestamp;
+        console.log(`${prefix} 🚨 Same bar: breakeven disabled — original SL breached after banking → SL_HIT @ ${signal.sl.toFixed(1)}`);
+        break;
+      }
       // Target banked, no further same-bar reversal - continue scanning forward.
       continue;
     }
 
     // No same-bar ambiguity - original sequential resolution applies unchanged.
-    if (!hasTP1 && origSlHit) {
+    if (origSlHit && (!hasTP1 || !breakevenActive)) {
       currentStatus = 'SL_HIT';
       exitPrice = signal.sl;
       outcomeResult = 'LOSS';
       resolvedAtBarTs = bar.timestamp;
-      console.log(`${prefix} 🚨 Pre-TP1 SL wick-through on bar @ ${new Date(bar.timestamp).toISOString()} → SL_HIT`);
+      console.log(`${prefix} 🚨 SL wick-through on bar @ ${new Date(bar.timestamp).toISOString()} → SL_HIT${breakevenActive ? '' : ' (breakeven disabled — original SL applies after TP1 too)'}`);
       break;
     }
 
@@ -424,12 +452,14 @@ export function resolveSignalWithBars(
       currentStatus = 'TP1_HIT';
       currentTargetsHit = 1;
       exitPrice = signal.tp1;
-      breakevenReached = true;
-      breakevenTime = new Date(bar.timestamp).toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-      });
+      if (breakevenActive) {
+        breakevenReached = true;
+        breakevenTime = new Date(bar.timestamp).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        });
+      }
     }
   }
 
