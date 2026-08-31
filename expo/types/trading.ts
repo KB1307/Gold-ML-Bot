@@ -106,6 +106,13 @@ export interface TradingSignal {
    * original always-protected behaviour.
    */
   breakevenPolicy?: boolean;
+  /**
+   * POST-TP2 STOP LEVEL — frozen onto this signal at emission alongside
+   * breakevenPolicy. 'tp1' = after TP2 banks, the protective stop sits at TP1
+   * (further into the trade). Absent = every pre-change signal resolves with
+   * the stop at entry (original behaviour) — past outcomes never rewritten.
+   */
+  postTP2StopLevel?: 'entry' | 'tp1';
   trailingSLPrice?: number;
   trailingSLLevel?: 'ENTRY' | 'TP1' | 'TP2';
   learningContext?: SignalLearningContext;

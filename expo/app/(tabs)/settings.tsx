@@ -761,18 +761,22 @@ export default function SettingsScreen() {
               </View>
 
               {/* SETTINGS TOGGLE — the Breakeven function. Gates the post-TP1
-                  +0.35R profit lock and the post-TP2 entry-level stop in BOTH
+                  +0.35R profit lock and the post-TP2 protective stop in BOTH
                   resolution paths (the live monitor in TradingContext and the
                   canonical services/signalResolver). Off = the original SL
                   applies at every stage. Banking is unaffected. The policy is
                   FROZEN per signal at emission — flipping this only affects
-                  signals emitted afterwards; past outcomes are never rewritten. */}
+                  signals emitted afterwards; past outcomes are never rewritten.
+                  The post-TP2 stop level is ALSO frozen per signal: TP1 for
+                  signals emitted after that change, entry for all history
+                  before it. */}
               <View style={styles.switchRow}>
                 <View style={styles.switchInfo}>
                   <Text style={styles.switchLabel}>Breakeven Protection</Text>
                   <Text style={styles.switchHelper}>
-                    On: after TP1 the stop locks at +0.35R and after TP2 at entry — a
-                    protected trade cannot lose. Off: the original SL stays until TP3
+                    On: after TP1 the stop locks at +0.35R and after TP2 it moves
+                    further into the trade to sit at TP1 — a protected trade
+                    cannot lose. Off: the original SL stays until TP3
                     or SL (a stop hit can be a full loss again). Applies to signals
                     emitted after the change — past signals keep their original
                     policy and their recorded outcomes are never rewritten.

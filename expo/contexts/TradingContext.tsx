@@ -15,7 +15,7 @@ import {
 } from "@/services/backgroundTaskService";
 import { subscribeToChartPrice, subscribeToChartHeartbeat } from "@/services/chartPriceBridge";
 import { ensureBarStoreReady, ingestTickAllTimeframes, upsertBars, getBars, getBarStoreStats, pruneOldBars, getLatestBarTimestamp, type OhlcBar } from "@/services/barStore";
-import { resolveSignalWithBars, getSignalBreakevenPolicy, getPostTP1LockPrice as computePostTP1LockPrice, POST_TP1_PROFIT_LOCK_R } from "@/services/signalResolver";
+import { resolveSignalWithBars, getSignalBreakevenPolicy, getPostTP1LockPrice as computePostTP1LockPrice, getPostTP2StopPrice, POST_TP1_PROFIT_LOCK_R } from "@/services/signalResolver";
 import { sendTelegramAlert } from "@/services/telegramNotifier";
 import { appendDiagnosticEvent, pruneOldDiagnosticEvents, ensureDiagnosticEventStoreReady, type DiagnosticEventType } from "@/services/diagnosticEventStore";
 import { supabase } from "@/lib/supabase";
@@ -448,6 +448,12 @@ function getProtectedExitPrice(signal: TradingSignal, targetsHit: number): numbe
   const normalizedTargetsHit = Math.max(0, Math.min(2, targetsHit));
 
   if (normalizedTargetsHit >= 2) {
+    // POST-TP2 STOP LEVEL — 'tp1' (stamped at emission) exits the runner AT
+    // TP1, the level the protective stop sits at. Absent = every pre-change
+    // signal keeps the original breakeven-weighted exit.
+    if (signal.postTP2StopLevel === 'tp1') {
+      return signal.tp1;
+    }
     return Number(((signal.tp1 + signal.tp2 + signal.entryPrice) / 3).toFixed(1));
   }
 
@@ -1334,6 +1340,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     // stamp and stay always-protected, so the live toggle can never rewrite a
     // past outcome here either.
     const breakevenActive = getSignalBreakevenPolicy(signal);
+    // POST-TP2 STOP LEVEL — frozen on the signal at emission: 'tp1' for new
+    // signals, entry (original behaviour) for every pre-change signal.
+    const postTP2StopPrice = getPostTP2StopPrice(signal);
 
     // CRITICAL FIX: Filter out bars that overlap the signal creation time.
     // A 1-minute bar with timestamp 11:08:00 covers 11:08:00 - 11:08:59. If the
@@ -1470,12 +1479,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           console.log(`      🧠 Trade continues to TP3 (${signal.tp3.toFixed(1)}) or original SL (${signal.sl.toFixed(1)}) for ML learning`);
         }
 
-        if (breakevenActive && currentTargetsHit >= 2 && bar.low <= signal.entryPrice && currentTargetsHit < 3) {
+        if (breakevenActive && currentTargetsHit >= 2 && bar.low <= postTP2StopPrice && currentTargetsHit < 3) {
           currentStatus = "PARTIAL_WIN_SL_HIT";
           currentTargetsHit = Math.max(currentTargetsHit, 2);
           exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
           outcomeResult = 'WIN';
-          console.log(`      ✅ TP2 runner returned to breakeven - closing as protected partial win @ ${exitPrice.toFixed(1)}`);
+          console.log(`      ✅ TP2 runner hit its protective stop - closing as protected partial win @ ${exitPrice.toFixed(1)}`);
           break;
         }
 
@@ -1546,12 +1555,12 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           console.log(`      🧠 Trade continues to TP3 (${signal.tp3.toFixed(1)}) or original SL (${signal.sl.toFixed(1)}) for ML learning`);
         }
 
-        if (breakevenActive && currentTargetsHit >= 2 && bar.high >= signal.entryPrice && currentTargetsHit < 3) {
+        if (breakevenActive && currentTargetsHit >= 2 && bar.high >= postTP2StopPrice && currentTargetsHit < 3) {
           currentStatus = "PARTIAL_WIN_SL_HIT";
           currentTargetsHit = Math.max(currentTargetsHit, 2);
           exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
           outcomeResult = 'WIN';
-          console.log(`      ✅ TP2 runner returned to breakeven - closing as protected partial win @ ${exitPrice.toFixed(1)}`);
+          console.log(`      ✅ TP2 runner hit its protective stop - closing as protected partial win @ ${exitPrice.toFixed(1)}`);
           break;
         }
 
@@ -1769,7 +1778,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             newStatus = "TP1_HIT";
             targetsHit = 1;
             fallbackBreachTrackerRef.current.delete(`${signal.id}:SL`);
-          } else if (targetsHit >= 2 && currentPrice <= signal.entryPrice && confirmFallbackBreach('TP2_RUNNER_RETRACE', (signal.entryPrice - currentPrice))) {
+          } else if (getSignalBreakevenPolicy(signal) && targetsHit >= 2 && currentPrice <= getPostTP2StopPrice(signal) && confirmFallbackBreach('TP2_RUNNER_RETRACE', (getPostTP2StopPrice(signal) - currentPrice))) {
             console.log(`   ✅ CATCH-UP (Fallback): TP2 runner returned to entry @ ${currentPrice.toFixed(1)} - closing as protected partial win`);
             newStatus = "PARTIAL_WIN_SL_HIT";
             targetsHit = Math.max(targetsHit, 2);
@@ -1820,7 +1829,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             newStatus = "TP1_HIT";
             targetsHit = 1;
             fallbackBreachTrackerRef.current.delete(`${signal.id}:SL`);
-          } else if (targetsHit >= 2 && currentPrice >= signal.entryPrice && confirmFallbackBreach('TP2_RUNNER_RETRACE', (currentPrice - signal.entryPrice))) {
+          } else if (getSignalBreakevenPolicy(signal) && targetsHit >= 2 && currentPrice >= getPostTP2StopPrice(signal) && confirmFallbackBreach('TP2_RUNNER_RETRACE', (currentPrice - getPostTP2StopPrice(signal)))) {
             console.log(`   ✅ CATCH-UP (Fallback): TP2 runner returned to entry @ ${currentPrice.toFixed(1)} - closing as protected partial win`);
             newStatus = "PARTIAL_WIN_SL_HIT";
             targetsHit = Math.max(targetsHit, 2);
@@ -2905,6 +2914,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         // of any already-emitted signal (past performance metrics are immutable;
         // only signals emitted after the change follow the new setting).
         signal.breakevenPolicy = breakevenEnabledRef.current;
+        // POST-TP2 STOP LEVEL — frozen onto THIS signal at emission: after TP2
+        // banks, the protective stop sits at TP1 (further into the trade).
+        // Absent = every pre-change signal keeps the entry-level stop, so past
+        // outcomes are never rewritten.
+        signal.postTP2StopLevel = 'tp1';
 
         // Telegram alert — fired FIRST, before any processing.
         // The fetch is truly fire-and-forget (no await), so the message
@@ -3194,8 +3208,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         };
 
         if (signal.type === "BUY") {
-          if (hasTP2 && price <= signal.entryPrice && confirmSLHit(signal.entryPrice)) {
-            console.log(`✅ TP2 runner returned to entry: BUY signal ${signal.id.slice(-6)} closing as protected partial win @ ${price.toFixed(1)}`);
+          if (getSignalBreakevenPolicy(signal) && hasTP2 && price <= getPostTP2StopPrice(signal) && confirmSLHit(getPostTP2StopPrice(signal))) {
+            console.log(`✅ TP2 runner hit its protective stop: BUY signal ${signal.id.slice(-6)} closing as protected partial win @ ${price.toFixed(1)}`);
             newStatus = "PARTIAL_WIN_SL_HIT";
             targetsHit = Math.max(targetsHit, 2);
             updated = true;
@@ -3220,8 +3234,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           } else if (price >= signal.tp2 && targetsHit < 2) {
             newStatus = "TP2_HIT";
             targetsHit = 2;
-            trailingSLPrice = signal.entryPrice;
-            trailingSLLevel = 'ENTRY';
+            // POST-TP2 STOP LEVEL — the stop moves to the frozen level (TP1 for
+            // signals stamped at emission, entry for pre-change history); BE-off
+            // signals keep the original SL (no protection exists).
+            if (getSignalBreakevenPolicy(signal)) {
+              trailingSLPrice = getPostTP2StopPrice(signal);
+              trailingSLLevel = signal.postTP2StopLevel === 'tp1' ? 'TP1' : 'ENTRY';
+            }
             updated = true;
             console.log(`🎯 🎯 TP2 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP2: ${signal.tp2.toFixed(1)})`);
             console.log(`📋 BREAKEVEN INDICATOR at entry ${signal.entryPrice.toFixed(1)} (indicator only - trade continues to TP3 or original SL)`);
@@ -3242,8 +3261,8 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             console.log(`📋 BREAKEVEN NOTIFICATION: BUY Signal ${signal.id.slice(-6)} price at entry ${signal.entryPrice.toFixed(1)} (indicator only - trade remains open)`);
           }
         } else {
-          if (hasTP2 && price >= signal.entryPrice && confirmSLHit(signal.entryPrice)) {
-            console.log(`✅ TP2 runner returned to entry: SELL signal ${signal.id.slice(-6)} closing as protected partial win @ ${price.toFixed(1)}`);
+          if (getSignalBreakevenPolicy(signal) && hasTP2 && price >= getPostTP2StopPrice(signal) && confirmSLHit(getPostTP2StopPrice(signal))) {
+            console.log(`✅ TP2 runner hit its protective stop: SELL signal ${signal.id.slice(-6)} closing as protected partial win @ ${price.toFixed(1)}`);
             newStatus = "PARTIAL_WIN_SL_HIT";
             targetsHit = Math.max(targetsHit, 2);
             updated = true;
@@ -3268,8 +3287,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           } else if (price <= signal.tp2 && targetsHit < 2) {
             newStatus = "TP2_HIT";
             targetsHit = 2;
-            trailingSLPrice = signal.entryPrice;
-            trailingSLLevel = 'ENTRY';
+            // POST-TP2 STOP LEVEL — the stop moves to the frozen level (TP1 for
+            // signals stamped at emission, entry for pre-change history); BE-off
+            // signals keep the original SL (no protection exists).
+            if (getSignalBreakevenPolicy(signal)) {
+              trailingSLPrice = getPostTP2StopPrice(signal);
+              trailingSLLevel = signal.postTP2StopLevel === 'tp1' ? 'TP1' : 'ENTRY';
+            }
             updated = true;
             console.log(`🎯 🎯 TP2 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP2: ${signal.tp2.toFixed(1)})`);
             console.log(`📋 BREAKEVEN INDICATOR at entry ${signal.entryPrice.toFixed(1)} (indicator only - trade continues to TP3 or original SL)`);

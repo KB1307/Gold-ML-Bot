@@ -1,0 +1,70 @@
+CHECKPOINT — POST-TP2 STOP AT TP1 (user request, 2026-08-31)
+User correction: the Settings copy "On: after TP1 the stop locks at +0.35R and
+after TP2 at entry" is half wrong — after TP2 the stop should move FURTHER INTO
+THE TRADE and sit at TP1. Investigation confirmed BOTH the copy and the code
+used entry after TP2; the behaviour was fixed, not just the text.
+
+──────────────────────────────────────────────────────────────────────────────
+1. WHAT THE CODE DID BEFORE (quoted)
+──────────────────────────────────────────────────────────────────────────────
+- signalResolver.ts:289  "Post-TP2: entry-level protective stop (existing behaviour)"
+- :294  entryHitAfterTP2 → retrace test at signal.entryPrice
+- :330  slBreachLevel = hasTP2 ? signal.entryPrice : (hasTP1 ? postTP1Lock : sl)
+- :343/:388/:431  protected exit = getProtectedExitPrice = (tp1+tp2+entry)/3
+- TradingContext live monitor  "after TP2 we switch to entry (existing behavior)",
+  trailingSLPrice = entryPrice / trailingSLLevel = 'ENTRY' on TP2 hit
+- catch-up fallback  TP2_RUNNER_RETRACE confirmed at signal.entryPrice
+- settings.tsx:774  "after TP2 at entry"
+
+──────────────────────────────────────────────────────────────────────────────
+2. WHAT SHIPPED (frozen-stamp pattern, same discipline as the BE toggle)
+──────────────────────────────────────────────────────────────────────────────
+- types/trading.ts: TradingSignal.postTP2StopLevel?: 'entry' | 'tp1'
+- TradingContext (emission, next to breakevenPolicy):
+    signal.postTP2StopLevel = 'tp1';
+  Absent = EVERY pre-change signal resolves with the entry-level stop and the
+  breakeven-weighted exit byte-identically → past outcomes immutable.
+- signalResolver.ts: getPostTP2StopLevel/getPostTP2StopPrice (no-stamp → entry);
+  postTP2StopHit + slBreachLevel + both same-bar branches use the frozen stop
+  price; getProtectedExitPrice ≥2 arm → tp1 for stamped, weighted for legacy
+  (one function → sequential branch, fromScratch matured collapse, and the
+  getEffectiveExitPrice metrics fallback stay consistent automatically).
+- Live paths: analyzeSignalWithHistoricalData BUY/SELL triggers, catch-up
+  fallback TP2_RUNNER_RETRACE (now ALSO gated on the signal's breakeven policy
+  — legacy no-stamp → true → byte-identical; stamped-OFF → no protection,
+  matching the resolver), real-time monitor stop checks (same gate), TP2-hit
+  trailing SL → frozen stop ('TP1' level for stamped, 'ENTRY' legacy, original
+  SL untouched when BE off).
+- settings.tsx: "On: after TP1 the stop locks at +0.35R and after TP2 it moves
+  further into the trade to sit at TP1 — a protected trade cannot lose."
+
+──────────────────────────────────────────────────────────────────────────────
+3. PROOF — scripts/test_post_tp2_stop.ts, REAL resolver, 24/24 PASS
+──────────────────────────────────────────────────────────────────────────────
+Geometry BUY: entry 4400 / SL 4390 (risk 10) / TP1 4410 / TP2 4430 / TP3 4445;
+legacy weighted exit (4410+4430+4400)/3 = 4413.3. SELL mirror: 4390/4375/4360,
+weighted 4388.3.
+- S1 stamped shallow retrace (low 4409: touches TP1, never entry):
+  PARTIAL_WIN_SL_HIT WIN @ 4410; LEGACY same bar → stays open TP2_HIT/null.
+- S2 deep retrace through entry (low 4398): stamped @ 4410 (TP1, better);
+  legacy @ 4413.3 (weighted, unchanged).
+- S3 same bar banks TP2 + retraces: stamped @ 4410; legacy @ 4413.3.
+- S4 same-bar SL-closer (TP3 4446 vs stop 4409, proximity guard): stamped
+  @ 4410; LEGACY → entry stop never touched (4409 > 4400) → ALL_TARGETS_HIT
+  @ 4445 (correct legacy behaviour — sharper contrast than expected).
+- S5 breakevenPolicy:false DOMINATES the tp1 stamp → SL_HIT LOSS @ 4390.
+- S6/S7 SELL mirrors: @ 4390 stamped vs stays-open / 4388.3 legacy.
+- S8 SCENARIO L: legacy re-resolve byte-identical.
+Regression: test_breakeven_toggle.ts ALL PASS (legacy paths untouched).
+runChecks(expo) PASS (one TS1005 paren slip on the SELL fallback line caught
+by checks and fixed).
+
+──────────────────────────────────────────────────────────────────────────────
+4. SCOPE NOTES
+──────────────────────────────────────────────────────────────────────────────
+- Server-side cron resolver keeps the canonical ladder (same named follow-up
+  as the BE flag). signalEngine near-miss miner read-only, untouched.
+- Item 194 backfilled signals carry no stamp → resolve legacy (consistent with
+  the BE stamp limitation).
+- Device round-trip BLOCKED-ON-DEVICE (as for the BE toggle).
+STATUS: SHIPPED / PROVEN / PAST-OUTCOMES IMMUTABLE.

@@ -149,6 +149,12 @@ export interface ResolverOutcome {
 function getProtectedExitPrice(signal: TradingSignal, targetsHit: number, override?: LadderOverride): number {
   const normalizedTargetsHit = Math.max(0, Math.min(2, targetsHit));
   if (normalizedTargetsHit >= 2) {
+    // POST-TP2 STOP LEVEL — 'tp1' (stamped at emission) exits the runner AT
+    // TP1, the level the protective stop sits at. Absent = EVERY pre-change
+    // signal keeps the original breakeven-weighted exit byte-identical.
+    if (signal.postTP2StopLevel === 'tp1') {
+      return signal.tp1;
+    }
     return Number(((signal.tp1 + signal.tp2 + signal.entryPrice) / 3).toFixed(1));
   }
   if (normalizedTargetsHit === 1) {
@@ -169,6 +175,21 @@ function getProtectedExitPrice(signal: TradingSignal, targetsHit: number, overri
  */
 export function getSignalBreakevenPolicy(signal: TradingSignal): boolean {
   return typeof signal.breakevenPolicy === "boolean" ? signal.breakevenPolicy : true;
+}
+
+/**
+ * POST-TP2 STOP LEVEL — frozen onto the signal at emission (postTP2StopLevel,
+ * stamped by TradingContext when the signal is created). 'tp1' = after TP2
+ * banks, the protective stop sits AT TP1 (further into the trade). A signal
+ * WITHOUT the stamp — every signal emitted before this change — resolves with
+ * the original entry-level stop, so historical outcomes are immutable.
+ */
+export function getPostTP2StopLevel(signal: TradingSignal): 'entry' | 'tp1' {
+  return signal.postTP2StopLevel === 'tp1' ? 'tp1' : 'entry';
+}
+
+export function getPostTP2StopPrice(signal: TradingSignal): number {
+  return getPostTP2StopLevel(signal) === 'tp1' ? signal.tp1 : signal.entryPrice;
 }
 
 export function resolveSignalWithBars(
@@ -239,6 +260,7 @@ export function resolveSignalWithBars(
   const slTriggerPrice = isBuy ? signal.sl - slSlack : signal.sl + slSlack;
 
   const postTP1Lock = getPostTP1LockPrice(signal, opts.ladder);
+  const postTP2StopPrice = getPostTP2StopPrice(signal);
 
   /**
    * ITEM 21 (NARROW) — did ANY evaluated bar trade through the entry band?
@@ -286,13 +308,15 @@ export function resolveSignalWithBars(
 
     // Pre-TP1: original SL with the wick-penetration slack applies.
     // Post-TP1: trailing 0.35R profit lock replaces the original SL.
-    // Post-TP2: entry-level protective stop (existing behaviour).
+    // Post-TP2: protective stop at the FROZEN postTP2StopLevel — entry for
+    // every pre-change signal (no stamp), TP1 for signals stamped 'tp1' at
+    // emission ("after TP2 the stop moves further into the trade").
     const origSlHit = isBuy ? bar.low <= slTriggerPrice : bar.high >= slTriggerPrice;
     const lockHit = breakevenActive && hasTP1 && !hasTP2
       ? (isBuy ? bar.low <= postTP1Lock : bar.high >= postTP1Lock)
       : false;
-    const entryHitAfterTP2 = breakevenActive && hasTP2
-      ? (isBuy ? bar.low <= signal.entryPrice : bar.high >= signal.entryPrice)
+    const postTP2StopHit = breakevenActive && hasTP2
+      ? (isBuy ? bar.low <= postTP2StopPrice : bar.high >= postTP2StopPrice)
       : false;
 
     const tp3Hit = isBuy ? bar.high >= signal.tp3 : bar.low <= signal.tp3;
@@ -324,10 +348,10 @@ export function resolveSignalWithBars(
 
     // Breakeven disabled: the ONLY stop is the original SL, at every stage.
     const slBreachedPreState = breakevenActive
-      ? (!hasTP1 && origSlHit) || (hasTP1 && !hasTP2 && lockHit) || (hasTP2 && entryHitAfterTP2)
+      ? (!hasTP1 && origSlHit) || (hasTP1 && !hasTP2 && lockHit) || (hasTP2 && postTP2StopHit)
       : origSlHit;
     const slBreachLevel = breakevenActive
-      ? (hasTP2 ? signal.entryPrice : (hasTP1 ? postTP1Lock : slTriggerPrice))
+      ? (hasTP2 ? postTP2StopPrice : (hasTP1 ? postTP1Lock : slTriggerPrice))
       : slTriggerPrice;
 
     if (newTargetLevelThisBar !== null && slBreachedPreState) {
@@ -378,11 +402,11 @@ export function resolveSignalWithBars(
       const postLockHitAfter = breakevenActive && !hasTP2After
         ? (isBuy ? bar.low <= postTP1Lock : bar.high >= postTP1Lock)
         : false;
-      const entryHitAfter = breakevenActive && hasTP2After
-        ? (isBuy ? bar.low <= signal.entryPrice : bar.high >= signal.entryPrice)
+      const postTP2StopHitAfter = breakevenActive && hasTP2After
+        ? (isBuy ? bar.low <= postTP2StopPrice : bar.high >= postTP2StopPrice)
         : false;
 
-      if (hasTP2After && entryHitAfter) {
+      if (hasTP2After && postTP2StopHitAfter) {
         currentStatus = 'PARTIAL_WIN_SL_HIT';
         currentTargetsHit = Math.max(currentTargetsHit, 2);
         exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
@@ -425,7 +449,7 @@ export function resolveSignalWithBars(
       break;
     }
 
-    if (hasTP2 && entryHitAfterTP2) {
+    if (hasTP2 && postTP2StopHit) {
       currentStatus = 'PARTIAL_WIN_SL_HIT';
       currentTargetsHit = Math.max(currentTargetsHit, 2);
       exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
