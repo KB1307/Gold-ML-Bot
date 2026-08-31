@@ -1,0 +1,113 @@
+EMISSION FUNNEL + 2026-08-31 ATTRIBUTION + WEEKEND COLD-START
+================================================================
+Date: 2026-08-31 (Sunday reopen session 2026-08-30T22:00Z -> Monday)
+
+1. EMISSION FUNNEL (SHIPPED — counters only, no gating effect)
+----------------------------------------------------------------
+signalEngine.ts:
+  - emissionFunnelRejections / emissionFunnelEmitted fields +
+    recordFunnelRejection(label) + getEmissionFunnel() accessor
+    (placed next to the UU market-gate funnel).
+  - ONE mutually-exclusive bucket per generateSignal() exit path:
+      MARKET_GATE_FAILSAFE, MARKET_CLOSED, EARLY_COOLDOWN_DEFER,
+      NO_VALID_PRICE, ENTRY_ANCHOR_STALE, DIRECTIONAL_BAR_LAYER_UNAVAILABLE,
+      NON_FINITE_CONFIDENCE, STAND_ASIDE_BEARISH_HTF_SELL_SUPPRESSED,
+      COUNTER_TREND_DRIFT_VETO, COUNTER_TREND_MID_RSI_UNCONFIRMED,
+      BLOCKED_UTC_HOUR, DYNAMIC_COOLDOWN, POST_STOP_COOLDOWN,
+      MACRO_EVENT_SUPPRESSION, CONFIDENCE_BELOW_THRESHOLD,
+      CONFIDENCE_BELOW_ENGINE_FLOOR, QUALITY_GATE, OB_FILTER_REJECT,
+      OB_FILTER_PENALTY_BELOW_FLOOR, STRUCTURAL_VALIDATION_FAILED,
+      PRICE_PROXIMITY_BLOCK, SIGNAL_CONFLICT_PREVENTION,
+      SELL_SUPPRESSED_SHADOW, TIER0_DEGRADATION_SUPPRESS,
+      GEOMETRY_UNWINNABLE, AWAIT_ZONE_ARMED, PATH_TO_TARGET_VETO,
+      AWAIT_ZONE_ARMED_NO_STRUCTURE, NO_STRUCTURE_VETO, BEHIND_ENTRY_ARMED,
+      CLUSTER_DEDUP, TIME_WINDOW_DEDUP, BAND_PROXIMITY_VETO
+    + emissionFunnelEmitted incremented at the single confirmed-emission
+    point (next to pushEmittedSignalRecord — NOT at
+    successfulSignalsGenerated, which increments before the post-geometry
+    vetoes can still return null).
+  - Invariant: sum(rejections) + emitted === attempts
+    (attempts = signalGenerationAttempts, incremented at the top of
+    generateSignal). Reported by getEmissionFunnel(); a mismatch names an
+    unaccounted exit instead of silently redistributing attribution.
+  - The ❌ REJECTED lines inside enhancedTransformerAnalysis (winning
+    strength / strength difference) are NOT exits — the attempt continues
+    after them — so they have no bucket by design.
+
+diagnosticsExport.ts:
+  - SECTION 10 — EMISSION FUNNEL: attempts -> sorted rejection buckets
+    (each with % of attempts) -> EMITTED -> invariant PASS/FAIL line,
+    plus the ITEM 17b/17c counters that were never rendered before:
+    anchorChecks, anchorStaleRejections, geometryChecks,
+    geometryUnwinnableRejections (sub-gate detail under the
+    ENTRY_ANCHOR_STALE / GEOMETRY_UNWINNABLE buckets).
+
+2. WHICH GATE CONSUMED THE 435 NON-STAND-ASIDE ATTEMPTS OF 2026-08-31
+----------------------------------------------------------------
+Source of the 435 (pasted, diagnostics export latest.txt,
+Generated: 2026-08-31T05:24:16.461Z, SECTION 8):
+    Readiness checks this process: 57308
+    Stand-asides (bar layer unavailable or stale): 5491
+    Stand-aside rate: 9.58%
+    LAST 24H (separate from lifetime): checks=1333 stand-asides=898 rate=67.37%
+  => 1333 - 898 = 435 attempts passed the directional bar layer.
+  Stand-aside REASON (same export, ring buffer):
+    "M5 series TOO SHORT: 59 bars (< 60 required) (m5Bars=59,
+     newestBarAge=8..9.3min)" — every recent entry, newest 02:59:20Z.
+
+Per-gate attribution of the 435:
+  - The RUNNING (pre-fix) bundle recorded NO per-gate counters and runtime
+    logs retain only back to 2026-08-31T04:25Z (page before oldest id
+    returns "No runtime logs found for this project"). Full-day per-gate
+    attribution is therefore NOT INSTRUMENTED for 2026-08-31 — pasting a
+    full-day breakdown would be a hypothesis, so it is not done.
+  - MEASURED window (runtime logs 2026-08-31T04:25:57Z -> 04:55:12Z):
+      SIGNAL GENERATION ATTEMPT           19
+      directional stand-asides             0   (series ready since ~02:55Z)
+      BLOCKED_UTC_HOUR (hour 04)          16
+      COUNTER_TREND_DRIFT_VETO             3
+      EMITTED                              0
+      all other gates                      0
+      unclassified                        0
+    => 19/19 non-stand-aside attempts consumed: 16 by the blocked-UTC-hour
+       gate (hour 04 is a measured dead window), 3 by the counter-trend
+       drift veto. First export taken AFTER this round will carry SECTION 10
+       and make the full-day attribution exact.
+
+3. WEEKEND COLD-START FIX (SHIPPED — measurement attached)
+----------------------------------------------------------------
+Root cause verified against the live table:
+  - gold_m1_bars has NO rows between Fri 2026-08-28T20:56Z and
+    Sun 2026-08-30T22:00Z (weekend gap; both recent weekends show the same
+    ~297-row Fri-tail + Sun-reopen shape).
+  - The pre-fix fetch window was 52h anchored to `now`: at Sunday reopen it
+    reached only Friday ~19:00Z, so the aggregated M5 series started below
+    the 60-bar floor of getDirectionalM5() and the engine stood aside until
+    60 POST-reopen bars accumulated (~5-6h, matching 898 stand-asides at
+    ~180 attempts/h and the export's last TOO SHORT reason at 02:59:20Z).
+Fix:
+  - BAR_SERIES_LOOKBACK_MIN = 72h (signalEngine.ts); refreshBarSeries()
+    now fetches across the gap so the M5/M15 series is built from the
+    PREVIOUS session's bars. 60-bar floor, freshness window, all gate
+    thresholds and scoring: UNCHANGED. Row cap verified: 4320 rows <=
+    MAX_PAGES(5) x PAGE_SIZE(1000).
+
+Measured before/after (scripts/measure_weekend_coldstart.ts, real tape,
+reopen 2026-08-30T22:00Z, generateSignal every 30s, 961 attempts to
+2026-08-31T06:00Z, gate replicated exactly incl. RSI(14)):
+    tape: 3114 M1 rows 2026-08-27T00:00 -> 2026-08-31T08:00
+    reopen (first post-reopen bar): 2026-08-30T22:00:00.000Z
+    gap check: last pre-gap bar  2026-08-28T20:56:00.000Z
+    BEFORE (52h window, pre-fix) : attempts=961 standAsides=590 rate=61.4%
+                                   blind=295 min (first ready 02:55:00Z)
+    AFTER  (72h window, fixed)   : attempts=961 standAsides=0   rate=0.0%
+                                   blind=0 min    (ready at reopen 22:00Z)
+    stand-asides recovered per weekend reopen: 590 of 961 attempts
+
+4. VALIDATION
+----------------------------------------------------------------
+  - bunx tsc --noEmit: PASS (exit 0).
+  - runChecks(expo): see session log this round.
+  - Note: the funnel counters are process-lifetime and in-memory (like
+    signalGenerationAttempts). The first diagnostics export taken from the
+    next build carries SECTION 10; exports from the pre-fix bundle cannot.

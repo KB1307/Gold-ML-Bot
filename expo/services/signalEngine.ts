@@ -1699,6 +1699,53 @@ class SignalGenerationEngine {
   getMarketGateRejectionCounts(): { saturday: number; fridayClose: number; sundayBeforeOpen: number; dailyBreak: number; failSafe: number } {
     return { ...this.marketGateRejections };
   }
+
+  /**
+   * EMISSION FUNNEL — mutually-exclusive exit-path counters for generateSignal()
+   * (COUNTERS ONLY, no gating effect). Every exit path of generateSignal()
+   * records EXACTLY ONE bucket via recordFunnelRejection(); a successful
+   * emission counts once via emissionFunnelEmitted at the single
+   * confirmed-emission point (next to pushEmittedSignalRecord). attempts is the
+   * pre-existing signalGenerationAttempts counter incremented at the top of
+   * generateSignal(). The ❌ REJECTED log lines inside
+   * enhancedTransformerAnalysis (winning-strength / strength-difference) are
+   * deliberately NOT buckets: they are sub-gates of scoring, not exits — the
+   * attempt continues after them.
+   * Invariant: sum(rejections) + emitted === attempts. getEmissionFunnel()
+   * reports the check so an unaccounted exit is visible immediately.
+   */
+  private emissionFunnelRejections: Record<string, number> = {};
+  private emissionFunnelEmitted: number = 0;
+
+  private recordFunnelRejection(label: string): void {
+    this.emissionFunnelRejections[label] = (this.emissionFunnelRejections[label] ?? 0) + 1;
+  }
+
+  /** EMISSION FUNNEL — read access for the diagnostics export (SECTION 10). */
+  getEmissionFunnel(): {
+    attempts: number;
+    rejections: Record<string, number>;
+    rejectionTotal: number;
+    emitted: number;
+    accounted: number;
+    invariantOk: boolean;
+  } {
+    const rejections: Record<string, number> = {};
+    let rejectionTotal = 0;
+    for (const [label, count] of Object.entries(this.emissionFunnelRejections)) {
+      rejections[label] = count;
+      rejectionTotal += count;
+    }
+    const accounted = rejectionTotal + this.emissionFunnelEmitted;
+    return {
+      attempts: this.signalGenerationAttempts,
+      rejections,
+      rejectionTotal,
+      emitted: this.emissionFunnelEmitted,
+      accounted,
+      invariantOk: accounted === this.signalGenerationAttempts,
+    };
+  }
   /**
    * F6 criterion 4 telemetry (COUNTERS ONLY — no scoring effect).
    * `directionalStandAsideChecks` counts every time the generation path asked
@@ -1853,6 +1900,16 @@ class SignalGenerationEngine {
   private static readonly BAR_M1_LOOKBACK = 240;
   private static readonly BAR_M5_LOOKBACK = 300;
   private static readonly BAR_M15_LOOKBACK = 200;
+  /**
+   * WEEKEND COLD START: the M1 fetch window must span the Fri-close → Sun-reopen
+   * gap. A 50h window anchored to `now` reaches only the Friday TAIL at reopen,
+   * so the aggregated M5 series sits below the 60-bar floor of
+   * getDirectionalM5() for hours and the engine stands aside blind. 72h reaches
+   * back into the previous session's full Friday tape at the earliest reopen
+   * (Sun 22:00 UTC → Thu 22:00), so the series is built ACROSS the gap from
+   * pre-close bars. Row cap: 72h of M1 bars = 4320 rows ≤ MAX_PAGES × PAGE_SIZE.
+   */
+  private static readonly BAR_SERIES_LOOKBACK_MIN = 72 * 60;
   /** A timeframe's newest bar may be at most 3 of its own periods old. */
   private static readonly BAR_MAX_AGE_M1_MS = 3 * 60 * 1000;
   private static readonly BAR_MAX_AGE_M5_MS = 15 * 60 * 1000;
@@ -2702,15 +2759,17 @@ class SignalGenerationEngine {
     }
     this.barSeriesBuiltAt = now;
 
-    // Longest requirement drives the fetch: M15 x 200 bars = 50h of M1 bars.
-    const lookbackMs = (SignalGenerationEngine.BAR_M15_LOOKBACK * 15 + 120) * 60 * 1000;
+    // WEEKEND COLD START: see BAR_SERIES_LOOKBACK_MIN. 72h spans the
+    // Fri-close → Sun-reopen gap so the M5/M15 series is built ACROSS the gap
+    // from the previous session's bars instead of requiring 60 post-reopen bars.
+    const lookbackMs = SignalGenerationEngine.BAR_SERIES_LOOKBACK_MIN * 60 * 1000;
     const fromIso = new Date(now - lookbackMs).toISOString();
     const toIso = new Date(now).toISOString();
 
     try {
       const rows: { timestamp: string; open: number; high: number; low: number; close: number }[] = [];
       const PAGE_SIZE = 1000;
-      const MAX_PAGES = 5; // 50h of M1 bars = ~3000 rows; 5 pages is ample headroom
+      const MAX_PAGES = 5; // 72h of M1 bars = ~4320 rows; 5 x 1000 = 5000 keeps headroom
       for (let page = 0; page < MAX_PAGES; page++) {
         const { data, error } = await client
           .from('gold_m1_bars')
@@ -8518,6 +8577,7 @@ class SignalGenerationEngine {
       // defaults to fetching): when the clock throws or returns a non-boolean,
       // the engine STANDS ASIDE and emits nothing. DEFAULT = REJECT.
       this.marketGateRejections.failSafe++;
+      this.recordFunnelRejection('MARKET_GATE_FAILSAFE');
       console.log(`❌ REJECTED: MARKET_GATE_FAILSAFE — market clock threw or returned a non-boolean (${gateErr instanceof Error ? gateErr.message : String(gateErr)}). Default: STAND-ASIDE (reject). No signal is emitted while the market state is unknown.`);
       console.log(`${'='.repeat(80)}\n`);
       return null;
@@ -8531,6 +8591,7 @@ class SignalGenerationEngine {
             ? "SUNDAY_BEFORE_OPEN"
             : "DAILY_BREAK";
       this.marketGateRejections[closedAs === "SATURDAY" ? "saturday" : closedAs === "FRIDAY_CLOSE" ? "fridayClose" : closedAs === "SUNDAY_BEFORE_OPEN" ? "sundayBeforeOpen" : "dailyBreak"]++;
+      this.recordFunnelRejection('MARKET_CLOSED');
       const nowDate = new Date();
       console.log(`❌ REJECTED: MARKET_CLOSED — condition=${closedAs}. Market gate (weekend-aware, shared predicate getGoldMarketClock) blocks all signal generation while the gold market is closed. Current UTC ${nowDate.getUTCHours()}:${String(nowDate.getUTCMinutes()).padStart(2, '0')}`);
       console.log(`${'='.repeat(80)}\n`);
@@ -8592,6 +8653,7 @@ class SignalGenerationEngine {
       if (this.lastSignalTime > 0 && cooldownElapsed < MIN_GLOBAL_COOLDOWN_MS) {
         const remainingCooldown = ((MIN_GLOBAL_COOLDOWN_MS - cooldownElapsed) / 1000).toFixed(1);
         console.log(`⏱️ EARLY COOLDOWN: ${remainingCooldown}s min cooldown remaining — deferring expensive analysis`);
+        this.recordFunnelRejection('EARLY_COOLDOWN_DEFER');
         console.log(`${'='.repeat(80)}\n`);
         return null;
       }
@@ -8606,6 +8668,7 @@ class SignalGenerationEngine {
     
     if (this.currentPrice <= 0) {
       console.log('❌ REJECTED: No valid price available yet - cannot generate signal');
+      this.recordFunnelRejection('NO_VALID_PRICE');
       console.log(`${'='.repeat(80)}\n`);
       return null;
     }
@@ -8629,6 +8692,7 @@ class SignalGenerationEngine {
     const anchorIsReplayed = REPLAYED_PRICE_SOURCE_MARKERS.some(m => anchorSourceLower.includes(m));
     if (anchorAgeMs > ENTRY_ANCHOR_MAX_AGE_MS || anchorIsReplayed) {
       this.entryAnchorStaleRejections += 1;
+      this.recordFunnelRejection('ENTRY_ANCHOR_STALE');
       const ageLabel = Number.isFinite(anchorAgeMs) ? `${(anchorAgeMs / 1000).toFixed(1)}s` : 'never observed';
       console.log('❌ REJECTED [EntryAnchorStale]: entry anchor is not a live observation — emitting nothing');
       console.log(`   [EntryAnchorStale] age=${ageLabel} (cap ${(ENTRY_ANCHOR_MAX_AGE_MS / 1000).toFixed(0)}s) | replayed=${anchorIsReplayed} | source="${lastPriceSource}" | lastRealSource="${lastRealPriceSource}"`);
@@ -8648,6 +8712,7 @@ class SignalGenerationEngine {
     // GC=F / TwelveData / priceHistory fallback on this path by design.
     if (!this.isDirectionalLayerReady()) {
       console.log('❌ REJECTED: directional bar layer unavailable or stale (M5 gold_m1_bars) - standing aside rather than scoring on a null feature vector');
+      this.recordFunnelRejection('DIRECTIONAL_BAR_LAYER_UNAVAILABLE');
       console.log(`${'='.repeat(80)}\n`);
       return null;
     }
@@ -8677,6 +8742,7 @@ class SignalGenerationEngine {
     // `confidence=NaN%`. Fail closed instead of trading on an unknown number.
     if (!Number.isFinite(analysis.confidence)) {
       console.log(`❌ REJECTED: non-finite confidence (${String(analysis.confidence)}) — failing closed`);
+      this.recordFunnelRejection('NON_FINITE_CONFIDENCE');
       console.log(`   💡 A NaN confidence would bypass every threshold comparison, so the signal is discarded rather than trusted.`);
       console.log(`${'='.repeat(80)}\n`);
       return null;
@@ -8714,6 +8780,7 @@ class SignalGenerationEngine {
         tp3Pips: settings.tp3Pips,
         slPips: settings.slPips,
       });
+      this.recordFunnelRejection('STAND_ASIDE_BEARISH_HTF_SELL_SUPPRESSED');
       return null;
     }
 
@@ -8761,6 +8828,7 @@ class SignalGenerationEngine {
           console.log(`   💡 TIP: Needs a CONFIRMED sweep reversal plus >=${(COUNTER_TREND_DRIFT_OVERRIDE_CONFIDENCE * 100).toFixed(0)}% conviction to trade against a live impulse of this size.`);
           console.log(`${'='.repeat(80)}\n`);
           this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'intraday drift veto', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
+          this.recordFunnelRejection('COUNTER_TREND_DRIFT_VETO');
           return null;
         }
       }
@@ -8812,6 +8880,7 @@ class SignalGenerationEngine {
             console.log(`   💡 TIP: ${requires5MinConfirmation.tip}`);
             console.log(`${'='.repeat(80)}\n`);
             this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'counter-trend mid-RSI unconfirmed', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
+            this.recordFunnelRejection('COUNTER_TREND_MID_RSI_UNCONFIRMED');
             return null;
           } else {
             console.log(`✅ COUNTER-TREND ASYMMETRIC: RSI ${features.rsi.toFixed(1)} not mid-range, accepting without 5-min gate`);
@@ -8829,6 +8898,7 @@ class SignalGenerationEngine {
     // (h11 EV -0.497R, h04 EV -0.409R in the 340-trade audit).
     if (BLOCKED_UTC_HOURS.includes(utcHour)) {
       console.log(`❌ REJECTED: UTC hour ${utcHour} is a blocked window (measured negative expectancy across the audited sample)`);
+      this.recordFunnelRejection('BLOCKED_UTC_HOUR');
       console.log(`${'='.repeat(80)}\n`);
       return null;
     }
@@ -8858,6 +8928,7 @@ class SignalGenerationEngine {
     if (this.lastSignalTime > 0 && cooldownElapsed < dynamicCooldown) {
       const remainingCooldown = ((dynamicCooldown - cooldownElapsed) / 1000).toFixed(1);
       console.log(`❌ REJECTED: Dynamic cooldown active: ${remainingCooldown}s remaining (Regime: ${features.marketRegime.type})`);
+      this.recordFunnelRejection('DYNAMIC_COOLDOWN');
       console.log(`${'='.repeat(80)}\n`);
       return null;
     }
@@ -8870,12 +8941,14 @@ class SignalGenerationEngine {
       console.log(`   💡 TIP: Same-direction re-entry within 15 min of a stop won only 13.3% of the time in the audited sample. Let structure re-form.`);
       console.log(`${'='.repeat(80)}\n`);
       this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'post-stop cooldown', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
+      this.recordFunnelRejection('POST_STOP_COOLDOWN');
       return null;
     }
 
     const macroEvent = this.detectMacroEvents();
     if (this.shouldSuppressMacroEvent(macroEvent)) {
       console.log(`❌ REJECTED: Macro event suppression (${macroEvent?.name})`);
+      this.recordFunnelRejection('MACRO_EVENT_SUPPRESSION');
       console.log(`${'='.repeat(80)}\n`);
       return null;
     }
@@ -8956,6 +9029,7 @@ class SignalGenerationEngine {
       console.log(`   💡 TIP: Confidence ${(analysis.confidence * 100).toFixed(1)}% below ${(effectiveMinConfidence * 100).toFixed(0)}% threshold. Wait for stronger alignment or adjust threshold in settings.`);
       console.log(`${'='.repeat(80)}\n`);
       this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, `below threshold ${(effectiveMinConfidence * 100).toFixed(0)}%`, { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
+      this.recordFunnelRejection('CONFIDENCE_BELOW_THRESHOLD');
       return null;
     }
     
@@ -8965,6 +9039,7 @@ class SignalGenerationEngine {
 
     if (analysis.confidence < absoluteConfidenceFloor) {
       console.log(`❌ REJECTED: Confidence ${(analysis.confidence * 100).toFixed(1)}% below engine floor ${(absoluteConfidenceFloor * 100).toFixed(0)}%`);
+      this.recordFunnelRejection('CONFIDENCE_BELOW_ENGINE_FLOOR');
       console.log(`   Engine floor keeps low-quality setups out even if user threshold is lower`);
       console.log(`${'='.repeat(80)}\n`);
       return null;
@@ -8973,6 +9048,7 @@ class SignalGenerationEngine {
     const qualityGate = this.evaluateQualityGate(analysis, features);
     if (!qualityGate.passed) {
       console.log(`❌ REJECTED: Quality Gate — ${qualityGate.reason}`);
+      this.recordFunnelRejection('QUALITY_GATE');
       console.log(`   💡 ${qualityGate.tip}`);
       console.log(`${'='.repeat(80)}\n`);
       return null;
@@ -8996,6 +9072,7 @@ class SignalGenerationEngine {
           console.log(`${'='.repeat(80)}\n`);
           this.obFilterRejectionCount += 1;
           this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'OB filter: no nearby unmitigated order block (bars)', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
+          this.recordFunnelRejection('OB_FILTER_REJECT');
           return null;
         }
         // ITEM 160(c): relaxed — confidence penalty instead of hard reject.
@@ -9005,6 +9082,7 @@ class SignalGenerationEngine {
           console.log(`${'='.repeat(80)}\n`);
           this.obFilterRejectionCount += 1;
           this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'OB filter penalty: below confidence floor after 5pt penalty', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
+          this.recordFunnelRejection('OB_FILTER_PENALTY_BELOW_FLOOR');
           return null;
         }
         analysis.confidence = penalizedConfidence;
@@ -9018,6 +9096,7 @@ class SignalGenerationEngine {
     const structuralValidation = this.validateStructuralConditions(analysis.signalType, features, settings);
     if (!structuralValidation.valid) {
       console.log(`❌ REJECTED: Structural Validation Failed`);
+      this.recordFunnelRejection('STRUCTURAL_VALIDATION_FAILED');
       if (exceptionConditionActive) {
         console.log(`   🛡️  EXCEPTION BLOCKED: Large movement/trend change detected BUT structural conditions not met`);
         console.log(`   This prevents false signals during volatility spikes`);
@@ -9038,6 +9117,7 @@ class SignalGenerationEngine {
       const proximityCheck = this.checkPriceProximity(activeSignals, analysis.signalType, dynamicCooldown);
       if (proximityCheck.blocked) {
         console.log(`❌ REJECTED: Price Proximity Filter Block`);
+        this.recordFunnelRejection('PRICE_PROXIMITY_BLOCK');
         console.log(`   ${proximityCheck.reason}`);
         console.log(`   💡 TIP: ${proximityCheck.tip}`);
         console.log(`${'='.repeat(80)}\n`);
@@ -9069,6 +9149,7 @@ class SignalGenerationEngine {
         console.log(`   💡 CONFLICT RESOLUTION: New signal must be >55% confident AND opposing signal <15% strength`);
         console.log(`${'='.repeat(80)}\n`);
         this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'conflict with last signal type', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
+        this.recordFunnelRejection('SIGNAL_CONFLICT_PREVENTION');
         return null;
       } else {
         console.log(`✅ SIGNAL OVERRIDE APPROVED: Conflict check passed`);
@@ -9359,6 +9440,7 @@ class SignalGenerationEngine {
         rsi: features.rsi,
       };
       pushShadowSellRecord(shadowRecord);
+      this.recordFunnelRejection('SELL_SUPPRESSED_SHADOW');
       return null;
     }
 
@@ -9429,6 +9511,7 @@ class SignalGenerationEngine {
       features.srZones,
     );
     if (tier0Degradation.suppress) {
+      this.recordFunnelRejection('TIER0_DEGRADATION_SUPPRESS');
       return null;
     }
     const tier0AdjustedConfidence = parseFloat(
@@ -9451,6 +9534,7 @@ class SignalGenerationEngine {
       : emissionPrice <= tp1;
     if (tp1AlreadyBehind) {
       this.geometryUnwinnableRejections += 1;
+      this.recordFunnelRejection('GEOMETRY_UNWINNABLE');
       console.log('❌ REJECTED [GeometryUnwinnable]: TP1 is already behind the live price — emitting nothing');
       console.log(`   [GeometryUnwinnable] ${analysis.signalType} anchor=${entryPrice.toFixed(2)} livePrice=${emissionPrice.toFixed(2)} TP1=${tp1.toFixed(2)} SL=${sl.toFixed(2)} | drift since anchor $${(emissionPrice - entryPrice).toFixed(2)}`);
       console.log(`   [GeometryUnwinnable] 💡 Measured on 379 historical signals: 11 (2.90%) were already at/past TP1 at their own generation minute, and 7 of those were nonetheless stored ALL_TARGETS_HIT.`);
@@ -9561,11 +9645,13 @@ class SignalGenerationEngine {
             this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'await-the-zone: pending entry armed at strong zone', {
               entryPrice: movedEntry, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips,
             });
+            this.recordFunnelRejection('AWAIT_ZONE_ARMED');
             return null;
           }
         }
         // Path still blocked at the moved entry, or no same-side zone found → VETO
         this.pathToTargetVetoes += 1;
+        this.recordFunnelRejection('PATH_TO_TARGET_VETO');
         console.log(`❌ REJECTED [PathToTargetVeto]: ${analysis.signalType} TP1 ${tp1Price.toFixed(1)} blocked by ${opposingType} @ ${blockingZone.price.toFixed(1)} (reaction ${(blockingZone.reactionStrength * 100).toFixed(0)}%)`);
         console.log(`   [PathToTargetVeto] entry=${entryPriceWithSlippage.toFixed(1)} TP1=${tp1Price.toFixed(1)} ${opposingType}@${blockingZone.price.toFixed(1)} — no await-the-zone escape possible`);
         console.log(`${'='.repeat(80)}\n`);
@@ -9632,12 +9718,14 @@ class SignalGenerationEngine {
             this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'no-structure route: zero opposing zones -> await-the-zone at nearest same-side shelf', {
               entryPrice: movedEntry, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips,
             });
+            this.recordFunnelRejection('AWAIT_ZONE_ARMED_NO_STRUCTURE');
             return null;
           }
           // No same-side shelf within the 3 ATR band either: NO structure
           // anywhere near price. Veto outright — do not emit into an
           // information vacuum.
           this.noStructureVetoes += 1;
+          this.recordFunnelRejection('NO_STRUCTURE_VETO');
           console.log(`❌ REJECTED [NoStructureVeto]: ${analysis.signalType} at ${entryPriceWithSlippage.toFixed(1)} — ZERO ${opposingType} zones in the map and no ${sameSideType} shelf within 3 ATR. An empty opposing set is absence of information, not a clear path.`);
           console.log(`${'='.repeat(80)}\n`);
           this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'no-structure veto: zero opposing zones and no same-side shelf within 3 ATR', {
@@ -9696,6 +9784,7 @@ class SignalGenerationEngine {
         this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'behind-entry arming (C2): opposing zone behind entry within 1.0 ATR -> await the same-side shelf', {
           entryPrice: movedEntry, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips,
         });
+        this.recordFunnelRejection('BEHIND_ENTRY_ARMED');
         return null;
       }
     }
@@ -9762,6 +9851,7 @@ class SignalGenerationEngine {
       const priceBandAtr = priceDist / Math.max(active.atr, atrForDedup);
       if (priceBandAtr < DEDUP_CLUSTER_BAND_ATR) {
         this.dedupBlocks += 1;
+        this.recordFunnelRejection('CLUSTER_DEDUP');
         console.log(`❌ REJECTED [ClusterDedup]: ${analysis.signalType} @ ${this.currentPrice.toFixed(1)} within ${priceBandAtr.toFixed(2)} ATR of active ${active.signalId.slice(-9)} @ ${active.price.toFixed(1)}`);
         console.log(`   [ClusterDedup] cluster_band=${DEDUP_CLUSTER_BAND_ATR} ATR — active signal in same zone cluster`);
         console.log(`${'='.repeat(80)}\n`);
@@ -9778,6 +9868,7 @@ class SignalGenerationEngine {
       const priceBandAtr = priceDist / atrForDedup;
       if (timeSinceLast < DEDUP_TIME_WINDOW_MS && priceBandAtr < DEDUP_PRICE_BAND_ATR) {
         this.dedupBlocks += 1;
+        this.recordFunnelRejection('TIME_WINDOW_DEDUP');
         console.log(`❌ REJECTED [TimeWindowDedup]: ${analysis.signalType} @ ${this.currentPrice.toFixed(1)} within ${priceBandAtr.toFixed(2)} ATR / ${(timeSinceLast / 60000).toFixed(1)} min of last ${this.lastEmittedSignal.direction}`);
         console.log(`${'='.repeat(80)}\n`);
         this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'time-window-dedup: secondary backstop', {
@@ -9819,12 +9910,14 @@ class SignalGenerationEngine {
         nowMs: now,
       });
       if (bandVeto.fires) {
+        this.recordFunnelRejection('BAND_PROXIMITY_VETO');
         console.log(`🚫 REJECTED [BandProximityVeto/${bandVeto.mode}]: ${analysis.signalType} @ ${entryPriceWithSlippage.toFixed(1)} — qualifying zone ${bandVeto.qualifyingZone?.price} (touches=${bandVeto.qualifyingZone?.touches}, rs=${Number(bandVeto.qualifyingZone?.reactionStrength ?? 0).toFixed(3)}) in band; fingerprint=${bandVeto.fingerprintActive ? "ACTIVE (exempt)" : "not active"} -> suppressed as ${bandVeto.suppressedId}`);
         console.log(`${"=".repeat(80)}\n`);
         return null;
       }
     }
 
+    this.emissionFunnelEmitted += 1;
     const emittedSignalId = `signal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
     // ITEM 52(b) — EMISSION PERSISTENCE. Fire-and-forget durable write of every

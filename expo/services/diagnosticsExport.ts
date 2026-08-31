@@ -111,6 +111,34 @@ export interface DiagnosticsExportInput {
    */
   vetoFunnel?: VetoFunnelInput | null;
   /**
+   * EMISSION FUNNEL: mutually-exclusive exit-path counters from the engine
+   * (`signalEngine.getEmissionFunnel()`). One bucket per generateSignal() exit;
+   * attempts == the engine's signalGenerationAttempts counter. Optional so older
+   * callers still compile; the section then reports NOT INSTRUMENTED.
+   */
+  emissionFunnel?: {
+    attempts: number;
+    rejections: Record<string, number>;
+    rejectionTotal: number;
+    emitted: number;
+    accounted: number;
+    invariantOk: boolean;
+  } | null;
+  /**
+   * ITEM 17b/17c: entry-anchor + geometry gate counters
+   * (`signalEngine.getEntryAnchorGateStats()`), rendered alongside the funnel.
+   * anchorChecks/anchorStaleRejections and geometryChecks/
+   * geometryUnwinnableRejections count EVALUATIONS (pre-existing counters), not
+   * 1:1 with attempts — they are sub-gate detail under the funnel buckets
+   * ENTRY_ANCHOR_STALE / GEOMETRY_UNWINNABLE.
+   */
+  entryAnchorGateStats?: {
+    anchorChecks: number;
+    anchorStaleRejections: number;
+    geometryChecks: number;
+    geometryUnwinnableRejections: number;
+  } | null;
+  /**
    * ITEM 12(d): durable learning-corpus hydration counters from
    * `learningStore.getLearningCorpusStats()`. The corpus READ is now a DIRECT
    * paginated Supabase read (it used to ride the 503-prone Rork backend), and an
@@ -971,6 +999,70 @@ function formatVetoFunnelSection(f: VetoFunnelInput | null | undefined): string 
   return lines.join("\n");
 }
 
+/**
+ * SECTION 10 — EMISSION FUNNEL. One mutually-exclusive bucket per
+ * generateSignal() exit path; the invariant sum(rejections) + emitted ==
+ * attempts is CHECKED here so an unaccounted exit is visible instead of
+ * silently redistributing attribution. The ITEM 17b/17c anchor/geometry gate
+ * counters render alongside as sub-gate detail.
+ */
+function formatEmissionFunnelSection(
+  funnel: {
+    attempts: number;
+    rejections: Record<string, number>;
+    rejectionTotal: number;
+    emitted: number;
+    accounted: number;
+    invariantOk: boolean;
+  } | null | undefined,
+  anchorStats: {
+    anchorChecks: number;
+    anchorStaleRejections: number;
+    geometryChecks: number;
+    geometryUnwinnableRejections: number;
+  } | null | undefined,
+): string {
+  const lines: string[] = [RULE, "SECTION 10 — EMISSION FUNNEL (generateSignal exit paths, mutually exclusive)", RULE];
+  if (!funnel) {
+    lines.push("NOT INSTRUMENTED — the caller supplied no emissionFunnel.");
+    lines.push("This is NOT the same as zero rejections. Attribution is impossible without it.");
+    return lines.join("\n");
+  }
+  lines.push(`Generation attempts: ${funnel.attempts}`);
+  const sorted = Object.entries(funnel.rejections).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  if (sorted.length === 0) {
+    lines.push("  (no rejections recorded)");
+  } else {
+    for (const [label, count] of sorted) {
+      const pct = funnel.attempts > 0 ? ((count / funnel.attempts) * 100).toFixed(1) : "n/a";
+      lines.push(`  ❌ REJECTED ${label}: ${count} (${pct}% of attempts)`);
+    }
+  }
+  lines.push("  ↓");
+  lines.push(`EMITTED: ${funnel.emitted}`);
+  lines.push("");
+  lines.push(
+    `INVARIANT: sum(rejections) ${funnel.rejectionTotal} + emitted ${funnel.emitted} = ${funnel.accounted}` +
+    ` vs attempts ${funnel.attempts} → ${funnel.invariantOk ? "PASS" : "FAIL — an exit path is unaccounted; investigate before trusting any rate above"}`,
+  );
+  lines.push("");
+  if (anchorStats) {
+    lines.push("ITEM 17b/17c anchor + geometry gate counters (sub-gate detail; these count evaluations, not 1:1 with attempts):");
+    lines.push(`  anchorChecks: ${anchorStats.anchorChecks}`);
+    lines.push(`  anchorStaleRejections: ${anchorStats.anchorStaleRejections}`);
+    lines.push(`  geometryChecks: ${anchorStats.geometryChecks}`);
+    lines.push(`  geometryUnwinnableRejections: ${anchorStats.geometryUnwinnableRejections}`);
+  } else {
+    lines.push("ITEM 17b/17c anchor/geometry gate counters: NOT INSTRUMENTED in this export.");
+  }
+  lines.push("");
+  lines.push("Counter semantics: process-lifetime, in-memory (like signalGenerationAttempts).");
+  lines.push("One bucket per generateSignal() exit — the ❌ REJECTED log line and the bucket");
+  lines.push("always move together. The conviction/strength-difference ❌ lines inside");
+  lines.push("enhancedTransformerAnalysis are NOT exits and have no bucket by design.");
+  return lines.join("\n");
+}
+
 export function buildDiagnosticsExportText(input: DiagnosticsExportInput): string {
   const sections = [
     DRULE,
@@ -1005,6 +1097,8 @@ export function buildDiagnosticsExportText(input: DiagnosticsExportInput): strin
     formatTelegramDeliverySection(input.telegramDeliveryStats, input.telegramOutbox),
     "",
     formatVetoFunnelSection(input.vetoFunnel),
+    "",
+    formatEmissionFunnelSection(input.emissionFunnel, input.entryAnchorGateStats),
     "",
     DRULE,
     "END OF EXPORT",

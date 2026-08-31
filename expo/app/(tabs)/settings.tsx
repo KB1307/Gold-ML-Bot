@@ -384,6 +384,10 @@ export default function SettingsScreen() {
         telegramDeliveryStats: getTelegramDeliveryStats(),
         // ITEM P: mutually-exclusive veto funnel (generated == emitted + suppressed).
         vetoFunnel: getVetoFunnel(),
+        // EMISSION FUNNEL: one mutually-exclusive bucket per generateSignal exit,
+        // with the ITEM 17b/17c anchor/geometry gate counters rendered alongside.
+        emissionFunnel: signalEngine.getEmissionFunnel(),
+        entryAnchorGateStats: signalEngine.getEntryAnchorGateStats(),
         telegramOutbox,
         // ITEM 12(d): durable corpus-hydration counters (rehydrated above).
         learningCorpusStats: getLearningCorpusStats(),
