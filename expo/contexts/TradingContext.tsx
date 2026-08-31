@@ -905,6 +905,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         // generation attempt can increment them, so a reload no longer zeroes a
         // full trading day's readiness/stand-aside record.
         await signalEngine.loadDirectionalLayerCounters();
+        // EMISSION FUNNEL: restore the SECTION 10 counters the same way, so a
+        // reload no longer zeroes the exit-path attribution record.
+        await signalEngine.loadEmissionFunnelCounters();
         const loadedDailyOHLC = await signalEngine.loadPersistedLearningData();
         await loadPersistedData();
         if (loadedDailyOHLC && loadedDailyOHLC.length > 0) {

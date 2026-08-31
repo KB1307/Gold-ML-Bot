@@ -123,6 +123,18 @@ export interface DiagnosticsExportInput {
     emitted: number;
     accounted: number;
     invariantOk: boolean;
+    /**
+     * Durable copy (AsyncStorage, hydrated at boot, max-merged, 15s flush) —
+     * survives app reloads. Optional so older callers still compile; the
+     * section then reports the durable block as NOT INSTRUMENTED.
+     */
+    durableAttempts?: number;
+    durableRejections?: Record<string, number>;
+    durableRejectionTotal?: number;
+    durableEmitted?: number;
+    durableAccounted?: number;
+    durableInvariantOk?: boolean;
+    durableHydrated?: boolean;
   } | null;
   /**
    * ITEM 17b/17c: entry-anchor + geometry gate counters
@@ -1014,6 +1026,14 @@ function formatEmissionFunnelSection(
     emitted: number;
     accounted: number;
     invariantOk: boolean;
+    /** Durable copy (AsyncStorage) — optional so older callers still compile. */
+    durableAttempts?: number;
+    durableRejections?: Record<string, number>;
+    durableRejectionTotal?: number;
+    durableEmitted?: number;
+    durableAccounted?: number;
+    durableInvariantOk?: boolean;
+    durableHydrated?: boolean;
   } | null | undefined,
   anchorStats: {
     anchorChecks: number;
@@ -1046,6 +1066,37 @@ function formatEmissionFunnelSection(
     ` vs attempts ${funnel.attempts} → ${funnel.invariantOk ? "PASS" : "FAIL — an exit path is unaccounted; investigate before trusting any rate above"}`,
   );
   lines.push("");
+  if (typeof funnel.durableAttempts === "number") {
+    lines.push("DURABLE (survives app reloads — AsyncStorage, max-merged at boot, 15s flush throttle):");
+    lines.push(`  attempts: ${funnel.durableAttempts}`);
+    const durableSorted = Object.entries(funnel.durableRejections ?? {}).sort(
+      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+    );
+    if (durableSorted.length === 0) {
+      lines.push("  (no durable rejections recorded)");
+    } else {
+      for (const [label, count] of durableSorted) {
+        const pct = funnel.durableAttempts > 0 ? ((count / funnel.durableAttempts) * 100).toFixed(1) : "n/a";
+        lines.push(`  ❌ REJECTED ${label}: ${count} (${pct}% of durable attempts)`);
+      }
+    }
+    lines.push(`EMITTED (durable): ${funnel.durableEmitted ?? 0}`);
+    if (funnel.durableHydrated === false) {
+      lines.push("  (not yet hydrated from storage at export time — durable block may trail the live counters)");
+    }
+    lines.push(
+      `INVARIANT (durable): sum(rejections) ${funnel.durableRejectionTotal ?? 0} + emitted ${funnel.durableEmitted ?? 0} = ${funnel.durableAccounted ?? 0}` +
+      ` vs durable attempts ${funnel.durableAttempts} → ${
+        funnel.durableInvariantOk
+          ? "PASS"
+          : "SHORT — a hard reload can lose the last ≤15s of counts (flush throttle); a small shortfall is flush-tail loss, not an unaccounted exit"
+      }`,
+    );
+    lines.push("");
+  } else {
+    lines.push("Durable funnel counters: NOT INSTRUMENTED in this bundle (funnel resets on every reload).");
+    lines.push("");
+  }
   if (anchorStats) {
     lines.push("ITEM 17b/17c anchor + geometry gate counters (sub-gate detail; these count evaluations, not 1:1 with attempts):");
     lines.push(`  anchorChecks: ${anchorStats.anchorChecks}`);
@@ -1056,7 +1107,9 @@ function formatEmissionFunnelSection(
     lines.push("ITEM 17b/17c anchor/geometry gate counters: NOT INSTRUMENTED in this export.");
   }
   lines.push("");
-  lines.push("Counter semantics: process-lifetime, in-memory (like signalGenerationAttempts).");
+  lines.push("Counter semantics: the top block is process-lifetime, in-memory (like");
+  lines.push("signalGenerationAttempts); the DURABLE block survives app reloads in");
+  lines.push("AsyncStorage and is max-merged at boot — a reload never resets it down.");
   lines.push("One bucket per generateSignal() exit — the ❌ REJECTED log line and the bucket");
   lines.push("always move together. The conviction/strength-difference ❌ lines inside");
   lines.push("enhancedTransformerAnalysis are NOT exits and have no bucket by design.");

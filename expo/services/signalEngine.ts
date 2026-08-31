@@ -330,6 +330,13 @@ const DAILY_OHLC_STORAGE_KEY = 'daily_ohlc_history_v1';
  */
 const DIRECTIONAL_LAYER_COUNTERS_KEY = 'directional_layer_counters_v1';
 /**
+ * EMISSION FUNNEL durable counters (SECTION 10). Same key-space rationale as
+ * DIRECTIONAL_LAYER_COUNTERS_KEY above: per-install telemetry with no
+ * cross-device meaning, written through AsyncStorage so the exit-path funnel
+ * survives an app reload instead of restarting attribution from zero.
+ */
+const EMISSION_FUNNEL_COUNTERS_KEY = 'emission_funnel_counters_v1';
+/**
  * Step 3 — expanded persisted learning memory.
  * A 24h accelerated real-market replay (scripts/runSignalSimulation.ts)
  * produced 5 signals/day with 2 reaching a terminal WIN/LOSS outcome the same
@@ -1712,13 +1719,45 @@ class SignalGenerationEngine {
    * deliberately NOT buckets: they are sub-gates of scoring, not exits — the
    * attempt continues after them.
    * Invariant: sum(rejections) + emitted === attempts. getEmissionFunnel()
-   * reports the check so an unaccounted exit is visible immediately.
+   * reports the check so an unaccounted exit is visible immediately. The
+   * in-process counters are mirrored into a durable AsyncStorage copy that
+   * survives app reloads (funnelDurable below).
    */
   private emissionFunnelRejections: Record<string, number> = {};
   private emissionFunnelEmitted: number = 0;
+  /**
+   * EMISSION FUNNEL durability: the in-memory counters above die with the JS
+   * process on every app reload, so the funnel also keeps a durable copy that
+   * hydrates from AsyncStorage at boot (max-merged — never resets a live count
+   * down) and flushes on the same 15s throttle as the SECTION 8 counters. A hard
+   * reload can lose at most the last ~15s of counts; the durable invariant
+   * check reports that shortfall honestly instead of hiding it.
+   */
+  private funnelDurable: { attempts: number; rejections: Record<string, number>; emitted: number } = {
+    attempts: 0,
+    rejections: {},
+    emitted: 0,
+  };
+  private funnelFlushedAt: number = 0;
+  /** Set once the persisted funnel has been read back in (loadEmissionFunnelCounters). */
+  private funnelHydrated: boolean = false;
 
   private recordFunnelRejection(label: string): void {
     this.emissionFunnelRejections[label] = (this.emissionFunnelRejections[label] ?? 0) + 1;
+    this.funnelDurable.rejections[label] = (this.funnelDurable.rejections[label] ?? 0) + 1;
+    this.persistEmissionFunnelCounters();
+  }
+
+  /** Durable attempt counter — incremented next to signalGenerationAttempts. */
+  private recordFunnelAttempt(): void {
+    this.funnelDurable.attempts += 1;
+    this.persistEmissionFunnelCounters();
+  }
+
+  /** Durable emitted counter — incremented at the single confirmed-emission point. */
+  private recordFunnelEmission(): void {
+    this.funnelDurable.emitted += 1;
+    this.persistEmissionFunnelCounters();
   }
 
   /** EMISSION FUNNEL — read access for the diagnostics export (SECTION 10). */
@@ -1729,6 +1768,13 @@ class SignalGenerationEngine {
     emitted: number;
     accounted: number;
     invariantOk: boolean;
+    durableAttempts: number;
+    durableRejections: Record<string, number>;
+    durableRejectionTotal: number;
+    durableEmitted: number;
+    durableAccounted: number;
+    durableInvariantOk: boolean;
+    durableHydrated: boolean;
   } {
     const rejections: Record<string, number> = {};
     let rejectionTotal = 0;
@@ -1737,6 +1783,13 @@ class SignalGenerationEngine {
       rejectionTotal += count;
     }
     const accounted = rejectionTotal + this.emissionFunnelEmitted;
+    const durableRejections: Record<string, number> = {};
+    let durableRejectionTotal = 0;
+    for (const [label, count] of Object.entries(this.funnelDurable.rejections)) {
+      durableRejections[label] = count;
+      durableRejectionTotal += count;
+    }
+    const durableAccounted = durableRejectionTotal + this.funnelDurable.emitted;
     return {
       attempts: this.signalGenerationAttempts,
       rejections,
@@ -1744,7 +1797,72 @@ class SignalGenerationEngine {
       emitted: this.emissionFunnelEmitted,
       accounted,
       invariantOk: accounted === this.signalGenerationAttempts,
+      durableAttempts: this.funnelDurable.attempts,
+      durableRejections,
+      durableRejectionTotal,
+      durableEmitted: this.funnelDurable.emitted,
+      durableAccounted,
+      durableInvariantOk: durableAccounted === this.funnelDurable.attempts,
+      durableHydrated: this.funnelHydrated,
     };
+  }
+
+  /**
+   * EMISSION FUNNEL durability — hydrate from AsyncStorage so the funnel
+   * survives an app reload. Idempotent; max-merge semantics mean a corrupt or
+   * absent record never resets a live count down (same contract as the SECTION 8
+   * counters). Called during boot next to loadDirectionalLayerCounters.
+   */
+  public async loadEmissionFunnelCounters(): Promise<void> {
+    if (this.funnelHydrated) return;
+    this.funnelHydrated = true;
+    try {
+      const raw = await AsyncStorage.getItem(EMISSION_FUNNEL_COUNTERS_KEY);
+      if (!raw) {
+        console.log('ℹ️ [EmissionFunnel] no persisted counters yet — starting from 0');
+        return;
+      }
+      const parsed = JSON.parse(raw) as { attempts?: unknown; rejections?: unknown; emitted?: unknown };
+      if (typeof parsed.attempts === 'number' && Number.isFinite(parsed.attempts) && parsed.attempts >= 0) {
+        this.funnelDurable.attempts = Math.max(this.funnelDurable.attempts, Math.floor(parsed.attempts));
+      }
+      if (typeof parsed.emitted === 'number' && Number.isFinite(parsed.emitted) && parsed.emitted >= 0) {
+        this.funnelDurable.emitted = Math.max(this.funnelDurable.emitted, Math.floor(parsed.emitted));
+      }
+      if (typeof parsed.rejections === 'object' && parsed.rejections !== null) {
+        for (const [label, count] of Object.entries(parsed.rejections as Record<string, unknown>)) {
+          if (typeof count === 'number' && Number.isFinite(count) && count >= 0) {
+            this.funnelDurable.rejections[label] = Math.max(this.funnelDurable.rejections[label] ?? 0, Math.floor(count));
+          }
+        }
+      }
+      const durableTotal = Object.values(this.funnelDurable.rejections).reduce((a, b) => a + b, 0);
+      console.log(
+        `✓ [EmissionFunnel] restored attempts=${this.funnelDurable.attempts} rejections=${durableTotal} emitted=${this.funnelDurable.emitted}`,
+      );
+    } catch (error: unknown) {
+      console.warn('⚠️ [EmissionFunnel] load failed (non-blocking):', error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
+   * EMISSION FUNNEL durability — throttled fire-and-forget flush, same 15s floor
+   * as persistDirectionalLayerCounters: at most one write per 15s, so a hard
+   * reload loses at most the last ~15s of counts.
+   */
+  private persistEmissionFunnelCounters(): void {
+    const now = Date.now();
+    if (now - this.funnelFlushedAt < 15_000) return;
+    this.funnelFlushedAt = now;
+    const payload = JSON.stringify({
+      attempts: this.funnelDurable.attempts,
+      rejections: this.funnelDurable.rejections,
+      emitted: this.funnelDurable.emitted,
+      updatedAt: now,
+    });
+    AsyncStorage.setItem(EMISSION_FUNNEL_COUNTERS_KEY, payload).catch((error: unknown) => {
+      console.warn('⚠️ [EmissionFunnel] persist failed (non-blocking):', error instanceof Error ? error.message : String(error));
+    });
   }
   /**
    * F6 criterion 4 telemetry (COUNTERS ONLY — no scoring effect).
@@ -8549,6 +8667,7 @@ class SignalGenerationEngine {
     const now = Date.now();
     const startTime = performance.now();
     this.signalGenerationAttempts++;
+    this.recordFunnelAttempt();
     this.recentAttemptTimestamps.push(now);
     this.getRecentAttemptCount(now);
     
@@ -9918,6 +10037,7 @@ class SignalGenerationEngine {
     }
 
     this.emissionFunnelEmitted += 1;
+    this.recordFunnelEmission();
     const emittedSignalId = `signal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
     // ITEM 52(b) — EMISSION PERSISTENCE. Fire-and-forget durable write of every

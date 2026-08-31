@@ -111,3 +111,17 @@ reopen 2026-08-30T22:00Z, generateSignal every 30s, 961 attempts to
   - Note: the funnel counters are process-lifetime and in-memory (like
     signalGenerationAttempts). The first diagnostics export taken from the
     next build carries SECTION 10; exports from the pre-fix bundle cannot.
+
+UPDATE — FUNNEL MADE DURABLE (same round; user question:
+"will the emissions record die or clear on every paid reload"):
+  - AS-SHIPPED it died on every reload (process-lifetime only) — the exact
+    reason full-day per-gate attribution for 2026-08-31 was impossible.
+  - NOW DURABLE: AsyncStorage key emission_funnel_counters_v1
+    { attempts, rejections{}, emitted, updatedAt }, hydrated at boot in
+    TradingContext next to loadDirectionalLayerCounters (max-merge — a
+    reload never resets a count down), flushed from every attempt /
+    rejection / emission increment on the same 15s throttle as SECTION 8
+    (a hard reload loses at most the last ~15s of counts).
+  - getEmissionFunnel() returns BOTH views; SECTION 10 renders the process
+    block + a DURABLE block with its own invariant line (a small durable
+    shortfall is labeled flush-tail loss, not an unaccounted exit).
