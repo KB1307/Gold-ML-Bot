@@ -1,0 +1,296 @@
+ROUND: AD (settings range) / AG (counter-trend gates) / AI (blocked hours) / AH (build marker) / AJ (live status)
+====================================================================================================
+Run date: 2026-08-31. Base HEAD 0ef38a6 (full-depth local history; user's clone reports 8032b29/e167a20 —
+commits named by the user that are ABSENT locally are flagged per item). Working tree shipped to managed
+sync; hashes below = HEAD + named files.
+
+────────────────────────────────────────────────────────────────────────────────────────
+ITEM AD — RESTORE THE SETTINGS RANGE
+────────────────────────────────────────────────────────────────────────────────────────
+AD.1 SIDE-BY-SIDE (the regression):
+  expo/app/(tabs)/settings.tsx:191-194 (handleSave):
+      const parsedMinConfidence = parseFloat(minConfidence);
+      const normalizedMinConfidence = Number.isFinite(parsedMinConfidence)
+        ? Math.max(90, Math.min(98, parsedMinConfidence)) / 100
+        : settings.minConfidence;
+  expo/contexts/TradingContext.tsx:385-387 (the two disagree — floor 0.68):
+      function clampSignalConfidenceThreshold(value: number): number {
+        return Number(Math.min(0.98, Math.max(ENFORCED_MIN_SIGNAL_CONFIDENCE, value)).toFixed(2));
+      }
+  The UI floor 0.90 > engine floor ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68
+  (services/signalEngine.ts:635). The user CANNOT set what the engine supports.
+
+AD.2 INTRODUCING COMMIT (local full-depth history, 661 commits):
+    0c00e9e 2026-03-24 15:47:01 +0000 "Agent update"
+  Touched: settings.tsx (+26), TradingContext.tsx (+28), signalEngine.ts (+19), dashboard, history,
+  PriceChart, backgroundTaskService. Stated purpose: none beyond "Agent update" — no measurement, no
+  stated rationale for the 90 floor. HONEST DISCREPANCY: the prompt's e167a20 ("Fix the web app's
+  repeated reloading") does NOT exist in this clone: `git cat-file -t e167a20` →
+    fatal: Not a valid object name e167a20
+  The regression goes on record at 0c00e9e locally; if e167a20 exists in the user's 8032b29 clone it is
+  a later re-statement of the same clamp.
+
+AD.3 FIX (shipped, working tree; runChecks(expo) PASS):
+  - services/signalEngine.ts:635: `const` → `export const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;`
+    (SINGLE source).
+  - contexts/TradingContext.tsx: local `const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;` DELETED
+    (ci_guard duplicate-constant class), replaced by:
+      // ENFORCED_MIN_SIGNAL_CONFIDENCE is imported from its SINGLE source in
+      // services/signalEngine.ts — the local 0.68 duplicate that stood here was the
+      // ci_guard duplicate-constant class.
+    and the import at :5 now reads:
+      import { signalEngine, setExternalPrice, fetchLiveGoldPriceFallback, ENFORCED_MIN_SIGNAL_CONFIDENCE } from "@/services/signalEngine";
+  - app/(tabs)/settings.tsx handleSave (the clamp):
+      // ITEM AD.3: the clamp now uses the engine's enforced floor (0.68) imported
+      // from its SINGLE source — the literal 90-floor (commit 0c00e9e) silently
+      // forbade every threshold the engine supports below 0.90 and disagreed with
+      // the context sanitizer's ENFORCED_MIN_SIGNAL_CONFIDENCE floor.
+      const normalizedMinConfidence = Number.isFinite(parsedMinConfidence)
+        ? Math.max(ENFORCED_MIN_SIGNAL_CONFIDENCE, Math.min(0.98, parsedMinConfidence / 100))
+        : settings.minConfidence;
+    No literal 90; ceiling 0.98; floor = the engine's own constant.
+  - Validation: runChecks(expo) → "Checks passed. No errors found." (full pass after all round edits).
+
+AD.4 STRING CHANGES (settings.tsx):
+  - Input placeholder: `placeholder="90"` → `placeholder="68"`.
+  - Helper text: "Signals are filtered by confidence threshold. Higher values = fewer but stronger
+    signals (72-96%)." → "... (68-98%)."
+  - No other string states or implies a 90 minimum (grep of the file for "90"/minimum/confidence).
+
+AD.5 LIVE 75% PROOF: BLOCKED-ON-DEVICE — setting the value requires the running app's UI/AsyncStorage,
+  which the sandbox cannot drive or read. What the user should see after the managed build lands:
+  set 75 → save → Settings shows 75; next generation attempt logs
+  `Base Threshold: 75%` (services/signalEngine.ts:9112 logs exactly
+  `${(settings.minConfidence * 100).toFixed(0)}%`).
+
+AD.6 CURRENT PERSISTED VALUE: not readable from the sandbox (device/preview AsyncStorage; the runtime
+  log ring retains no "Base Threshold" line in the last 5,000 lines — the running preview bundle
+  predates this round). DETERMINISTIC SUB-ANSWER: YES — on every Settings save since 0c00e9e the clamp
+  wrote max(parsed,90)/100, so any earlier persisted value below 0.90 WAS silently overwritten to
+  >= 0.90 on the next save. The fix stops further overwrites; it cannot restore the pre-clamp value.
+
+AD.7 FINAL VALUE: BLOCKED-ON-DEVICE (I cannot write the device's AsyncStorage). The clamp now ADMITS
+  0.68. Per the prompt the target is 0.68 unless the user instructs otherwise — the user should set
+  Minimum Confidence = 68 once the build lands; until then the persisted value remains whatever the
+  90-floor left it at.
+
+────────────────────────────────────────────────────────────────────────────────────────
+ITEM AG — COUNTER-TREND GATES
+────────────────────────────────────────────────────────────────────────────────────────
+AG.1 QUOTES (services/signalEngine.ts):
+  (a) isCounterTrendSignal (:8915-8922):
+      const isCounterTrendSignal = (
+        (analysis.signalType === 'BUY' && htfTrend === 'BEARISH') ||
+        (analysis.signalType === 'SELL' && htfTrend === 'BULLISH') ||
+        (analysis.signalType === 'BUY' && htfTrend === 'NEUTRAL' && ltfTrendForGate === 'BEARISH') ||
+        (analysis.signalType === 'SELL' && htfTrend === 'NEUTRAL' && ltfTrendForGate === 'BULLISH') ||
+        (analysis.signalType === 'BUY' && htfTrend === 'NEUTRAL' && features.rsi < 35) ||
+        (analysis.signalType === 'SELL' && htfTrend === 'NEUTRAL' && features.rsi > 65)
+      );
+  (b) computeRecentDrift (:10916-10923) in full:
+      private computeRecentDrift(candles: number = DRIFT_LOOKBACK_CANDLES): number | null {
+        if (this.fiveMinCandles.length < 3) return null;
+        const window = this.fiveMinCandles.slice(-Math.max(3, candles));
+        const first = window[0];
+        const last = window[window.length - 1];
+        if (!first || !last) return null;
+        return last.close - first.open;
+      }
+      (DRIFT_LOOKBACK_CANDLES = 12, 5-min candles; drift = last.close - first.open)
+  (c) Veto predicate + override (:8937-8955): driftAgainst = BUY ? -recentDrift : recentDrift;
+      driftVetoThreshold = features.atr * COUNTER_TREND_DRIFT_ATR_VETO (2.0, :613);
+      reject when driftAgainst >= threshold UNLESS
+      sweepReclaimConfirmed && analysis.confidence >= COUNTER_TREND_DRIFT_OVERRIDE_CONFIDENCE (0.85):
+      ✅ DRIFT VETO OVERRIDE: ... allowed on confirmed sweep reversal + >=85% conviction
+  (d) Mid-RSI gate (:8985-9010): when the 5-min confirmation is NOT confirmed and the alternative
+      confirmation (OB/QM/Sweep) fails and rsiMidRange:
+      ❌ REJECTED: Counter-trend signal at mid-range RSI requires 5-min candle OR OB/QM/Sweep confirmation
+      (bypass paths: RSI-extreme + confirmed sweep; alt confirmation; RSI not mid-range; 5-min confirmed)
+  (e) Near-miss store (recordNearMiss :10749-10789 + NearMissEntry interface :957+):
+      entry = { timestamp, signalType, confidence (SMOOTHED), strengthDiff, reason, rawConfidence?,
+                entryPrice, tp1, tp2, tp3, sl } — written ONLY when
+      confidence in [0.60, 0.68) OR strengthDiff in [0.04, 0.06); retained IN-MEMORY, trimmed to
+      NEAR_MISS_MAX_ENTRIES = 40 (:953, slice(-40) at :10787-10788); NOT persisted anywhere.
+
+AG.2 SHIPPED (write-only, zero live behaviour change):
+  - NEW services/counterTrendShadow.ts: anon Supabase client (storageKey
+    "rork-svc-counter-trend-shadow", OO pattern), fire-and-forget insert into shadow_candidates_v1
+    (column shape copied verbatim from bandProximityVeto.writeSuppressedCandidate / 'BAND_VETO_SUPPRESSED'):
+    { candidate_name, evaluated_at, direction, entry, sl, tp1, tp2, tp3, inputs{atr, confidence,
+    drift_against, drift_veto_threshold, drift_veto_atr_multiple, sweep_reclaim_confirmed, rsi, veto_spec} }.
+    Counted (writeSuccesses/writeFailures, greppable `[CounterTrendShadow]`), never blocks or throws;
+    a write failure NEVER changes the veto outcome.
+  - signalEngine wiring: private writeCounterTrendShadow() (geometry mirrors recordNearMiss exactly:
+    same ATR-scaled sizing, same SL floor) called at the COUNTER_TREND_DRIFT_VETO exit (~:8949) with
+    candidate_name 'DRIFT_VETO_SUPPRESSED' and at the COUNTER_TREND_MID_RSI_UNCONFIRMED exit (~:9003)
+    with 'MID_RSI_SUPPRESSED'.
+  - GATE ISOLATION: strict candidate_name equality in every query — these rows count toward NO
+    existing gate (P.3 n=30 counts ONLY 'BAND_VETO_SUPPRESSED'; exit gate ONLY 'EXIT_SHADOW_LADDER').
+  - Forward resolution: through the ONE canonical instrument (resolveSignalWithBars fromScratch +
+    lib/evCompute computeRNet, win predicate rNet > 0) — the same instrument the band-veto shadow
+    rows resolve through (the round item-series scripts read shadow_candidates_v1; there is no
+    in-app scheduled resolver for that table — stated honestly; the first resolved counts arrive
+    with the next round-status run).
+  - runChecks(expo) PASS.
+  - FIRST REAL ROW: BLOCKED-ON-MARKET + BLOCKED-ON-DEVICE — rows accrue only once the managed build
+    with this code reaches the running preview AND the market generates counter-trend attempts.
+
+AG.3 MEASUREMENTS:
+  (a) Near-miss buffer pilot: BLOCKED-ON-DEVICE. The buffer is IN-MEMORY in the running device/preview
+      process (≤40 entries, unpersisted — AG.1(e)). The sandbox cannot read another process's memory.
+      Forward: AG.2 rows supersede this buffer; the pilot's successor is the DRIFT_VETO_SUPPRESSED
+      forward cohort (n>=60 pre-registered).
+  (b) emitted_signals_v1 counter-trend cohort buckets: BLOCKED — named blocker: the counter-trend
+      columns DO NOT EXIST in the live table (the round context's claim is contradicted by the source
+      system — mindset 4):
+        GET /rest/v1/emitted_signals_v1?driftAgainst=not.is.null →
+          {"code":"42703","message":"column emitted_signals_v1.driftAgainst does not exist"}
+        same for drift_against / drift_veto_threshold / veto_predicate (all 42703).
+        Live row columns (select=* keys): only band_veto_would_fire, band_veto_zone_price,
+        pre_signal_drift — no driftAgainst, no driftVetoThreshold, no vetoPredicate.
+      Nothing to bucket; the historical "2.0 line position" question has NO data source.
+  (c) STATEMENT (AG.3(c), verbatim): the rejected cohort's EV cannot be established from history.
+      Rejected counter-trend setups left no durable record before AG.2 (near-miss buffer is 40
+      in-memory entries without full geometry for non-band rows, and the emitted table carries no
+      drift columns). Forward accrual under AG.2 is the only route.
+
+AG.4 PRE-REGISTERED PROMOTION GATE — QUOTED FROM SHIPPED CODE (services/counterTrendShadow.ts header
+  and services/signalEngine.ts writeCounterTrendShadow JSDoc, identical text):
+  ═══════════════════════════════════════════════════════════════════
+  ITEM AG.4 — PRE-REGISTERED PROMOTION GATE (verbatim):
+  A change to COUNTER_TREND_DRIFT_ATR_VETO or to the mid-RSI gate may be
+  proposed only when forward decided DRIFT_VETO_SUPPRESSED n >= 60 (and
+  MID_RSI_SUPPRESSED n >= 40 respectively) AND the cohort's canonical EV_net
+  95% CI lower bound > 0 (the rejected trades would have been net winners).
+  Until then: observation only. RECOMMENDATION ONLY.
+  ═══════════════════════════════════════════════════════════════════
+
+────────────────────────────────────────────────────────────────────────────────────────
+ITEM AI — BLOCKED_UTC_HOURS = [4, 11] (measure only)
+────────────────────────────────────────────────────────────────────────────────────────
+AI.1 JUSTIFICATION ON RECORD:
+  Commit (local): 647ea26 2026-07-29 10:22:25 +0000 "Improved trade accuracy and updated profit goals
+  for the gold trading system." (introduces BLOCKED_UTC_HOURS in signalEngine.ts; +343 lines in that
+  file; commit body carries no measurement).
+  Artifact: NONE dedicated — grep of expo/artifacts/*.txt finds no hours-4/11 justification artifact;
+  the only in-repo measurement citing the gate is scripts/item110_114_measure.ts (:273), whose label
+  set was: stored trade_outcomes_v1 realized_r, win predicate `isWin: rNet > 0` (:188) — i.e. the
+  PRE-canonical-resolver stored labels (mixing gross-writer and net-writer rows; see
+  artifacts/canonical_book_2026-08-26.txt A0: 37 gross / 301 net / 14 neither of n=352). The gate's
+  justification therefore predates the canonical instrument, as the prompt states.
+
+AI.2 RE-MEASURED CANONICALLY (scripts/item_ai2_by_hour.ts, run 2026-08-31T15:56:22Z):
+  Instrument = canonicalBook.ts machinery unchanged: REAL resolveSignalWithBars fromScratch, 8h window,
+  safeBarStart = emitted+60s, decided = outcomeResult !== null, quotable book = decided AND full 8h
+  coverage, cost $0.20/trade (NET), bootstrap CI seed 20260824 / 10k iters, era boundary
+  2026-07-16T10:51:28.481Z. Population: 490 emitted rows, 62,975 bars (2026-06-29 -> 2026-08-31T15:55Z),
+  472 decided with full coverage. POWER FIRST — MDE = 2.802/sqrt(n) R (80% power, two-sided 5%, sigma~=1R):
+
+  hour_utc |   n |  MDE    | WR     | EV_net            | 95% CI_net (bootstrap)      | era: pre/post-boundary
+   0Z      |  18 | ±0.6604R | 77.8% | +0.4818R | [0.0385, 0.8986] | 12/6
+   1Z      |  14 | ±0.7489R | 71.4% | +0.1811R | [-0.2665, 0.5972] | 9/5
+   2Z      |  13 | ±0.7771R | 38.5% | -0.4327R | [-0.8286, 0.0451] | 7/6
+   3Z      |  18 | ±0.6604R | 83.3% | +0.2626R | [-0.0502, 0.5655] | 15/3
+   4Z      |  12 | ±0.8089R | 66.7% | -0.0033R | [-0.4808, 0.4629] | 8/4 [BLOCKED_UTC_HOURS]
+   5Z      |  15 | ±0.7235R | 46.7% | -0.1411R | [-0.6480, 0.3855] | 8/7
+   6Z      |  21 | ±0.6114R | 42.9% | -0.1903R | [-0.6173, 0.2706] | 6/15
+   7Z      |  35 | ±0.4736R | 62.9% | -0.0468R | [-0.3169, 0.2454] | 9/26
+   8Z      |  25 | ±0.5604R | 60.0% | -0.0803R | [-0.4014, 0.2433] | 11/14
+   9Z      |  19 | ±0.6428R | 73.7% | +0.1093R | [-0.2480, 0.4420] | 8/11
+  10Z      |  29 | ±0.5203R | 65.5% | -0.1316R | [-0.3798, 0.0976] | 11/18
+  11Z      |  13 | ±0.7771R | 30.8% | -0.5285R | [-0.9415, -0.0097] | 11/2 [BLOCKED_UTC_HOURS]
+  12Z      |  14 | ±0.7489R | 57.1% | -0.0546R | [-0.5532, 0.4448] | 8/6
+  13Z      |  43 | ±0.4273R | 67.4% | +0.2389R | [-0.0504, 0.5311] | 24/19
+  14Z      |  40 | ±0.4430R | 65.0% | +0.0360R | [-0.2354, 0.3071] | 25/15
+  15Z      |  38 | ±0.4545R | 52.6% | -0.2562R | [-0.4964, -0.0068] | 20/18
+  16Z      |  40 | ±0.4430R | 62.5% | +0.2284R | [-0.1157, 0.5626] | 14/26
+  17Z      |   9 | ±0.9340R | 77.8% | +0.2610R | [-0.2989, 0.8121] | 4/5
+  18Z      |   8 | ±0.9907R | 75.0% | +0.1629R | [-0.3795, 0.7078] | 6/2
+  19Z      |  12 | ±0.8089R | 75.0% | +0.0337R | [-0.3700, 0.3943] | 6/6
+  20Z      |  15 | ±0.7235R | 73.3% | +0.0250R | [-0.3393, 0.3580] | 7/8
+  21Z      |   0 | n/a     | n/a    | n/a
+  22Z      |  11 | ±0.8448R | 54.5% | -0.0720R | [-0.6149, 0.5170] | 4/7
+  23Z      |  10 | ±0.8861R | 70.0% | +0.1171R | [-0.4229, 0.6577] | 7/3
+
+  BLOCKED HOURS [4,11] combined : n=25  MDE=±0.5604R  WR=48.0%  EV_net=-0.2764R  CI=[-0.6098, 0.0719]
+                                  (pre-boundary n=19 — mostly pre-gate-era rows, as predicted)
+  ALL OTHER HOURS combined      : n=447  MDE=±0.1325R  WR=63.5%  EV_net=+0.0312R  CI=[-0.0514, 0.1149]
+  worst hours by EV_net (n>=8)  : 11Z (-0.5285R) | 2Z (-0.4327R) | 15Z (-0.2562R)
+
+AI.3 RECOMMENDATION (ONLY — nothing changes live this round):
+  - Hour 11: the ONLY blocked hour whose canonical CI excludes zero on the negative side
+    ([-0.9415, -0.0097]) — the block is JUSTIFIED for 11Z. Keep it.
+  - Hour 4: EV_net -0.0033R, CI [-0.4808, 0.4629] — statistically indistinguishable from zero AND from
+    the book-wide mean; canonically it does NOT justify a daily block (today it consumed 132 attempts
+    at the 15:25Z-export rates). RECOMMENDATION: remove 4 from BLOCKED_UTC_HOURS, keep 11. Note 2Z
+    (-0.4327R) and 15Z (-0.2562R, CI upper -0.0068) are canonically WORSE than 4Z; hour 15 already
+    carries the ELEVATED_FLOOR premium; do NOT add new blocks on n<=13 samples — pre-register the same
+    promotion-gate discipline before any change.
+  - CAVEAT: 19/25 blocked-hour rows pre-date the snapshot-era boundary and power is ±0.5604R combined;
+    this is a re-measurement, not a mandate.
+
+────────────────────────────────────────────────────────────────────────────────────────
+ITEM AH — BUILD MARKER, TWELFTH STRIP
+────────────────────────────────────────────────────────────────────────────────────────
+AH.1 FAILING RUN ON THE STRIPPED TREE (babel.config.js was the 5-line Rork template, 0 occurrences of
+  rork-build-marker; metro.config.js was the 5-line withRorkMetro-only form — BOTH stripped again by sync):
+    $ bun scripts/ci_guard_duplicate_constants.ts
+      BUILD-MARKER GUARD: the dedicated Metro marker transformer is missing, unregistered, or imprecisely scoped.
+      RESULT: FAIL — 1 problem(s) in LIVE code.
+      Two sources of truth means a grep can return the wrong answer and a
+      gate can ship against a construct that was never measured.
+    $ bun scripts/ci_guard_build_marker.ts
+      self-test: all mutated fixtures correctly rejected (5/5)
+      ✗ metro.config.js: dedicated build-marker transformer is not registered.
+      ✗ ci_guard_build_marker FAILED — the build-marker chain is broken. Do not ship.
+  (This is the twelfth restoration cycle; the strip is now visible IN GIT HISTORY — commit 7d563f7
+  removed the transformer registration that 0e63c3d shipped.)
+
+AH.2 RESTORE + PASSING RUN:
+  - babel.config.js restored VERBATIM from git fad0a9b (76 lines, guard comment + rorkBuildMarkerPlugin,
+    scoping to buildMarker files only).
+  - metro.config.js restored VERBATIM from git 0e63c3d (75 lines: web-bundle serializer hardening +
+    `config.transformer.babelTransformerPath = require.resolve("./metro.build-marker-transformer")`).
+    $ bun scripts/ci_guard_duplicate_constants.ts
+      RESULT: PASS — 0 single-source constant(s), 0 parity-asserted, 0 script warning(s), across 0 live files.
+    $ bun scripts/ci_guard_build_marker.ts
+      diagnosticsExport      : sentinel detector present, no bare-literal comparison
+      ✅ ci_guard_build_marker PASSED — transformer, placeholders, and sentinel detector intact.
+    $ bun scripts/ci_guard_market_gate.ts
+      ✅ ci_guard_market_gate PASSED — the weekend market gate is wired to the shared predicate.
+
+AH.3 STATEMENT (was the Metro-transformer move adopted?):
+  YES — adopted in the repo: metro.build-marker-transformer.js exists, is registered by the restored
+  metro.config.js, is scoped to constants/buildMarker.ts, and the guard enforces the chain. BUT the
+  15:25Z export printed the LITERAL `__BUILD_SHA__` (user-reported, consistent with the pre-strip
+  tree's failure mode): the HOSTED build pipeline does not run this repo's metro.config.js — the
+  platform's bundler owns its own transform chain, and platform sync strips BOTH config files
+  (babel.config.js AND metro.config.js, per 7d563f7). Consequence, stated honestly: restoring is not
+  a fix; the guard is a detector, not a prevention. What can ship next round: (i) the guard stays the
+  mechanical detector of every strip; (ii) the only in-repo path that could survive the strip is a
+  marker derivation that does NOT depend on either config file (e.g. buildMarker.ts computing the SHA
+  at module init from an injected value the platform cannot own) — PROPOSED, not shipped this round;
+  (iii) the strip itself remains a platform-side escalation, joined to the NN.2 edge/503 report.
+
+────────────────────────────────────────────────────────────────────────────────────────
+ITEM AJ — LIVE STATUS AFTER AD
+────────────────────────────────────────────────────────────────────────────────────────
+AJ.1 Fresh diagnostics export ≥30 min after AD with SECTION 10 DURABLE: BLOCKED-ON-DEVICE — the export
+  is produced by the running app, which still executes the pre-round bundle until managed delivery
+  propagates and the preview reloads. Expected shape restated: CONFIDENCE_BELOW_THRESHOLD (830, 57.6%)
+  falls sharply once the user sets 68; drift veto / structural / dedup buckets RISE in absolute terms
+  (more attempts reach them) — expected, not a defect. Emissions/hour before/after: NOT MEASURABLE
+  until that export exists (2 emissions / 1,441 attempts = 0.083/hour at the 15:25Z book; after-state
+  pending).
+AJ.2 First DRIFT_VETO_SUPPRESSED row in shadow_candidates_v1: BLOCKED-ON-MARKET + BLOCKED-ON-DEVICE
+  (AG.2 code must first reach the running process; then a counter-trend attempt must occur).
+AJ.3 Build-marker SHA in that export: BLOCKED-ON-DEVICE (same export), AND contingent on AH: the
+  hosted bundler must apply the transformer for a real SHA instead of the literal placeholder —
+  see AH.3; a literal `__BUILD_SHA__` in the next export is itself the AH.3 datapoint.
+
+────────────────────────────────────────────────────────────────────────────────────────
+VALIDATION
+────────────────────────────────────────────────────────────────────────────────────────
+  - runChecks(expo) AFTER AD.3/AD.4 + AG.2 code: "Checks passed. No errors found."
+  - Guards after AH.2 restore: duplicate-constants PASS (0), build-marker PASS, market-gate PASS.
+  - AI.2 script: READ-ONLY against Supabase (gold_m1_bars + emitted_signals_v1); nothing written.

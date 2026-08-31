@@ -1,5 +1,6 @@
 import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC, SignalLearningContext, DetectedSRZone } from "@/types/trading";
 import { pushShadowSellRecord, type ShadowSellRecord } from "@/services/shadowSignalService";
+import { writeCounterTrendSuppression } from "@/services/counterTrendShadow";
 import { pushEmittedSignalRecord } from "@/services/emittedSignalService";
 import { BAND_PROXIMITY_VETO_ENABLED, evaluateBandProximityVeto } from "@/services/bandProximityVeto";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -632,7 +633,7 @@ const RANGE_CONTRADICTION_MAX_CONFIDENCE = 0.72;
 const RSI_MODULATION_APPLIED_MAX = 1.5;
 // ============================================================================
 
-const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;
+export const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;
 const ENFORCED_MIN_CONFIDENCE_POWER_HOUR = 0.65;
 const ENFORCED_MIN_CONFIDENCE_LOW_LIQUIDITY = 0.72;
 const ABSOLUTE_MIN_SIGNAL_CONFIDENCE = 0.62;
@@ -8947,6 +8948,12 @@ class SignalGenerationEngine {
           console.log(`   💡 TIP: Needs a CONFIRMED sweep reversal plus >=${(COUNTER_TREND_DRIFT_OVERRIDE_CONFIDENCE * 100).toFixed(0)}% conviction to trade against a live impulse of this size.`);
           console.log(`${'='.repeat(80)}\n`);
           this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'intraday drift veto', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
+          // ITEM AG.2 — forward instrumentation (write-only, fire-and-forget): the
+          // rejected setup is persisted to shadow_candidates_v1 under the STRICT
+          // candidate_name 'DRIFT_VETO_SUPPRESSED' so the "gate or leak" question
+          // is answered by forward canonical rows, not by reasoning. See the
+          // pre-registered promotion gate on writeCounterTrendShadow below.
+          this.writeCounterTrendShadow('DRIFT_VETO_SUPPRESSED', analysis.signalType, analysis.confidence, { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips }, { driftAgainst, driftVetoThreshold, sweepReclaimConfirmed, rsi: features.rsi });
           this.recordFunnelRejection('COUNTER_TREND_DRIFT_VETO');
           return null;
         }
@@ -8999,6 +9006,9 @@ class SignalGenerationEngine {
             console.log(`   💡 TIP: ${requires5MinConfirmation.tip}`);
             console.log(`${'='.repeat(80)}\n`);
             this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'counter-trend mid-RSI unconfirmed', { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips });
+            // ITEM AG.2 — forward instrumentation, candidate_name 'MID_RSI_SUPPRESSED'
+            // (strict equality; counts toward NO existing gate). Write-only.
+            this.writeCounterTrendShadow('MID_RSI_SUPPRESSED', analysis.signalType, analysis.confidence, { entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips }, { driftAgainst: recentDrift !== null ? (analysis.signalType === 'BUY' ? -recentDrift : recentDrift) : null, driftVetoThreshold: recentDrift !== null ? features.atr * COUNTER_TREND_DRIFT_ATR_VETO : null, sweepReclaimConfirmed: features.sessionSweeps.some(s => s.reversalConfirmed), rsi: features.rsi });
             this.recordFunnelRejection('COUNTER_TREND_MID_RSI_UNCONFIRMED');
             return null;
           } else {
@@ -10913,6 +10923,70 @@ class SignalGenerationEngine {
    * synthetic substitute). Feeds the drift veto that stops the engine firing
    * repeatedly into a live impulse.
    */
+  /**
+   * ITEM AG.2 — FORWARD INSTRUMENTATION for the counter-trend gates
+   * (WRITE-ONLY — zero live behaviour change). Persists every rejected
+   * counter-trend setup to shadow_candidates_v1 under the STRICT candidate_name
+   * 'DRIFT_VETO_SUPPRESSED' / 'MID_RSI_SUPPRESSED' with full geometry, resolved
+   * forward through the ONE canonical instrument (resolveSignalWithBars
+   * fromScratch + lib/evCompute computeRNet, win predicate rNet > 0).
+   *
+   * ═══════════════════════════════════════════════════════════════════
+   * ITEM AG.4 — PRE-REGISTERED PROMOTION GATE (verbatim):
+   * A change to COUNTER_TREND_DRIFT_ATR_VETO or to the mid-RSI gate may be
+   * proposed only when forward decided DRIFT_VETO_SUPPRESSED n >= 60 (and
+   * MID_RSI_SUPPRESSED n >= 40 respectively) AND the cohort's canonical EV_net
+   * 95% CI lower bound > 0 (the rejected trades would have been net winners).
+   * Until then: observation only. RECOMMENDATION ONLY.
+   * ═══════════════════════════════════════════════════════════════════
+   *
+   * GATE ISOLATION: strict candidate_name equality in every query — these rows
+   * count toward NO existing gate (P.3 n=30 counts ONLY 'BAND_VETO_SUPPRESSED';
+   * the exit gate counts ONLY 'EXIT_SHADOW_LADDER'; never a range, prefix
+   * match, or name-omitted filter).
+   *
+   * Geometry mirrors recordNearMiss exactly (same ATR-scaled sizing, same
+   * 1.4R-scalper SL floor) so forward rows are graded against the same ladder
+   * a real signal would have received. A write failure never changes the veto
+   * outcome — the veto is applied regardless.
+   */
+  private writeCounterTrendShadow(
+    candidateName: 'DRIFT_VETO_SUPPRESSED' | 'MID_RSI_SUPPRESSED',
+    signalType: SignalType,
+    confidence: number,
+    snapshot: { entryPrice: number; atr: number; tp1Pips: number; tp2Pips: number; tp3Pips: number; slPips: number },
+    extra: { driftAgainst: number | null; driftVetoThreshold: number | null; sweepReclaimConfirmed: boolean; rsi: number | null },
+  ): void {
+    const pipValue = 0.1;
+    const atrMultiplier = Math.max(1.0, Math.min(1.6, 0.7 + snapshot.atr * 0.06));
+    const atrFloorSlPips = (snapshot.atr * MIN_SL_ATR_MULTIPLE) / pipValue;
+    const slPips = Math.max(snapshot.slPips * atrMultiplier, atrFloorSlPips);
+    const dir = signalType === 'BUY' ? 1 : -1;
+    const entry = snapshot.entryPrice;
+    writeCounterTrendSuppression({
+      candidateName,
+      direction: signalType === 'SELL' ? 'SELL' : 'BUY',
+      evaluatedAt: Date.now(),
+      entry,
+      sl: entry - dir * slPips * pipValue,
+      tp1: entry + dir * snapshot.tp1Pips * pipValue,
+      tp2: entry + dir * snapshot.tp2Pips * pipValue,
+      tp3: entry + dir * snapshot.tp3Pips * pipValue,
+      inputs: {
+        atr: Math.round(snapshot.atr * 1000) / 1000,
+        confidence: Math.round(confidence * 1000) / 1000,
+        drift_against: extra.driftAgainst !== null ? Math.round(extra.driftAgainst * 100) / 100 : null,
+        drift_veto_threshold: extra.driftVetoThreshold !== null ? Math.round(extra.driftVetoThreshold * 100) / 100 : null,
+        drift_veto_atr_multiple: COUNTER_TREND_DRIFT_ATR_VETO,
+        sweep_reclaim_confirmed: extra.sweepReclaimConfirmed,
+        rsi: extra.rsi !== null ? Math.round(extra.rsi * 10) / 10 : null,
+        veto_spec: candidateName === 'DRIFT_VETO_SUPPRESSED'
+          ? `driftAgainst >= ATR x ${COUNTER_TREND_DRIFT_ATR_VETO} without a confirmed sweep reversal + >=${(COUNTER_TREND_DRIFT_OVERRIDE_CONFIDENCE * 100).toFixed(0)}% conviction override`
+          : 'counter-trend at mid-range RSI without a confirmed 5-min candle or OB/QM/Sweep alternative confirmation',
+      },
+    });
+  }
+
   private computeRecentDrift(candles: number = DRIFT_LOOKBACK_CANDLES): number | null {
     if (this.fiveMinCandles.length < 3) return null;
     const window = this.fiveMinCandles.slice(-Math.max(3, candles));

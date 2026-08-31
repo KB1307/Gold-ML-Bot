@@ -2,7 +2,7 @@ import createContextHook from "@nkzw/create-context-hook";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { TradingSignal, SignalStatus, Settings, MarketOutlook, PerformanceMetrics, PositionSizing, DailyOHLC } from "@/types/trading";
-import { signalEngine, setExternalPrice, fetchLiveGoldPriceFallback } from "@/services/signalEngine";
+import { signalEngine, setExternalPrice, fetchLiveGoldPriceFallback, ENFORCED_MIN_SIGNAL_CONFIDENCE } from "@/services/signalEngine";
 import { migrateSettingsToV2, SETTINGS_SCHEMA_VERSION } from "@/services/settingsMigration";
 import { Platform, AppState, type AppStateStatus } from "react-native";
 import { fetchHistoricalData } from "@/lib/trpc";
@@ -212,7 +212,9 @@ async function fetchSupabaseGoldBars(fromTime: number, toTime: number): Promise<
     return [];
   }
 }
-const ENFORCED_MIN_SIGNAL_CONFIDENCE = 0.68;
+// ENFORCED_MIN_SIGNAL_CONFIDENCE is imported from its SINGLE source in
+// services/signalEngine.ts — the local 0.68 duplicate that stood here was the
+// ci_guard duplicate-constant class.
 
 // False-SL protection thresholds.
 // A single glitch tick that pokes 0.1 pips past SL for 0 ms was closing

@@ -14,7 +14,7 @@ import {
   getTelegramDeliveryStats,
   sendTelegramMessage,
 } from "@/services/telegramNotifier";
-import { signalEngine } from "@/services/signalEngine";
+import { signalEngine, ENFORCED_MIN_SIGNAL_CONFIDENCE } from "@/services/signalEngine";
 import { buildDiagnosticsExportText } from "@/services/diagnosticsExport";
 import { getVetoFunnel } from "@/services/bandProximityVeto";
 import { publishDiagnosticsExport } from "@/services/diagnosticsExportStore";
@@ -189,8 +189,12 @@ export default function SettingsScreen() {
 
   const handleSave = async () => {
     const parsedMinConfidence = parseFloat(minConfidence);
+    // ITEM AD.3: the clamp now uses the engine's enforced floor (0.68) imported
+    // from its SINGLE source — the literal 90-floor (commit 0c00e9e) silently
+    // forbade every threshold the engine supports below 0.90 and disagreed with
+    // the context sanitizer's ENFORCED_MIN_SIGNAL_CONFIDENCE floor.
     const normalizedMinConfidence = Number.isFinite(parsedMinConfidence)
-      ? Math.max(90, Math.min(98, parsedMinConfidence)) / 100
+      ? Math.max(ENFORCED_MIN_SIGNAL_CONFIDENCE, Math.min(0.98, parsedMinConfidence / 100))
       : settings.minConfidence;
 
     await updateSettings({
@@ -782,13 +786,13 @@ export default function SettingsScreen() {
                   value={minConfidence}
                   onChangeText={setMinConfidence}
                   keyboardType="decimal-pad"
-                  placeholder="90"
+                  placeholder="68"
                   placeholderTextColor="#666"
                 />
               </View>
 
               <Text style={styles.helperText}>
-                Signals are filtered by confidence threshold. Higher values = fewer but stronger signals (72-96%).
+                Signals are filtered by confidence threshold. Higher values = fewer but stronger signals (68-98%).
               </Text>
 
               <View style={styles.tpSelector}>
