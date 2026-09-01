@@ -1868,6 +1868,29 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           }
         }
         
+        // P-3 FRESH-BOOT GUARD (catch-up fallback path): this branch evaluates
+        // the CURRENT price, not bars — the same authority the live tick monitor
+        // is denied for a pre-boot unvalidated signal. Same rule, same exemption:
+        // once the bar-based catch-up validates the signal, the fallback resumes.
+        const fallbackTerminalBlocked = TERMINAL_SIGNAL_STATUSES.includes(newStatus)
+          && !TERMINAL_SIGNAL_STATUSES.includes(signal.status)
+          && (signal.createdAt ?? new Date(signal.timestamp).getTime()) < appLaunchTime
+          && !barValidatedSignalsRef.current.has(signal.id);
+        if (fallbackTerminalBlocked) {
+          if (!freshBootGuardLoggedRef.current.has(signal.id)) {
+            freshBootGuardLoggedRef.current.add(signal.id);
+            console.log(`🛡️ FRESH-BOOT GUARD (fallback): Signal ${signal.id.slice(-6)} predates this boot and has no bar-validated state yet — price-fallback termination deferred (${signal.status} -> ${newStatus} NOT written); the bar-based catch-up/audit own the verdict`);
+            void appendDiagnosticEvent({
+              ts: Date.now(),
+              signalId: signal.id,
+              eventType: 'FRESH_BOOT_TERMINATION_DEFERRED',
+              price: currentPrice,
+              detail: { storedStatus: signal.status, attemptedStatus: newStatus, path: 'catchUpFallback' },
+            }).catch(err => console.warn('⚠️ [DiagnosticEventStore] fresh-boot guard event log failed (non-blocking):', err));
+          }
+          newStatus = signal.status;
+          targetsHit = signal.targetsHit;
+        }
         if (newStatus !== signal.status || targetsHit !== signal.targetsHit) {
           hasChanges = true;
           const exitDate = new Date();
@@ -1905,9 +1928,6 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         }
       } else {
         resolutionPathFireCountsRef.current.path2BarsResolved += 1;
-        // P-3 FRESH-BOOT GUARD: this signal has now been evaluated against real
-        // bars by the catch-up — the live tick monitor may resume ownership.
-        barValidatedSignalsRef.current.add(signal.id);
         // ITEM 41b (second half): a matured signal must still be able to reach a
         // terminal state - but ONLY on bar evidence. Forward-seeded resolution
         // can never collapse a matured-but-unresolved signal (that branch is
@@ -1929,6 +1949,20 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           ? assessBarCoverage(historicalBars, signalTime, barWindowEnd)
           : { dense: false, reason: 'not matured yet' };
         const resolveFromScratch = isMatured && maturedCoverage.dense;
+        // P-3 FRESH-BOOT GUARD: the bar-validated mark means the catch-up has
+        // RULED on this signal's full life with real bars — only then may the
+        // live tick monitor resume ownership. A matured signal with insufficient
+        // coverage gets NO ruling (Item 41b deliberately leaves it unchanged for
+        // a later pass), so marking it here would lift the fresh-boot guard while
+        // the signal is still unruled — measured 2026-09-01: exactly that lifted
+        // guard let the live monitor re-terminate backfilled signals from the
+        // current price (LOSS@SL re-clobbering server rows the P-1 audit had
+        // corrected, exits 13:32:51-52Z at exact SL levels). Non-matured
+        // signals' whole life IS the evaluated window, so they are marked as
+        // before. Byte-identical for post-boot signals (guard never engages).
+        if (!isMatured || resolveFromScratch) {
+          barValidatedSignalsRef.current.add(signal.id);
+        }
         if (isMatured) {
           console.log(`   ⏳ [Item 41b] Signal matured (${(signalAge / 3600000).toFixed(1)}h >= ${(RESOLUTION_WINDOW_MS / 3600000).toFixed(0)}h): coverage ${maturedCoverage.reason} → ${resolveFromScratch ? 'resolving from bar evidence (fromScratch)' : 'INSUFFICIENT bar coverage, leaving status unchanged for a later pass (no guessed outcome)'}`);
         }
@@ -2036,7 +2070,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     console.log('='.repeat(80) + '\n');
     
     return updatedHistory;
-  }, [analyzeSignalWithHistoricalData, fetchPriceHistory]);
+  }, [analyzeSignalWithHistoricalData, fetchPriceHistory, appLaunchTime]);
 
   /**
    * Two-tier authoritative bar source for auditing a signal's window.

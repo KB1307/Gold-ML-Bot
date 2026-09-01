@@ -133,3 +133,56 @@ RECORDS CORRECTED (one-shot scripts/correct_sl_hit_records.ts, anon UPDATE
   P-1 on next boot.
 STATUS: SHIPPED / PROVEN / 4 RECORDS CORRECTED.
 
+══════════════════════════════════════════════════════════════════════════════
+6. REVERT LOOP (user report 2026-09-01: "audit corrects, then the resolvers
+   set them back") — MEASURED / ROOT CAUSE NAMED / FIXED / RE-CORRECTED
+══════════════════════════════════════════════════════════════════════════════
+SERVER STATE AFTER THE FIRST CORRECTION (queried 2026-09-01 ~13:4xZ):
+  901 WIN @4535.7 HELD; 908 WIN @4424.4 HELD;
+  906 REVERTED: LOSS @4433.7 r=-1, ts=2026-09-01T13:32:52.285Z (FRESH)
+  907 REVERTED: LOSS @4437   r=-1, ts=2026-09-01T13:32:51.492Z (FRESH)
+  → one live-monitor pass ~0.8s apart, exits EXACTLY at their SLs
+    (4433.7 / 4437) = the monitor's `exitPrice = signal.sl` LOSS branch
+    (:3407). The catch-up fallback would have written currentPrice ±
+    slippage — excluded. 901/908 survived because price never crossed
+    their SLs (901 SELL SL ~4546 with price ~4430; 908 SELL SL 4434.7
+    with price below it) — geometry confirms a CURRENT-PRICE termination,
+    not a bar-based one.
+ROOT CAUSE (TradingContext, code-read):
+  1. Item 194 backfill (:863-920) reconstructs server-held signals missing
+     from local history as status ACTIVE, targetsHit 0 (emitted_signals_v1
+     carries NO status columns — select=* pasted). Hosted reload-loop
+     sessions lose AsyncStorage history → the 4 signals resurrect ACTIVE.
+  2. The catch-up marked barValidatedSignalsRef (:1910) UNCONDITIONALLY in
+     the bars-resolved branch BEFORE any verdict — for a matured signal
+     with insufficient coverage the catch-up deliberately rules NOTHING
+     (Item 41b) but the mark had already LIFTED the P-3 fresh-boot guard.
+  3. Guard lifted → the live tick monitor terminated the resurrected-ACTIVE
+     signals from the CURRENT price when it crossed their SL (13:31-13:32Z)
+     → recordTradeOutcome(LOSS) → pushOutcomesToRemote (no ignoreDuplicates)
+     clobbered the corrected server rows. The P-1 audit re-corrects on the
+     next pass — the flap the user saw.
+FIXES (SHIPPED):
+  FIX 1 — guard-lift correctness: the bar-validated mark is written ONLY
+     when the catch-up actually RULED on the signal's full life:
+     !isMatured || resolveFromScratch. Matured + thin coverage = NO ruling
+     → the guard HOLDS and the monitor defers; later passes retry when
+     dense bars arrive. Byte-identical for post-boot signals.
+  FIX 2 — fallback path guard: the catch-up's price-based FALLBACK branch
+     (confirmFallbackBreach chain, runs when bars are unavailable — a
+     second termination authority the shipped P-3 guard did not cover) is
+     gated with the SAME pre-boot-unvalidated rule at its apply point;
+     blocked transitions log FRESH_BOOT_TERMINATION_DEFERRED (path
+     'catchUpFallback') and are reverted. appLaunchTime added to the
+     catch-up deps.
+VALIDATION: runChecks(expo) PASS; test_bar_evidence_correction 15/15;
+  test_post_tp2_stop + test_breakeven_toggle ALL PASS. Device behavioral
+  proof (no further LOSS re-writes at those SL levels on a fresh session)
+  BLOCKED-ON-DEVICE.
+RE-CORRECTION (same idempotent LOSS-guard script re-run):
+  906 → WIN @4443.9 r=0.275 ts 19:39 Aug 31 — VERIFIED
+  907 → WIN @4453   r=1.0125 ts 19:59 Aug 31 — VERIFIED
+  901/908 idempotent-skip (still WIN). With the guard fixes the monitor
+  can no longer re-terminate unruled pre-boot signals — expected to HOLD.
+STATUS: FIXED / RE-CORRECTED / VERIFIED.
+
