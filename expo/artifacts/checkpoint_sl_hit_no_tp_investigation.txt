@@ -93,3 +93,43 @@ P-4 TP/SL CONFIRMATION RECONCILIATION: at each bar close, reconcile the tick
     TP cannot be walked past silently.
 STATUS: MEASURED / REPORTED / user's claim CONFIRMED for 906, 907, 908, 901;
 904 honest; 902/903/905 correct.
+
+══════════════════════════════════════════════════════════════════════════════
+5. SHIPPED (user approval 2026-09-01: P-1 + P-3 + record correction)
+══════════════════════════════════════════════════════════════════════════════
+P-1 BAR-EVIDENCE CORRECTION GATE:
+  - shouldApplyBarEvidenceCorrection (signalResolver.ts, pure): fires ONLY for
+    stored SL_HIT with ZERO banked targets (the measured fingerprint) when a
+    fromScratch tape replay disagrees with a banked-target WIN. Honest
+    SL-first losses replay identically -> never corrected. One-shot per signal
+    via TradingSignal.barEvidenceCorrectedAt (additive field).
+  - Wired into auditTerminalSLSignals (runs automatically at every
+    boot/interval reconciliation + the daily force sweep):
+    fromScratch: force || isCorruptionFingerprint; the correction stamps the
+    signal + a BAR_EVIDENCE_CORRECTION diagnostic event (before/after) and
+    records the corrected outcome through the EXISTING loss->WIN branch
+    (learning engine + server push, which fixes the server row); the agreement
+    path stamps "honest stop-out verified" without changing anything.
+  - Gate bounded: signals beyond 7-day local-bar retention keep the old audit
+    skip; WIN->LOSS direction deliberately excluded.
+P-3 FRESH-BOOT GUARD:
+  - A signal created before appLaunchTime (process never observed its life)
+    and not yet bar-validated (the catch-up marks it after evaluating with
+    real bars) may NOT be terminated by the live tick monitor from the
+    current price — FRESH_BOOT_TERMINATION_DEFERRED event; the bar-based
+    catch-up/audit own the verdict. Post-boot signals unaffected.
+PROOF: scripts/test_bar_evidence_correction.ts, REAL resolver, 15/15
+  (gate matrix G1-G5 + real corruption geometry R1 -> SL_AFTER_BE WIN @4403.5
+  fires + honest SL-first R2 -> SL_HIT @4390 refuses). Regressions
+  test_post_tp2_stop.ts + test_breakeven_toggle.ts ALL PASS. runChecks PASS.
+RECORDS CORRECTED (one-shot scripts/correct_sl_hit_records.ts, anon UPDATE
+  gated .eq('result','LOSS') = idempotent, app-convention values):
+  901 -> WIN @4535.7 r=0.3125 (PARTIAL_WIN, 2 targets, ts 15:50 Aug 28)
+  906 -> WIN @4443.9 r=0.275  (SL_AFTER_BE, ts 19:39 Aug 31)
+  907 -> WIN @4453   r=1.0125 (ALL_TARGETS_HIT, ts 19:59 Aug 31)
+  908 -> WIN @4424.4 r=0.3    (SL_AFTER_BE, ts 05:31 Sep 1)
+  All readback VERIFIED. 904 (honest loss) untouched. MFE columns left as
+  measured (observational, non-label). Local device history self-corrects via
+  P-1 on next boot.
+STATUS: SHIPPED / PROVEN / 4 RECORDS CORRECTED.
+

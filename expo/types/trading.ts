@@ -118,6 +118,15 @@ export interface TradingSignal {
   learningContext?: SignalLearningContext;
   slAuditVersion?: string;
   /**
+   * P-1 BAR-EVIDENCE CORRECTION — set once the audit's fromScratch replay of the
+   * real bar tape has RULED on this signal's stored verdict. The gate is narrow
+   * (shouldApplyBarEvidenceCorrection, signalResolver.ts): only a stored SL_HIT
+   * with ZERO banked targets that the tape contradicts can be corrected, and
+   * only once. Honest SL-first losses replay identically and are stamped
+   * without any field changing.
+   */
+  barEvidenceCorrectedAt?: number;
+  /**
    * ITEM 28 (additive, telemetry only): exactly what the counter-trend
    * classifier and the intraday drift veto saw for THIS signal — drift, the
    * ATR-scaled threshold, the sweep-reclaim flag, the resulting predicate, the

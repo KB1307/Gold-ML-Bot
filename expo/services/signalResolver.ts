@@ -192,6 +192,37 @@ export function getPostTP2StopPrice(signal: TradingSignal): number {
   return getPostTP2StopLevel(signal) === 'tp1' ? signal.tp1 : signal.entryPrice;
 }
 
+/**
+ * P-1 BAR-EVIDENCE CORRECTION GATE — the narrow, reproducible exception to
+ * past-outcomes immutability (measured 2026-09-01: the live tick monitor
+ * terminated signals SL_HIT with ZERO banked targets although the real bar tape
+ * shows TP1/TP2(/TP3) were touched well before the stop bar; SL_HIT is terminal
+ * so no bar-based path ever revised them, and the cron's first-writer-wins
+ * upsert entrenched them in the durable book).
+ *
+ * A correction may fire ONLY when ALL hold:
+ *   1. the stored verdict is exactly SL_HIT with zero banked targets (the
+ *      measured corruption fingerprint — no stored banked progress exists that
+ *      a fromScratch replay could lose),
+ *   2. it has not already been ruled on once (barEvidenceCorrectedAt), and
+ *   3. the fromScratch replay of the real tape DISAGREES with a banked-target
+ *      WIN (a concrete TP touch precedes the terminal event).
+ *
+ * An honest SL-first loss replays as SL_HIT LOSS → false, byte-identical. A
+ * WIN→LOSS direction is deliberately NOT part of this gate. The decision is a
+ * pure function of (stored state, tape replay) — same tape, same verdict.
+ */
+export function shouldApplyBarEvidenceCorrection(
+  stored: { status: SignalStatus; targetsHit?: number; barEvidenceCorrectedAt?: number },
+  replay: { newStatus: SignalStatus; outcomeResult: 'WIN' | 'LOSS' | null; exitPrice?: number },
+): boolean {
+  if (typeof stored.barEvidenceCorrectedAt === 'number') return false;
+  if (stored.status !== 'SL_HIT') return false;
+  if ((stored.targetsHit ?? 0) !== 0) return false;
+  if (replay.outcomeResult !== 'WIN' || replay.newStatus === 'SL_HIT') return false;
+  return typeof replay.exitPrice === 'number' && Number.isFinite(replay.exitPrice);
+}
+
 export function resolveSignalWithBars(
   signal: TradingSignal,
   bars: OhlcBar[],

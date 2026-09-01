@@ -63,7 +63,21 @@ export type DiagnosticEventType =
    * shadow_signals_v1 Supabase table; this event provides a local
    * in-memory trace for the rolling 24h diagnostic log.
    */
-  | 'SHADOW_SELL_SUPPRESSED';
+  | 'SHADOW_SELL_SUPPRESSED'
+  /**
+   * P-1 BAR-EVIDENCE CORRECTION: fired when the audit's fromScratch replay of
+   * the real bar tape overturns a stored SL_HIT/0-TP verdict — carries the
+   * before/after status, targetsHit and exitPrice (detail.before / detail.after)
+   * so every correction is auditable against the tape that produced it.
+   */
+  | 'BAR_EVIDENCE_CORRECTION'
+  /**
+   * P-3 FRESH-BOOT GUARD: fired when the live tick monitor DEFERS a terminal
+   * write for a signal that predates the process boot and has no bar-validated
+   * state yet (detail.storedStatus / detail.attemptedStatus) — the bar-based
+   * catch-up/audit own the verdict from real price history instead.
+   */
+  | 'FRESH_BOOT_TERMINATION_DEFERRED';
 
 export interface DiagnosticEvent {
   ts: number;

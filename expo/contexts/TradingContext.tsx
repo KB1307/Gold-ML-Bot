@@ -15,7 +15,7 @@ import {
 } from "@/services/backgroundTaskService";
 import { subscribeToChartPrice, subscribeToChartHeartbeat } from "@/services/chartPriceBridge";
 import { ensureBarStoreReady, ingestTickAllTimeframes, upsertBars, getBars, getBarStoreStats, pruneOldBars, getLatestBarTimestamp, type OhlcBar } from "@/services/barStore";
-import { resolveSignalWithBars, getSignalBreakevenPolicy, getPostTP1LockPrice as computePostTP1LockPrice, getPostTP2StopPrice, POST_TP1_PROFIT_LOCK_R } from "@/services/signalResolver";
+import { resolveSignalWithBars, getSignalBreakevenPolicy, getPostTP1LockPrice as computePostTP1LockPrice, getPostTP2StopPrice, shouldApplyBarEvidenceCorrection, POST_TP1_PROFIT_LOCK_R } from "@/services/signalResolver";
 import { sendTelegramAlert } from "@/services/telegramNotifier";
 import { appendDiagnosticEvent, pruneOldDiagnosticEvents, ensureDiagnosticEventStoreReady, type DiagnosticEventType } from "@/services/diagnosticEventStore";
 import { supabase } from "@/lib/supabase";
@@ -732,6 +732,13 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   // Tracks when price first broke the SL; we only confirm SL_HIT after the
   // required duration AND minimum penetration are satisfied.
   const slBreachTrackerRef = useRef<Map<string, { firstBreachAt: number; maxPenetrationPips: number; lastPrice: number; tickCount: number }>>(new Map());
+  // P-3 FRESH-BOOT GUARD: a signal whose life predates this process boot has
+  // never been observed by the live tick path. Until the bar-based catch-up has
+  // ruled on it with real price history, the live tick monitor may not TERMINATE
+  // it from the current price alone (measured 2026-09-01: boot-moment live-tick
+  // terminations wrote SL_HIT/0-TP rows the real bar tape contradicts).
+  const barValidatedSignalsRef = useRef<Set<string>>(new Set());
+  const freshBootGuardLoggedRef = useRef<Set<string>>(new Set());
   // Path 3 (catch-up fallback, fires when NO historical bars are available)
   // breach confirmation tracker. Hardens the fallback with the SAME standard
   // Path 1 (confirmSLHit above) already has: a single point-in-time price read
@@ -1898,6 +1905,9 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         }
       } else {
         resolutionPathFireCountsRef.current.path2BarsResolved += 1;
+        // P-3 FRESH-BOOT GUARD: this signal has now been evaluated against real
+        // bars by the catch-up — the live tick monitor may resume ownership.
+        barValidatedSignalsRef.current.add(signal.id);
         // ITEM 41b (second half): a matured signal must still be able to reach a
         // terminal state - but ONLY on bar evidence. Forward-seeded resolution
         // can never collapse a matured-but-unresolved signal (that branch is
@@ -2167,6 +2177,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       const isTerminal = TERMINAL_SIGNAL_STATUSES.includes(signal.status);
       const signalAgeMs = now - new Date(signal.timestamp).getTime();
       const alreadyAudited = (signal as TradingSignal & { slAuditVersion?: string }).slAuditVersion === SL_AUDIT_VERSION;
+      // P-1 BAR-EVIDENCE CORRECTION GATE: a stored SL_HIT with ZERO banked
+      // targets is the corruption fingerprint measured on 2026-09-01 (live-tick
+      // terminations the real bar tape contradicts). For these rows — and only
+      // these — the audit re-derives the outcome fromScratch even outside a
+      // force pass: the fingerprint signal has no stored banked progress to
+      // lose, and an honest SL-first loss replays identically (no correction,
+      // no write). Signals beyond the 7-day local-bar retention keep the old
+      // skip — the gate is bounded to where the tape can actually be read.
+      const isCorruptionFingerprint = signal.status === 'SL_HIT'
+        && (signal.targetsHit ?? 0) === 0
+        && typeof signal.barEvidenceCorrectedAt !== 'number';
       // If the signal is older than local bar retention AND already audited, we
       // cannot do better than the prior pass using local bars - safe to skip to
       // save CPU. force=true (manual audit) bypasses both the audit lock and
@@ -2202,8 +2223,10 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         // to UNDO a falsely-recorded terminal (e.g. an ALL_TARGETS_HIT banked
         // off a phantom spike when price never reached TP1). Forward-seeded
         // resolution can only ratchet forward, so we re-derive from scratch
-        // when force-auditing.
-        fromScratch: force,
+        // when force-auditing — and for P-1 corruption-fingerprint rows, whose
+        // fromScratch ruling is the whole point of the gate (narrow, see
+        // shouldApplyBarEvidenceCorrection).
+        fromScratch: force || isCorruptionFingerprint,
         evalNowMs: now,
       });
       // STEP 2 (GC=F/spot investigation): durable, fire-and-forget record of
@@ -2255,6 +2278,19 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           exitTime: statusChanged ? exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) : (signal.exitTime ?? exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })),
         };
         (patched as TradingSignal & { slAuditVersion?: string }).slAuditVersion = SL_AUDIT_VERSION;
+        // P-1: stamp the ruling so the gate fires at most once per signal, and
+        // leave a durable audit trail of exactly what the tape overturned.
+        if (isCorruptionFingerprint && shouldApplyBarEvidenceCorrection(signal, barOutcome)) {
+          patched.barEvidenceCorrectedAt = Date.now();
+          console.log(`   🛡️ [P-1] Bar-evidence correction stamped on ${signal.id.slice(-6)} (was SL_HIT/0-TP, the tape says ${analysis.newStatus} @ ${analysis.exitPrice.toFixed(1)})`);
+          void appendDiagnosticEvent({
+            ts: Date.now(),
+            signalId: signal.id,
+            eventType: 'BAR_EVIDENCE_CORRECTION',
+            price: analysis.exitPrice,
+            detail: { before: { status: signal.status, targetsHit: signal.targetsHit, exitPrice: signal.exitPrice }, after: { status: analysis.newStatus, targetsHit: analysis.targetsHit, exitPrice: analysis.exitPrice }, replayFromScratch: true },
+          }).catch(err => console.warn('⚠️ [DiagnosticEventStore] bar-evidence correction event log failed (non-blocking):', err));
+        }
         updated.push(patched);
 
         console.log(`   🔧 CORRECTED: ${signal.status} -> ${analysis.newStatus} (targets ${signal.targetsHit} -> ${analysis.targetsHit})`);
@@ -2306,7 +2342,15 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         }
       } else {
         console.log(`   ✅ Audit confirms original status - marking audited`);
-        updated.push({ ...signal, slAuditVersion: SL_AUDIT_VERSION } as TradingSignal);
+        const ruled: TradingSignal = { ...signal, slAuditVersion: SL_AUDIT_VERSION } as TradingSignal;
+        // P-1: for a fingerprint signal the fromScratch replay just CONFIRMED
+        // the honest SL-first loss with real bars — stamp it so the gate does
+        // not re-run on every audit pass. Nothing about the outcome changes.
+        if (isCorruptionFingerprint && barOutcome.outcomeResult === 'LOSS' && barOutcome.newStatus === 'SL_HIT') {
+          ruled.barEvidenceCorrectedAt = Date.now();
+          console.log(`   🛡️ [P-1] Bar evidence CONFIRMS the stored SL_HIT for ${signal.id.slice(-6)} — honest stop-out verified, no correction`);
+        }
+        updated.push(ruled);
       }
     }
 
@@ -3316,6 +3360,31 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
         }
 
         if (newStatus !== signal.status || targetsHit !== signal.targetsHit || trailingSLPrice !== signal.trailingSLPrice) {
+          // P-3 FRESH-BOOT GUARD: a signal the process never observed (created
+          // before this boot) may not be TERMINATED from the live tick price
+          // before the bar-based catch-up has ruled on it. Non-terminal state
+          // updates are unaffected; once the catch-up validates the signal with
+          // real bars, live monitoring resumes exactly as before.
+          const signalCreatedAtMs = signal.createdAt ?? new Date(signal.timestamp).getTime();
+          const isPreBootUnvalidated = signalCreatedAtMs < appLaunchTime && !barValidatedSignalsRef.current.has(signal.id);
+          if (
+            isPreBootUnvalidated
+            && newStatus !== signal.status
+            && (newStatus === "SL_HIT" || newStatus === "SL_AFTER_BE" || newStatus === "ALL_TARGETS_HIT" || newStatus === "PARTIAL_WIN_SL_HIT")
+          ) {
+            if (!freshBootGuardLoggedRef.current.has(signal.id)) {
+              freshBootGuardLoggedRef.current.add(signal.id);
+              console.log(`🛡️ FRESH-BOOT GUARD: Signal ${signal.id.slice(-6)} predates this boot and has no bar-validated state yet — live-tick termination deferred (${signal.status} -> ${newStatus} NOT written); the bar-based catch-up/audit own the verdict`);
+              void appendDiagnosticEvent({
+                ts: Date.now(),
+                signalId: signal.id,
+                eventType: 'FRESH_BOOT_TERMINATION_DEFERRED',
+                price,
+                detail: { storedStatus: signal.status, attemptedStatus: newStatus },
+              }).catch(err => console.warn('⚠️ [DiagnosticEventStore] fresh-boot guard event log failed (non-blocking):', err));
+            }
+            return signal;
+          }
           if (newStatus === "SL_HIT" || newStatus === "SL_AFTER_BE" || newStatus === "ALL_TARGETS_HIT" || newStatus === "PARTIAL_WIN_SL_HIT") {
             const exitDate = new Date();
             console.log(`✅ Terminal status reached: Signal ${signal.id.slice(-6)} will remain in history only`);
@@ -3399,7 +3468,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       return updated ? updatedHistory : prevHistory;
     });
-  }, [signalTrackingSnapshot, signalUpdateTrigger, setSignalUpdateTrigger]);
+  }, [signalTrackingSnapshot, signalUpdateTrigger, setSignalUpdateTrigger, appLaunchTime]);
 
   useEffect(() => {
     updateAllSignalsStatus();
