@@ -1,0 +1,95 @@
+INVESTIGATION — "last signals show SL_HIT with no TP hits though they went to TP2+"
+(user report, 2026-09-01). READ-ONLY measurement, no live change.
+Method: expo/scripts/investigate_last_signals_sl.ts — real gold_m1_bars tape +
+the REAL resolveSignalWithBars (fromScratch, 8h window, safeBarStart=+60s,
+identical to the canonical replay item_ai2_by_hour.ts), plus trade_outcomes_v1
+reads via anon key. Nothing written anywhere.
+
+══════════════════════════════════════════════════════════════════════════════
+1. VERDICT TABLE — last 8 signals, real tape vs recorded outcome
+══════════════════════════════════════════════════════════════════════════════
+sig   dir  first touches (raw M1, rel to emission)                replay (canonical)      recorded (server book)   verdict
+901   SELL TP1@-1.7m TP2@+2.3m TP3@+10.3m  SL never(9h)           PARTIAL_WIN WIN @4535.7 LOSS @4546.2 r=-1        WRONG
+902   SELL TP1@+5.7m TP2@+7.7m TP3@+12.7m  SL never(9h)           SL_AFTER_BE WIN @4472.3 WIN @4472.3              correct
+903   BUY  TP1@+1.8m                       SL never(9h)           SL_AFTER_BE WIN @4461.1 WIN @4461.1              correct
+904   BUY  SL@+25.5m -> TP1@+139.5m TP2/TP3 later                 SL_HIT LOSS @SL         LOSS @SL r=-1            CORRECT (SL first)
+905   SELL TP1@+2.1m TP2@+7.1m TP3@+9.1m   SL@+283m               SL_AFTER_BE WIN @4432.1 WIN @4432.1              correct
+906   BUY  TP1@+1.0m TP2@+12m TP3@+14m         SL@+419m            SL_AFTER_BE WIN @4443.9 LOSS @4433.7 r=-1        WRONG
+907   BUY  TP1@+1.9m TP2@+2.9m TP3@+11.9m      SL@+345m            ALL_TARGETS WIN @4453   LOSS @4437.0 r=-1        WRONG
+908   SELL TP1@+29.5m                      SL@+33.5m              SL_AFTER_BE WIN @4424.4 LOSS @4434.7 r=-1        WRONG
+
+USER'S CLAIM: CONFIRMED. 4 of the recent "SL_HIT, no TPs" outcomes (906, 907,
+908, and 901 further back) are contradicted by the real tape — TPs were touched
+well before the SL; the canonical resolver replays all four as WINs. Exactly
+ONE of the recent losses (904) is honest: price hit the stop 25.5m after
+emission and only reached the TPs hours later, after the trade was dead.
+
+══════════════════════════════════════════════════════════════════════════════
+2. WRITER FINGERPRINT — the live-tick monitor wrote the wrong rows
+══════════════════════════════════════════════════════════════════════════════
+Recorded exit_ts vs the tape's SL bar minute (open-stamped M1 bars):
+  908: SL bar 05:34:00 -> exit_ts 05:34:48.895, created_at 05:34:50 (+2s)
+  904: SL bar 08:12:00 -> exit_ts 08:12:44.338, created_at 08:12:45 (+1s)
+  907: SL bar 01:32:00 -> exit_ts 01:32:36.156
+  906: SL bar 02:35:00 -> exit_ts 02:36:06.772
+= tick-confirmation latency (SL_CONFIRMATION_MIN_DURATION_MS + ticks) after the
+price pierce, i.e. the LIVE TICK monitor's Date.now() — not a bar timestamp.
+The server cron resolver stamps resolvedAtBarTs (bar minute, :572); these are
+not bar-aligned. The app wrote them at the real SL moment.
+
+Why that outcome survived:
+  - Locally: SL_HIT is TERMINAL. updateAllSignalsStatus skips terminal
+    statuses (TradingContext :3005) and the catch-up paths skip them too —
+    NO bar-based path ever re-examines a terminal signal, so the tape can
+    never correct the live monitor's verdict.
+  - Server-side: the app's pushOutcomesToRemote upserts with
+    onConflict:'signal_id' and NO ignoreDuplicates (learningStore.ts:597) —
+    the app's row lands/overwrites; the cron resolver's upsert uses
+    ignoreDuplicates:true (resolve-emitted-signals:605, first-writer-wins) so
+    it permanently skips signals the app already recorded. The cron would have
+    resolved 906/907/908 correctly from the same tape — it never got the vote.
+  - The durable book now contradicts ITSELF: Item 224's MFE backfill filled
+    max_favourable_target_reached_before_exit = 3 on 906 and 907 — a recorded
+    LOSS at the original SL whose own MFE columns say TP3 was touched before
+    exit.
+
+══════════════════════════════════════════════════════════════════════════════
+3. WHY ZERO TPs WERE BANKED BEFORE THE SL CONFIRMED
+══════════════════════════════════════════════════════════════════════════════
+The live tick monitor only sees the current price. For 906/907 the TP touches
+all landed within 1-15 minutes of emission (Aug 31 19:37-19:50Z) while the SL
+came 5.7-7h later (Sep 1 01:32/02:35Z). targetsHit=0 in the recorded rows means
+the monitor's state held NO banked TPs when the SL confirmed — the process was
+not observing through the touch window (hosted reload-loop class: boots every
+few seconds, sessions die between events) and/or the Item 42a tick-confirmation
+thresholds (sustained duration + penetration + multiple ticks) rejected brief
+TP touches that the bar tape banks (touched = bar range contains level), while
+the deep, sustained SL pierce confirmed. Both leave the same residue: a
+terminal SL_HIT with 0 TPs that bars contradict.
+
+ANOMALY (same entrenchment class, writer not fully attributable): 901/902/903
+carry exit_ts Aug 30 05:17-05:38Z — SUNDAY MORNING, market closed — while
+created_at is Aug 28 evening. 902/903's verdicts match the replay anyway;
+901's (LOSS @SL, mfe_target=0, mfe_r=-6.76) contradicts the tape (TP2/TP3
+within 12 minutes) and belongs to the wrong-outcome class.
+
+══════════════════════════════════════════════════════════════════════════════
+4. PROPOSALS (NOTHING CHANGED LIVE — user's call)
+══════════════════════════════════════════════════════════════════════════════
+P-1 BAR-EVIDENCE CORRECTION GATE: allow the bar-based catch-up/audit to
+    overturn a terminal status whose verdict the bar tape contradicts
+    (SL_HIT/0-TPs where the tape shows a TP touch before the SL bar), writing
+    the corrected outcome + audit trail. This is the narrow exception to
+    past-outcomes immutability: the correction is bar-evidence-driven and
+    reproducible, not a toggle.
+P-2 CRON RE-RESOLUTION: drop blind ignoreDuplicates for rows whose stored label
+    contradicts the bar replay (the mfe-vs-label contradiction is already
+    computable server-side); the cron becomes a corrector, not just a backstop.
+P-3 FRESH-BOOT GUARD: a signal the process never observed may not be
+    terminated from the current price alone before the bar-based catch-up has
+    ruled on it (prevents boot-moment SL termination of an untouched history).
+P-4 TP/SL CONFIRMATION RECONCILIATION: at each bar close, reconcile the tick
+    monitor's un-confirmed brief TP touches against the bar tape so a bar-banked
+    TP cannot be walked past silently.
+STATUS: MEASURED / REPORTED / user's claim CONFIRMED for 906, 907, 908, 901;
+904 honest; 902/903/905 correct.
