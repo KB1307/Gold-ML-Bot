@@ -186,3 +186,38 @@ RE-CORRECTION (same idempotent LOSS-guard script re-run):
   can no longer re-terminate unruled pre-boot signals — expected to HOLD.
 STATUS: FIXED / RE-CORRECTED / VERIFIED.
 
+══════════════════════════════════════════════════════════════════════════════
+7. THIRD CLOBBER + VERDICT (2026-09-04, user report: "audit corrects the
+   signal history and metrics, but refresh loses them")
+══════════════════════════════════════════════════════════════════════════════
+MEASURED (server query ~08:30Z):
+  906 REVERTED AGAIN: LOSS @4433.7, ts=2026-09-04T06:19:03.108Z
+  907 REVERTED AGAIN: LOSS @4437,   ts=2026-09-04T06:19:01.808Z
+  → one batch ~1.3s apart; updated_at UNCHANGED since the Aug-31 correction
+    write; toRemoteRow (learningStore.ts:397-443) has NO updated_at column →
+    app-side pushOutcomesToRemote writer. Exits at EXACT SL = tick-monitor
+    `exitPrice = signal.sl` fingerprint. 901/908 held WIN (SLs never crossed
+    — geometry confirms current-price termination of only the crossed ones).
+WRITER IDENTIFIED: a session running PRE-FIX code. Under the fixed tree a
+  pre-boot unvalidated signal cannot be terminated from the current price
+  (P-3 monitor guard + FIX 1 conditional mark + FIX 2 fallback guard), and a
+  catch-up fromScratch ruling produces bar-derived exits, not exact-SL — the
+  fixed code CANNOT emit this fingerprint. The public origin served
+  src_df97ac2de2e0d4709 (pre-fix) until the managed sync advanced to
+  src_727808a6a74298f7c (verified live between 06:19 and 08:31).
+HOSTED BUILD VERIFICATION (served bundle, 17,288,111 bytes, grepped):
+  BAR_EVIDENCE_CORRECTION ×1; FRESH_BOOT_TERMINATION_DEFERRED ×2;
+  catchUpFallback ×1; barEvidenceCorrectedAt ×5 → guarded build IS LIVE.
+  Render sanitizer spreads `...signal` (:423) — stamps survive re-render
+  (suspect eliminated).
+RE-CORRECTION (third run, idempotent LOSS-guard):
+  906 → WIN @4443.9 r=0.275 ts 19:39 Aug 31 — VERIFIED
+  907 → WIN @4453   r=1.0125 ts 19:59 Aug 31 — VERIFIED
+  901/908 idempotent-skip.
+HOLD PROOF: BLOCKED-ON-DEVICE/BROWSER — user hard-reloads the preview to
+  load the guarded build, closes any other session still on the old cached
+  bundle (second tab / phone can still clobber server rows), then verifies
+  history stays corrected across a refresh. Superseding-repair last checkbox
+  (one application start ≥20s on the new sourceHash) still open.
+STATUS: CAUSE NAMED / RE-CORRECTED / VERIFIED / HOLD BLOCKED-ON-BROWSER.
+
