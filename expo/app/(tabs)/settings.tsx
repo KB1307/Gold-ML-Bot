@@ -373,6 +373,19 @@ export default function SettingsScreen() {
 
       const content = buildDiagnosticsExportText({
         signalHistory,
+        // ITEM AB — the newest signal's model telemetry for SECTION 2's
+        // feature-vector block (signalHistory is newest-first).
+        recentSignalModel: signalHistory.length > 0 ? {
+          signalId: signalHistory[0].id,
+          timestamp: signalHistory[0].timestamp instanceof Date
+            ? signalHistory[0].timestamp.toISOString()
+            : String(signalHistory[0].timestamp),
+          type: signalHistory[0].type,
+          confidence: signalHistory[0].confidence,
+          learningContext: signalHistory[0].learningContext ?? null,
+        } : null,
+        // ITEM AD — shadow-mode aggregates for SECTION 11 (read-only).
+        modelShadowStats: signalEngine.getModelShadowStats(),
         modelWeights,
         modelHealth,
         performanceMetrics,

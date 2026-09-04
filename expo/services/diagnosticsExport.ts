@@ -1,9 +1,11 @@
-import { FeatureConfidence, PerformanceMetrics, TradingSignal } from "@/types/trading";
+import { FeatureConfidence, PerformanceMetrics, TradingSignal, SignalLearningContext } from "@/types/trading";
 import { renderAttentionAnnotation } from "@/services/attentionTelemetry";
 import type { signalEngine } from "@/services/signalEngine";
 import type { DiagnosticEvent } from "@/services/diagnosticEventStore";
 
 export type ModelHealthMetrics = ReturnType<typeof signalEngine.getModelHealthMetrics>;
+/** ITEM AD — shadow-mode aggregates + promotion-gate verdict (read-only). */
+export type ModelShadowStats = ReturnType<typeof signalEngine.getModelShadowStats>;
 export type RawModelWeights = {
   weights: [string, number][];
   lastTrainingTime: number;
@@ -15,6 +17,26 @@ export type RawModelWeights = {
    */
   corpusSizeAtTraining?: number | null;
   hydrateUnavailableAtTraining?: number | null;
+  /**
+   * ITEM AA — corpus-cleanup provenance. What the vector was actually fitted
+   * on: raw corpus size, how many rows carried featuresSource=
+   * 'app-bar-reconstruction' (excluded from fitting, read-side only), and how
+   * many engine-native rows were used. `null` means the vector predates the
+   * Item AA filter — provenance unknown is not the same claim as excluded 0.
+   */
+  corpusTotal?: number | null;
+  corpusExcludedReconstruction?: number | null;
+  corpusUsedForTraining?: number | null;
+  /**
+   * ITEM AC — architecture + fit provenance. 'logistic_regression_v1' once the
+   * centroid scorer has been replaced and a logistic fit has been persisted;
+   * null on a vector that predates Item AC.
+   */
+  architecture?: string | null;
+  fitIterations?: number | null;
+  fitFinalLoss?: number | null;
+  fitRowsUsed?: number | null;
+  fitExcludedNaN?: number | null;
 } | null;
 
 export interface ShadowSellSummary {
@@ -34,11 +56,33 @@ export interface ShadowSellSummary {
   recent: Array<Record<string, unknown>>;
 }
 
+export interface RecentSignalModelView {
+  signalId: string;
+  timestamp: string;
+  type: "BUY" | "SELL";
+  confidence: number;
+  learningContext: SignalLearningContext | null;
+}
+
 export interface DiagnosticsExportInput {
   signalHistory: TradingSignal[];
   modelWeights: RawModelWeights;
   modelHealth: ModelHealthMetrics;
   performanceMetrics: PerformanceMetrics;
+  /**
+   * ITEM AB — the most recent emitted signal's model telemetry (its learning
+   * context), rendered under SECTION 2 so the feature vector — including the
+   * seven new side-relative features — is visible in every export.
+   */
+  recentSignalModel?: RecentSignalModelView | null;
+
+  /**
+   * ITEM AD — shadow-mode aggregates (getModelShadowStats): counts, win rates
+   * and EV for the AGREE/DISAGREE buckets plus the promotion-gate verdict.
+   * Rendered as SECTION 11. Read-only — nothing here suppresses a signal.
+   */
+  modelShadowStats?: ModelShadowStats | null;
+
   /**
    * Item 3: recent (rolling 24h) structured resolution-decision events from
    * diagnosticEventStore.ts. Optional so callers/tests that predate this field
@@ -596,10 +640,41 @@ function formatBuildProvenanceBlock(p: BuildProvenanceInput | null | undefined):
   return lines;
 }
 
+/**
+ * ITEM AB — renders the most recent emitted signal's 13-value model vector
+ * (the six legacy scalars plus the seven side-relative features) under
+ * SECTION 2, so feature-vector changes are visible in every export. A null
+ * feature prints as "null (not computable)" — insufficient bars at emission,
+ * which training excludes and scoring standardises.
+ */
+function formatRecentSignalModelBlock(recent: RecentSignalModelView | null | undefined): string[] {
+  const lines: string[] = [""];
+  lines.push("Most recent signal — model vector (Item AB):");
+  if (!recent || !recent.learningContext) {
+    lines.push("  (no emitted signal available yet)");
+    return lines;
+  }
+  const lc = recent.learningContext;
+  lines.push(`  signal ${recent.signalId} | ${recent.timestamp} | ${recent.type} | confidence ${recent.confidence.toFixed(4)}`);
+  const fmt = (v: unknown): string => (typeof v === "number" && Number.isFinite(v) ? v.toFixed(6) : "null (not computable)");
+  lines.push(
+    `  legacy: rsi=${fmt(lc.rsi)} | atr=${fmt(lc.atr)} | volumeRatio=${fmt(lc.volumeRatio)} | ` +
+    `sentiment=${fmt(lc.sentiment?.score)} | dxyChange=${fmt(lc.dxyChange)} | timeWindowFactor=${fmt(lc.timeWindowFactor)}`,
+  );
+  lines.push(
+    `  side-relative: feat_trend_aligned=${fmt(lc.feat_trend_aligned)} | feat_rsi_aligned=${fmt(lc.feat_rsi_aligned)} | ` +
+    `feat_ema_stack=${fmt(lc.feat_ema_stack)} | feat_session_level_count=${fmt(lc.feat_session_level_count)} | ` +
+    `feat_at_day_extreme=${fmt(lc.feat_at_day_extreme)} | feat_zone_max_react=${fmt(lc.feat_zone_max_react)} | ` +
+    `feat_near_round50=${fmt(lc.feat_near_round50)}`,
+  );
+  return lines;
+}
+
 function formatModelWeightsSection(
   modelWeights: RawModelWeights,
   learningCorpusStats?: LearningCorpusStatsInput | null,
   outboundPushStats?: OutboundPushStatsInput | null,
+  recentSignalModel?: RecentSignalModelView | null,
 ): string {
   const lines: string[] = [RULE, "SECTION 2 — MODEL WEIGHTS (model_weights_v1)", RULE];
   if (!modelWeights) {
@@ -628,6 +703,32 @@ function formatModelWeightsSection(
           : modelWeights.hydrateUnavailableAtTraining
       }`,
     );
+    // ITEM AA — what the vector was actually fitted on after the read-side
+    // reconstruction-row exclusion. UNKNOWN = the vector predates Item AA.
+    lines.push(
+      `Corpus cleanup (Item AA): total ${
+        modelWeights.corpusTotal ?? "UNKNOWN (vector predates Item AA)"
+      } | excluded reconstruction ${
+        modelWeights.corpusExcludedReconstruction ?? "UNKNOWN (vector predates Item AA)"
+      } | used for training ${
+        modelWeights.corpusUsedForTraining ?? "UNKNOWN (vector predates Item AA)"
+      }`,
+    );
+    // ITEM AC — which scorer produced this vector, and how the fit went.
+    lines.push(
+      `Scorer architecture (Item AC): ${
+        modelWeights.architecture ?? "centroid (vector predates Item AC)"
+      }`,
+    );
+    if (modelWeights.architecture === "logistic_regression_v1") {
+      lines.push(
+        `Logistic fit: iterations ${modelWeights.fitIterations ?? "?"} | final loss ${
+          modelWeights.fitFinalLoss !== null && modelWeights.fitFinalLoss !== undefined
+            ? modelWeights.fitFinalLoss.toFixed(6)
+            : "?"
+        } | rows used ${modelWeights.fitRowsUsed ?? "?"} (NaN-excluded ${modelWeights.fitExcludedNaN ?? "?"}) | lambda 1.0, lr 0.01`,
+      );
+    }
     lines.push("");
     lines.push("Feature weights:");
     if (modelWeights.weights.length === 0) {
@@ -640,6 +741,9 @@ function formatModelWeightsSection(
         });
     }
   }
+  // ITEM AB — the most recent signal's feature vector, next to the weights
+  // it will be scored against.
+  lines.push(...formatRecentSignalModelBlock(recentSignalModel));
   // ITEM 12(d): the corpus block renders in BOTH branches - a never-trained model
   // with a repeatedly unavailable corpus is exactly the state worth seeing.
   lines.push(...formatLearningCorpusBlock(learningCorpusStats));
@@ -681,6 +785,32 @@ function formatModelHealthSection(modelHealth: ModelHealthMetrics): string {
       );
     });
   }
+  return lines.join("\n");
+}
+
+/**
+ * ITEM AD — SECTION 11: shadow-mode performance of the fitted model, computed
+ * from resolved rows that carry the emission-time verdict. READ-ONLY: no
+ * suppression, filtering, demotion or delay exists anywhere in this pipeline.
+ */
+function formatModelShadowPerformanceSection(stats: ModelShadowStats | null | undefined): string {
+  const lines: string[] = [RULE, "SECTION 11 — MODEL SHADOW PERFORMANCE (Item AD)", RULE];
+  if (!stats) {
+    lines.push("  (shadow stats unavailable — engine did not provide them)");
+    return lines.join("\n");
+  }
+  lines.push(`Signals with modelVerdict + resolved outcome: ${stats.eligibleCount}`);
+  lines.push(
+    `  AGREE:    n=${stats.agreeCount} | win rate ${stats.agreeWinRate !== null ? (stats.agreeWinRate * 100).toFixed(1) + "%" : "n/a"} | EV ${stats.agreeEV !== null ? stats.agreeEV.toFixed(4) + "R" : "n/a"}`,
+  );
+  lines.push(
+    `  DISAGREE: n=${stats.disagreeCount} | win rate ${stats.disagreeWinRate !== null ? (stats.disagreeWinRate * 100).toFixed(1) + "%" : "n/a"} | EV ${stats.disagreeEV !== null ? stats.disagreeEV.toFixed(4) + "R" : "n/a"}`,
+  );
+  lines.push(`  EV delta (AGREE - DISAGREE): ${stats.evDelta !== null ? stats.evDelta.toFixed(4) + "R" : "n/a"}`);
+  lines.push(
+    `  PROMOTION GATE: ${stats.gate}${stats.gate === "INSUFFICIENT DATA" ? " (needs >= 100 signals with both modelVerdict and a resolved outcome)" : ""}`,
+  );
+  lines.push("  Shadow mode: the model watches and logs; NOTHING is suppressed or altered.");
   return lines.join("\n");
 }
 
@@ -1129,7 +1259,7 @@ export function buildDiagnosticsExportText(input: DiagnosticsExportInput): strin
     "",
     formatSignalHistorySection(input.signalHistory),
     "",
-    formatModelWeightsSection(input.modelWeights, input.learningCorpusStats, input.outboundPushStats),
+    formatModelWeightsSection(input.modelWeights, input.learningCorpusStats, input.outboundPushStats, input.recentSignalModel),
     "",
     formatModelHealthSection(input.modelHealth),
     "",
@@ -1152,6 +1282,9 @@ export function buildDiagnosticsExportText(input: DiagnosticsExportInput): strin
     formatVetoFunnelSection(input.vetoFunnel),
     "",
     formatEmissionFunnelSection(input.emissionFunnel, input.entryAnchorGateStats),
+    "",
+    // ITEM AD — shadow performance (the model watches and logs; no suppression).
+    formatModelShadowPerformanceSection(input.modelShadowStats),
     "",
     DRULE,
     "END OF EXPORT",

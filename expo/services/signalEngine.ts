@@ -11,6 +11,7 @@ import { appendOutcome as appendOutcomeToStore, getAllOutcomes as getAllOutcomes
 import { resolveSignalWithBars } from "@/services/signalResolver";
 import type { MfeResult } from "@/services/maxFavourableExcursion";
 import type { OhlcBar } from "@/services/barStore";
+import { filterTrainingCorpus, computeSideRelativeFeatures, fitLogisticRegression, extractFeatureVector, scoreLogisticModel, parsePersistedLogisticModel, getLogisticWeightName, meanKeyName, stdKeyName, verdictForProbability, MODEL_FEATURE_KEYS, MODEL_BIAS_KEY, type LogisticModel } from "@/services/modelFitting";
 import { appendDiagnosticEvent } from "@/services/diagnosticEventStore";
 import { fetchTier0SRZones, recordTier0FallbackUse } from "@/services/srZoneTier0Service";
 import { recordAppFeedTick } from "@/services/appFeedBarCapture";
@@ -1065,10 +1066,12 @@ const TIME_WEIGHTS = {
  */
 /**
  * 3 = v2 wide vector PLUS the ITEM 28 counter-trend-gate / execution-cost
- * telemetry block. Every consumer checks `>= 2`, so the bump is backward
- * compatible and legacy records keep declaring 1 or 2 truthfully.
+ * telemetry block.
+ * 4 = ITEM AB: adds the seven side-relative model features (feat_* fields,
+ * see services/modelFitting.ts). Every consumer checks `>= 2`, so the bump is
+ * backward compatible and legacy records keep declaring 1, 2 or 3 truthfully.
  */
-const LEARNING_FEATURE_SCHEMA_VERSION = 3;
+const LEARNING_FEATURE_SCHEMA_VERSION = 4;
 
 function createDefaultLearningContext(): SignalLearningContext {
   return {
@@ -1664,6 +1667,13 @@ class SignalGenerationEngine {
   private volumeHistory: number[] = [];
   private tradeOutcomes: TradeOutcome[] = [];
   private modelWeights: Map<string, number> = new Map();
+  /**
+   * ITEM AC — the fitted logistic model (13 weights + bias + corpus
+   * means/stds). Restored from model_weights_v1 at boot, refreshed at every
+   * retrain. The live scorer's ONLY model; null until an AC-architecture fit
+   * has been persisted, in which case modelProbability is simply not stamped.
+   */
+  private logisticModel: LogisticModel | null = null;
   private lastTrainingTime: number = 0;
   /** ITEM 12 / 11(b): outcome count the persisted weight vector was trained on. */
   private corpusSizeAtTraining: number | null = null;
@@ -7770,10 +7780,24 @@ class SignalGenerationEngine {
     features: MarketFeatures,
     geometry: { entryPrice: number; slDistance: number; tp1Distance: number; confidence: number },
     gate?: CounterTrendGateTelemetry,
+    direction: 'BUY' | 'SELL' = 'BUY',
   ): SignalLearningContext {
     const now = new Date();
     const price = geometry.entryPrice;
     const atr = Math.max(features.atr, 0.01);
+
+    // ITEM AB — side-relative features, computed from data available AT or
+    // BEFORE the signal bar (barSeriesM5 is aggregated from gold_m1_bars up
+    // to the present; srZones is the live zone map). A null component means
+    // "not computable" (insufficient bars) — training excludes such rows
+    // (Item AC NaN rule) and scoring standardises null to the mean.
+    const sideRelative = computeSideRelativeFeatures({
+      direction,
+      entryPrice: price,
+      rsi: Number.isFinite(features.rsi) ? features.rsi : null,
+      m5Bars: this.barSeriesM5 ?? [],
+      zonePrices: features.srZones.map((z) => z.price),
+    });
 
     const nearestZoneDistance = features.srZones.length > 0
       ? Math.min(...features.srZones.map(z => Math.abs(z.price - price)))
@@ -7782,7 +7806,7 @@ class SignalGenerationEngine {
     const confirmedSweep = features.sessionSweeps.find(s => s.reversalConfirmed)
       ?? features.sessionSweeps[features.sessionSweeps.length - 1];
 
-    return {
+    const context: SignalLearningContext = {
       rsi: features.rsi,
       atr: features.atr,
       volumeRatio: features.volumeRatio,
@@ -7791,6 +7815,9 @@ class SignalGenerationEngine {
       sentiment: features.sentiment ?? { score: 0, confidence: 0, source: 'engine-default' },
 
       schemaVersion: LEARNING_FEATURE_SCHEMA_VERSION,
+
+      // ITEM AB — side-relative feature vector (see computeSideRelativeFeatures).
+      ...sideRelative,
 
       macdHistogram: features.macdHistogram,
       emaCrossover: features.emaCrossover,
@@ -7870,6 +7897,20 @@ class SignalGenerationEngine {
       driftVetoOverrideApplied: gate?.driftVetoOverrideApplied,
       spreadPipsAtEntry: gate?.spreadPipsAtEntry,
     };
+
+    // ITEM AC — shadow model probability. Standardises with the STORED corpus
+    // means/stds; a missing/NaN feature standardises to 0 (the mean). NEVER
+    // used for the emission decision or the confidence field (the Item AD
+    // verdict is logging only; suppression is a future, separately-gated item).
+    const probability = scoreLogisticModel(extractFeatureVector(context), this.logisticModel);
+    if (probability !== null) {
+      context.modelProbability = probability;
+      // ITEM AD — shadow verdict, derived from the probability. Logging/
+      // telemetry ONLY: no signal is suppressed, filtered, demoted or delayed
+      // on this basis (the promotion gate lives in the diagnostics export).
+      context.modelVerdict = verdictForProbability(probability);
+    }
+    return context;
   }
 
   /**
@@ -8286,179 +8327,129 @@ class SignalGenerationEngine {
   }
   
   private retrainModel(trainingData: TradeOutcome[]): void {
-    const now = Date.now();
-    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
-    const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
-    
-    const DECAY_LAMBDA = 0.75;
-    
-    const dataWithWeights = trainingData.map(outcome => {
-      const age = now - new Date(outcome.timestamp).getTime();
-      const daysSinceOutcome = age / (24 * 60 * 60 * 1000);
-      
-      const weight = Math.pow(DECAY_LAMBDA, daysSinceOutcome);
-      
-      return { outcome, weight };
-    });
-    
-    const totalWeight = dataWithWeights.reduce((sum, d) => sum + d.weight, 0);
-    const normalizedData = dataWithWeights.map(d => ({
-      ...d,
-      weight: d.weight / totalWeight
-    }));
-    
-    const last3DaysInfluence = normalizedData
-      .filter(d => (now - new Date(d.outcome.timestamp).getTime()) <= threeDaysMs)
-      .reduce((sum, d) => sum + d.weight, 0);
-    
-    const last7DaysInfluence = normalizedData
-      .filter(d => (now - new Date(d.outcome.timestamp).getTime()) <= sevenDaysMs)
-      .reduce((sum, d) => sum + d.weight, 0);
-    
-    console.log(`\n📊 EXPONENTIAL DECAY WEIGHTING:`);    console.log(`   Last 3 Days Influence: ${(last3DaysInfluence * 100).toFixed(1)}%`);
-    console.log(`   Last 7 Days Influence: ${(last7DaysInfluence * 100).toFixed(1)}%`);
-    console.log(`   Older Data Influence: ${((1 - last7DaysInfluence) * 100).toFixed(1)}%`);
-    
-    // PHASE 2 (C3): drop scratches from the LABEL partition. A ~0R profit-lock
-    // exit carries no information about whether the setup was good, but as an
-    // unqualified WIN it dragged the "winning" feature centroid toward neutral
-    // feature values, which is exactly what makes a fitted weight vector look
-    // like it has no signal.
-    const scratchData = normalizedData.filter(d => d.outcome.isScratch === true);
-    const labelledData = normalizedData.filter(d => d.outcome.isScratch !== true);
-    if (scratchData.length > 0) {
-      console.log(`➖ Excluding ${scratchData.length} scratch outcome(s) (|R| < ${SCRATCH_R_THRESHOLD}) from label-based weight fitting`);
+    // ITEM AA — READ-SIDE CORPUS CLEANUP, applied BEFORE any weight computation.
+    // Rows marked featuresSource='app-bar-reconstruction' carry 4-of-6 defaulted
+    // features (volumeRatio=1, timeWindowFactor=1, dxyChange=0, sentiment.score=0
+    // — see reconstructLearningFeaturesFromBars) and dilute every fitted weight
+    // toward the defaults. Read-side only: rows are never deleted, and the
+    // hydrate/push/pull paths are untouched. A row WITHOUT the marker predates
+    // the marker and is treated as engine-native (INCLUDED).
+    const corpusFilter = filterTrainingCorpus(trainingData);
+    const filteredTrainingData = corpusFilter.included;
+    if (corpusFilter.excludedReconstruction > 0) {
+      console.log(
+        `🧹 ITEM AA CORPUS FILTER: excluded ${corpusFilter.excludedReconstruction} of ${corpusFilter.total} outcome(s) ` +
+        `(featuresSource='app-bar-reconstruction') — ${filteredTrainingData.length} engine-native row(s) used for training`,
+      );
     }
-    const winningData = labelledData.filter(d => d.outcome.result === 'WIN');
-    const losingData = labelledData.filter(d => d.outcome.result === 'LOSS');
-    const weightedWinningData = winningData.length > 0 ? winningData : normalizedData;
-    const weightedLosingData = losingData.length > 0 ? losingData : normalizedData;
+    if (filteredTrainingData.length < 10) {
+      console.log(
+        `⚠️ ITEM AA: only ${filteredTrainingData.length} engine-native outcome(s) after the reconstruction filter — ` +
+        'too few to fit; keeping the existing weights',
+      );
+      return;
+    }
+    // ITEM AC — the decay weighting is retired with the centroid architecture
+    // it served: the Item AC spec fits the cleaned corpus directly, with L2
+    // (lambda = 1.0) providing the shrinkage. The scratch exclusion below is
+    // label hygiene (PHASE 2 (C3)), not weighting.
+    
+    // PHASE 2 (C3) — kept under the AC architecture: drop scratches from the
+    // LABEL partition. A ~0R profit-lock exit carries no information about
+    // whether the setup was good.
+    const scratchRows = filteredTrainingData.filter(o => o.isScratch === true);
+    const labelledRows = filteredTrainingData.filter(o => o.isScratch !== true);
+    if (scratchRows.length > 0) {
+      console.log(`➖ Excluding ${scratchRows.length} scratch outcome(s) (|R| < ${SCRATCH_R_THRESHOLD}) from label-based weight fitting`);
+    }
 
     // PHASE 2 (C4): realised expectancy per direction, computed here so the
     // calibration gate reads a freshly consolidated view on every retrain.
     this.recomputeDirectionalExpectancy();
-
-    if (winningData.length === 0 || losingData.length === 0) {
-      console.log('⚠️ Retrain class diversity is limited - applying neutral fallback weighting to avoid unstable model weights');
+    // ITEM AC — LOGISTIC REGRESSION (replaces the centroid scorer). Spec:
+    //   input  = cleaned corpus (Item AA filter + scratch exclusion), each row
+    //            = 13 feature values + outcome (1 = winner, 0 = loser)
+    //   fit    = L2-regularised logistic regression, lambda = 1.0
+    //   solver = full-batch gradient descent, lr 0.01, <= 1000 iterations,
+    //            converged when |loss change| < 1e-6
+    //   NaN    = rows with any missing/non-finite feature are EXCLUDED (no
+    //            imputation); at scoring time a missing feature standardises
+    //            to 0 (the mean)
+    // Guards: fewer than 30 usable rows, no class diversity, or
+    // non-convergence keeps the EXISTING weights (never fits noise).
+    if (filteredTrainingData.length < 30) {
+      console.log(`⚠️ ITEM AC: corpus after the AA filter is ${filteredTrainingData.length} row(s) (< 30) — NOT retraining; keeping the existing weights`);
+      return;
     }
-    
-    // Step 1: capture the pre-retrain ("historical") vector BEFORE clearing,
-    // so the freshly fitted recent-window vector can be blended against it
-    // rather than overwriting it outright.
-    const historicalWeights = new Map<string, number>(this.modelWeights);
+    const fitRows = labelledRows.map(o => ({
+      x: extractFeatureVector(o.features),
+      y: o.result === 'WIN' ? 1 : 0,
+    }));
+    const fitWinners = fitRows.filter(r => r.y === 1).length;
+    const fitLosers = fitRows.filter(r => r.y === 0).length;
+    if (fitWinners === 0 || fitLosers === 0) {
+      console.log(`⚠️ ITEM AC: labelled rows have no class diversity (wins=${fitWinners}, losses=${fitLosers}) — NOT retraining; keeping the existing weights`);
+      return;
+    }
+    const fit = fitLogisticRegression(fitRows, { lambda: 1.0, learningRate: 0.01, maxIterations: 1000, tolerance: 1e-6 });
+    if (!fit.converged || fit.rowsUsed < 2 || !Number.isFinite(fit.finalLoss)) {
+      console.log(
+        `⚠️ ITEM AC: logistic fit did not converge (iterations=${fit.iterations}, rowsUsed=${fit.rowsUsed}, finalLoss=${fit.finalLoss}) — keeping the existing weights`,
+      );
+      return;
+    }
+
+    console.log('\n📈 ITEM AC LOGISTIC FIT:');
+    console.log(`   rows=${fit.rowsUsed} excludedNaN=${fit.excludedNaN} winners=${fit.winners} losers=${fit.losers}`);
+    console.log(`   iterations=${fit.iterations} finalLoss=${fit.finalLoss.toFixed(6)} (L2 lambda=1.0, lr=0.01)`);
+    console.log(`   ${MODEL_BIAS_KEY}: ${fit.bias.toFixed(6)}`);
+    MODEL_FEATURE_KEYS.forEach((key, i) => {
+      console.log(`   ${getLogisticWeightName(key)}: ${fit.weights[i].toFixed(6)} (mean ${fit.means[i].toFixed(4)}, std ${fit.stds[i].toFixed(4)})`);
+    });
+
+    // The fitted vector + bias + corpus means/stds go into model_weights_v1
+    // under their own names. The six legacy modulation names (rsi_weight,
+    // volume_weight, ...) are carried by the LOGISTIC weights themselves (the
+    // Item AC spec: "plus the existing 6 names"), so getFeatureModulation, the
+    // drift auto-halver and CONSUMED_MODEL_WEIGHTS keep valid targets.
+    // NOTE: with the logistic scale, the E25 drift auto-halver would halve a
+    // logistic weight if CRITICAL drift fires — shadow-only impact
+    // (modelProbability is not wired to confidence); the next retrain re-fits
+    // and repairs the vector.
     this.modelWeights.clear();
-    
-    const rawWeights: { [key: string]: number } = {};
-    
-    const weightedAvgWinRSI = weightedWinningData.reduce((sum, d) => sum + d.outcome.features.rsi * d.weight, 0) / 
-      weightedWinningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossRSI = weightedLosingData.reduce((sum, d) => sum + d.outcome.features.rsi * d.weight, 0) / 
-      weightedLosingData.reduce((sum, d) => sum + d.weight, 0);
-    rawWeights['rsi_weight'] = (weightedAvgWinRSI - weightedAvgLossRSI) / 100;
-    
-    const weightedAvgWinTimeWindow = weightedWinningData.reduce((sum, d) => sum + d.outcome.features.timeWindowFactor * d.weight, 0) / 
-      weightedWinningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossTimeWindow = weightedLosingData.reduce((sum, d) => sum + d.outcome.features.timeWindowFactor * d.weight, 0) / 
-      weightedLosingData.reduce((sum, d) => sum + d.weight, 0);
-    rawWeights['timeWindow_weight'] = (weightedAvgWinTimeWindow - weightedAvgLossTimeWindow) * 0.5;
-    
-    const weightedAvgWinVolume = weightedWinningData.reduce((sum, d) => sum + d.outcome.features.volumeRatio * d.weight, 0) / 
-      weightedWinningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossVolume = weightedLosingData.reduce((sum, d) => sum + d.outcome.features.volumeRatio * d.weight, 0) / 
-      weightedLosingData.reduce((sum, d) => sum + d.weight, 0);
-    rawWeights['volume_weight'] = weightedAvgWinVolume - weightedAvgLossVolume;
-    
-    const weightedAvgWinSentiment = weightedWinningData.reduce((sum, d) => sum + (d.outcome.features.sentiment?.score ?? 0) * d.weight, 0) / 
-      weightedWinningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossSentiment = weightedLosingData.reduce((sum, d) => sum + (d.outcome.features.sentiment?.score ?? 0) * d.weight, 0) / 
-      weightedLosingData.reduce((sum, d) => sum + d.weight, 0);
-    rawWeights['sentiment_weight'] = (weightedAvgWinSentiment - weightedAvgLossSentiment) * 2;
-    
-    const weightedAvgWinATR = weightedWinningData.reduce((sum, d) => sum + d.outcome.features.atr * d.weight, 0) / 
-      weightedWinningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossATR = weightedLosingData.reduce((sum, d) => sum + d.outcome.features.atr * d.weight, 0) / 
-      weightedLosingData.reduce((sum, d) => sum + d.weight, 0);
-    rawWeights['atr_weight'] = (weightedAvgWinATR - weightedAvgLossATR) / 10;
-    
-    const weightedAvgWinDXY = weightedWinningData.reduce((sum, d) => sum + d.outcome.features.dxyChange * d.weight, 0) / 
-      weightedWinningData.reduce((sum, d) => sum + d.weight, 0);
-    const weightedAvgLossDXY = weightedLosingData.reduce((sum, d) => sum + d.outcome.features.dxyChange * d.weight, 0) / 
-      weightedLosingData.reduce((sum, d) => sum + d.weight, 0);
-    rawWeights['dxy_weight'] = (weightedAvgWinDXY - weightedAvgLossDXY) * 2;
-    
-    console.log('\n📐 WEIGHT NORMALIZATION:');
-    console.log('   Raw Weights (before normalization):');
-    Object.entries(rawWeights).forEach(([key, value]) => {
-      console.log(`      ${key}: ${value.toFixed(4)}`);
+    MODEL_FEATURE_KEYS.forEach((key, i) => {
+      this.modelWeights.set(getLogisticWeightName(key), fit.weights[i]);
+      this.modelWeights.set(meanKeyName(key), fit.means[i]);
+      this.modelWeights.set(stdKeyName(key), fit.stds[i]);
     });
-    
-    const sumAbsoluteWeights = Object.values(rawWeights).reduce((sum, w) => sum + Math.abs(w), 0);
-    const sumAbsoluteConsumedWeights = Object.entries(rawWeights)
-      .filter(([key]) => CONSUMED_MODEL_WEIGHTS.has(key))
-      .reduce((sum, [, w]) => sum + Math.abs(w), 0);
-    console.log(`   Sum of Absolute Weights: ${sumAbsoluteWeights.toFixed(4)}`);
-    console.log(`   Sum of Absolute CONSUMED Weights (${Array.from(CONSUMED_MODEL_WEIGHTS).join(', ')}): ${sumAbsoluteConsumedWeights.toFixed(4)}`);
-    
-    const recentWeights = new Map<string, number>();
-    if (sumAbsoluteWeights > 0) {
-      Object.entries(rawWeights).forEach(([key, value]) => {
-        // PHASE 2 (C2): weights that actually modulate scoring are normalized
-        // over the consumed subset, so inert telemetry-only columns can no
-        // longer dilute them. Inert columns keep the all-features denominator
-        // so they stay bounded and comparable for drift/telemetry reads.
-        const denominator = CONSUMED_MODEL_WEIGHTS.has(key) && sumAbsoluteConsumedWeights > 0
-          ? sumAbsoluteConsumedWeights
-          : sumAbsoluteWeights;
-        const normalizedWeight = value / denominator;
-        recentWeights.set(key, normalizedWeight);
-      });
-    } else {
-      console.log('   ⚠️ Warning: All weights are zero. Using equal distribution.');
-      Object.keys(rawWeights).forEach(key => {
-        recentWeights.set(key, 1.0 / Object.keys(rawWeights).length);
-      });
-    }
+    this.modelWeights.set(MODEL_BIAS_KEY, fit.bias);
+    this.logisticModel = {
+      weights: [...fit.weights],
+      bias: fit.bias,
+      means: [...fit.means],
+      stds: [...fit.stds],
+    };
 
-    // Step 1: Bayesian memory consolidation. Blend the freshly fitted
-    // recent-window vector (W_recent) with the previous consolidated vector
-    // (W_historical, i.e. last cycle's W_final) instead of overwriting it:
-    //   W_final = (alpha * W_historical) + ((1 - alpha) * W_recent)
-    // A feature with no prior history defaults W_historical to 0 (neutral),
-    // so cold-start behaviour is unaffected.
-    console.log('\n🧮 BAYESIAN MEMORY CONSOLIDATION:');
-    console.log(`   alpha (historical weight): ${BAYESIAN_BLEND_ALPHA}`);
-    const blendedKeys = new Set<string>([...historicalWeights.keys(), ...recentWeights.keys()]);
-    blendedKeys.forEach(key => {
-      const historical = historicalWeights.get(key) ?? 0;
-      const recent = recentWeights.get(key) ?? 0;
-      const blended = (BAYESIAN_BLEND_ALPHA * historical) + ((1 - BAYESIAN_BLEND_ALPHA) * recent);
-      this.modelWeights.set(key, blended);
-      console.log(`      ${key}: historical=${historical.toFixed(4)} recent=${recent.toFixed(4)} -> blended=${blended.toFixed(4)}`);
-    });
-
-    console.log('   Final Blended Weights:');
+    console.log('   Final Vector (Item AC logistic: 13 weights + bias + means + stds):');
     let verificationSum = 0;
     this.modelWeights.forEach((value, key) => {
-      console.log(`      ${key}: ${value.toFixed(4)} (${(Math.abs(value) * 100).toFixed(1)}% influence)`);
+      console.log(`      ${key}: ${value.toFixed(6)}`);
       verificationSum += Math.abs(value);
     });
-    console.log(`   Verification Sum (post-blend, not necessarily 1.0): ${verificationSum.toFixed(4)}`);
-    
+    console.log(`   Verification Sum (|entries| total, not necessarily 1.0): ${verificationSum.toFixed(4)}`);
+
     this.lastTrainingTime = Date.now();
-    
+
     console.log('\n' + '='.repeat(80));
-    console.log('✅✅✅ MODEL RETRAINED ✅✅✅');
+    console.log('✅✅✅ MODEL RETRAINED (Item AC logistic regression) ✅✅✅');
     console.log('='.repeat(80));
     console.log(`   Training Time: ${new Date(this.lastTrainingTime).toISOString()}`);
-    console.log(`   Retraining Strategy: 48-Hour Schedule + Confidence Degradation + Drift Detection`);
-    console.log(`   Training Window: ${TRAINING_WINDOW_DAYS} days with exponential decay`);
-    console.log(`   Normalized weights:`, Array.from(this.modelWeights.entries()));
-    console.log(`   Training Data Size: ${trainingData.length} outcomes`);
-    console.log(`   Wins: ${winningData.length}, Losses: ${losingData.length}`);
-    console.log(`   Last 3 Days Weight: ${(last3DaysInfluence * 100).toFixed(1)}%`);
-    console.log(`   Last 7 Days Weight: ${(last7DaysInfluence * 100).toFixed(1)}%`);
-    console.log(`   Target: 80-90% influence from last 3-7 days`);
-    console.log(`   Weight Normalization: ✅ Complete (prevents single feature monopolization)`);
+    console.log(`   Retraining Triggers: 48-Hour Schedule + Confidence Degradation + Drift Detection`);
+    console.log(`   Scorer: L2 logistic regression, 13 features (lambda=1.0, lr=0.01, ${fit.iterations} iterations)`);
+    console.log(`   Final loss: ${fit.finalLoss.toFixed(6)} | bias: ${fit.bias.toFixed(6)}`);
+    console.log(`   Vector entries: ${this.modelWeights.size} (13 weights + model_bias + 13 means + 13 stds)`);
+    console.log(`   Training Data Size: ${filteredTrainingData.length} outcomes (after Item AA filter; raw corpus ${corpusFilter.total})`);
+    console.log(`   Fit rows: ${fit.rowsUsed} (NaN-excluded ${fit.excludedNaN}) | Wins: ${fit.winners}, Losses: ${fit.losers}`);
     console.log('='.repeat(80) + '\n');
     
     // ITEM 12 / 11(b): record HOW MANY outcomes these weights were trained on, and
@@ -8466,13 +8457,24 @@ class SignalGenerationEngine {
     // both numbers a weight vector's provenance is unrecoverable - weights trained
     // on the full corpus are indistinguishable from weights trained on a truncated
     // one after a failed hydrate.
-    this.corpusSizeAtTraining = trainingData.length;
+    this.corpusSizeAtTraining = fit.rowsUsed;
     this.hydrateUnavailableAtTraining = getLearningCorpusStats().hydrateUnavailableCount;
     const persistData = {
       weights: Array.from(this.modelWeights.entries()),
       lastTrainingTime: this.lastTrainingTime,
       corpusSizeAtTraining: this.corpusSizeAtTraining,
       hydrateUnavailableAtTraining: this.hydrateUnavailableAtTraining,
+      // ITEM AA — corpus-cleanup provenance so the diagnostics export can show
+      // exactly what the vector was fitted on (and what was excluded).
+      corpusTotal: corpusFilter.total,
+      corpusExcludedReconstruction: corpusFilter.excludedReconstruction,
+      corpusUsedForTraining: filteredTrainingData.length,
+      // ITEM AC — architecture + fit provenance.
+      architecture: 'logistic_regression_v1',
+      fitIterations: fit.iterations,
+      fitFinalLoss: fit.finalLoss,
+      fitRowsUsed: fit.rowsUsed,
+      fitExcludedNaN: fit.excludedNaN,
     };
     AsyncStorage.setItem(MODEL_WEIGHTS_KEY, JSON.stringify(persistData)).catch((error: unknown) => {
       console.error('Failed to persist model weights:', error);
@@ -8528,6 +8530,13 @@ class SignalGenerationEngine {
       if (weightsData) {
         const weightsObj = JSON.parse(weightsData);
         this.modelWeights = new Map(weightsObj.weights || weightsObj);
+        // ITEM AC — restore the fitted logistic model (13 weights + bias +
+        // means/stds). Null on a pre-AC vector: modelProbability stays unset
+        // until the next retrain fits under the AC architecture.
+        this.logisticModel = parsePersistedLogisticModel(weightsObj);
+        if (this.logisticModel) {
+          console.log('✓ ITEM AC logistic model restored from model_weights_v1 (13 weights + bias + means/stds)');
+        }
         if (weightsObj.lastTrainingTime && weightsObj.lastTrainingTime > 0) {
           this.lastTrainingTime = weightsObj.lastTrainingTime;
           const daysSince = (Date.now() - this.lastTrainingTime) / (24 * 60 * 60 * 1000);
@@ -10148,7 +10157,7 @@ class SignalGenerationEngine {
         slDistance: Math.abs(entryPriceWithSlippage - sl),
         tp1Distance: Math.abs(tp1 - entryPriceWithSlippage),
         confidence: analysis.confidence,
-      }, counterTrendTelemetry),
+      }, counterTrendTelemetry, analysis.signalType),
       counterTrendTelemetry,
       timeToLive: timeToLiveMinutes,
       nextMoveContext,
@@ -11347,7 +11356,7 @@ class SignalGenerationEngine {
    * has never been retrained yet, so callers can render an explicit
    * "never retrained" message instead of a misleading empty section.
    */
-  async getRawModelWeightsForExport(): Promise<{ weights: [string, number][]; lastTrainingTime: number; corpusSizeAtTraining: number | null; hydrateUnavailableAtTraining: number | null } | null> {
+  async getRawModelWeightsForExport(): Promise<{ weights: [string, number][]; lastTrainingTime: number; corpusSizeAtTraining: number | null; hydrateUnavailableAtTraining: number | null; corpusTotal: number | null; corpusExcludedReconstruction: number | null; corpusUsedForTraining: number | null; architecture: string | null; fitIterations: number | null; fitFinalLoss: number | null; fitRowsUsed: number | null; fitExcludedNaN: number | null } | null> {
     try {
       const weightsData = await AsyncStorage.getItem(MODEL_WEIGHTS_KEY);
       if (!weightsData) return null;
@@ -11358,12 +11367,76 @@ class SignalGenerationEngine {
       // "provenance unknown" and "trained on zero outcomes" are different claims.
       const corpusSizeAtTraining: number | null = typeof parsed?.corpusSizeAtTraining === 'number' ? parsed.corpusSizeAtTraining : null;
       const hydrateUnavailableAtTraining: number | null = typeof parsed?.hydrateUnavailableAtTraining === 'number' ? parsed.hydrateUnavailableAtTraining : null;
+      // ITEM AA: null when the persisted vector predates the corpus filter —
+      // "provenance unknown" is not the same claim as excluded 0 rows.
+      const corpusTotal: number | null = typeof parsed?.corpusTotal === 'number' ? parsed.corpusTotal : null;
+      const corpusExcludedReconstruction: number | null = typeof parsed?.corpusExcludedReconstruction === 'number' ? parsed.corpusExcludedReconstruction : null;
+      const corpusUsedForTraining: number | null = typeof parsed?.corpusUsedForTraining === 'number' ? parsed.corpusUsedForTraining : null;
+      // ITEM AC: null when the persisted vector predates the logistic fit.
+      const architecture: string | null = typeof parsed?.architecture === 'string' ? parsed.architecture : null;
+      const fitIterations: number | null = typeof parsed?.fitIterations === 'number' ? parsed.fitIterations : null;
+      const fitFinalLoss: number | null = typeof parsed?.fitFinalLoss === 'number' ? parsed.fitFinalLoss : null;
+      const fitRowsUsed: number | null = typeof parsed?.fitRowsUsed === 'number' ? parsed.fitRowsUsed : null;
+      const fitExcludedNaN: number | null = typeof parsed?.fitExcludedNaN === 'number' ? parsed.fitExcludedNaN : null;
       if (weights.length === 0 && !lastTrainingTime) return null;
-      return { weights, lastTrainingTime, corpusSizeAtTraining, hydrateUnavailableAtTraining };
+      return { weights, lastTrainingTime, corpusSizeAtTraining, hydrateUnavailableAtTraining, corpusTotal, corpusExcludedReconstruction, corpusUsedForTraining, architecture, fitIterations, fitFinalLoss, fitRowsUsed, fitExcludedNaN };
     } catch (error) {
       console.error('[SignalEngine] Failed to read raw model weights for export:', error);
       return null;
     }
+  }
+
+  /**
+   * ITEM AD — MODEL SHADOW PERFORMANCE aggregates, computed from the resolved
+   * corpus: every row carrying a modelVerdict (stamped at emission) and a
+   * realised R. Scratches are excluded. The promotion gate is deliberately
+   * conservative: INSUFFICIENT DATA until >= 100 eligible signals exist; then
+   * MET only when AGREE EV > DISAGREE EV. READ-ONLY — nothing here
+   * suppresses, filters, demotes or delays any signal.
+   */
+  getModelShadowStats(): {
+    eligibleCount: number;
+    agreeCount: number;
+    disagreeCount: number;
+    agreeWinRate: number | null;
+    agreeEV: number | null;
+    disagreeWinRate: number | null;
+    disagreeEV: number | null;
+    evDelta: number | null;
+    gate: "INSUFFICIENT DATA" | "MET" | "NOT MET";
+  } {
+    const eligible = this.tradeOutcomes.filter(
+      (o) =>
+        (o.features?.modelVerdict === "AGREE" || o.features?.modelVerdict === "DISAGREE") &&
+        o.isScratch !== true &&
+        typeof o.realizedR === "number",
+    );
+    const agree = eligible.filter((o) => o.features.modelVerdict === "AGREE");
+    const disagree = eligible.filter((o) => o.features.modelVerdict === "DISAGREE");
+    const winRate = (rows: typeof agree): number | null =>
+      rows.length > 0 ? rows.filter((o) => (o.realizedR ?? 0) > 0).length / rows.length : null;
+    const ev = (rows: typeof agree): number | null =>
+      rows.length > 0 ? rows.reduce((s, o) => s + (o.realizedR ?? 0), 0) / rows.length : null;
+    const agreeEV = ev(agree);
+    const disagreeEV = ev(disagree);
+    const evDelta = agreeEV !== null && disagreeEV !== null ? agreeEV - disagreeEV : null;
+    const gate: "INSUFFICIENT DATA" | "MET" | "NOT MET" =
+      eligible.length < 100
+        ? "INSUFFICIENT DATA"
+        : evDelta !== null && evDelta > 0
+          ? "MET"
+          : "NOT MET";
+    return {
+      eligibleCount: eligible.length,
+      agreeCount: agree.length,
+      disagreeCount: disagree.length,
+      agreeWinRate: winRate(agree),
+      agreeEV,
+      disagreeWinRate: winRate(disagree),
+      disagreeEV,
+      evDelta,
+      gate,
+    };
   }
 
   getTradeOutcomeCount(): number {

@@ -285,6 +285,34 @@ export interface SignalLearningContext {
   atrTimeframe?: string;
   atrMethod?: string;
 
+  // ---- Item AB: side-relative model features (schemaVersion >= 4) ---------
+  // All seven are computed AT emission from data at or before the signal bar
+  // (no lookahead) and are SIDE-RELATIVE (depend on BUY/SELL). See
+  // services/modelFitting.ts computeSideRelativeFeatures for the exact
+  // definitions. null = not computable (insufficient bars); training excludes
+  // null rows (Item AC NaN rule); scoring standardises null to the mean.
+  feat_trend_aligned?: number | null;
+  feat_rsi_aligned?: number | null;
+  feat_ema_stack?: number | null;
+  feat_session_level_count?: number | null;
+  feat_at_day_extreme?: number | null;
+  feat_zone_max_react?: number | null;
+  feat_near_round50?: number | null;
+
+  /**
+   * ITEM AC — the fitted logistic model's probability for this signal
+   * (0..1). Shadow telemetry ONLY: it never touches `confidence` or the
+   * emission decision. Null/absent = no fitted model at emission time.
+   */
+  modelProbability?: number;
+
+  /**
+   * ITEM AD — shadow verdict derived from modelProbability at emission
+   * ('AGREE' when >= 0.50, else 'DISAGREE'). Logging/telemetry ONLY: no
+   * signal is suppressed, filtered, demoted or delayed on this basis.
+   */
+  modelVerdict?: "AGREE" | "DISAGREE";
+
   // momentum / trend
   macdHistogram?: number;
   emaCrossover?: number;
