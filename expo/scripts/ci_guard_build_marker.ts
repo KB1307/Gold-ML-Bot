@@ -36,6 +36,16 @@ function read(rel: string): string {
 /** Check 1 — Metro registers the dedicated, scoped marker transformer. */
 export function checkTransformerConfig(metroSrc: string, transformerSrc: string): string[] {
   const errors: string[] = [];
+  // ITEM AI — file-size sanity. The real config is ~75 lines; the 2026-09-04
+  // restore accident wrote a 10,426-line git-diff blob that PASSED the grep
+  // checks because the patterns matched inside the diff text. Any accidental
+  // diff/concatenation is caught here instead of by a human's wc -l.
+  const lineCount = metroSrc.split("\n").length;
+  if (lineCount > 200) {
+    errors.push(
+      `metro.config.js is ${lineCount} lines (expected ~75) — likely contains a git diff blob instead of the config. Restore with: git show 0e63c3d:expo/metro.config.js > expo/metro.config.js`,
+    );
+  }
   if (!metroSrc.includes('require.resolve("./metro.build-marker-transformer")')) {
     errors.push("metro.config.js: dedicated build-marker transformer is not registered.");
   }
@@ -105,6 +115,10 @@ export function selfTest(): string[] {
   if (checkTransformerConfig("module.exports = {};", validTransformer).length !== 1) {
     failures.push("self-test: unregistered transformer should yield exactly one error");
   }
+  const bloatedMetro = `${validMetro}\n${Array.from({ length: 300 }, (_, i) => `// padding line ${i}`).join("\n")}`;
+  if (checkTransformerConfig(bloatedMetro, validTransformer).length !== 1) {
+    failures.push("self-test: 300-line metro blob should yield exactly the size error");
+  }
   const unscopedTransformer = validTransformer.replace(
     'normalized.endsWith("/constants/buildMarker.ts")',
     'filename.includes("buildMarker")',
@@ -137,7 +151,7 @@ function main(): number {
     console.log("\n✗ ci_guard_build_marker FAILED — the guard's own regression self-test is broken.");
     return 1;
   }
-  console.log("  self-test: all mutated fixtures correctly rejected (5/5)\n");
+  console.log("  self-test: all mutated fixtures correctly rejected (6/6)\n");
 
   const errors: string[] = [
     ...checkTransformerConfig(read("metro.config.js"), read("metro.build-marker-transformer.js")),

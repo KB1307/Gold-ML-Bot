@@ -6,20 +6,27 @@
  * calls at emission) and writes them into the row's `features` jsonb.
  *
  * HARD GUARANTEES:
- *   - ADDITIVE ONLY: the 7 feat_* keys are merged into a FRESH read of the
+ *   - ADDITIVE ONLY: the feat_* keys are merged into a FRESH read of the
  *     row's features; result / exit_price / ts / updated_at / every other
  *     column are never touched. The PATCH payload is the features object only.
- *   - IDEMPOTENT: a row that already carries feat_trend_aligned is skipped.
+ *   - IDEMPOTENT (default mode): a row that already carries feat_trend_aligned
+ *     is skipped.
  *   - LABELS IMMUTABLE: nothing in the label/R/exit path is read for writing.
+ *
+ * ITEM AH (--recompute-session): recomputes ONLY feat_session_level_count
+ * over a bar window wide enough to cover the 72h of candidate sessions
+ * (dayStart(emission-72h) .. emission) and writes JUST THAT ONE KEY — the
+ * other six feat_* keys and every non-features column are untouched. The
+ * idempotent skip is bypassed in this mode (that is its purpose).
  *
  * DOCUMENTED APPROXIMATION (training rows only): historical SR zone maps are
  * not persisted, so feat_zone_max_react uses bar-pivot zone levels (2-bar
  * fractals, deduped within $1) over the trailing window — mirroring the
  * engine's own local fallback detector. At emission the live engine zone map
- * is used. Session/day features use the trailing ~25h bar window (the
- * engine's BAR_M5_LOOKBACK=300), not the backtest's 72h.
+ * is used. Default mode computes session/day features over the trailing ~25h
+ * bar window (the engine's BAR_M5_LOOKBACK=300) — the emission mirror.
  *
- * bun expo/scripts/backfill_side_relative_features.ts
+ * bun expo/scripts/backfill_side_relative_features.ts [--recompute-session]
  */
 
 import { computeSideRelativeFeatures, type BarInput } from "../services/modelFitting";
@@ -28,7 +35,10 @@ const SUPABASE_URL = (process.env.EXPO_PUBLIC_SUPABASE_URL ?? "https://tcbnqmnzs
 const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? "sb_publishable__uw7Qn3qPIARNPGPEDWWww_KzseiT8x";
 const M5_BAR_MS = 5 * 60 * 1000;
 const ENGINE_M5_WINDOW = 300;
-const SESSION_BACKFILL_HOURS = 26;
+/** ITEM AH — the tape must reach dayStart(emission - 72h), which is at most 96h back. */
+const SESSION_BACKFILL_HOURS = 96;
+/** ITEM AH — recompute ONLY feat_session_level_count over the 72h-candidate window. */
+const RECOMPUTE_SESSION = process.argv.includes("--recompute-session");
 
 interface CorpusRow {
   signal_id: string;
@@ -89,6 +99,12 @@ function emissionMsFromSignalId(signalId: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+/** ITEM AH — start of the UTC day containing (anchorMs - 72h): the earliest candidate-session start. */
+function wideFromMs(anchorMs: number): number {
+  const d = new Date(anchorMs - 72 * 60 * 60 * 1000);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+
 function aggregateM1ToM5(m1: readonly TapeBar[]): BarInput[] {
   const buckets = new Map<number, { open: number; high: number; low: number; close: number; start: number }>();
   for (const bar of m1) {
@@ -140,7 +156,9 @@ function inferDirection(row: CorpusRow): "BUY" | "SELL" | null {
 
 async function main(): Promise<void> {
   console.log("=".repeat(80));
-  console.log("ITEM AB ENABLER — ADDITIVE-ONLY side-relative feature backfill");
+  console.log(RECOMPUTE_SESSION
+    ? "ITEM AH — ADDITIVE-ONLY feat_session_level_count RECOMPUTE (72h candidate window; writes ONLY that key)"
+    : "ITEM AB ENABLER — ADDITIVE-ONLY side-relative feature backfill");
   console.log("=".repeat(80));
 
   console.log("Pulling corpus + tape...");
@@ -162,12 +180,13 @@ async function main(): Promise<void> {
   let skipped = 0;
   let nulls = 0;
   let failures = 0;
+  let sessionChanged = 0;
 
   for (let i = 0; i < emissions.length; i += 1) {
     const { row, emittedAt } = emissions[i];
     try {
       const existingFeatures = (row.features ?? {}) as Record<string, unknown>;
-      if (existingFeatures.feat_trend_aligned !== undefined) {
+      if (!RECOMPUTE_SESSION && existingFeatures.feat_trend_aligned !== undefined) {
         skipped += 1;
         continue;
       }
@@ -177,26 +196,44 @@ async function main(): Promise<void> {
         nulls += 1;
         continue; // not computable — leave the row untouched (training excludes it)
       }
-      const window = barsBefore.slice(-ENGINE_M5_WINDOW);
-      const entryPrice = row.entry_price ?? window[window.length - 1].close;
       const rsiRaw = existingFeatures.rsi;
-      const feats = computeSideRelativeFeatures({
-        direction,
-        entryPrice,
-        rsi: typeof rsiRaw === "number" && Number.isFinite(rsiRaw) ? rsiRaw : null,
-        m5Bars: window,
-        zonePrices: pivotZoneLevels(window),
-      });
-      const merged = {
-        ...existingFeatures,
-        feat_trend_aligned: feats.feat_trend_aligned,
-        feat_rsi_aligned: feats.feat_rsi_aligned,
-        feat_ema_stack: feats.feat_ema_stack,
-        feat_session_level_count: feats.feat_session_level_count,
-        feat_at_day_extreme: feats.feat_at_day_extreme,
-        feat_zone_max_react: feats.feat_zone_max_react,
-        feat_near_round50: feats.feat_near_round50,
-      };
+      const rsi = typeof rsiRaw === "number" && Number.isFinite(rsiRaw) ? rsiRaw : null;
+      let merged: Record<string, unknown>;
+      if (RECOMPUTE_SESSION) {
+        // ITEM AH — recompute ONLY the session key over the wide window; the
+        // six other feat_* keys keep their stored emission-mirror values.
+        const wideWindow = barsBefore.filter((b) => b.timestamp >= wideFromMs(emittedAt));
+        const entryPrice = row.entry_price ?? wideWindow[wideWindow.length - 1].close;
+        const featsWide = computeSideRelativeFeatures({
+          direction,
+          entryPrice,
+          rsi,
+          m5Bars: wideWindow,
+          zonePrices: pivotZoneLevels(wideWindow),
+        });
+        if (existingFeatures.feat_session_level_count !== featsWide.feat_session_level_count) sessionChanged += 1;
+        merged = { ...existingFeatures, feat_session_level_count: featsWide.feat_session_level_count };
+      } else {
+        const window = barsBefore.slice(-ENGINE_M5_WINDOW);
+        const entryPrice = row.entry_price ?? window[window.length - 1].close;
+        const feats = computeSideRelativeFeatures({
+          direction,
+          entryPrice,
+          rsi,
+          m5Bars: window,
+          zonePrices: pivotZoneLevels(window),
+        });
+        merged = {
+          ...existingFeatures,
+          feat_trend_aligned: feats.feat_trend_aligned,
+          feat_rsi_aligned: feats.feat_rsi_aligned,
+          feat_ema_stack: feats.feat_ema_stack,
+          feat_session_level_count: feats.feat_session_level_count,
+          feat_at_day_extreme: feats.feat_at_day_extreme,
+          feat_zone_max_react: feats.feat_zone_max_react,
+          feat_near_round50: feats.feat_near_round50,
+        };
+      }
       const res = await restFetch(`trade_outcomes_v1?signal_id=eq.${encodeURIComponent(row.signal_id)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Prefer: "return=minimal" },
@@ -218,8 +255,14 @@ async function main(): Promise<void> {
   }
 
   console.log("\nDONE:");
-  console.log(`  updated (7 feat_* keys written): ${updated}`);
-  console.log(`  skipped (already carried the keys): ${skipped}`);
+  if (RECOMPUTE_SESSION) {
+    console.log(`  updated (feat_session_level_count ONLY written): ${updated}`);
+    console.log(`  ...of which the value CHANGED vs the stored one: ${sessionChanged}`);
+    console.log(`  skipped (already carried the keys): ${skipped}`);
+  } else {
+    console.log(`  updated (7 feat_* keys written): ${updated}`);
+    console.log(`  skipped (already carried the keys): ${skipped}`);
+  }
   console.log(`  not computable (no direction / no tape) — untouched: ${nulls}`);
   console.log(`  failures: ${failures}`);
   console.log("Labels, exits, timestamps and updated_at were NEVER part of any payload.");

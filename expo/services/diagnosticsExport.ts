@@ -1,5 +1,6 @@
 import { FeatureConfidence, PerformanceMetrics, TradingSignal, SignalLearningContext } from "@/types/trading";
 import { renderAttentionAnnotation } from "@/services/attentionTelemetry";
+import { formatWeightSignAudit } from "@/services/modelFitting";
 import type { signalEngine } from "@/services/signalEngine";
 import type { DiagnosticEvent } from "@/services/diagnosticEventStore";
 
@@ -740,6 +741,10 @@ function formatModelWeightsSection(
         } | rows used ${modelWeights.fitRowsUsed ?? "?"} (NaN-excluded ${modelWeights.fitExcludedNaN ?? "?"}) | lambda 1.0, lr 0.01`,
       );
     }
+    // ITEM AG — weight-sign audit, rendered from the STORED weights. The three
+    // backtest expectations are hardcoded reference strings from the completed
+    // study (not live measurements). Documentation only — no weight changes.
+    lines.push(...formatWeightSignAudit(modelWeights.weights));
     lines.push("");
     lines.push("Feature weights:");
     if (modelWeights.weights.length === 0) {

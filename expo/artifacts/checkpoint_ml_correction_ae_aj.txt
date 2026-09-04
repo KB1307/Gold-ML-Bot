@@ -1,0 +1,324 @@
+══════════════════════════════════════════════════════════════════════════════
+ML UPGRADE CORRECTION ROUND — Items AE–AJ (user request, 2026-09-04)
+Artifact: expo/artifacts/checkpoint_ml_correction_ae_aj.txt
+Scope honoured: modelFitting.ts, signalEngine.ts (training function +
+buildLearningContext), diagnosticsExport.ts, settings.tsx (unchanged — nothing
+needed), acceptance/backfill scripts, ci_guard_build_marker.ts (Item AI).
+══════════════════════════════════════════════════════════════════════════════
+
+──────────────────────────────────────────────────────────────────────────────
+ITEM AE — FIX THE RECONSTRUCTION LEAK
+──────────────────────────────────────────────────────────────────────────────
+STEP 1-2 — MEASURED FIRST (trade_outcomes_v1, direct anon-key read, 496 rows):
+  Fingerprint: volumeRatio===1 AND timeWindowFactor===1 AND dxyChange===0
+               AND (sentiment.score===0 OR sentiment absent)
+  Total rows:                                  496
+  Rows with features = null:                   0
+  Rows carrying the featuresSource marker:     26
+  Single-default counts:
+    volumeRatio === 1:                         386
+    timeWindowFactor === 1:                    402
+    dxyChange === 0:                           495
+    sentiment.score === 0 or absent:           399
+  Partial fingerprint (vr=1 AND tw=1 AND dxy=0, sentiment ignored): 376
+  COUNTER-CHECK rows (tw=1 AND dxy=0 AND sentiment-default BUT volumeRatio !== 1
+  — KEPT by the AND): 6
+  FULL FINGERPRINT (ALL FOUR defaults):        373
+    ...carrying the marker:                    26
+    ...WITHOUT the marker (THE LEAK):          347
+  Leak-row ts range: 2026-06-29T08:44:00Z .. 2026-08-30T04:58:39Z
+  Sample unmarked fingerprint rows (leak evidence):
+    yggwqq ts=2026-06-29T08:44Z source=undefined rsi=47.53 atr=1.64 volumeRatio=1
+      timeWindowFactor=1 dxy=0 sentiment={"score":0,"source":"resolver-bar-reconstruction","confidence":0}
+    r8tucp / k37du2 / srwtzk / 7h9q1q — same fingerprint, same sentiment.source class.
+  LABEL-QUALITY DECOMPOSITION (false-positive check) — fingerprint rows by
+  sentiment.source: resolver-bar-reconstruction 285, record-fallback 62,
+  app-bar-reconstruction 26; sentiment ABSENT 0; score-undefined 0.
+  → ZERO rows with a real sentiment source. Every fingerprint row is
+  reconstruction-class. The 347-row leak is genuine defaulted data.
+
+STEP 3 — SHIPPED (modelFitting.ts):
+  export function matchesReconstructionFingerprint(
+    features?: ReconstructionFeatureShape | null,
+  ): boolean {
+    if (!features || typeof features !== "object") return false;
+    const volumeDefault = features.volumeRatio === 1;
+    const timeWindowDefault = features.timeWindowFactor === 1;
+    const dxyDefault = features.dxyChange === 0;
+    const sentiment = features.sentiment;
+    const sentimentDefault =
+      sentiment === null ||
+      sentiment === undefined ||
+      (typeof sentiment === "object" && sentiment.score === 0);
+    return volumeDefault && timeWindowDefault && dxyDefault && sentimentDefault;
+  }
+  export function isReconstructionRow(
+    features?: ReconstructionFeatureShape | null,
+  ): boolean {
+    if (features?.featuresSource === RECONSTRUCTION_SOURCE) return true;   // marker check KEPT
+    return matchesReconstructionFingerprint(features);
+  }
+  CorpusFilterResult gains excludedReconstructionMarked / excludedReconstructionFingerprint;
+  filterTrainingCorpus reports both sub-counts.
+
+STEP 4 — COUNTER-CHECK (verified): a row with volumeRatio=1.5 and
+  timeWindowFactor=1 and dxyChange=0 and sentiment.score=0 is NOT excluded —
+  the AND chain requires ALL FOUR; volumeDefault=false makes the conjunction
+  false → isReconstructionRow false → included. Evidence: the measured 6 rows
+  in exactly that class are among the 123 KEPT rows (373+123=496).
+
+STEP 5 — DIAGNOSTICS LABEL (diagnosticsExport.ts, SECTION 2):
+  `Corpus cleanup (Item AA+AE): total N | excluded reconstruction (marked +
+  fingerprint) M + F = T | used for training U` — sub-counts render
+  "UNKNOWN (predates Item AE)" for vectors persisted before this round.
+  persistData (retrainModel) + getRawModelWeightsForExport carry
+  corpusExcludedReconstructionMarked / corpusExcludedReconstructionFingerprint.
+
+STEP 6 — BACKFILL RE-RUN (default idempotent mode, after the filter change):
+  DONE:
+    updated (7 feat_* keys written): 0
+    skipped (already carried the keys): 496
+    not computable (no direction / no tape) — untouched: 0
+    failures: 0
+  Zero writes occurred → the 4 default fields are provably untouched. Code
+  proof: the payload is `{ ...existingFeatures, <the 7 feat_* keys> }` —
+  volumeRatio/timeWindowFactor/dxyChange/sentiment only pass through the
+  existingFeatures spread and are never assigned.
+
+ACCEPTANCE (acceptance script, AA section, shipped filter):
+  corpusTotal                  = 496
+  corpusExcludedReconstruction = 373
+    ...marked (featuresSource) = 26
+    ...fingerprint (AE)        = 347
+  corpusUsedForTraining        = 123
+  GATE (corpusUsedForTraining >= 100): PASS
+  GATE AE (excluded >= 200): 373 PASS.
+  BEFORE vs AFTER replica weights (same math, only the filter differs):
+    atr_weight      0.153467 → 0.103928
+    dxy_weight      0.000000 → 0.000000
+    rsi_weight     -0.116010 → -0.077398
+    sentiment      -0.137776 → -0.176550
+    timeWindow     -0.120168 → -0.145363
+    volume_weight   0.330524 → 0.418674
+
+──────────────────────────────────────────────────────────────────────────────
+ITEM AF — rowsUsed >= 30 GUARD (signalEngine.ts, retrainModel)
+──────────────────────────────────────────────────────────────────────────────
+SHIPPED CODE (verbatim, with context; line numbers from the live file):
+  8395|    // ITEM AG — WEIGHT-SIGN CONTEXT (documentation only, no weight is changed):
+  8396|    // The backtest population (4,570 double-top/bottom signals, matched null,
+  8397|    // 18mo M5) found opposite signs for trend_aligned and rsi_aligned compared
+  8398|    // to this corpus. The most likely cause is population composition: the
+  8399|    // engine emits ~60% BUYs with 36% WR, skewing the winner centroid. The
+  8400|    // shadow gate (SECTION 11) settles whether these weights predict on the
+  8401|    // live population.
+  8402|    const fit = fitLogisticRegression(fitRows, { lambda: 1.0, learningRate: 0.01, maxIterations: 1000, tolerance: 1e-6 });
+  8403|    // ITEM AF — the corpus-level <30 guard above counts rows BEFORE the fit's
+  8404|    // NaN exclusion; the fit can still land on as few as 2 usable rows. A 2-29
+  8405|    // row fit is exactly the "fitting noise on tiny samples" case the AC guard
+  8406|    // exists to prevent, so the same floor applies to the fit's own usable-row
+  8407|    // count. Sits BEFORE the convergence check (which keeps its <2 safety
+  8408|    // floor) and BEFORE this.modelWeights.clear() — on this return the existing
+  8409|    // weights and the restored logisticModel are untouched, so modelProbability
+  8410|    // continues to be stamped from the previous model (or not stamped when no
+  8411|    // previous model exists).
+  8412|    if (fit.rowsUsed < 30) {
+  8413|      console.log(`⚠️ ITEM AF: logistic fit used only ${fit.rowsUsed} rows (< 30) — keeping the existing weights to prevent noise`);
+  8414|      return;
+  8415|    }
+  8416|    if (!fit.converged || fit.rowsUsed < 2 || !Number.isFinite(fit.finalLoss)) {
+  ...  (convergence guard keeps its <2 safety floor, unchanged)
+  8440|    this.modelWeights.clear();          ← the guard sits 28 lines BEFORE this
+GATE (order): guard at :8412-8415 is BEFORE this.modelWeights.clear() at :8440.
+  On the guard's return, weights have NOT been overwritten.
+COUNTER-CHECK (traced): with rowsUsed=25 the guard returns at :8414 →
+  :8440 clear() and the logisticModel assignment never run → this.logisticModel
+  keeps the boot-restored model → buildLearningContext :7905
+  `const probability = scoreLogisticModel(extractFeatureVector(context), this.logisticModel);`
+  continues to stamp modelProbability/modelVerdict from the PREVIOUS model;
+  with no previous model, scoreLogisticModel returns null and :7906's
+  `if (probability !== null)` skips stamping. persistData (:8484+) is never
+  written → the AsyncStorage model_weights_v1 vector is unchanged.
+ACCEPTANCE: the code block + line-order proof above (per the item's test).
+
+──────────────────────────────────────────────────────────────────────────────
+ITEM AG — WEIGHT-SIGN AUDIT (documentation only; NO weight changed)
+──────────────────────────────────────────────────────────────────────────────
+SHIPPED: pure shared renderer formatWeightSignAudit + WEIGHT_SIGN_AUDIT in
+modelFitting.ts (single implementation behind BOTH the diagnostics SECTION 2
+and the acceptance script); diagnosticsExport.ts renders the block right after
+the logistic-fit stats; signalEngine.ts carries the population-composition
+comment above the fit call (:8395-8401, quoted in the AF block above).
+RENDERED with the fitted weights (acceptance script, shipped renderer):
+  WEIGHT-SIGN AUDIT (Item AG):
+   feat_trend_aligned_weight: -0.028959 — backtest expectation: POSITIVE (t=+3.54)
+   feat_rsi_aligned_weight: 0.095881 — backtest expectation: NEGATIVE (t=−2.62)
+   feat_ema_stack_weight: 0.394068 — backtest expectation: POSITIVE (t=+1.83)
+   Agreement: 1 of 3 signs match — if <2, investigate population composition before promoting modulation
+LIVE-DEVICE NOTE: the currently stored device vector predates Item AC (6
+legacy names only), so TODAY's live SECTION 2 renders the same block with
+UNKNOWN values (the gate explicitly allows this); the real values above appear
+at the next in-app retrain, which will persist exactly these weights.
+
+──────────────────────────────────────────────────────────────────────────────
+ITEM AH — SESSION-LEVEL COUNT WINDOW (72h candidates)
+──────────────────────────────────────────────────────────────────────────────
+SHIPPED (modelFitting.ts, computeSideRelativeFeatures — windows array only):
+    // ITEM AH — candidate windows span the trailing 72h (anchor day + the
+    // three previous days). The coverage guard below is BYTE-IDENTICAL: a
+    // session counts only when the bars FULLY cover it, so candidates outside
+    // the caller's bar window are excluded naturally — safe for any window.
+    const windows = [
+      ...sessionWindowBoundsUtc(anchorMs - 72 * SESSION_WINDOW_MS),
+      ...sessionWindowBoundsUtc(anchorMs - 48 * SESSION_WINDOW_MS),
+      ...sessionWindowBoundsUtc(anchorMs - 24 * SESSION_WINDOW_MS),
+      ...sessionWindowBoundsUtc(anchorMs),
+    ];
+  The coverage guard `if (firstBarMs <= w.startMs && w.endMs <= anchorMs)` is
+  UNCHANGED (byte-identical); the shipped `seen > 0` bars-exist check inside
+  is unchanged.
+DATA-SOURCE DISCREPANCY (reported, not silently resolved): at EMISSION the
+  engine passes barSeriesM5 = aggregateBars(m1,5).slice(-BAR_M5_LOOKBACK=300)
+  (signalEngine.ts:2957) ≈ 25h of bars, so the candidate widening alone is a
+  no-op at emission EXCEPT across weekend gaps (300 trading bars span >48h
+  wall clock across the Fri-close → Sun-reopen gap — the narrow mirror below
+  rose 0.0417 → 0.0460 exactly from those rows). Widening BAR_M5_LOOKBACK is
+  OUTSIDE this prompt's scoped functions → NOT touched; consequence + remedy
+  named in the final report (train rows carry 72h-window session values; live
+  emission computes over the caller's bar window; shadow-only impact).
+BACKFILL (AH Task 3): backfill_side_relative_features.ts gained
+  --recompute-session — recomputes ONLY feat_session_level_count over a bar
+  window from dayStart(emission−72h) (wide enough to cover all candidates) and
+  writes JUST THAT ONE KEY; the idempotent skip is bypassed for this mode.
+  RUN OUTPUT:
+    updated (feat_session_level_count ONLY written): 496
+    ...of which the value CHANGED vs the stored one: 124
+    skipped: 0 | not computable — untouched: 0 | failures: 0
+  Labels, exits, timestamps and updated_at were NEVER part of any payload.
+ACCEPTANCE (acceptance script, AB section, real tape 69,883 M1 bars / 70.3d):
+  feat_session_level_count   non-null  496/496 (100.0%) | min 0.0000 max 0.6000 mean 0.1101 | range OK
+  feat_session_level_count (pre-AH 300-bar emission mirror): non-null 496/496 (100.0%) | mean 0.0460 | ones 0.0%
+  (Pre-AH original round: non-null 470/496 (94.8%), mean 0.0417.)
+  Coverage 100.0% (~95%+ expected) | mean 0.1101 > 0.042 expected, > 0.04 gate.
+  ONES % honesty note: "ones" (value == 1, i.e. 5 levels within $3) stayed
+  0.0% in every view — no row reaches the cap; the distribution moved as
+  intended (mean ×2.6, max 0.2 → 0.6). Reported, not smoothed over.
+  GATE AB (all 7 features non-null and in [0,1] on covered rows): PASS
+COUNTER-CHECK (from the AB run, verbatim):
+  COUNTER-CHECK (Item AH) yggwqq emitted 2026-06-29T08:25:44.894Z:
+    wide-window bars 377 | firstBar 2026-06-26T00:00:00.000Z | anchor 2026-06-29T08:20:00.000Z
+    candidate sessions: 12 (4 days x 3) | counted (guard + bars exist): 4 | excluded: 8
+    example EXCLUDED (no bars in window): 2026-06-27T00:00:00.000Z .. 2026-06-27T07:00:00.000Z
+      (guard passes but NO bars exist in the window — market closed; the shipped
+      seen>0 branch excludes it)
+  Sessions outside the bar window are still excluded — guard byte-identical.
+
+──────────────────────────────────────────────────────────────────────────────
+ITEM AI — CI-GUARD FILE-SIZE CHECK (anti-false-pass)
+──────────────────────────────────────────────────────────────────────────────
+TASK 1 — the transformer-registration line (ci_guard_build_marker.ts:39):
+  if (!metroSrc.includes('require.resolve("./metro.build-marker-transformer")')) {
+TASK 2 — SHIPPED (in checkTransformerConfig, first check):
+  // ITEM AI — file-size sanity. The real config is ~75 lines; the 2026-09-04
+  // restore accident wrote a 10,426-line git-diff blob that PASSED the grep
+  // checks because the patterns matched inside the diff text. Any accidental
+  // diff/concatenation is caught here instead of by a human's wc -l.
+  const lineCount = metroSrc.split("\n").length;
+  if (lineCount > 200) {
+    errors.push(
+      `metro.config.js is ${lineCount} lines (expected ~75) — likely contains a git diff blob instead of the config. Restore with: git show 0e63c3d:expo/metro.config.js > expo/metro.config.js`,
+    );
+  }
+  Plus a 6th self-test fixture (valid config + 300 padding lines must yield
+  EXACTLY the size error) — self-test now reports (6/6).
+14TH PLATFORM STRIP found at round start (metro.config.js = 6 lines). Per the
+TT.4 protocol the failing guard run was captured BEFORE any restore:
+  ✗ metro.config.js: dedicated build-marker transformer is not registered.
+  ✗ ci_guard_build_marker FAILED — the build-marker chain is broken. Do not ship.
+THREE-WAY ACCEPTANCE (raw):
+  RUN 1 — restored verbatim `git show 0e63c3d:expo/metro.config.js` (75 lines):
+    self-test: all mutated fixtures correctly rejected (6/6)
+    Metro transformer      : registered, delegates to Rork, scoped to constants/buildMarker.ts
+    ✅ ci_guard_build_marker PASSED — transformer, placeholders, and sentinel detector intact.
+  RUN 2 — valid config + 300 padding lines (376 lines total):
+    ✗ metro.config.js is 376 lines (expected ~75) — likely contains a git diff blob instead of the config. Restore with: git show 0e63c3d:expo/metro.config.js > expo/metro.config.js
+    ✗ ci_guard_build_marker FAILED — the build-marker chain is broken. Do not ship.
+  RUN 3 — restored verbatim again (75 lines):
+    ✅ ci_guard_build_marker PASSED — transformer, placeholders, and sentinel detector intact.
+GATE: fails on the long file, passes on the 75-line file. CLOSED.
+
+──────────────────────────────────────────────────────────────────────────────
+ITEM AJ — RE-FIT ON THE CLEANED CORPUS + RE-BACKFILL
+──────────────────────────────────────────────────────────────────────────────
+Order honoured: AE → AF/AG → AH → AJ. The backfill recompute ran under AH
+(496 updated / 124 changed / 0 failures, feat_session_level_count only).
+"Uses the AE-cleaned population for any feature that references the corpus":
+VERIFIED VACUOUS — computeSideRelativeFeatures is a pure per-row function of
+{direction, entryPrice, rsi, m5Bars, zonePrices}; it references no corpus row.
+FRESH FIT (acceptance script, AC section — shipped fitLogisticRegression on
+the AE-cleaned corpus with the AH-widened session values):
+  Fit input: 122 labelled row(s) (scratches excluded).   [123 included − 1 scratch]
+  rowsUsed=122 excludedNaN=0 winners=73 losers=49
+  iterations=65 finalLoss=74.031111 converged=true
+  GATE AC (converged, iterations < 1000, rowsUsed >= 30): PASS
+  GATE AJ (rowsUsed >= 100): PASS (122)
+  13 weights + bias (as persisted to model_weights_v1):
+    model_bias: 0.452139
+    rsi_weight: -0.217689      atr_weight: -0.081645
+    volume_weight: -0.023347   sentiment_weight: -0.186503
+    dxy_weight: 0.000000       timeWindow_weight: -0.360004
+    feat_trend_aligned_weight: -0.028959   feat_rsi_aligned_weight: 0.095881
+    feat_ema_stack_weight: 0.394068        feat_session_level_count_weight: 0.339915
+    feat_at_day_extreme_weight: -0.085134  feat_zone_max_react_weight: 0.017444
+    feat_near_round50_weight: -0.080251
+  WEIGHT-SIGN AUDIT: 1 of 3 signs match (feat_ema_stack agrees; trend_aligned
+  and rsi_aligned opposite to the backtest reference) — FLAGGED per the item;
+  not suppressed; the shadow period (SECTION 11) decides promotion.
+  HAND-CHECK zhbsv8: hand sigmoid(0.996986) = 0.730465 == shipped
+  scoreLogisticModel = 0.730465 — MATCH (3dp): YES
+  SYNTHETIC SANITY: converged, iterations=17, bias 0.1497 vs truth 0.15,
+  sign agreement on all 11 non-zero generating weights, zero-truth weights
+  within 3σ(0.300) — PASS.
+READBACK (3 rows of the AE-included training population, all 7 feat_* keys,
+read back from the server AFTER the recompute):
+  EARLY rgssd0 ts=2026-07-16T22:55Z WIN SELL — trend 1, rsi_aligned null,
+    ema_stack 1, session 0, day_extreme 0, zone 0.6416, round50 0
+    (legacy scalars undefined on this row — it is the corpus's one scratch;
+    excluded from the fit by the scratch rule, present for completeness)
+  MID o2bz0x ts=2026-08-21T09:06Z WIN BUY — trend 1, rsi_aligned 0,
+    ema_stack 1, session 0, day_extreme 0, zone 0, round50 0
+    (real features: volumeRatio 3.85, sentiment NEUTRAL — included because a
+    non-default volumeRatio carries real data; the fingerprint correctly kept it)
+  RECENT 6izfkj ts=2026-09-04T06:18Z LOSS SELL — trend 1, rsi_aligned 0,
+    ema_stack 1, session 0, day_extreme 0, zone 0.2918, round50 1
+    (real features: rsi 41.73, sentiment BEARISH −0.3, volumeRatio 1.56)
+
+──────────────────────────────────────────────────────────────────────────────
+REGRESSION CHECKS
+──────────────────────────────────────────────────────────────────────────────
+runChecks(expo): PASS after AE, after AF+AG, after AH, after AI (final). 0 errors.
+ci_guard_build_marker: PASS (three-way test, RUN 3).
+ci_guard_duplicate_constants: PASS — 24 single-source constant(s), 2 parity-asserted.
+ci_guard_market_gate: PASS.
+
+──────────────────────────────────────────────────────────────────────────────
+OPEN ITEMS
+──────────────────────────────────────────────────────────────────────────────
+1. First live emission carrying the 7 features + modelProbability/modelVerdict:
+   BLOCKED-ON-MARKET (unchanged from the AA–AD round).
+2. Live export showing the AE sub-counters + AG audit block + the fresh fit:
+   requires the next in-app retrain (concept drift HIGH → scheduled, boot with
+   lastTrainingTime > 2 days, or Settings manual retrain).
+3. EMISSION-SIDE SESSION WINDOW (named, not touched — out of scope):
+   barSeriesM5 = slice(-300) at signalEngine.ts:2957. Training rows now carry
+   72h-window feat_session_level_count; live emission computes over the
+   caller's bar window (~25h, except weekend-gap spans). Shadow-only impact
+   (modelProbability is not wired to confidence). Named remedy for its own
+   gated item: widen BAR_M5_LOOKBACK or pass a wider M5 series into
+   buildLearningContext.
+4. AD's 3-signal verdict proof + live emission-rate comparison:
+   BLOCKED-ON-MARKET (static no-suppression proof stands).
+5. HOLD PROOF for the corrections (hard-reload preview, close old-bundle
+   sessions): BLOCKED-ON-DEVICE (user's to run; carried from the prior round).
+
+STATUS: ALL SIX GATES CLOSED / SHIPPED / MEASURED / VERIFIED.

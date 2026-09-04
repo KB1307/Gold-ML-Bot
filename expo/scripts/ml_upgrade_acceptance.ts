@@ -27,6 +27,7 @@ import {
   sigmoid,
   CENTROID_FEATURE_SPECS,
   getLogisticWeightName,
+  formatWeightSignAudit,
   MODEL_FEATURE_KEYS,
   MODEL_BIAS_KEY,
   meanKeyName,
@@ -40,7 +41,8 @@ const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? "sb_publi
 const M5_BAR_MS = 5 * 60 * 1000;
 /** The engine retains BAR_M5_LOOKBACK = 300 M5 bars — the backfill mirrors that window. */
 const ENGINE_M5_WINDOW = 300;
-const SESSION_BACKFILL_HOURS = 26;
+/** ITEM AH — the tape must reach dayStart(emission - 72h), which is at most 96h back. */
+const SESSION_BACKFILL_HOURS = 96;
 
 interface CorpusRow {
   signal_id: string;
@@ -269,11 +271,19 @@ function printWeights(title: string, weights: Map<string, number>): void {
   }
 }
 
-// ─── ITEM AB backfill helpers ────────────────────────────────────────────────
+/**
+ * ITEM AB backfill helpers ─────────────────────────────────────────────────
+ */
 
 function emissionMsFromSignalId(signalId: string): number | null {
   const m = /^signal_(\d+)_/.exec(signalId);
   return m ? Number(m[1]) : null;
+}
+
+/** ITEM AH — start of the UTC day containing (anchorMs - 72h): the earliest candidate-session start. */
+function wideFromMs(anchorMs: number): number {
+  const d = new Date(anchorMs - 72 * 60 * 60 * 1000);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
 }
 
 /** Aggregate ascending M1 bars into completed M5 buckets (open/first, high/max, low/min, close/last). */
@@ -503,6 +513,11 @@ async function main(): Promise<void> {
   console.log(`Aggregated to ${m5.length} M5 bar(s) (tape span ${tapeSpanDays.toFixed(1)} day(s): ${tape[0]?.timestamp ?? "none"} .. ${tape[tape.length - 1]?.timestamp ?? "none"})`);
 
   const backfilled = new Map<string, ReturnType<typeof computeSideRelativeFeatures>>();
+  // ITEM AH — feat_session_level_count computed over a bar window wide enough
+  // to cover the 72h of candidate sessions (dayStart(emission - 72h) .. now).
+  // This is the value the backfill's --recompute-session pass writes to the
+  // server; the 300-bar map below stays the emission-mirror view.
+  const wideSessionCounts = new Map<string, number | null>();
   let withoutTape = 0;
   let withoutDirection = 0;
   let covered = 0;
@@ -543,6 +558,15 @@ async function main(): Promise<void> {
       zonePrices: pivotZoneLevels(window),
     });
     backfilled.set(row.signal_id, feats);
+    const wideWindow = barsBefore.filter((b) => b.timestamp >= wideFromMs(emittedAt));
+    const featsWide = computeSideRelativeFeatures({
+      direction,
+      entryPrice,
+      rsi,
+      m5Bars: wideWindow,
+      zonePrices: pivotZoneLevels(wideWindow),
+    });
+    wideSessionCounts.set(row.signal_id, featsWide.feat_session_level_count);
   }
 
   console.log(`\nCoverage: full ${covered}, no tape (${withoutTape}), no direction (${withoutDirection})`);
@@ -550,7 +574,12 @@ async function main(): Promise<void> {
   const featKeys = MODEL_FEATURE_KEYS.filter((k) => k.startsWith("feat_")) as Array<(typeof MODEL_FEATURE_KEYS)[number]>;
   let gateAb = true;
   for (const key of featKeys) {
-    const vals = [...backfilled.values()].map((v) => v[key as keyof typeof v]).filter((v): v is number => v !== null);
+    // ITEM AH — the feat_session_level_count row reports the 72h-window values
+    // (what the backfill writes); every other row stays the 300-bar mirror.
+    const source = key === "feat_session_level_count"
+      ? [...wideSessionCounts.values()]
+      : [...backfilled.values()].map((v) => v[key as keyof typeof v]);
+    const vals = source.filter((v): v is number => v !== null);
     const nonNullPct = ((vals.length / covered) * 100).toFixed(1);
     const isBinary = vals.every((v) => v === 0 || v === 1);
     const ones = vals.filter((v) => v === 1).length;
@@ -560,6 +589,60 @@ async function main(): Promise<void> {
     const inRange = vals.every((v) => Number.isFinite(v) && v >= 0 && v <= 1);
     if (!inRange || vals.length === 0) gateAb = false;
     console.log(`  ${key.padEnd(26)} non-null ${String(vals.length).padStart(4)}/${covered} (${nonNullPct}%) | min ${min.toFixed(4)} max ${max.toFixed(4)} mean ${mean.toFixed(4)}${isBinary ? ` | ones ${((ones / vals.length) * 100).toFixed(1)}%` : ""} | range ${inRange ? "OK" : "VIOLATION"}`);
+  }
+
+  // ITEM AH — the pre-AH emission-mirror distribution for comparison (the
+  // ~25h window the engine passes at emission today).
+  {
+    const narrowVals = [...backfilled.values()].map((v) => v.feat_session_level_count).filter((v): v is number => v !== null);
+    const mean = narrowVals.length ? narrowVals.reduce((s, v) => s + v, 0) / narrowVals.length : NaN;
+    const ones = narrowVals.filter((v) => v === 1).length;
+    console.log(`  feat_session_level_count (pre-AH 300-bar emission mirror): non-null ${narrowVals.length}/${covered} (${((narrowVals.length / covered) * 100).toFixed(1)}%) | mean ${mean.toFixed(4)} | ones ${narrowVals.length ? ((ones / narrowVals.length) * 100).toFixed(1) : "n/a"}%`);
+  }
+
+  // ITEM AH counter-check — sessions outside the bar window are still excluded
+  // by the byte-identical coverage guard (one sample row, printed in full).
+  {
+    const sample = emissions.find((e) => (wideSessionCounts.get(e.row.signal_id) ?? null) !== null);
+    if (sample) {
+      const emittedAt = sample.emittedAt;
+      const barsAll = m5.filter((b) => b.timestamp + M5_BAR_MS <= emittedAt);
+      const wide = barsAll.filter((b) => b.timestamp >= wideFromMs(emittedAt));
+      const firstBarMs = wide[0]?.timestamp ?? NaN;
+      const anchorMs = wide[wide.length - 1]?.timestamp ?? NaN;
+      // The 12 candidate windows (4 days x 3 UTC sessions) reconstructed for
+      // this PRINT only — the shipped predicate lives in modelFitting.
+      const sessionsUtc: ReadonlyArray<readonly [number, number]> = [[0, 7], [7, 12], [12, 22]];
+      const dayStart = (ms: number): number => { const d = new Date(ms); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); };
+      let counted = 0;
+      let excludedOld: string | null = null;
+      let excludedNoBars: string | null = null;
+      for (const h of [72, 48, 24, 0]) {
+        const day = dayStart(emittedAt - h * 3600_000);
+        for (const [sh, eh] of sessionsUtc) {
+          const startMs = day + sh * 3600_000;
+          const endMs = day + eh * 3600_000;
+          const guardOk = firstBarMs <= startMs && endMs <= anchorMs;
+          let hasBars = false;
+          if (guardOk) {
+            for (const bar of wide) {
+              if (bar.timestamp >= startMs && bar.timestamp < endMs) { hasBars = true; break; }
+            }
+          }
+          if (guardOk && hasBars) counted += 1;
+          else if (excludedOld === null && !guardOk && startMs < firstBarMs) {
+            excludedOld = `${new Date(startMs).toISOString()} .. ${new Date(endMs).toISOString()} (session starts ${((firstBarMs - startMs) / 3600_000).toFixed(1)}h before the first bar — not fully covered)`;
+          } else if (excludedNoBars === null && guardOk && !hasBars) {
+            excludedNoBars = `${new Date(startMs).toISOString()} .. ${new Date(endMs).toISOString()} (guard passes but NO bars exist in the window — market closed; the shipped seen>0 branch excludes it)`;
+          }
+        }
+      }
+      console.log(`\nCOUNTER-CHECK (Item AH) ${sample.row.signal_id.slice(-6)} emitted ${new Date(emittedAt).toISOString()}:`);
+      console.log(`  wide-window bars ${wide.length} | firstBar ${new Date(firstBarMs).toISOString()} | anchor ${new Date(anchorMs).toISOString()}`);
+      console.log(`  candidate sessions: 12 (4 days x 3) | counted (guard + bars exist): ${counted} | excluded: ${12 - counted}`);
+      if (excludedOld) console.log(`  example EXCLUDED (outside bar window): ${excludedOld}`);
+      if (excludedNoBars) console.log(`  example EXCLUDED (no bars in window): ${excludedNoBars}`);
+    }
   }
 
   const spot = rows.find((r) => r.signal_id === "signal_1788205623383_ekszhbsv8");
@@ -577,20 +660,17 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Attach the backfilled features to the outcome rows and fit 13 centroid weights.
+  // ITEM AJ — the fit input mirrors the POST-AJ SERVER state: the six
+  // non-session features keep their stored (emission-mirroring) values and
+  // feat_session_level_count is the Item AH 72h-window value that the
+  // backfill's --recompute-session pass writes to the server.
   const enriched: TradeOutcomeShape[] = filter.included.map((r) => {
-    const feats = backfilled.get(r.signalId);
+    const wideSession = wideSessionCounts.get(r.signalId);
     return {
       ...r,
       features: {
         ...r.features,
-        feat_trend_aligned: feats?.feat_trend_aligned ?? null,
-        feat_rsi_aligned: feats?.feat_rsi_aligned ?? null,
-        feat_ema_stack: feats?.feat_ema_stack ?? null,
-        feat_session_level_count: feats?.feat_session_level_count ?? null,
-        feat_at_day_extreme: feats?.feat_at_day_extreme ?? null,
-        feat_zone_max_react: feats?.feat_zone_max_react ?? null,
-        feat_near_round50: feats?.feat_near_round50 ?? null,
+        feat_session_level_count: wideSession !== undefined ? wideSession : (r.features.feat_session_level_count ?? null),
       },
     };
   });
@@ -626,8 +706,14 @@ async function main(): Promise<void> {
   console.log("stds:");
   MODEL_FEATURE_KEYS.forEach((key, i) => console.log(`  ${stdKeyName(key)}: ${fit.stds[i].toFixed(6)}`));
 
+  console.log("\nITEM AG — WEIGHT-SIGN AUDIT (shipped formatWeightSignAudit on the fitted weights):");
+  formatWeightSignAudit(
+    MODEL_FEATURE_KEYS.map((key, i) => [getLogisticWeightName(key), fit.weights[i]] as const),
+  ).forEach((line) => console.log(`  ${line}`));
+
   const gateAc = fit.converged && fit.iterations < 1000 && fit.rowsUsed >= 30;
   console.log(`\nGATE AC (converged, iterations < 1000, rowsUsed >= 30): ${gateAc ? "PASS" : "FAIL"}`);
+  console.log(`GATE AJ (rowsUsed >= 100): ${fit.rowsUsed >= 100 ? "PASS" : "FAIL"}`);
 
   // Shadow-scoring demo: the SHIPPED scoreLogisticModel on the newest real
   // corpus rows, next to the confidence the emission actually used. (The live

@@ -377,13 +377,15 @@ function utcDayStartMs(anchorMs: number): number {
 /**
  * Computes the 7 Item AB side-relative features.
  *
- * WINDOW HONESTY (deviation documented in the round artifact): the prompt's
- * spec says a 72h trailing window for feat_session_level_count and
- * feat_zone_max_react, but the engine retains only BAR_M5_LOOKBACK=300 M5
- * bars (~25h). Both features are computed over the FULL AVAILABLE bar window
- * (a session is counted only when the bar window fully covers it, so no
- * partial-session highs/lows ever enter the count). At emission the engine
- * passes barSeriesM5; nothing looks ahead.
+ * WINDOW SEMANTICS (Item AH): feat_session_level_count candidates span the
+ * trailing 72h (anchor day + the three previous days). The bar-coverage guard
+ * below is UNCHANGED — a session counts ONLY when the passed bars FULLY cover
+ * it, so the effective window is the CALLER's bar window: at emission that is
+ * barSeriesM5 (BAR_M5_LOOKBACK = 300 M5 bars, ~25h), so live emissions keep
+ * ~25h coverage until the engine's bar window itself widens (out of scope
+ * here, reported); the corpus backfill passes a window wide enough to cover
+ * the 72h of candidates. feat_zone_max_react keeps its available-bar-window
+ * semantics. Nothing looks ahead.
  */
 export function computeSideRelativeFeatures(
   input: SideRelativeFeatureInput,
@@ -417,9 +419,13 @@ export function computeSideRelativeFeatures(
   if (m5Bars.length > 0) {
     const firstBarMs = m5Bars[0].timestamp;
     const anchorMs = m5Bars[m5Bars.length - 1].timestamp;
-    // Candidate windows anchored on the anchor day AND the previous day (a
-    // session that started yesterday can still be the nearest completed one).
+    // ITEM AH — candidate windows span the trailing 72h (anchor day + the
+    // three previous days). The coverage guard below is BYTE-IDENTICAL: a
+    // session counts only when the bars FULLY cover it, so candidates outside
+    // the caller's bar window are excluded naturally — safe for any window.
     const windows = [
+      ...sessionWindowBoundsUtc(anchorMs - 72 * SESSION_WINDOW_MS),
+      ...sessionWindowBoundsUtc(anchorMs - 48 * SESSION_WINDOW_MS),
       ...sessionWindowBoundsUtc(anchorMs - 24 * SESSION_WINDOW_MS),
       ...sessionWindowBoundsUtc(anchorMs),
     ];
@@ -735,4 +741,57 @@ export type ModelVerdict = "AGREE" | "DISAGREE";
 
 export function verdictForProbability(p: number): ModelVerdict {
   return p >= 0.5 ? "AGREE" : "DISAGREE";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ITEM AG — weight-sign audit (documentation only; no weight is changed)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface WeightSignAuditEntry {
+  name: string;
+  expectation: string;
+  expectedSign: 1 | -1;
+}
+
+/**
+ * The three reference signs are hardcoded strings from the COMPLETED backtest
+ * study (4,570 double-top/bottom signals, matched null, 18mo M5) — reference
+ * values, not live measurements. The corpus fit may disagree (population
+ * composition); the shadow gate (SECTION 11) settles promotion.
+ */
+export const WEIGHT_SIGN_AUDIT: readonly WeightSignAuditEntry[] = [
+  { name: "feat_trend_aligned_weight", expectation: "POSITIVE (t=+3.54)", expectedSign: 1 },
+  { name: "feat_rsi_aligned_weight", expectation: "NEGATIVE (t=−2.62)", expectedSign: -1 },
+  { name: "feat_ema_stack_weight", expectation: "POSITIVE (t=+1.83)", expectedSign: 1 },
+];
+
+/**
+ * ITEM AG — renders the weight-sign audit block from the STORED model weights
+ * (the shared implementation behind diagnostics SECTION 2 and the acceptance
+ * script). A missing or non-finite weight renders UNKNOWN — the stored vector
+ * predates the Item AC logistic fit. Pure: no I/O, no side effects.
+ */
+export function formatWeightSignAudit(
+  weights: ReadonlyArray<readonly [string, number]> | Map<string, number>,
+): string[] {
+  const lines: string[] = ["WEIGHT-SIGN AUDIT (Item AG):"];
+  const lookup = weights instanceof Map ? weights : new Map(weights);
+  let matches = 0;
+  let unknown = 0;
+  for (const { name, expectation, expectedSign } of WEIGHT_SIGN_AUDIT) {
+    const value = lookup.get(name);
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      unknown += 1;
+      lines.push(` ${name}: UNKNOWN — backtest expectation: ${expectation}`);
+      continue;
+    }
+    if (Math.sign(value) === expectedSign) matches += 1;
+    lines.push(` ${name}: ${value.toFixed(6)} — backtest expectation: ${expectation}`);
+  }
+  const unknownNote =
+    unknown > 0 ? ` (${unknown} value(s) UNKNOWN — the stored vector predates the Item AC logistic fit)` : "";
+  lines.push(
+    ` Agreement: ${matches} of 3 signs match${unknownNote} — if <2, investigate population composition before promoting modulation`,
+  );
+  return lines;
 }

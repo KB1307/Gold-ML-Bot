@@ -8392,7 +8392,27 @@ class SignalGenerationEngine {
       console.log(`⚠️ ITEM AC: labelled rows have no class diversity (wins=${fitWinners}, losses=${fitLosers}) — NOT retraining; keeping the existing weights`);
       return;
     }
+    // ITEM AG — WEIGHT-SIGN CONTEXT (documentation only, no weight is changed):
+    // The backtest population (4,570 double-top/bottom signals, matched null,
+    // 18mo M5) found opposite signs for trend_aligned and rsi_aligned compared
+    // to this corpus. The most likely cause is population composition: the
+    // engine emits ~60% BUYs with 36% WR, skewing the winner centroid. The
+    // shadow gate (SECTION 11) settles whether these weights predict on the
+    // live population.
     const fit = fitLogisticRegression(fitRows, { lambda: 1.0, learningRate: 0.01, maxIterations: 1000, tolerance: 1e-6 });
+    // ITEM AF — the corpus-level <30 guard above counts rows BEFORE the fit's
+    // NaN exclusion; the fit can still land on as few as 2 usable rows. A 2-29
+    // row fit is exactly the "fitting noise on tiny samples" case the AC guard
+    // exists to prevent, so the same floor applies to the fit's own usable-row
+    // count. Sits BEFORE the convergence check (which keeps its <2 safety
+    // floor) and BEFORE this.modelWeights.clear() — on this return the existing
+    // weights and the restored logisticModel are untouched, so modelProbability
+    // continues to be stamped from the previous model (or not stamped when no
+    // previous model exists).
+    if (fit.rowsUsed < 30) {
+      console.log(`⚠️ ITEM AF: logistic fit used only ${fit.rowsUsed} rows (< 30) — keeping the existing weights to prevent noise`);
+      return;
+    }
     if (!fit.converged || fit.rowsUsed < 2 || !Number.isFinite(fit.finalLoss)) {
       console.log(
         `⚠️ ITEM AC: logistic fit did not converge (iterations=${fit.iterations}, rowsUsed=${fit.rowsUsed}, finalLoss=${fit.finalLoss}) — keeping the existing weights`,
