@@ -100,11 +100,52 @@ export function parsePersistedLogisticModel(raw: unknown): LogisticModel | null 
  */
 export const RECONSTRUCTION_SOURCE = "app-bar-reconstruction";
 
-/** The AA predicate: true ONLY when the row explicitly carries the marker. */
-export function isReconstructionRow(
-  features?: { featuresSource?: string } | null,
+/** The feature subset the reconstruction detectors read. */
+export interface ReconstructionFeatureShape {
+  featuresSource?: string;
+  volumeRatio?: unknown;
+  timeWindowFactor?: unknown;
+  dxyChange?: unknown;
+  sentiment?: { score?: unknown } | null;
+}
+
+/**
+ * ITEM AE — the defaulted-feature fingerprint. True when ALL FOUR legacy
+ * features carry their no-data defaults SIMULTANEOUSLY: volumeRatio === 1,
+ * timeWindowFactor === 1, dxyChange === 0, and sentiment.score === 0 or the
+ * sentiment object absent. Most reconstruction-era rows were pushed to
+ * trade_outcomes_v1 BEFORE Item 194 added the featuresSource marker, so the
+ * marker alone missed them (measured 2026-09-04: 347 unmarked of 373
+ * fingerprint rows; every one carries a reconstruction-class sentiment
+ * source — resolver-bar-reconstruction 285, record-fallback 62, marker 26).
+ * A row where ANY ONE of the four has a non-default value carries at least
+ * one real feature and is NOT excluded.
+ */
+export function matchesReconstructionFingerprint(
+  features?: ReconstructionFeatureShape | null,
 ): boolean {
-  return features?.featuresSource === RECONSTRUCTION_SOURCE;
+  if (!features || typeof features !== "object") return false;
+  const volumeDefault = features.volumeRatio === 1;
+  const timeWindowDefault = features.timeWindowFactor === 1;
+  const dxyDefault = features.dxyChange === 0;
+  const sentiment = features.sentiment;
+  const sentimentDefault =
+    sentiment === null ||
+    sentiment === undefined ||
+    (typeof sentiment === "object" && sentiment.score === 0);
+  return volumeDefault && timeWindowDefault && dxyDefault && sentimentDefault;
+}
+
+/**
+ * The AA+AE predicate: the explicit Item 179(c) marker (kept — it catches any
+ * future case regardless of feature values) OR the Item AE defaulted-feature
+ * fingerprint (catches the unmarked pre-marker reconstruction rows).
+ */
+export function isReconstructionRow(
+  features?: ReconstructionFeatureShape | null,
+): boolean {
+  if (features?.featuresSource === RECONSTRUCTION_SOURCE) return true;
+  return matchesReconstructionFingerprint(features);
 }
 
 export interface CorpusFilterResult<T> {
@@ -112,26 +153,38 @@ export interface CorpusFilterResult<T> {
   included: T[];
   /** Rows in, before the filter. */
   total: number;
-  /** Rows removed by the filter. */
+  /** Rows removed by the filter (marked + fingerprint). */
   excludedReconstruction: number;
+  /** ITEM AE — of the excluded, those carrying the explicit marker. */
+  excludedReconstructionMarked: number;
+  /** ITEM AE — of the excluded, those caught by the fingerprint alone. */
+  excludedReconstructionFingerprint: number;
 }
 
 /**
- * Excludes rows where features.featuresSource === 'app-bar-reconstruction'.
- * A row WITHOUT the marker predates the marker and is treated as
- * engine-native (INCLUDED). Read-side only — rows are never deleted and the
- * hydrate/push/pull paths are untouched.
+ * Excludes reconstruction rows: the explicit 'app-bar-reconstruction' marker
+ * (Item AA) plus unmarked rows matching the defaulted-feature fingerprint
+ * (Item AE). Read-side only — rows are never deleted and the hydrate/push/
+ * pull paths are untouched.
  */
 export function filterTrainingCorpus<T extends { features?: unknown }>(
   rows: readonly T[],
 ): CorpusFilterResult<T> {
-  const included = rows.filter(
-    (row) => !isReconstructionRow(row.features as { featuresSource?: string } | null),
-  );
+  let excludedMarked = 0;
+  let excludedFingerprint = 0;
+  const included = rows.filter((row) => {
+    const features = row.features as ReconstructionFeatureShape | null;
+    if (!isReconstructionRow(features)) return true;
+    if (features?.featuresSource === RECONSTRUCTION_SOURCE) excludedMarked += 1;
+    else excludedFingerprint += 1;
+    return false;
+  });
   return {
     included,
     total: rows.length,
     excludedReconstruction: rows.length - included.length,
+    excludedReconstructionMarked: excludedMarked,
+    excludedReconstructionFingerprint: excludedFingerprint,
   };
 }
 

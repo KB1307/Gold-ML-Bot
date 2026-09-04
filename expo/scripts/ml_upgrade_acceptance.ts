@@ -8,12 +8,13 @@
  * computation: the actual shipped functions are imported and executed.
  *
  * Sections:
+ *   AE — reconstruction-leak MEASUREMENT (defaulted-feature fingerprint vs marker)
  *   AA — corpus cleanup counts + before/after weight replicas
  *   AB — side-relative feature backfill verification + 13 named centroid weights
  *   AC — logistic-regression fit (13 weights + bias + convergence + hand-check)
  *   AD — model shadow performance computation (INSUFFICIENT DATA expected)
  *
- * bun expo/scripts/ml_upgrade_acceptance.ts [aa|ab|ac|ad|all]
+ * bun expo/scripts/ml_upgrade_acceptance.ts [ae|aa|ab|ac|ad|all]
  */
 
 import {
@@ -346,6 +347,84 @@ async function main(): Promise<void> {
   console.log(`Pulled ${rows.length} row(s).`);
   const outcomeRows = rows.map(toOutcomeShape);
 
+  // ── ITEM AE — MEASURE FIRST ────────────────────────────────────────────────
+  if (section === "ae") {
+    console.log("\n" + "─".repeat(80));
+    console.log("ITEM AE — RECONSTRUCTION-LEAK MEASUREMENT (trade_outcomes_v1, direct anon-key read)");
+    console.log("─".repeat(80));
+    console.log("Fingerprint: volumeRatio===1 AND timeWindowFactor===1 AND dxyChange===0");
+    console.log("             AND (sentiment.score===0 OR sentiment absent)");
+    const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+    let fingerprint = 0;
+    let fingerprintMarked = 0;
+    let fingerprintUnmarked = 0;
+    let featuresNull = 0;
+    let markerTotal = 0;
+    let vr1 = 0;
+    let tw1 = 0;
+    let dxy0 = 0;
+    let sentDefault = 0;
+    let allButSentiment = 0;
+    let allButVolume = 0;
+    const unmarked: CorpusRow[] = [];
+    let unmarkedMinTs: string | null = null;
+    let unmarkedMaxTs: string | null = null;
+    for (const r of rows) {
+      const f = (r.features ?? {}) as Record<string, unknown>;
+      if (r.features === null || r.features === undefined) featuresNull += 1;
+      const vr = isNum(f.volumeRatio) ? f.volumeRatio : null;
+      const tw = isNum(f.timeWindowFactor) ? f.timeWindowFactor : null;
+      const dxy = isNum(f.dxyChange) ? f.dxyChange : null;
+      const sent = f.sentiment as { score?: unknown } | null | undefined;
+      const sentDef = sent === null || sent === undefined || sent.score === 0;
+      const marked = f.featuresSource === "app-bar-reconstruction";
+      if (marked) markerTotal += 1;
+      if (vr === 1) vr1 += 1;
+      if (tw === 1) tw1 += 1;
+      if (dxy === 0) dxy0 += 1;
+      if (sentDef) sentDefault += 1;
+      if (vr === 1 && tw === 1 && dxy === 0) allButSentiment += 1;
+      if (tw === 1 && dxy === 0 && sentDef && vr !== 1) allButVolume += 1;
+      if (vr === 1 && tw === 1 && dxy === 0 && sentDef) {
+        fingerprint += 1;
+        if (marked) {
+          fingerprintMarked += 1;
+        } else {
+          fingerprintUnmarked += 1;
+          if (unmarked.length < 5) unmarked.push(r);
+          if (unmarkedMinTs === null || r.ts < unmarkedMinTs) unmarkedMinTs = r.ts;
+          if (unmarkedMaxTs === null || r.ts > unmarkedMaxTs) unmarkedMaxTs = r.ts;
+        }
+      }
+    }
+    console.log(`\nTotal rows:                                  ${rows.length}`);
+    console.log(`Rows with features = null:                   ${featuresNull}`);
+    console.log(`Rows carrying the featuresSource marker:     ${markerTotal}`);
+    console.log("\nSingle-default counts:");
+    console.log(`  volumeRatio === 1:                         ${vr1}`);
+    console.log(`  timeWindowFactor === 1:                    ${tw1}`);
+    console.log(`  dxyChange === 0:                           ${dxy0}`);
+    console.log(`  sentiment.score === 0 or absent:           ${sentDefault}`);
+    console.log(`\nPartial fingerprint (vr=1 AND tw=1 AND dxy=0, sentiment ignored): ${allButSentiment}`);
+    console.log(`COUNTER-CHECK rows (tw=1 AND dxy=0 AND sentiment-default BUT volumeRatio !== 1 — KEPT by the AND): ${allButVolume}`);
+    console.log("\n─── FULL FINGERPRINT (ALL FOUR defaults simultaneously) ───");
+    console.log(`Fingerprint-matching rows:                   ${fingerprint}`);
+    console.log(`  ...carrying the app-bar-reconstruction marker: ${fingerprintMarked}`);
+    console.log(`  ...WITHOUT the marker (THE LEAK):            ${fingerprintUnmarked}`);
+    console.log(`Leak-row ts range: ${unmarkedMinTs ?? "n/a"} .. ${unmarkedMaxTs ?? "n/a"}`);
+    if (unmarked.length > 0) {
+      console.log("\nSample unmarked fingerprint rows (leak evidence):");
+      for (const r of unmarked) {
+        const f = (r.features ?? {}) as Record<string, unknown>;
+        const sent = f.sentiment as { score?: unknown } | null | undefined;
+        console.log(
+          `  ${r.signal_id.slice(-6)} ts=${r.ts} source=${String(f.featuresSource)} rsi=${String(f.rsi)} atr=${String(f.atr)} volumeRatio=${String(f.volumeRatio)} timeWindowFactor=${String(f.timeWindowFactor)} dxy=${String(f.dxyChange)} sentiment=${sent === undefined ? "ABSENT" : JSON.stringify(sent)}`,
+        );
+      }
+    }
+    return finish();
+  }
+
   // ── ITEM AA ────────────────────────────────────────────────────────────────
   const filter = filterTrainingCorpus(outcomeRows);
   if (section === "aa" || section === "all") {
@@ -354,13 +433,21 @@ async function main(): Promise<void> {
     console.log("─".repeat(80));
     console.log(`corpusTotal                  = ${filter.total}`);
     console.log(`corpusExcludedReconstruction = ${filter.excludedReconstruction}`);
+    console.log(`  ...marked (featuresSource) = ${filter.excludedReconstructionMarked}`);
+    console.log(`  ...fingerprint (AE)        = ${filter.excludedReconstructionFingerprint}`);
     console.log(`corpusUsedForTraining        = ${filter.included.length}`);
 
     const reconRows = outcomeRows.filter((r) => isReconstructionRow(r.features));
     console.log(`\nSanity: reconstruction rows identified = ${reconRows.length}`);
-    if (reconRows.length > 0) {
-      const first = reconRows[0];
-      console.log(`  sample: ${first.features.featuresSource} | rsi=${first.features.rsi} atr=${first.features.atr} volumeRatio=${first.features.volumeRatio} timeWindowFactor=${first.features.timeWindowFactor} dxy=${first.features.dxyChange} sentiment=${JSON.stringify(first.features.sentiment)}`);
+    const markedSample = reconRows.find((r) => r.features.featuresSource === "app-bar-reconstruction");
+    const fingerprintSample = reconRows.find((r) => r.features.featuresSource !== "app-bar-reconstruction");
+    if (markedSample) {
+      const f = markedSample.features;
+      console.log(`  sample (MARKED): ${f.featuresSource} | rsi=${f.rsi} atr=${f.atr} volumeRatio=${f.volumeRatio} timeWindowFactor=${f.timeWindowFactor} dxy=${f.dxyChange} sentiment=${JSON.stringify(f.sentiment)}`);
+    }
+    if (fingerprintSample) {
+      const f = fingerprintSample.features;
+      console.log(`  sample (FINGERPRINT, unmarked): ${f.featuresSource} | rsi=${f.rsi} atr=${f.atr} volumeRatio=${f.volumeRatio} timeWindowFactor=${f.timeWindowFactor} dxy=${f.dxyChange} sentiment=${JSON.stringify(f.sentiment)}`);
     }
     const gate = filter.included.length >= 100;
     console.log(`\nGATE (corpusUsedForTraining >= 100): ${gate ? "PASS" : "FAIL"}`);

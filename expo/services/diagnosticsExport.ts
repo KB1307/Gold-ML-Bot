@@ -26,6 +26,10 @@ export type RawModelWeights = {
    */
   corpusTotal?: number | null;
   corpusExcludedReconstruction?: number | null;
+  /** ITEM AE — of the excluded, how many carried the explicit marker. */
+  corpusExcludedReconstructionMarked?: number | null;
+  /** ITEM AE — of the excluded, how many were caught by the defaulted-feature fingerprint alone. */
+  corpusExcludedReconstructionFingerprint?: number | null;
   corpusUsedForTraining?: number | null;
   /**
    * ITEM AC — architecture + fit provenance. 'logistic_regression_v1' once the
@@ -703,12 +707,19 @@ function formatModelWeightsSection(
           : modelWeights.hydrateUnavailableAtTraining
       }`,
     );
-    // ITEM AA — what the vector was actually fitted on after the read-side
-    // reconstruction-row exclusion. UNKNOWN = the vector predates Item AA.
+    // ITEM AA + AE — what the vector was actually fitted on after the read-side
+    // reconstruction-row exclusion. The operator sees BOTH exclusion sub-counts:
+    // the explicit featuresSource marker and the Item AE defaulted-feature
+    // fingerprint. Sub-counts UNKNOWN when the vector predates Item AE.
+    const aeUnknown = "UNKNOWN (predates Item AE)";
     lines.push(
-      `Corpus cleanup (Item AA): total ${
+      `Corpus cleanup (Item AA+AE): total ${
         modelWeights.corpusTotal ?? "UNKNOWN (vector predates Item AA)"
-      } | excluded reconstruction ${
+      } | excluded reconstruction (marked + fingerprint) ${
+        modelWeights.corpusExcludedReconstructionMarked ?? aeUnknown
+      } + ${
+        modelWeights.corpusExcludedReconstructionFingerprint ?? aeUnknown
+      } = ${
         modelWeights.corpusExcludedReconstruction ?? "UNKNOWN (vector predates Item AA)"
       } | used for training ${
         modelWeights.corpusUsedForTraining ?? "UNKNOWN (vector predates Item AA)"

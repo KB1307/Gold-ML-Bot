@@ -8338,8 +8338,9 @@ class SignalGenerationEngine {
     const filteredTrainingData = corpusFilter.included;
     if (corpusFilter.excludedReconstruction > 0) {
       console.log(
-        `🧹 ITEM AA CORPUS FILTER: excluded ${corpusFilter.excludedReconstruction} of ${corpusFilter.total} outcome(s) ` +
-        `(featuresSource='app-bar-reconstruction') — ${filteredTrainingData.length} engine-native row(s) used for training`,
+        `🧹 ITEM AA+AE CORPUS FILTER: excluded ${corpusFilter.excludedReconstruction} of ${corpusFilter.total} outcome(s) ` +
+        `(marked ${corpusFilter.excludedReconstructionMarked} + defaulted-fingerprint ${corpusFilter.excludedReconstructionFingerprint}) — ` +
+        `${filteredTrainingData.length} engine-native row(s) used for training`,
       );
     }
     if (filteredTrainingData.length < 10) {
@@ -8468,6 +8469,10 @@ class SignalGenerationEngine {
       // exactly what the vector was fitted on (and what was excluded).
       corpusTotal: corpusFilter.total,
       corpusExcludedReconstruction: corpusFilter.excludedReconstruction,
+      // ITEM AE — exclusion sub-counts: explicit featuresSource marker vs the
+      // defaulted-feature fingerprint (unmarked pre-marker reconstruction rows).
+      corpusExcludedReconstructionMarked: corpusFilter.excludedReconstructionMarked,
+      corpusExcludedReconstructionFingerprint: corpusFilter.excludedReconstructionFingerprint,
       corpusUsedForTraining: filteredTrainingData.length,
       // ITEM AC — architecture + fit provenance.
       architecture: 'logistic_regression_v1',
@@ -11356,7 +11361,7 @@ class SignalGenerationEngine {
    * has never been retrained yet, so callers can render an explicit
    * "never retrained" message instead of a misleading empty section.
    */
-  async getRawModelWeightsForExport(): Promise<{ weights: [string, number][]; lastTrainingTime: number; corpusSizeAtTraining: number | null; hydrateUnavailableAtTraining: number | null; corpusTotal: number | null; corpusExcludedReconstruction: number | null; corpusUsedForTraining: number | null; architecture: string | null; fitIterations: number | null; fitFinalLoss: number | null; fitRowsUsed: number | null; fitExcludedNaN: number | null } | null> {
+  async getRawModelWeightsForExport(): Promise<{ weights: [string, number][]; lastTrainingTime: number; corpusSizeAtTraining: number | null; hydrateUnavailableAtTraining: number | null; corpusTotal: number | null; corpusExcludedReconstruction: number | null; corpusExcludedReconstructionMarked: number | null; corpusExcludedReconstructionFingerprint: number | null; corpusUsedForTraining: number | null; architecture: string | null; fitIterations: number | null; fitFinalLoss: number | null; fitRowsUsed: number | null; fitExcludedNaN: number | null } | null> {
     try {
       const weightsData = await AsyncStorage.getItem(MODEL_WEIGHTS_KEY);
       if (!weightsData) return null;
@@ -11371,6 +11376,9 @@ class SignalGenerationEngine {
       // "provenance unknown" is not the same claim as excluded 0 rows.
       const corpusTotal: number | null = typeof parsed?.corpusTotal === 'number' ? parsed.corpusTotal : null;
       const corpusExcludedReconstruction: number | null = typeof parsed?.corpusExcludedReconstruction === 'number' ? parsed.corpusExcludedReconstruction : null;
+      // ITEM AE: null when the persisted vector predates the fingerprint filter.
+      const corpusExcludedReconstructionMarked: number | null = typeof parsed?.corpusExcludedReconstructionMarked === 'number' ? parsed.corpusExcludedReconstructionMarked : null;
+      const corpusExcludedReconstructionFingerprint: number | null = typeof parsed?.corpusExcludedReconstructionFingerprint === 'number' ? parsed.corpusExcludedReconstructionFingerprint : null;
       const corpusUsedForTraining: number | null = typeof parsed?.corpusUsedForTraining === 'number' ? parsed.corpusUsedForTraining : null;
       // ITEM AC: null when the persisted vector predates the logistic fit.
       const architecture: string | null = typeof parsed?.architecture === 'string' ? parsed.architecture : null;
@@ -11379,7 +11387,7 @@ class SignalGenerationEngine {
       const fitRowsUsed: number | null = typeof parsed?.fitRowsUsed === 'number' ? parsed.fitRowsUsed : null;
       const fitExcludedNaN: number | null = typeof parsed?.fitExcludedNaN === 'number' ? parsed.fitExcludedNaN : null;
       if (weights.length === 0 && !lastTrainingTime) return null;
-      return { weights, lastTrainingTime, corpusSizeAtTraining, hydrateUnavailableAtTraining, corpusTotal, corpusExcludedReconstruction, corpusUsedForTraining, architecture, fitIterations, fitFinalLoss, fitRowsUsed, fitExcludedNaN };
+      return { weights, lastTrainingTime, corpusSizeAtTraining, hydrateUnavailableAtTraining, corpusTotal, corpusExcludedReconstruction, corpusExcludedReconstructionMarked, corpusExcludedReconstructionFingerprint, corpusUsedForTraining, architecture, fitIterations, fitFinalLoss, fitRowsUsed, fitExcludedNaN };
     } catch (error) {
       console.error('[SignalEngine] Failed to read raw model weights for export:', error);
       return null;
