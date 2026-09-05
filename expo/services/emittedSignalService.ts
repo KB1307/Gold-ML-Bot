@@ -317,6 +317,22 @@ const SCHEMA_PROBE_RECORD: EmittedSignalRecord = {
   source: 'LIVE',
 };
 
+/** True for fetch-transport failures (offline, DNS, CORS preflight, timeout) as opposed to a PostgREST/auth/schema error. */
+function isTransportError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes('networkerror') ||
+    m.includes('network request failed') ||
+    m.includes('failed to fetch') ||
+    m.includes('fetch failed') ||
+    m.includes('load failed') ||
+    m.includes('timed out') ||
+    m.includes('timeout') ||
+    m.includes('econnrefused') ||
+    m.includes('enotfound')
+  );
+}
+
 /**
  * Assert at startup that the LIVE emitted_signals_v1 column set can accept every
  * field this code writes. Fire-and-forget: call it and do not await.
@@ -336,10 +352,34 @@ export async function assertEmittedSchemaContract(): Promise<EmittedSchemaAssert
   try {
     // select('*') limit 1 is the same probe the write-path guard uses, so the
     // assertion sees exactly what the guard will see.
-    const { data, error } = await client.from('emitted_signals_v1').select('*').limit(1);
-    if (error) {
-      lastSchemaAssertion = { ok: false, checkedAt, missingInDb: [], unwrittenInCode: [], probeError: error.message };
-      console.error(`[EmittedSignal] B5_SCHEMA_ASSERTION INCONCLUSIVE — live probe failed: ${error.message}. Treating as NOT verified.`);
+    //
+    // The probe fires on boot, before the device/preview network has settled, so a
+    // transport failure ("NetworkError when attempting to fetch resource",
+    // "Failed to fetch", timeouts) is retried with backoff. Only a NON-network
+    // error, or exhaustion of the retries, is reported — and a transport failure
+    // is a WARNING (network unreachable, schema unknown), not the FAILED banner,
+    // which is reserved for a genuine code-vs-DB column mismatch.
+    const attempts = 4;
+    let data: Record<string, unknown>[] | null = null;
+    let probeError: string | null = null;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      const result = await client.from('emitted_signals_v1').select('*').limit(1);
+      if (!result.error) {
+        data = (result.data ?? null) as Record<string, unknown>[] | null;
+        probeError = null;
+        break;
+      }
+      probeError = result.error.message;
+      if (!isTransportError(probeError) || attempt === attempts) break;
+      await new Promise<void>(resolve => setTimeout(resolve, 1500 * attempt));
+    }
+    if (probeError !== null) {
+      lastSchemaAssertion = { ok: false, checkedAt, missingInDb: [], unwrittenInCode: [], probeError };
+      if (isTransportError(probeError)) {
+        console.warn(`[EmittedSignal] B5_SCHEMA_ASSERTION INCONCLUSIVE — Supabase unreachable after ${attempts} attempts (${probeError}). Schema NOT verified this session; the A1 write-path guard still runs its own probe on first emission.`);
+      } else {
+        console.error(`[EmittedSignal] B5_SCHEMA_ASSERTION INCONCLUSIVE — live probe failed: ${probeError}. Treating as NOT verified.`);
+      }
       return lastSchemaAssertion;
     }
     if (!data || data.length === 0) {
