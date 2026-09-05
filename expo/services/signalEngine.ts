@@ -8392,7 +8392,9 @@ class SignalGenerationEngine {
       console.log(`⚠️ ITEM AC: labelled rows have no class diversity (wins=${fitWinners}, losses=${fitLosers}) — NOT retraining; keeping the existing weights`);
       return;
     }
-    // ITEM AG — WEIGHT-SIGN CONTEXT (documentation only, no weight is changed):
+    // ITEM AG (ML round, weight-sign audit — distinct from the counter-trend
+    // ITEM AG.2/AG.4 instrumentation) — WEIGHT-SIGN CONTEXT (documentation
+    // only, no weight is changed):
     // The backtest population (4,570 double-top/bottom signals, matched null,
     // 18mo M5) found opposite signs for trend_aligned and rsi_aligned compared
     // to this corpus. The most likely cause is population composition: the
@@ -8404,8 +8406,8 @@ class SignalGenerationEngine {
     // NaN exclusion; the fit can still land on as few as 2 usable rows. A 2-29
     // row fit is exactly the "fitting noise on tiny samples" case the AC guard
     // exists to prevent, so the same floor applies to the fit's own usable-row
-    // count. Sits BEFORE the convergence check (which keeps its <2 safety
-    // floor) and BEFORE this.modelWeights.clear() — on this return the existing
+    // count. Sits BEFORE the convergence check and BEFORE
+    // this.modelWeights.clear() — on this return the existing
     // weights and the restored logisticModel are untouched, so modelProbability
     // continues to be stamped from the previous model (or not stamped when no
     // previous model exists).
@@ -8413,7 +8415,9 @@ class SignalGenerationEngine {
       console.log(`⚠️ ITEM AF: logistic fit used only ${fit.rowsUsed} rows (< 30) — keeping the existing weights to prevent noise`);
       return;
     }
-    if (!fit.converged || fit.rowsUsed < 2 || !Number.isFinite(fit.finalLoss)) {
+    // (72h review D2: the former `rowsUsed < 2` clause here was unreachable
+    // once the AF `< 30` floor above existed — removed, no behaviour change.)
+    if (!fit.converged || !Number.isFinite(fit.finalLoss)) {
       console.log(
         `⚠️ ITEM AC: logistic fit did not converge (iterations=${fit.iterations}, rowsUsed=${fit.rowsUsed}, finalLoss=${fit.finalLoss}) — keeping the existing weights`,
       );

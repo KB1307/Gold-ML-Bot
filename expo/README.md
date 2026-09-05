@@ -198,6 +198,14 @@ This template includes:
 └── tsconfig.json        # TypeScript configuration
 ```
 
+### Signal-model tooling (Items AA–AJ, 2026-09)
+
+- `scripts/ml_upgrade_acceptance.ts [aa|ab|ac|ad|ae]` — acceptance gates against the real corpus (GATE AB/AC/AJ lines are the quotable results).
+- `scripts/backfill_side_relative_features.ts [--recompute-session]` — additive `feat_*` backfill on `trade_outcomes_v1`; idempotent.
+- `scripts/readback_ae_decomp.ts`, `scripts/readback_aj_rows.ts` — read-only evidence probes.
+- `scripts/ci_guard_build_marker.ts`, `ci_guard_duplicate_constants.ts`, `ci_guard_market_gate.ts` — run all three before shipping.
+- Ledger with commit hashes: `../SYSTEM_CHECKLIST.md` → "ITEMS AA–AJ"; artifacts in `artifacts/checkpoint_ml_*.txt`.
+
 ## Custom Development Builds
 
 For advanced native features, you'll need to create a Custom Development Build instead of using Expo Go.

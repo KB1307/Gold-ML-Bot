@@ -744,7 +744,9 @@ export function verdictForProbability(p: number): ModelVerdict {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ITEM AG — weight-sign audit (documentation only; no weight is changed)
+// ITEM AG (ML round, weight-sign audit — distinct from the counter-trend
+// ITEM AG.2/AG.4 instrumentation in counterTrendShadow.ts) — documentation
+// only; no weight is changed
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface WeightSignAuditEntry {

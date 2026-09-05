@@ -6,3 +6,6 @@ node_modules
 # Cloudflare Functions
 functions/node_modules
 !functions/package.json
+
+# one-off scratch probes (kept out of the repo; promote to expo/scripts/ if evidence-worthy)
+tmp/

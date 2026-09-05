@@ -808,6 +808,27 @@ it are migrated once on load — a stale 49/74/98 ladder becomes 25/50/80 and a
 stale `useDynamicSL:true` becomes false (`expo/services/settingsMigration.ts`,
 proof in `expo/artifacts/verifySettingsMigration_run.txt`).
 
+### ITEMS AA–AJ — ML CORRECTION ROUNDS (2026-09-04) + 72h REVIEW (2026-09-05)
+
+Two rounds on the signal-rating model. Shadow-only throughout: `modelProbability`/`modelVerdict` are telemetry; no emission is suppressed, filtered, demoted or delayed on their basis. Every item is bound to a commit hash (rule: a planned edit that does not appear in git is not done).
+
+| Item | Status | Evidence / pointer |
+|---|---|---|
+| AA | SHIPPED — read-side exclusion of `featuresSource=resolver-bar-reconstruction` rows from training (`filterTrainingCorpus`); corpus counters persisted with the weights | `33e2cb1` / `58a05ad`; `expo/services/modelFitting.ts`, `artifacts/checkpoint_ml_upgrade_aa_ad.txt` |
+| AB | SHIPPED — 7 side-relative features (`feat_trend_aligned … feat_near_round50`, schemaVersion ≥ 4) computed at emission with no lookahead; backfill over 496 rows | `expo/scripts/backfill_side_relative_features.ts`, `expo/types/trading.ts` |
+| AC | SHIPPED — L2 logistic regression (13 named weights + bias, λ=1.0, lr=0.01) replaces the centroid rule; NaN rows excluded; convergence + <30-row guards keep the previous weights | `expo/services/modelFitting.ts fitLogisticRegression`, `signalEngine.ts` retrain path |
+| AD | SHIPPED — shadow verdict AGREE/DISAGREE at 0.50, SECTION 11 aggregates; static no-suppression proof | `expo/services/diagnosticsExport.ts`, `app/(tabs)/settings.tsx` |
+| AE | SHIPPED — reconstruction FINGERPRINT (all four legacy defaults simultaneously) OR marker; 496 total / 373 excluded (26 marked + 347 fingerprint) / 123 included | **`b045ef101ff362b6a73e307e54d05df6e09241a1`** (commit message is platform junk — "Failed: AI_InvalidResponseDataError" — the hash is the binding); `modelFitting.ts:124 matchesReconstructionFingerprint`; `scripts/readback_ae_decomp.ts` |
+| AF | SHIPPED — `fit.rowsUsed < 30` floor AFTER the fit, BEFORE the convergence check and `modelWeights.clear()` | **`bddcd99f2f456a01e707593ba777175b6a88889e`**; `signalEngine.ts:~8412` |
+| AG | SHIPPED — weight-sign audit vs the backtest reference signs (documentation only; 1 of 3 match, flagged, shadow gate decides). Distinct from the counter-trend ITEM AG.2/AG.4 | `bddcd99`; `modelFitting.ts formatWeightSignAudit`, diagnostics SECTION 2 |
+| AH | SHIPPED — `feat_session_level_count` candidate set widened to 72h (4 days × 3 sessions); coverage guard byte-identical; coverage 496/496, mean 0.0417 → 0.1101; `--recompute-session` wrote 496 / changed 124. Emission side still ~25h (`BAR_M5_LOOKBACK=300`) — named, out of scope | `bddcd99`; `modelFitting.ts:427-430` |
+| AI | SHIPPED — `ci_guard_build_marker.ts` size check (>200 lines FAIL with exact restore command) + 6th self-test fixture. metro.config.js has now been platform-stripped 15 times; the 15th (`b6095d2`, 19:44Z) shipped on origin/main until the 2026-09-05 restore | `bddcd99`; `scripts/ci_guard_build_marker.ts:44` |
+| AJ | MEASURED — re-fit on the AE-cleaned corpus: rowsUsed 122, converged 65 it, hand-check 3dp MATCH. **Re-run 2026-09-05: rowsUsed 117, excludedNaN 5 — root cause D8 below** | `bddcd99`; `scripts/ml_upgrade_acceptance.ts ac`, `scripts/readback_aj_rows.ts`, `artifacts/checkpoint_ml_correction_ae_aj.txt` (+ ADDENDUM 2026-09-05) |
+| D1–D7 | SHIPPED (72h review) — metro.config.js restored (75 lines, guards PASS); dead `rowsUsed < 2` removed; AG comment collision qualified; scratch probes promoted from `tmp/` to `expo/scripts/`; artifact addendum; this section | working tree 2026-09-05, awaiting managed sync |
+| D8 | **OPEN — FIX WRITTEN, NOT APPLIED**: `learningStore.ts:432 toRemoteRow()` writes the whole `features` jsonb on every re-upsert, clobbering backfilled `feat_*` on rows the app still holds locally (5 rows lost all seven keys between 09-04 and 09-05). Fix = migration 023 BEFORE UPDATE trigger preserving OLD feat_* when NEW lacks/nulls them. Sequence: apply 023 → re-run backfill (expect 5 updated) → `ac` (expect rowsUsed=122) | `backend/migrations/023_preserve_backfilled_features.sql` |
+
+Carried BLOCKED-ON-MARKET/DEVICE: first live emission carrying the 7 features + modelProbability/modelVerdict; live export of the AE counters / AG block / fresh fit (needs the next in-app retrain); AD 3-signal verdict proof; HOLD PROOF (hard-reload preview, close old-bundle sessions).
+
 ## 6. KNOWN FAULTS
 
 Severity ranked by effect on SIGNAL ACCURACY and SIGNAL VOLUME.

@@ -322,3 +322,58 @@ OPEN ITEMS
    sessions): BLOCKED-ON-DEVICE (user's to run; carried from the prior round).
 
 STATUS: ALL SIX GATES CLOSED / SHIPPED / MEASURED / VERIFIED.
+
+──────────────────────────────────────────────────────────────────────────────
+ADDENDUM 2026-09-05 — 72-HOUR REVIEW (read-only git + fresh gate re-run)
+──────────────────────────────────────────────────────────────────────────────
+GIT BINDING (git log -S, fetched origin/main = 0c62f88e…):
+  AE                 = b045ef101ff362b6a73e307e54d05df6e09241a1  (2026-09-04 14:26Z)
+  AF AG AH AI AJ     = bddcd99f2f456a01e707593ba777175b6a88889e  (2026-09-04 18:23Z)
+  (line proof on origin/main: modelFitting.ts:124 matchesReconstructionFingerprint,
+   :427 anchorMs - 72 * SESSION_WINDOW_MS, :774 formatWeightSignAudit;
+   signalEngine.ts:8412 fit.rowsUsed < 30; ci_guard_build_marker.ts:44 lineCount > 200)
+
+CORRECTION TO THE "14TH PLATFORM STRIP" LINE ABOVE: a 15TH strip landed AFTER this
+artifact was written — commit b6095d2b83b3714e7b5114ddf9189ceca46c735d (19:44:57Z)
+took expo/metro.config.js 75 → 6 lines again, so origin/main was shipping with the
+build-marker chain broken. Captured BEFORE restore (TT.4):
+  ✗ metro.config.js: dedicated build-marker transformer is not registered.
+  ✗ ci_guard_build_marker FAILED — the build-marker chain is broken. Do not ship.
+  ci_guard_duplicate_constants: RESULT: FAIL — 1 problem(s) in LIVE code (same cause)
+Restored 2026-09-05 via `git show 0e63c3d:expo/metro.config.js` (75 lines) → both PASS.
+72h strip cadence: 33e2cb1=75 → b045ef1=6 → bddcd99=75 → b6095d2=6 (every other sync).
+
+GATE AJ RE-RUN 2026-09-05 (bun expo/scripts/ml_upgrade_acceptance.ts ac):
+  Fit input: 122 labelled row(s) (scratches excluded).
+  rowsUsed=117 excludedNaN=5 winners=71 losers=46
+  iterations=77 finalLoss=69.115942 converged=true
+  GATE AC (converged, iterations < 1000, rowsUsed >= 30): PASS
+  GATE AJ (rowsUsed >= 100): PASS
+  HAND-CHECK zhbsv8 … MATCH (3dp): YES
+  Agreement: 1 of 3 signs match (flagged, unchanged)
+  DELTA vs 2026-09-04: rowsUsed 122 → 117, excludedNaN 0 → 5. NOT noise — see D8.
+
+D8 — BACKFILL CLOBBERED BY THE APP'S RE-UPSERT (new finding):
+  expo/services/learningStore.ts:432 toRemoteRow() writes `features: outcome.features ?? {}`
+  on every upsert, replacing the whole jsonb with the app's local copy (no feat_* keys
+  for pre-AB / old-bundle emissions). The 5 rows that lost all seven feat_* (DB read,
+  isReconstructionRow-filtered, non-scratch, all LOSS, no featuresSource):
+    signal_1788204958964_qnql740dk  2026-08-31T19:39Z
+    signal_1788205623383_ekszhbsv8  2026-08-31T20:00Z
+    signal_1788318142156_1cd6izfkj  2026-09-02T03:08Z
+    signal_1788407423956_swv1rendr  2026-09-03T03:53Z
+    signal_1788447692413_ujjg5ijl2  2026-09-03T15:02Z
+  = exactly the labelled rows still inside the app's local outcome window.
+  FIX WRITTEN (not yet applied — needs service role): backend/migrations/023_preserve_backfilled_features.sql
+  BEFORE UPDATE trigger keeps OLD feat_* when NEW lacks/nulls them; non-null incoming wins.
+  Sequence: apply 023 → re-run backfill (expect 5 updated) → `ac` (expect rowsUsed=122).
+
+OTHER 72h FIXES (this working tree, awaiting managed sync):
+  D2 signalEngine.ts: dead `fit.rowsUsed < 2` clause removed (unreachable after AF <30).
+  D4 "ITEM AG" qualified as ML-round weight-sign audit in 3 comment sites (collision
+     with counter-trend ITEM AG.2/AG.4) — comments only.
+  D5 tmp/ae_decomp.ts → expo/scripts/readback_ae_decomp.ts, tmp/aj_readback.ts →
+     expo/scripts/readback_aj_rows.ts; `tmp/` gitignored.
+  D6 SYSTEM_CHECKLIST.md ITEMS AA–AJ section + README pointer added.
+  D7 b045ef1 carries a junk commit message ("Failed: AI_InvalidResponseDataError") —
+     managed history, not fixable; hash recorded here and in the checklist.

@@ -741,7 +741,8 @@ function formatModelWeightsSection(
         } | rows used ${modelWeights.fitRowsUsed ?? "?"} (NaN-excluded ${modelWeights.fitExcludedNaN ?? "?"}) | lambda 1.0, lr 0.01`,
       );
     }
-    // ITEM AG — weight-sign audit, rendered from the STORED weights. The three
+    // ITEM AG (ML round, weight-sign audit — not the counter-trend AG.2/AG.4)
+    // — rendered from the STORED weights. The three
     // backtest expectations are hardcoded reference strings from the completed
     // study (not live measurements). Documentation only — no weight changes.
     lines.push(...formatWeightSignAudit(modelWeights.weights));

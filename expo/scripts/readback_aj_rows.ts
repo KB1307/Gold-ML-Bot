@@ -1,5 +1,5 @@
 /** AJ readback — 3 rows (early/mid/recent of the AE-INCLUDED training population), all 7 feat_* values. */
-import { filterTrainingCorpus } from "../expo/services/modelFitting";
+import { filterTrainingCorpus } from "../services/modelFitting";
 
 const SUPABASE_URL = "https://tcbnqmnzsnjhqkyuhrch.supabase.co";
 const KEY = "sb_publishable__uw7Qn3qPIARNPGPEDWWww_KzseiT8x";
