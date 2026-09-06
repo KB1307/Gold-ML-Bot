@@ -390,3 +390,16 @@ Hotfix: backend/migrations/023a_hotfix_preserve_backfilled_features.sql
 (diagnostics prosrc+triggerdef → verified body + NULL paranoia guard → rolled-back
 self-test 3/3 → emergency DROP TRIGGER block). Post-fix sequence: backfill (expect
 5 updated) → --recompute-session → `ac` (expect rowsUsed=122 excludedNaN=0).
+
+023a CONTINUED — user pasted the source they applied (their own variant: function
+preserve_backfilled_features(), trigger trg_preserve_backfilled_features, same
+preserve semantics). LOCAL REPLICA TEST (pglite 0.5.8, real Postgres/plpgsql,
+replica table with features jsonb NOT NULL, 4 probes × 2 bodies):
+  USER'S body: P1 identical-features UPDATE ✓ / P2 features-free UPDATE ✓ /
+               P3 features='{}' ✓ (7 keys restored) / P4 repair PATCH ✓
+  MY 023a body: all 4 ✓
+  NEITHER body can produce 23502. ⇒ the function STORED in Supabase ≠ the source
+  pasted (apply-time mangling suspected), or an additional trigger/rule exists.
+023a updated accordingly: diagnostics now dump BOTH function-name sources + the
+FULL trigger list; fix drops BOTH triggers + BOTH functions, installs one verified
+body + NULL paranoia guard. Awaiting user run → backfill → --recompute-session → ac.

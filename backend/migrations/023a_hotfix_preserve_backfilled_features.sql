@@ -1,23 +1,31 @@
 -- 023a — HOTFIX (2026-09-05): the trigger as applied on Supabase NULLs `features`
 -- on EVERY UPDATE of trade_outcomes_v1 (verified empirically: identical-features
 -- PATCH and features-free PATCH on BOTH a healthy row and a clobbered row all
--- return 23502 "null value in column \"features\""). That is impossible for the
--- function body in 023_preserve_backfilled_features.sql (its do-nothing path is
--- a bare RETURN NEW), so the function live in the DB is NOT that body.
+-- return 23502 "null value in column \"features\"").
+--
+-- LOCAL REPLICA VERDICT (pglite 0.5.8, real Postgres/plpgsql, 2026-09-05): BOTH
+-- bodies — the user's 023 as pasted in chat AND the verified 023a body — pass all
+-- four probes (identical-features UPDATE, features-free UPDATE, features='{}',
+-- repair-style PATCH) with features never NULL. NEITHER SOURCE can produce 23502.
+-- Therefore the function stored in Supabase is NOT the source pasted, or another
+-- trigger/rule object exists on the table. Block A below settles which.
 --
 -- This script, in order:
---   A. DIAGNOSTICS — dump the live function source + trigger definition (paste back).
---   B. FIX — drop trigger, replace function with the verified body (+ a final
---      paranoia guard so features can NEVER end UPDATE as NULL), recreate trigger.
+--   A. DIAGNOSTICS — dump BOTH function-name sources + ALL triggers on the table
+--      (paste back).
+--   B. FIX — drop BOTH trigger names (user's trg_preserve_backfilled_features and
+--      023's trade_outcomes_v1_preserve_backfilled_features) and BOTH functions,
+--      then install ONE verified body (+ final paranoia guard so features can
+--      NEVER end UPDATE as NULL) with ONE trigger.
 --   C. SELF-TEST — inside BEGIN…ROLLBACK (nothing persists): T1 preserve-on-null,
 --      T2 incoming-wins, T3 unrelated keys pass through. If any T fails, run the
 --      EMERGENCY block at the bottom to restore write service, and paste the
 --      DIAGNOSTICS output back.
 
 -- ── A. DIAGNOSTICS ─────────────────────────────────────────────────────────
-SELECT prosrc AS live_function_source
+SELECT proname, prosrc AS live_function_source
 FROM pg_proc
-WHERE proname = 'trade_outcomes_v1_preserve_backfilled_features';
+WHERE proname IN ('trade_outcomes_v1_preserve_backfilled_features', 'preserve_backfilled_features');
 
 SELECT tgname, pg_get_triggerdef(oid) AS trigger_definition
 FROM pg_trigger
@@ -26,6 +34,9 @@ WHERE tgrelid = 'public.trade_outcomes_v1'::regclass
 
 -- ── B. FIX ─────────────────────────────────────────────────────────────────
 DROP TRIGGER IF EXISTS trade_outcomes_v1_preserve_backfilled_features ON public.trade_outcomes_v1;
+DROP TRIGGER IF EXISTS trg_preserve_backfilled_features ON public.trade_outcomes_v1;
+DROP FUNCTION IF EXISTS public.trade_outcomes_v1_preserve_backfilled_features();
+DROP FUNCTION IF EXISTS public.preserve_backfilled_features();
 
 CREATE OR REPLACE FUNCTION public.trade_outcomes_v1_preserve_backfilled_features()
 RETURNS trigger
@@ -114,4 +125,5 @@ ROLLBACK;
 
 -- ── EMERGENCY (run ONLY if a self-test T above failed) ─────────────────────
 -- DROP TRIGGER IF EXISTS trade_outcomes_v1_preserve_backfilled_features ON public.trade_outcomes_v1;
+-- DROP TRIGGER IF EXISTS trg_preserve_backfilled_features ON public.trade_outcomes_v1;
 -- (then paste the DIAGNOSTICS output from block A back to me)
