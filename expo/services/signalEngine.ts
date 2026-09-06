@@ -1,6 +1,7 @@
 import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC, SignalLearningContext, DetectedSRZone } from "@/types/trading";
 import { pushShadowSellRecord, type ShadowSellRecord } from "@/services/shadowSignalService";
 import { writeCounterTrendSuppression } from "@/services/counterTrendShadow";
+import { detectDoubleTop, detectScoredReopen, persistShadowStrategy } from "@/services/shadowStrategies";
 import { pushEmittedSignalRecord } from "@/services/emittedSignalService";
 import { BAND_PROXIMITY_VETO_ENABLED, evaluateBandProximityVeto } from "@/services/bandProximityVeto";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -2661,6 +2662,27 @@ class SignalGenerationEngine {
       auth: { autoRefreshToken: false, persistSession: false, storageKey: "rork-svc-signal-engine-daily-ohlc" },
     });
     return this.dailyOhlcSupabaseClient;
+  }
+
+  private shadowStrategiesClient: SupabaseClient | null | undefined;
+
+  /**
+   * Dedicated anon client for the shadow strategy books, same OO.2 pattern as
+   * getDailyOhlcSupabaseClient / counterTrendShadow.getClient: distinct
+   * storageKey so this client never contends on a shared GoTrue lock name.
+   */
+  private getShadowStrategiesClient(): SupabaseClient | null {
+    if (this.shadowStrategiesClient !== undefined) return this.shadowStrategiesClient;
+    const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
+    const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !anonKey) {
+      this.shadowStrategiesClient = null;
+      return null;
+    }
+    this.shadowStrategiesClient = createSupabaseClient(url, anonKey, {
+      auth: { autoRefreshToken: false, persistSession: false, storageKey: "rork-svc-shadow-strategies" },
+    });
+    return this.shadowStrategiesClient;
   }
 
   // ITEM 2c: fetch M1 bars directly from Supabase for daily OHLC aggregation.
@@ -10161,6 +10183,18 @@ class SignalGenerationEngine {
       source: 'LIVE',
     });
 
+    // ITEMS BA/BB — SCORED_DT_SHORT / SCORED_REOPEN_LONG shadow forward books:
+    // pure detection on the exact M5 series the signal was emitted from, then
+    // at most one WRITE-ONLY row per qualifying pattern. Fire-and-forget —
+    // detection or persistence failure must never delay, crash, or alter the
+    // emission above.
+    this.detectShadowStrategies({
+      signalId: emittedSignalId,
+      direction: analysis.signalType === 'SELL' ? 'SELL' : 'BUY',
+      entryPrice: entryPriceWithSlippage,
+      rsi: Number.isFinite(features.rsi) ? features.rsi : null,
+    });
+
     return {
       id: emittedSignalId,
       timestamp: new Date(),
@@ -11023,6 +11057,92 @@ class SignalGenerationEngine {
           : 'counter-trend at mid-range RSI without a confirmed 5-min candle or OB/QM/Sweep alternative confirmation',
       },
     });
+  }
+
+  /**
+   * ITEMS BA/BB — runs both shadow strategy detectors on `this.barSeriesM5`
+   * (the exact sealed M5 series the signal was scored on) and persists one row
+   * per qualifying pattern to shadow_candidates_v1. Pure detection +
+   * fire-and-forget persistence: never gates, delays, or alters the emission.
+   *
+   * `isReopen` is derived here (no engine state carries it): a 60–200 minute
+   * gap between the last two M5 bars is the daily maintenance break, so the
+   * entry bar is the first bar after the break, and `priorClose` is the close
+   * of the bar before the gap. A null/uncomputable score is NEVER persisted —
+   * no fabricated book entries.
+   */
+  private detectShadowStrategies(params: {
+    signalId: string;
+    direction: 'BUY' | 'SELL';
+    entryPrice: number;
+    rsi: number | null;
+  }): void {
+    const { signalId, direction, entryPrice, rsi } = params;
+    const bars = this.barSeriesM5;
+    if (!bars || bars.length < 2) return;
+
+    const persist = (
+      candidateName: 'SCORED_DT_SHORT' | 'SCORED_REOPEN_LONG',
+      score: number,
+      scoreVerdict: 'ABOVE' | 'BELOW',
+      metadata: Record<string, unknown>,
+    ): void => {
+      const client = this.getShadowStrategiesClient();
+      if (!client) {
+        console.warn('[ShadowStrategies] Supabase not configured — shadow strategy row NOT persisted (emission unaffected)');
+        return;
+      }
+      void persistShadowStrategy({
+        supabaseClient: client,
+        signalId,
+        candidateName,
+        direction,
+        entryPrice,
+        emittedAt: new Date().toISOString(),
+        score,
+        scoreVerdict,
+        metadata,
+      }).catch((err: unknown) => {
+        console.warn(`[ShadowStrategies] UNCAUGHT (defense-in-depth, emission unaffected): ${err instanceof Error ? err.message : String(err)}`);
+      });
+    };
+
+    // SCORED_DT_SHORT — SELL-only double top at a session level, scored by the
+    // 7 side-relative features. Detected-with-null-score (pattern real, scoring
+    // unavailable) is deliberately NOT persisted.
+    const dt = detectDoubleTop({ m5Bars: bars, entryPrice, direction, rsi });
+    if (dt.detected && dt.score !== null && Number.isFinite(dt.score) && dt.scoreVerdict !== null) {
+      persist('SCORED_DT_SHORT', dt.score, dt.scoreVerdict, {
+        pattern: {
+          swingHighPrice: dt.swingHighPrice,
+          swingHighBar: dt.swingHighBar,
+          pullbackDepth: dt.pullbackDepth,
+          sessionLevelDistance: dt.sessionLevelDistance,
+        },
+        rsi,
+      });
+    }
+
+    // SCORED_REOPEN_LONG — LONG-only, first bar after the daily maintenance
+    // break (60–200 minute gap between the last two M5 bars).
+    const n = bars.length;
+    const gapMs = bars[n - 1].timestamp - bars[n - 2].timestamp;
+    const isReopen = gapMs > 60 * 60 * 1000 && gapMs < 200 * 60 * 1000;
+    if (!isReopen) return;
+    const priorClose = bars[n - 2].close;
+    const reopen = detectScoredReopen({ m5Bars: bars, isReopen, entryPrice, priorClose });
+    if (reopen.detected && reopen.score !== null && Number.isFinite(reopen.score) && reopen.scoreVerdict !== null) {
+      persist('SCORED_REOPEN_LONG', reopen.score, reopen.scoreVerdict, {
+        pattern: {
+          ema20AboveEma50: reopen.ema20AboveEma50,
+          gapDown: reopen.gapDown,
+          priorDayBigMove: reopen.priorDayBigMove,
+        },
+        priorClose,
+        gapMinutes: Math.round(gapMs / 60000),
+        rsi,
+      });
+    }
   }
 
   private computeRecentDrift(candles: number = DRIFT_LOOKBACK_CANDLES): number | null {
