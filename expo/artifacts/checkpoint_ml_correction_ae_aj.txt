@@ -403,3 +403,18 @@ replica table with features jsonb NOT NULL, 4 probes × 2 bodies):
 023a updated accordingly: diagnostics now dump BOTH function-name sources + the
 FULL trigger list; fix drops BOTH triggers + BOTH functions, installs one verified
 body + NULL paranoia guard. Awaiting user run → backfill → --recompute-session → ac.
+
+RESOLUTION 2026-09-05 — 023a incident CLOSED. Live trigger healthy (user applied
+the fix; backfill PATCHes no longer fail). Full 5-step re-run pasted raw:
+  Step 1 backfill:        5 updated / 491 skipped / 0 failures (exactly the 5
+                          clobbered rows) — D8 repair COMPLETE.
+  Step 2 --recompute-session (nohup): 496 updated, 2 value CHANGED, 0 failures.
+  Distribution (ab):      feat_session_level_count non-null 496/496 (100.0%),
+                          min 0, max 0.6, mean 0.1101 (pre-AH 300-bar mirror 0.0460).
+  Step 3 ac:              rowsUsed=122 excludedNaN=0 winners=71 losers=51,
+                          iterations=70 converged=true, GATE AC PASS, GATE AJ PASS,
+                          bias 0.375328, WEIGHT-SIGN AUDIT 1 of 3 (flagged),
+                          hand-check MATCH YES (0.669997 == 0.669997).
+  Step 4:                 metro 19th strip (6 lines) → restored 75 lines,
+                          ci_guard_build_marker PASS (self-test 6/6).
+Corpus is now clean and complete; model is fit on all 122 labelled rows.
