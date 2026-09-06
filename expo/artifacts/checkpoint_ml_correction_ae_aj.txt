@@ -377,3 +377,16 @@ OTHER 72h FIXES (this working tree, awaiting managed sync):
   D6 SYSTEM_CHECKLIST.md ITEMS AA–AJ section + README pointer added.
   D7 b045ef1 carries a junk commit message ("Failed: AI_InvalidResponseDataError") —
      managed history, not fixable; hash recorded here and in the checklist.
+
+023a INCIDENT (2026-09-05, later same day): user applied 023 on Supabase ("trigger
+active"). The repair backfill then failed on ALL 5 target rows with 23502 "null
+value in column \"features\" violates not-null constraint". Controlled probes proved
+the live function nulls `features` on EVERY UPDATE: (a) PATCH with byte-identical
+features on a CLOBBERED row → 23502; (b) same on a HEALTHY row → 23502; (c)
+features-free PATCH (updated_at = same value) → 23502. The 023 body cannot do this
+(its do-nothing path is RETURN NEW), so the function live in the DB is not that body.
+Consequence: ALL updates to trade_outcomes_v1 are blocked app-wide until fixed.
+Hotfix: backend/migrations/023a_hotfix_preserve_backfilled_features.sql
+(diagnostics prosrc+triggerdef → verified body + NULL paranoia guard → rolled-back
+self-test 3/3 → emergency DROP TRIGGER block). Post-fix sequence: backfill (expect
+5 updated) → --recompute-session → `ac` (expect rowsUsed=122 excludedNaN=0).
