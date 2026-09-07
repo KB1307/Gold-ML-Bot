@@ -392,8 +392,8 @@ const MIN_CONFIDENCE_FOR_RETRAINING = 0.68;
  * scales that feature's hardcoded scoring contribution inside
  * enhancedTransformerAnalysis(). At cold-start (no learned weight) the multiplier
  * is 1.0, so behaviour is identical to the pre-Phase-0 engine. As a feature's
- * learned importance rises the multiplier grows; as it drifts toward zero (or is
- * halved by the concept-drift auto-response) the multiplier shrinks toward — and
+ * learned importance rises the multiplier grows; as it drifts toward zero the
+ * multiplier shrinks toward — and
  * can cross — zero, measurably reducing or reversing that feature's influence on
  * the next signal.
  */
@@ -6065,8 +6065,25 @@ class SignalGenerationEngine {
     let totalDrift = 0;
     let driftCount = 0;
     
+    // ITEM BE: sentiment_score excluded from the drift average. It reads an
+    // external news feed that is non-stationary by nature — its drift was
+    // measured at 0.97 (2026-09-07), which poisoned the average and held
+    // driftAlertLevel at HIGH indefinitely, raising the confidence floor to
+    // 80% and blocking 44% of emission attempts for 3.5 days. The remaining
+    // features (rsi, atr, dxyChange, volumeRatio, orderFlow_volumeImbalance)
+    // are price-derived and stationary enough for drift detection. Sentiment
+    // drift is still tracked by analyzeFeatureValueDrift (diagnostics) but no
+    // longer gates emissions.
+    // DISCREPANCY vs the ITEM BE prompt (live code wins): the prompt says to
+    // remove 'sentiment_score' from featureKeys, but the average below iterates
+    // featureDistributionHistory (NOT featureKeys) and that map is persisted
+    // across restarts via saveFeatureDriftHistory — removing it from featureKeys
+    // would BOTH stop the required tracking push AND leave the already-persisted
+    // sentiment history feeding this average forever. So sentiment STAYS in
+    // featureKeys (tracking) and is skipped HERE, in the averaging loop.
     for (const [key, values] of this.featureDistributionHistory.entries()) {
       if (values.length < 30) continue;
+      if (key === 'sentiment_score') continue;
       
       const recent = values.slice(-10);
       const historical = values.slice(0, -10);
@@ -6101,19 +6118,12 @@ class SignalGenerationEngine {
     } else {
       this.driftAlertLevel = 'HIGH';
       console.log(`🚨 Concept Drift: HIGH (${this.conceptDriftScore.toFixed(2)}) - SCHEDULING RETRAIN`);
-      // E25: Auto-halve weights of critical-drift features
-      const featureDriftMetrics = this.analyzeFeatureValueDrift();
-      featureDriftMetrics.forEach(m => {
-        if (m.status === 'CRITICAL') {
-          const key = `${m.feature}_weight`;
-          const current = this.modelWeights.get(key);
-          if (current !== undefined) {
-            const halved = current * 0.5;
-            this.modelWeights.set(key, halved);
-            console.log(`   ⚡ Auto-halved ${key}: ${current.toFixed(3)} -> ${halved.toFixed(3)}`);
-          }
-        }
-      });
+      // ITEM BE: auto-halving of CRITICAL-drift feature weights REMOVED.
+      // The halving compounded on every drift-check cycle while driftAlertLevel
+      // stayed HIGH, progressively destroying learned weights. The retrain
+      // (scheduled for the next low-liquidity window) is the correct response
+      // to concept drift. Weight modification between retrains is a compounding
+      // error that Item AC's logistic regression replaces entirely.
       
       console.log('\n' + '🔥'.repeat(30));
       console.log('⚡ CONCEPT DRIFT AUTO-RESPONSE SYSTEM ACTIVATED');
@@ -6331,8 +6341,9 @@ class SignalGenerationEngine {
    * multiplier. Returns 1.0 when the feature has no learned weight yet (cold
    * start), so the engine reproduces pre-Phase-0 behaviour until training data
    * exists. A positive learned weight amplifies the feature's contribution; a
-   * weight that has drifted toward/under zero (including the concept-drift
-   * auto-halving) shrinks or reverses it.
+   * weight that has drifted toward/under zero shrinks or reverses it. (The
+   * concept-drift auto-halving that could push weights there was removed by
+   * Item BE.)
    */
   private getFeatureModulation(featureKey: string): number {
     // ITEM 111: modulation disabled — learner is at chance (50.0% held-out
@@ -8457,12 +8468,11 @@ class SignalGenerationEngine {
     // The fitted vector + bias + corpus means/stds go into model_weights_v1
     // under their own names. The six legacy modulation names (rsi_weight,
     // volume_weight, ...) are carried by the LOGISTIC weights themselves (the
-    // Item AC spec: "plus the existing 6 names"), so getFeatureModulation, the
-    // drift auto-halver and CONSUMED_MODEL_WEIGHTS keep valid targets.
-    // NOTE: with the logistic scale, the E25 drift auto-halver would halve a
-    // logistic weight if CRITICAL drift fires — shadow-only impact
-    // (modelProbability is not wired to confidence); the next retrain re-fits
-    // and repairs the vector.
+    // Item AC spec: "plus the existing 6 names"), so getFeatureModulation and
+    // CONSUMED_MODEL_WEIGHTS keep valid targets.
+    // NOTE: the E25 drift auto-halver was REMOVED by Item BE (compounding
+    // weight destruction while drift stayed HIGH) — nothing modifies a fitted
+    // weight between retrains any more.
     this.modelWeights.clear();
     MODEL_FEATURE_KEYS.forEach((key, i) => {
       this.modelWeights.set(getLogisticWeightName(key), fit.weights[i]);
@@ -8476,6 +8486,17 @@ class SignalGenerationEngine {
       means: [...fit.means],
       stds: [...fit.stds],
     };
+
+    // ITEM BE: clear the elevated threshold immediately after a successful
+    // retrain so the system returns to the normal 68% floor. Without this,
+    // driftAlertLevel stays HIGH until the next detectConceptDrift cycle
+    // (hours later), blocking emissions the whole time.
+    // SUCCESS-ONLY by construction: every failure guard above (Item AA filter
+    // <10 rows, AC corpus <30, class diversity, AF rowsUsed <30, AC
+    // non-convergence) returns early — control only reaches this point with a
+    // converged fit that was actually written into modelWeights/logisticModel.
+    this.driftAlertLevel = 'NONE';
+    this.conceptDriftScore = 0;
 
     console.log('   Final Vector (Item AC logistic: 13 weights + bias + means + stds):');
     let verificationSum = 0;
