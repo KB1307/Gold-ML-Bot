@@ -69,3 +69,21 @@ if (!zone || !dt) {
   const dtOk = dGeo.sl === 12 && dGeo.tp === 10 && dGeo.timeStopBars === 96;
   console.log(`ITEM CD GATE: ${zoneOk && dtOk ? "PASS" : "FAIL"} (zone25=${zoneOk}, dtRegression=${dtOk})`);
 }
+
+// ── ITEM CE GATE ── geometryVersion: 2 on EVERY new row (all three names) and
+// the three excursion keys present (null at emission — filled by a resolver).
+const reopen = captured.find((r) => r.payload.candidate_name === "SCORED_REOPEN_LONG");
+if (!reopen) {
+  console.log("ITEM CE GATE: FAIL (missing captured REOPEN row)");
+} else {
+  const ceOk = captured.every((row) => {
+    const inputs = row.payload.inputs as Record<string, unknown>;
+    return (
+      inputs.geometryVersion === 2 &&
+      "mfe" in inputs && inputs.mfe === null &&
+      "mae" in inputs && inputs.mae === null &&
+      "barsHeld" in inputs && inputs.barsHeld === null
+    );
+  });
+  console.log(`ITEM CE GATE: ${ceOk ? "PASS" : "FAIL"} (geometryVersion=2 + mfe/mae/barsHeld null on all ${captured.length} rows)`);
+}

@@ -609,6 +609,18 @@ export async function persistShadowStrategy(params: {
         score,
         scoreVerdict,
         geometry,
+        // ITEM CE — forward-book self-diagnosis keys. geometryVersion marks the
+        // post-CD geometry era: pre-CD ZONE rows carry SL $15 and are excluded
+        // by SECTION 12; DT/REOPEN rows written before CE simply lack the key
+        // and are excluded the same way. The three excursion fields are written
+        // NULL at emission and are to be FILLED IN by whatever resolves the row
+        // (CE resolver report: no dedicated shadow resolver exists yet — the
+        // shared live-path resolver is deliberately NOT modified). mfe/mae in
+        // $; barsHeld in M5 bars from fill to resolution.
+        geometryVersion: 2,
+        mfe: null,
+        mae: null,
+        barsHeld: null,
         ...metadata,
       },
     });
