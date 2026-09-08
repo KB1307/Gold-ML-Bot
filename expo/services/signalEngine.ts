@@ -2,6 +2,7 @@ import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData
 import { pushShadowSellRecord, type ShadowSellRecord } from "@/services/shadowSignalService";
 import { writeCounterTrendSuppression } from "@/services/counterTrendShadow";
 import { detectDoubleTop, detectScoredReopen, detectZoneRetestLong, persistShadowStrategy } from "@/services/shadowStrategies";
+import { resolveShadowRows } from "@/services/shadowResolver";
 import { pushEmittedSignalRecord } from "@/services/emittedSignalService";
 import { BAND_PROXIMITY_VETO_ENABLED, evaluateBandProximityVeto } from "@/services/bandProximityVeto";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -6011,6 +6012,19 @@ class SignalGenerationEngine {
     }
     
     this.lastDriftCheck = now;
+    
+    // ITEM DA — resolve one shadow-candidate pass (≤200 rows, oldest first) on
+    // the SAME 4h cadence as this drift check. STANDALONE: shadowResolver.ts
+    // imports neither signalResolver nor any live resolution path. Fire-and-
+    // forget: a resolution failure must never affect emission. The write-back
+    // needs migration 024 (anon UPDATE on shadow_candidates_v1.inputs); until
+    // it is applied every pass reports RLS no-op errors in its own log line.
+    const shadowResolverClient = this.getShadowStrategiesClient();
+    if (shadowResolverClient) {
+      void resolveShadowRows({ supabaseClient: shadowResolverClient })
+        .then((r) => console.log(`[ShadowResolver] pass done: resolved=${r.resolved} stillOpen=${r.stillOpen} errors=${r.errors} skippedPreGeometryV2=${r.skippedPreGeometryV2}${r.lastError ? ` lastError=${r.lastError}` : ""}`))
+        .catch((err: unknown) => console.log(`[ShadowResolver] pass failed (fire-and-forget, emission unaffected): ${err instanceof Error ? err.message : String(err)}`));
+    }
     
     if (this.tradeOutcomes.length < 30) {
       console.log('⚠️ Insufficient data for drift detection (need 30+ outcomes)');
