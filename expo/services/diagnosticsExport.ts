@@ -1103,7 +1103,8 @@ export async function fetchShadowForwardBooksStats(
 function formatShadowForwardBooksSection(stats: ShadowForwardBooksStats | null | undefined): string {
   const lines: string[] = [RULE, "SECTION 12 — SHADOW FORWARD BOOKS (ITEM CF, read-only)", RULE];
   if (!stats) {
-    lines.push("  NOT INSTRUMENTED by this caller — fetchShadowForwardBooksStats() was not wired in.");
+    lines.push("  NOT INSTRUMENTED this run — shadowForwardBooks was null (fetch failed or Supabase env missing).");
+    lines.push("  fetchShadowForwardBooksStats() IS wired into the export caller (Item CF wiring).");
     lines.push("  The pre-registered gates below are REPORT-ONLY; nothing acts on them.");
     return lines.join("\n");
   }

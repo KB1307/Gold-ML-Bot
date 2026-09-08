@@ -15,7 +15,8 @@ import {
   sendTelegramMessage,
 } from "@/services/telegramNotifier";
 import { signalEngine, ENFORCED_MIN_SIGNAL_CONFIDENCE } from "@/services/signalEngine";
-import { buildDiagnosticsExportText } from "@/services/diagnosticsExport";
+import { buildDiagnosticsExportText, fetchShadowForwardBooksStats } from "@/services/diagnosticsExport";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { getVetoFunnel } from "@/services/bandProximityVeto";
 import { publishDiagnosticsExport } from "@/services/diagnosticsExportStore";
 import { getRecentDiagnosticEvents } from "@/services/diagnosticEventStore";
@@ -341,6 +342,22 @@ export default function SettingsScreen() {
     }
   };
 
+  // ITEM CF (wiring) — SECTION 12 reads the three shadow forward books
+  // DIRECTLY from Supabase (anon key, paginated). Dedicated client mirrors
+  // the OO.2 pattern in shadowSignalService.ts (distinct storageKey — ends
+  // the shared-key "Multiple GoTrueClient instances" warning).
+  let section12BooksClient: SupabaseClient | null = null;
+  const getSection12BooksClient = (): SupabaseClient | null => {
+    if (section12BooksClient) return section12BooksClient;
+    const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
+    const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !anonKey) return null;
+    section12BooksClient = createClient(url, anonKey, {
+      auth: { autoRefreshToken: false, persistSession: false, storageKey: "rork-svc-section12-books" },
+    });
+    return section12BooksClient;
+  };
+
   const handleExportDiagnostics = async () => {
     setIsExporting(true);
     setExportError(null);
@@ -362,13 +379,20 @@ export default function SettingsScreen() {
       await hydrateOutboundPushStats().catch(() => undefined);
       await hydratePendingPushQueue().catch(() => undefined);
 
-      const [modelWeights, modelHealth, diagnosticEvents, shadowSellSummary, telegramOutbox] =
+      const [modelWeights, modelHealth, diagnosticEvents, shadowSellSummary, telegramOutbox, shadowForwardBooks] =
         await Promise.all([
           signalEngine.getRawModelWeightsForExport(),
           Promise.resolve(signalEngine.getModelHealthMetrics()),
           getRecentDiagnosticEvents(1000).catch(() => []),
           fetchShadowSellSummary(30).catch(() => null),
           fetchTelegramOutboxSummary(72).catch(() => null),
+          // ITEM CF (wiring) — SECTION 12 shadow forward books, fetched the
+          // same direct-Supabase way as the other sections; null (fetch
+          // failure or missing env) renders the NOT INSTRUMENTED fallback.
+          (async () => {
+            const client = getSection12BooksClient();
+            return client ? await fetchShadowForwardBooksStats(client) : null;
+          })().catch(() => null),
         ]);
 
       const content = buildDiagnosticsExportText({
@@ -386,6 +410,8 @@ export default function SettingsScreen() {
         } : null,
         // ITEM AD — shadow-mode aggregates for SECTION 11 (read-only).
         modelShadowStats: signalEngine.getModelShadowStats(),
+        // ITEM CF — SECTION 12 shadow forward books (read-only; null → NOT INSTRUMENTED).
+        shadowForwardBooks,
         modelWeights,
         modelHealth,
         performanceMetrics,
