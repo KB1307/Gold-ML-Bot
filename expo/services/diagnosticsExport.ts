@@ -3,6 +3,7 @@ import { renderAttentionAnnotation } from "@/services/attentionTelemetry";
 import { formatWeightSignAudit } from "@/services/modelFitting";
 import type { signalEngine } from "@/services/signalEngine";
 import type { DiagnosticEvent } from "@/services/diagnosticEventStore";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 export type ModelHealthMetrics = ReturnType<typeof signalEngine.getModelHealthMetrics>;
 /** ITEM AD — shadow-mode aggregates + promotion-gate verdict (read-only). */
@@ -87,6 +88,17 @@ export interface DiagnosticsExportInput {
    * Rendered as SECTION 11. Read-only — nothing here suppresses a signal.
    */
   modelShadowStats?: ModelShadowStats | null;
+
+  /**
+   * ITEM CF — SECTION 12: shadow forward books for the three scored strategies
+   * (SCORED_DT_SHORT / SCORED_REOPEN_LONG / ZONE_RETEST_LONG), fetched DIRECTLY
+   * from Supabase via `fetchShadowForwardBooksStats` (anon read, paginated —
+   * Item 12 pattern). Read-only: the section REPORTS the pre-registered
+   * PROMOTION/ABORT gates and the backtest FINGERPRINT check; nothing in the
+   * emission or gating path consumes it. Optional so older callers still
+   * compile; the section then reports NOT INSTRUMENTED rather than zeros.
+   */
+  shadowForwardBooks?: ShadowForwardBooksStats | null;
 
   /**
    * Item 3: recent (rolling 24h) structured resolution-decision events from
@@ -831,6 +843,346 @@ function formatModelShadowPerformanceSection(stats: ModelShadowStats | null | un
   return lines.join("\n");
 }
 
+// ═══ ITEM CF — SECTION 12: SHADOW FORWARD BOOKS ═══
+// Read-only forward accounting for the three shadow strategies written by
+// shadowStrategies.persistShadowStrategy (Items BA/BB/CA/CD/CE). This section
+// REPORTS the pre-registered PROMOTION/ABORT gates — it never acts on them:
+// no promotion, suppression, delay or demotion is wired to these numbers.
+//
+// Data sources (verified against live code 2026-09-08):
+//  • shadow_candidates_v1 rows for the three candidate names, EXCLUDING every
+//    row without inputs.geometryVersion === 2 (pre-CD ZONE rows carry SL $15;
+//    pre-CE rows lack the key entirely — Items CD/CE).
+//  • trade_outcomes_v1 joined on signal_id === inputs.signalId (shadow rows
+//    carry the LIVE emitted signalId — Item CE finding, so outcomes are the
+//    LIVE ladder's, an approximation CC anticipated). DISCREPANCY (live code
+//    wins): the corpus has NO status column — result is WIN/LOSS and
+//    learningStore F-8 makes the realized_r SIGN authoritative — so decided
+//    rows are classified by realized_r: >0 win (TP side), <0 stop-out (SL
+//    side), ===0 breakeven (SL_AFTER_BREAKEVEN-like), null = no R (excluded
+//    from EV, counted separately).
+//  • FINGERPRINT median MFE reads max_favourable_excursion_before_exit_r
+//    (Item 224, backfilled) × the row's own inputs.geometry.sl — the shadow
+//    rows' inputs.mfe is written NULL and stays NULL until a dedicated
+//    resolver exists (Item CE), so $ MFE comes from the corpus.
+//
+// EV$ = realized_r × inputs.geometry.sl PER ROW — ZONE $25, DT/REOPEN $12;
+// never a shared constant. EV is computed ONLY over decided rows; unresolved
+// rows never contribute a cent.
+
+export type ShadowForwardCandidateName =
+  | "SCORED_DT_SHORT"
+  | "SCORED_REOPEN_LONG"
+  | "ZONE_RETEST_LONG";
+
+interface ShadowCandidateRow {
+  candidate_name: string;
+  evaluated_at: string;
+  direction: string;
+  entry: number;
+  inputs: {
+    signalId?: string;
+    scoreVerdict?: "ABOVE" | "BELOW" | null;
+    geometryVersion?: number;
+    geometry?: { sl?: number } | null;
+    mfe?: number | null;
+  } | null;
+}
+
+interface OutcomeRow {
+  signal_id: string;
+  realized_r: number | string | null;
+  max_favourable_excursion_before_exit_r: number | string | null;
+}
+
+export interface ShadowForwardBookStats {
+  candidateName: ShadowForwardCandidateName;
+  firstEntryAt: string | null;
+  totalRows: number;
+  excludedPreV2: number;
+  malformedV2: number;
+  aboveRows: number;
+  belowRows: number;
+  decidedAbove: number;
+  unresolvedAbove: number;
+  winsAbove: number;
+  stopOutsAbove: number;
+  flatAbove: number;
+  noRAbove: number;
+  sumR$: number;
+  evPerTrade$: number | null;
+  stopOutRate: number | null;
+  medianMfeBeforeExit$: number | null;
+  mfeSampleCount: number;
+}
+
+export interface ShadowForwardBooksStats {
+  generatedAt: string;
+  books: Record<ShadowForwardCandidateName, ShadowForwardBookStats>;
+  combined: {
+    aboveRows: number;
+    decidedAbove: number;
+    wins: number;
+    stopOuts: number;
+    sumR$: number;
+    evPerTrade$: number | null;
+  };
+}
+
+/** Pre-registered gates + backtest reference figures, locked per candidate. */
+const SECTION12_BOOKS: ReadonlyArray<{
+  name: ShadowForwardCandidateName;
+  tag: string;
+  promoDecidedAbove: number;
+  abortWindowDecidedAbove: number;
+  backtest: { n: number; winRate: number; evPerTrade: number; stopOutRate: number; medianMfe: number };
+  expectedPerDay: number;
+}> = [
+  {
+    name: "SCORED_DT_SHORT",
+    tag: "DT",
+    promoDecidedAbove: 100,
+    abortWindowDecidedAbove: 50,
+    backtest: { n: 623, winRate: 0.62, evPerTrade: 1.56, stopOutRate: 0.36, medianMfe: 3.36 },
+    expectedPerDay: 1.6,
+  },
+  {
+    name: "SCORED_REOPEN_LONG",
+    tag: "REOPEN",
+    promoDecidedAbove: 60,
+    abortWindowDecidedAbove: 40,
+    backtest: { n: 148, winRate: 0.66, evPerTrade: 2.49, stopOutRate: 0.31, medianMfe: 4.2 },
+    expectedPerDay: 0.4,
+  },
+  {
+    name: "ZONE_RETEST_LONG",
+    tag: "ZONE",
+    promoDecidedAbove: 100,
+    abortWindowDecidedAbove: 50,
+    backtest: { n: 322, winRate: 0.58, evPerTrade: 4.07, stopOutRate: 0.39, medianMfe: 6.36 },
+    expectedPerDay: 0.8,
+  },
+];
+
+/**
+ * DIRECT paginated anon-key read of the three shadow forward books plus the
+ * outcome corpus, joined in-memory on signalId (Item 12 pagination pattern;
+ * `.in` with the three exact names preserves candidate-name isolation — the
+ * item249 strict-equality rule generalized from one name to three, never a
+ * range or prefix match).
+ */
+export async function fetchShadowForwardBooksStats(
+  client: SupabaseClient,
+): Promise<ShadowForwardBooksStats> {
+  const names = SECTION12_BOOKS.map((b) => b.name);
+
+  const candidateRows: ShadowCandidateRow[] = [];
+  for (let offset = 0; ; offset += 1000) {
+    const { data, error } = await client
+      .from("shadow_candidates_v1")
+      .select("candidate_name, evaluated_at, direction, entry, inputs")
+      .in("candidate_name", [...names])
+      .order("evaluated_at", { ascending: true })
+      .range(offset, offset + 999);
+    if (error) throw error;
+    const rows = (data ?? []) as unknown as ShadowCandidateRow[];
+    candidateRows.push(...rows);
+    if (rows.length < 1000) break;
+  }
+
+  const outcomesBySignalId = new Map<string, OutcomeRow>();
+  for (let offset = 0; ; offset += 500) {
+    const { data, error } = await client
+      .from("trade_outcomes_v1")
+      .select("signal_id, realized_r, max_favourable_excursion_before_exit_r")
+      .range(offset, offset + 499);
+    if (error) throw error;
+    const rows = (data ?? []) as unknown as OutcomeRow[];
+    for (const row of rows) {
+      if (row?.signal_id) outcomesBySignalId.set(String(row.signal_id), row);
+    }
+    if (rows.length < 500) break;
+  }
+
+  const books = {} as Record<ShadowForwardCandidateName, ShadowForwardBookStats>;
+  for (const book of SECTION12_BOOKS) {
+    const rows = candidateRows.filter((r) => r.candidate_name === book.name);
+    const stats: ShadowForwardBookStats = {
+      candidateName: book.name,
+      firstEntryAt: rows[0]?.evaluated_at ?? null,
+      totalRows: rows.length,
+      excludedPreV2: 0,
+      malformedV2: 0,
+      aboveRows: 0,
+      belowRows: 0,
+      decidedAbove: 0,
+      unresolvedAbove: 0,
+      winsAbove: 0,
+      stopOutsAbove: 0,
+      flatAbove: 0,
+      noRAbove: 0,
+      sumR$: 0,
+      evPerTrade$: null,
+      stopOutRate: null,
+      medianMfeBeforeExit$: null,
+      mfeSampleCount: 0,
+    };
+    const mfeSamples: number[] = [];
+    let decidedWithR = 0;
+    for (const row of rows) {
+      const inputs = row.inputs ?? {};
+      if (inputs.geometryVersion !== 2) {
+        stats.excludedPreV2 += 1;
+        continue;
+      }
+      const verdict = inputs.scoreVerdict;
+      if (verdict === "ABOVE") stats.aboveRows += 1;
+      else if (verdict === "BELOW") stats.belowRows += 1;
+      if (verdict !== "ABOVE") continue;
+      const sl =
+        typeof inputs.geometry?.sl === "number" && Number.isFinite(inputs.geometry.sl)
+          ? inputs.geometry.sl
+          : null;
+      const signalId = typeof inputs.signalId === "string" ? inputs.signalId : null;
+      if (sl === null || signalId === null) {
+        stats.malformedV2 += 1;
+        continue;
+      }
+      const outcome = outcomesBySignalId.get(signalId);
+      if (!outcome) {
+        stats.unresolvedAbove += 1;
+        continue;
+      }
+      stats.decidedAbove += 1;
+      const realizedR = outcome.realized_r === null ? null : Number(outcome.realized_r);
+      if (realizedR === null || !Number.isFinite(realizedR)) {
+        stats.noRAbove += 1;
+      } else {
+        decidedWithR += 1;
+        stats.sumR$ += realizedR * sl;
+        if (realizedR > 0) stats.winsAbove += 1;
+        else if (realizedR < 0) stats.stopOutsAbove += 1;
+        else stats.flatAbove += 1;
+      }
+      const mfeR = outcome.max_favourable_excursion_before_exit_r;
+      if (mfeR !== null && Number.isFinite(Number(mfeR))) {
+        mfeSamples.push(Number(mfeR) * sl);
+      }
+    }
+    if (decidedWithR > 0) stats.evPerTrade$ = stats.sumR$ / decidedWithR;
+    if (stats.decidedAbove > 0) stats.stopOutRate = stats.stopOutsAbove / stats.decidedAbove;
+    if (mfeSamples.length > 0) {
+      const sorted = [...mfeSamples].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      stats.medianMfeBeforeExit$ =
+        sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+      stats.mfeSampleCount = sorted.length;
+    }
+    books[book.name] = stats;
+  }
+
+  const combined = SECTION12_BOOKS.reduce(
+    (acc, book) => {
+      const s = books[book.name];
+      acc.aboveRows += s.aboveRows;
+      acc.decidedAbove += s.decidedAbove;
+      acc.wins += s.winsAbove;
+      acc.stopOuts += s.stopOutsAbove;
+      acc.sumR$ += s.sumR$;
+      return acc;
+    },
+    { aboveRows: 0, decidedAbove: 0, wins: 0, stopOuts: 0, sumR$: 0, evPerTrade$: null as number | null },
+  );
+  const combinedNoR = SECTION12_BOOKS.reduce((n, b) => n + books[b.name].noRAbove, 0);
+  const combinedDecidedWithR = combined.decidedAbove - combinedNoR;
+  if (combinedDecidedWithR > 0) combined.evPerTrade$ = combined.sumR$ / combinedDecidedWithR;
+
+  return { generatedAt: new Date().toISOString(), books, combined };
+}
+
+function formatShadowForwardBooksSection(stats: ShadowForwardBooksStats | null | undefined): string {
+  const lines: string[] = [RULE, "SECTION 12 — SHADOW FORWARD BOOKS (ITEM CF, read-only)", RULE];
+  if (!stats) {
+    lines.push("  NOT INSTRUMENTED by this caller — fetchShadowForwardBooksStats() was not wired in.");
+    lines.push("  The pre-registered gates below are REPORT-ONLY; nothing acts on them.");
+    return lines.join("\n");
+  }
+  let combinedAbove = 0;
+  let combinedDecided = 0;
+  for (const book of SECTION12_BOOKS) {
+    const s = stats.books[book.name];
+    if (!s) continue;
+    lines.push("");
+    lines.push(`${book.name} (${book.tag}):`);
+    if (s.totalRows === 0) {
+      lines.push(`  no entries yet — expected ~${book.expectedPerDay}/day (${book.tag})`);
+      continue;
+    }
+    lines.push(`  rows ${s.totalRows} since ${s.firstEntryAt ?? "?"} | excluded pre-v2 ${s.excludedPreV2} | malformed ${s.malformedV2}`);
+    lines.push(`  verdict split (v2): ABOVE ${s.aboveRows} | BELOW ${s.belowRows}`);
+    if (s.aboveRows === 0) {
+      lines.push("  no ABOVE rows yet");
+      continue;
+    }
+    lines.push(`  decided-ABOVE ${s.decidedAbove} (win ${s.winsAbove} / stop-out ${s.stopOutsAbove} / BE ${s.flatAbove} / no-R ${s.noRAbove}) | unresolved ${s.unresolvedAbove}`);
+    if (s.decidedAbove === 0) {
+      lines.push("  NOT RESOLVED — no shadow resolution path exists (see Item CE)");
+    } else {
+      lines.push(
+        `  win rate ${((s.winsAbove / s.decidedAbove) * 100).toFixed(1)}% | EV ${
+          s.evPerTrade$ !== null ? `$${s.evPerTrade$.toFixed(2)}/trade` : "n/a"
+        } (realized_r × own inputs.geometry.sl)`,
+      );
+    }
+    const ev = s.evPerTrade$;
+    if (s.decidedAbove >= book.promoDecidedAbove && ev !== null && ev > 0) {
+      lines.push(`  GATE: PROMOTION CLEARED (pre-registered: >=${book.promoDecidedAbove} decided-ABOVE AND EV>0) — REPORT ONLY`);
+    } else if (s.decidedAbove >= book.abortWindowDecidedAbove && ev !== null && ev <= 0) {
+      lines.push(`  GATE: ABORT WINDOW MET (EV<=0 within first ${book.abortWindowDecidedAbove} decided-ABOVE) — REPORT ONLY`);
+    } else {
+      lines.push(
+        `  GATE: ACCUMULATING — decided-ABOVE ${s.decidedAbove}/${book.promoDecidedAbove} toward promotion, ${Math.min(s.decidedAbove, book.abortWindowDecidedAbove)}/${book.abortWindowDecidedAbove} through abort window`,
+      );
+    }
+    if (s.decidedAbove < 20) {
+      lines.push(`  FINGERPRINT: INSUFFICIENT DATA (needs >=20 decided-ABOVE, have ${s.decidedAbove})`);
+    } else {
+      const divergent: string[] = [];
+      if (s.stopOutRate !== null && Math.abs(s.stopOutRate - book.backtest.stopOutRate) > 0.15) {
+        divergent.push(
+          `stop-out ${(s.stopOutRate * 100).toFixed(1)}% vs backtest ${(book.backtest.stopOutRate * 100).toFixed(1)}% (>15pp)`,
+        );
+      }
+      if (s.medianMfeBeforeExit$ !== null && s.medianMfeBeforeExit$ > book.backtest.medianMfe * 1.5) {
+        divergent.push(
+          `median MFE $${s.medianMfeBeforeExit$.toFixed(2)} vs backtest $${book.backtest.medianMfe.toFixed(2)} (>50%)`,
+        );
+      }
+      const mfeNote =
+        s.medianMfeBeforeExit$ === null
+          ? " | MFE half: no corpus before-exit MFE for these rows (shadow inputs.mfe null — see Item CE)"
+          : "";
+      lines.push(
+        `  FINGERPRINT: ${divergent.length > 0 ? `DIVERGENT (${divergent.join("; ")})` : "CONSISTENT"}${mfeNote}`,
+      );
+    }
+    combinedAbove += s.aboveRows;
+    combinedDecided += s.decidedAbove;
+  }
+  lines.push("");
+  lines.push("COMBINED (ABOVE-only):");
+  lines.push(
+    `  ABOVE rows ${combinedAbove} | decided ${combinedDecided} (win ${stats.combined.wins} / stop-out ${stats.combined.stopOuts}) | EV ${
+      stats.combined.evPerTrade$ !== null ? `$${stats.combined.evPerTrade$.toFixed(2)}/trade` : "n/a"
+    }`,
+  );
+  if (combinedAbove > 0 && combinedDecided === 0) {
+    lines.push("  NOT RESOLVED — no shadow resolution path exists (see Item CE)");
+  }
+  lines.push("  Read-only: this section REPORTS the pre-registered gates; no promotion, suppression, delay or demotion is wired to it.");
+  return lines.join("\n");
+}
+
 function formatShadowSellSection(
   summary: ShadowSellSummary | null | undefined,
   writeFailures: number,
@@ -1302,6 +1654,9 @@ export function buildDiagnosticsExportText(input: DiagnosticsExportInput): strin
     "",
     // ITEM AD — shadow performance (the model watches and logs; no suppression).
     formatModelShadowPerformanceSection(input.modelShadowStats),
+    "",
+    // ITEM CF — SECTION 12: shadow forward books (read-only reporting).
+    formatShadowForwardBooksSection(input.shadowForwardBooks),
     "",
     DRULE,
     "END OF EXPORT",
