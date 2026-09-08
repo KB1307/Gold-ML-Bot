@@ -696,6 +696,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   }, [settings.breakevenEnabled]);
   const [marketOutlook, setMarketOutlook] = useState<MarketOutlook | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  // ITEM BG: true when the server-side history backfill (reconcileHistoryFromServer)
+  // could not reach Supabase. The History tab uses this to show a
+  // "Connection error — showing cached history" state instead of a bare
+  // "No Signal History", so a sync outage is never mistaken for an empty book.
+  const [historySyncError, setHistorySyncError] = useState<boolean>(false);
   const [performanceMetrics, setPerformanceMetrics] = useState<PerformanceMetrics>(DEFAULT_METRICS);
   const [positionSizing, setPositionSizing] = useState<PositionSizing | null>(null);
   const [accountBalance, setAccountBalance] = useState<number>(100);
@@ -864,24 +869,44 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     try {
       if (!supabase) {
         console.warn('⚠️ [Item194] server-history reconciliation skipped — Supabase not configured');
+        setHistorySyncError(true);
         return;
       }
-      // Anon-key read, Supabase DIRECT (DATA-SOURCE RULE).
+      // ITEM BG: a failed read used to be swallowed silently — the History tab
+      // then showed "No Signal History" with no way to tell a sync outage from
+      // a genuinely empty book. RETRY (3 attempts, 5s apart — a boot-time
+      // NetworkError usually clears within seconds) and surface the outcome
+      // through historySyncError so the UI can show a connection-error state.
       const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-      const { data, error } = await supabase
-        .from('emitted_signals_v1')
-        .select('signal_id, emitted_at, direction, entry, sl, tp1, tp2, tp3, confidence')
-        .gte('emitted_at', since)
-        .order('emitted_at', { ascending: false })
-        .limit(200);
-      if (error) {
-        console.warn('⚠️ [Item194] server-history reconciliation read failed:', error.message);
-        return;
-      }
-      const rows = (data ?? []) as Array<{
+      let rows: Array<{
         signal_id: string; emitted_at: string; direction: string;
         entry: number; sl: number; tp1: number; tp2: number; tp3: number; confidence: number | null;
-      }>;
+      }> | null = null;
+      let lastError = 'unknown';
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        // Anon-key read, Supabase DIRECT (DATA-SOURCE RULE).
+        const { data, error } = await supabase
+          .from('emitted_signals_v1')
+          .select('signal_id, emitted_at, direction, entry, sl, tp1, tp2, tp3, confidence')
+          .gte('emitted_at', since)
+          .order('emitted_at', { ascending: false })
+          .limit(200);
+        if (!error) {
+          rows = (data ?? []) as Array<{
+            signal_id: string; emitted_at: string; direction: string;
+            entry: number; sl: number; tp1: number; tp2: number; tp3: number; confidence: number | null;
+          }>;
+          break;
+        }
+        lastError = error.message;
+        if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 5000));
+      }
+      if (rows === null) {
+        setHistorySyncError(true);
+        console.warn('⚠️ [Item194] server-history reconciliation read failed after 3 attempt(s):', lastError);
+        return;
+      }
+      setHistorySyncError(false);
       if (rows.length === 0) return;
       const knownIds = new Set(signalHistoryRef.current.map(s => s.id));
       const missing = rows.filter(r => !knownIds.has(r.signal_id));
@@ -2618,28 +2643,37 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
       console.log('📦 Raw saved history from storage:', savedHistory);
 
-      if (savedSettings) {
-        const rawParsedSettings = JSON.parse(savedSettings) as Settings;
-        // PHASE D / D2 (F-9): one-time versioned migration. A pre-Item-121 row keeps
-        // the stale 49/74/98 ladder and a pre-Item-82 row keeps useDynamicSL=true —
-        // both entered the row as old DEFAULTS, and every forward measurement runs
-        // on a mix of two ladders until they are corrected.
-        const migration = migrateSettingsToV2(rawParsedSettings);
-        if (migration.changed) {
-          console.log(`🔧 [SettingsMigration v1→${SETTINGS_SCHEMA_VERSION}] ${migration.changes.join('; ')}`);
-        }
-        const parsedSettings = sanitizeSettings(migration.settings);
-        setSettings(parsedSettings);
-        console.log('✅ Settings loaded:', parsedSettings);
-
-        if (migration.changed || parsedSettings.minConfidence !== rawParsedSettings.minConfidence) {
-          await AsyncStorage.setItem("trading_settings", JSON.stringify(parsedSettings));
-          if (parsedSettings.minConfidence !== rawParsedSettings.minConfidence) {
-            console.log(`🔒 Raised persisted minimum confidence to enforced floor ${(ENFORCED_MIN_SIGNAL_CONFIDENCE * 100).toFixed(0)}%`);
+      // ITEM BG: this block is isolated so a corrupted settings row can no
+      // longer throw past history loading — previously the throw reached the
+      // outer catch at the bottom of this function, which blanked the History
+      // tab on every refresh even though signal_history itself was intact.
+      try {
+        if (savedSettings) {
+          const rawParsedSettings = JSON.parse(savedSettings) as Settings;
+          // PHASE D / D2 (F-9): one-time versioned migration. A pre-Item-121 row keeps
+          // the stale 49/74/98 ladder and a pre-Item-82 row keeps useDynamicSL=true —
+          // both entered the row as old DEFAULTS, and every forward measurement runs
+          // on a mix of two ladders until they are corrected.
+          const migration = migrateSettingsToV2(rawParsedSettings);
+          if (migration.changed) {
+            console.log(`🔧 [SettingsMigration v1→${SETTINGS_SCHEMA_VERSION}] ${migration.changes.join('; ')}`);
           }
+          const parsedSettings = sanitizeSettings(migration.settings);
+          setSettings(parsedSettings);
+          console.log('✅ Settings loaded:', parsedSettings);
+
+          if (migration.changed || parsedSettings.minConfidence !== rawParsedSettings.minConfidence) {
+            await AsyncStorage.setItem("trading_settings", JSON.stringify(parsedSettings));
+            if (parsedSettings.minConfidence !== rawParsedSettings.minConfidence) {
+              console.log(`🔒 Raised persisted minimum confidence to enforced floor ${(ENFORCED_MIN_SIGNAL_CONFIDENCE * 100).toFixed(0)}%`);
+            }
+          }
+        } else {
+          console.log('⚠️ No saved settings found - using defaults');
+          setSettings(DEFAULT_SETTINGS);
         }
-      } else {
-        console.log('⚠️ No saved settings found - using defaults');
+      } catch (settingsError) {
+        console.error('⚠️ [Item BG] Settings load failed — keeping defaults, continuing history load:', settingsError);
         setSettings(DEFAULT_SETTINGS);
       }
 
@@ -2732,7 +2766,11 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log('✅ All persisted data loaded successfully');
     } catch (error) {
       console.error("❌ Failed to load persisted data:", error);
-      setSignalHistory([]);
+      // ITEM BG: do NOT wipe signal history here. This catch previously called
+      // setSignalHistory([]) for ANY load failure — a corrupted settings or
+      // metrics JSON (unrelated keys) erased the visible History tab on every
+      // refresh even when signal_history itself was intact. signalHistory
+      // starts as [] and is only ever assigned from a successful read.
       setSettings(DEFAULT_SETTINGS);
       setPerformanceMetrics(DEFAULT_METRICS);
       setAccountBalance(100);
@@ -3837,6 +3875,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
   return useMemo(() => ({
     isLoggedIn,
     isLoading,
+    historySyncError,
     signalHistory,
     settings,
     marketOutlook,
@@ -3880,6 +3919,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
     guidePrice,
     guidePriceSource,
     guidePriceUpdatedAt,
+    historySyncError,
     isLoading,
     isLoggedIn,
     ingestChartPrice,

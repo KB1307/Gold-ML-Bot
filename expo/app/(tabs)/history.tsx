@@ -46,7 +46,7 @@ const getDisplayTargetsHit = (signal: TradingSignal): number => {
 const TERMINAL_PNL_STATUSES: TradingSignal["status"][] = ["ALL_TARGETS_HIT", "TP3_HIT", "PARTIAL_WIN_SL_HIT", "SL_AFTER_BE", "SL_HIT", "CLOSED", "EXPIRED_MISSED_ENTRY", "NEVER_FILLABLE"];
 
 export default function HistoryScreen() {
-  const { signalHistory, deleteSignalFromHistory, signalUpdateTrigger, isLoading, settings, runManualAudit } = useTrading();
+  const { signalHistory, deleteSignalFromHistory, signalUpdateTrigger, isLoading, settings, runManualAudit, historySyncError } = useTrading();
   const [isAuditing, setIsAuditing] = useState<boolean>(false);
 
   const handleManualAudit = useCallback(async () => {
@@ -421,6 +421,18 @@ export default function HistoryScreen() {
               </TouchableOpacity>
             </View>
 
+            {/* ITEM BG: never let a failed server sync masquerade as an empty book.
+                When the backfill pull failed but cached history is on screen,
+                say so; when nothing is on screen either, name the connection
+                error instead of the generic "No Signal History". */}
+            {historySyncError && !isLoading && sortedSignalHistory.length > 0 ? (
+              <View style={styles.syncBanner} testID="history-sync-error-banner">
+                <Text style={styles.syncBannerText}>
+                  ⚠️ Connection error — showing cached history. Signals will re-sync automatically.
+                </Text>
+              </View>
+            ) : null}
+
             {isLoading ? (
               <View style={styles.emptyState}>
                 <History size={64} color="#444" strokeWidth={1.5} />
@@ -430,9 +442,13 @@ export default function HistoryScreen() {
             ) : sortedSignalHistory.length === 0 ? (
               <View style={styles.emptyState}>
                 <History size={64} color="#444" strokeWidth={1.5} />
-                <Text style={styles.emptyTitle}>No Signal History</Text>
+                <Text style={styles.emptyTitle}>
+                  {historySyncError ? "Connection Error" : "No Signal History"}
+                </Text>
                 <Text style={styles.emptyText}>
-                  Active and closed signals appear here automatically as soon as the engine creates them.
+                  {historySyncError
+                    ? "Signal history couldn't be synced from the server and no cached copy was found on this device. Your signals will reappear automatically once the connection is restored."
+                    : "Active and closed signals appear here automatically as soon as the engine creates them."}
                 </Text>
               </View>
             ) : (
@@ -528,6 +544,22 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     paddingHorizontal: 40,
   },
+  syncBanner: {
+    backgroundColor: "rgba(239, 68, 68, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.35)",
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginBottom: 16,
+  },
+  syncBannerText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#f87171",
+    lineHeight: 18,
+    textAlign: "center",
+  } as const,
   signalSections: {
     gap: 24,
     marginBottom: 20,
