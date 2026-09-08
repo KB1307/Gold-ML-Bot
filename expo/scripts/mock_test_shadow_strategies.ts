@@ -13,7 +13,7 @@
  * swingHighPrice 4510, swingHighBar 50, pullbackDepth 6, sessionLevelDistance 0,
  * finite score, verdict BELOW.
  */
-import { detectDoubleTop, detectScoredReopen, type ShadowM5Bar } from "../services/shadowStrategies";
+import { detectDoubleTop, detectScoredReopen, detectZoneRetestLong, type ShadowM5Bar } from "../services/shadowStrategies";
 
 const DAY_MS = Date.UTC(2026, 8, 1); // 2026-09-01
 const M5_MS = 5 * 60 * 1000;
@@ -55,6 +55,40 @@ console.log("── detectScoredReopen (isReopen=false self-filter) ──");
 const reopenNo = detectScoredReopen({ m5Bars: reopenBars, isReopen: false, entryPrice: 4490, priorClose });
 console.log(JSON.stringify(reopenNo));
 
+// ── ITEM CA — ZONE_RETEST_LONG ──────────────────────────────────────────────
+// Adaptation note (live code wins): emaSpan returns null below its span, so
+// the tested 960-bar trend EMA needs >= 960 bars — the prompt's 100-bar mock
+// cannot exercise it. Series is 1000 bars with the pattern at the end, and
+// prices are shifted −10 (flat 4490, swing 4480, retest close 4496) because a
+// close of 4496 can never exceed a long EMA anchored on a flat-4500 book.
+// Structure and expected RELATIVE values match the prompt exactly:
+//   reaction 12 (>= 10), pullback >= A+4, retest distance 3 (<= 4), green
+//   close above A, EMA20 > EMA50, close > EMA_960 → detected ABOVE.
+console.log("── detectZoneRetestLong (BUY, confirmed zone retest, 1000-bar series) ──");
+const zoneBars: ShadowM5Bar[] = [];
+for (let k = 0; k < 1000; k += 1) zoneBars.push(mkBar(k, 4490, 4490, 4490, 4490));
+zoneBars[950] = mkBar(950, 4490, 4490, 4480, 4484); // swing low A = 4480
+zoneBars[951] = mkBar(951, 4484, 4490, 4482, 4488);
+zoneBars[952] = mkBar(952, 4488, 4492, 4486, 4492); // k = 952 — the zone is BORN here
+for (let k = 953; k <= 997; k += 1) {
+  const c = 4492 + (k - 952) * 0.05; // monotone rising ramp — no later fractal lows
+  zoneBars[k] = mkBar(k, c - 0.05, c + 0.1, c - 0.3, c);
+}
+zoneBars[998] = mkBar(998, 4494.2, 4494.8, 4494.0, 4494.5);
+zoneBars[999] = mkBar(999, 4494, 4496, 4483, 4496); // retest: low within $4 of A, green close above A
+const zone = detectZoneRetestLong({ m5Bars: zoneBars, entryPrice: 4496, direction: "BUY" });
+console.log(JSON.stringify(zone, null, 2));
+
+console.log("── detectZoneRetestLong (SELL self-filter) ──");
+const zoneSell = detectZoneRetestLong({ m5Bars: zoneBars, entryPrice: 4496, direction: "SELL" });
+console.log(JSON.stringify(zoneSell));
+
+console.log("── detectZoneRetestLong (retest closes BELOW the zone level) ──");
+const zoneBarsBelow = zoneBars.slice();
+zoneBarsBelow[999] = mkBar(999, 4494, 4496, 4483, 4479); // close 4479 < A 4480
+const zoneBelow = detectZoneRetestLong({ m5Bars: zoneBarsBelow, entryPrice: 4479, direction: "BUY" });
+console.log(JSON.stringify(zoneBelow));
+
 console.log("── GATE CHECKS ──");
 const dtPass =
   dt.detected === true &&
@@ -74,4 +108,17 @@ const reopenPass =
   reopen.gapDown === true &&
   reopen.priorDayBigMove === true &&
   reopenNo.detected === false;
+const zonePass =
+  zone.detected === true &&
+  zone.swingLowPrice === 4480 &&
+  zone.swingLowBar === 950 &&
+  zone.confirmationBar === 952 &&
+  zone.firstReaction === 12 &&
+  zone.retestDistance === 3 &&
+  zone.trendUp === true &&
+  zone.emaStacked === true &&
+  zone.scoreVerdict === "ABOVE" &&
+  zoneSell.detected === false &&
+  zoneBelow.detected === false;
 console.log(`ITEM BA MOCK GATE: ${dtPass && reopenPass ? "PASS" : "FAIL"} (dt=${dtPass}, reopen=${reopenPass})`);
+console.log(`ITEM CA MOCK GATE: ${zonePass ? "PASS" : "FAIL"} (zone=${zonePass})`);

@@ -1,7 +1,7 @@
 import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC, SignalLearningContext, DetectedSRZone } from "@/types/trading";
 import { pushShadowSellRecord, type ShadowSellRecord } from "@/services/shadowSignalService";
 import { writeCounterTrendSuppression } from "@/services/counterTrendShadow";
-import { detectDoubleTop, detectScoredReopen, persistShadowStrategy } from "@/services/shadowStrategies";
+import { detectDoubleTop, detectScoredReopen, detectZoneRetestLong, persistShadowStrategy } from "@/services/shadowStrategies";
 import { pushEmittedSignalRecord } from "@/services/emittedSignalService";
 import { BAND_PROXIMITY_VETO_ENABLED, evaluateBandProximityVeto } from "@/services/bandProximityVeto";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -11103,7 +11103,7 @@ class SignalGenerationEngine {
     if (!bars || bars.length < 2) return;
 
     const persist = (
-      candidateName: 'SCORED_DT_SHORT' | 'SCORED_REOPEN_LONG',
+      candidateName: 'SCORED_DT_SHORT' | 'SCORED_REOPEN_LONG' | 'ZONE_RETEST_LONG',
       score: number,
       scoreVerdict: 'ABOVE' | 'BELOW',
       metadata: Record<string, unknown>,
@@ -11140,6 +11140,32 @@ class SignalGenerationEngine {
           pullbackDepth: dt.pullbackDepth,
           sessionLevelDistance: dt.sessionLevelDistance,
         },
+        rsi,
+      });
+    }
+
+    // ZONE_RETEST_LONG — long-only, first retest of a confirmed swing low
+    // with a strong first reaction, trend-filtered. Causality asserted in
+    // the detector (confirmationBar < retestBar on every signal).
+    // NOTE (Item CA live-code discrepancy): BAR_M5_LOOKBACK caps the series
+    // at 300 bars, so the tested 960-bar trend EMA is approximated by the
+    // longest available span until the cap is raised. trendEmaSpanUsed is
+    // recorded so the forward book can split the two regimes (CB reads it).
+    const zr = detectZoneRetestLong({ m5Bars: bars, entryPrice, direction });
+    if (zr.detected && zr.scoreVerdict !== null) {
+      persist('ZONE_RETEST_LONG', zr.scoreVerdict === 'ABOVE' ? 1 : 0, zr.scoreVerdict, {
+        pattern: {
+          swingLowPrice: zr.swingLowPrice,
+          swingLowBar: zr.swingLowBar,
+          confirmationBar: zr.confirmationBar,
+          firstReaction: zr.firstReaction,
+          pullbackHigh: zr.pullbackHigh,
+          retestDistance: zr.retestDistance,
+        },
+        trendUp: zr.trendUp,
+        emaStacked: zr.emaStacked,
+        trendEmaSpanUsed: Math.min(960, bars.length - 1),
+        barsInSeries: bars.length,
         rsi,
       });
     }
