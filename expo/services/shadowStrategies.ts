@@ -516,16 +516,43 @@ export type ShadowCandidateName = "SCORED_DT_SHORT" | "SCORED_REOPEN_LONG" | "ZO
 
 /**
  * The strategies' TESTED geometry (Item BD write-side, applied from day one so
- * no row ever lacks it): fixed SL/TP per strategy, 8h time stop, no lock, no
+ * no row ever lacks it): fixed SL/TP per strategy, time stop, no lock, no
  * partial exits. The core resolver's standard geometry does NOT match — see
- * Items BC/BD for how the books are read.
+ * Items CB/CC for how the books are read.
+ *
+ * ITEM CD: re-derivation RAN on 2026-09-08 and CHANGED NOTHING — DT: 260 cells,
+ * best train t 3.91, holdout improvement +$0.08 (nothing); REOPEN: 155 cells,
+ * best pick LOST $1.17 on holdout (overfit). Both keep SL $12 / TP $10 / T96.
+ * Do not re-run this sweep for these two.
  */
 export const SHADOW_STRATEGY_GEOMETRY = { sl: 12, tp: 10, timeStopBars: 96 } as const;
-/** Item CA: ZONE_RETEST_LONG's tested geometry differs — SL $15 / TP $10. */
-export const ZONE_RETEST_GEOMETRY = { sl: 15, tp: 10, timeStopBars: 96 } as const;
+/**
+ * Item CD: ZONE_RETEST_LONG's corrected tested geometry — SL $25 / TP $25 / T192.
+ *
+ * DERIVATION RECORD (re-derived 2026-09-08 on TRAIN ONLY across 177 cells in
+ * five exit families: flat SL/TP/time-stop, TP proportional to the signal's own
+ * first reaction, ATR-scaled, trailing, partial+runner; best train t = 3.01;
+ * holdout then read ONCE):
+ *   SL 15 / TP 10 / T96 (previous live):  full +$1.15 | train +$1.69 | holdout +$0.38
+ *   SL 25 / TP 25 / T192 (CORRECT):       full +$4.07 | train +$5.16 | holdout +$2.51
+ * Stop sweep at TP $25 / T192 (full EV, [holdout]):
+ *   SL 10 +$2.09 [+0.51] · SL 15 +$2.94 [+1.22] · SL 20 +$3.28 [+2.02]
+ *   · SL 25 +$4.06 [+2.51] · SL 30 +$4.00 [+1.83] — $25 peaks on BOTH halves.
+ * REJECTED hypothesis: targeting a fraction of the signal's own first reaction.
+ * EV rises MONOTONICALLY with target width — a $3 target wins 82% of trades and
+ * still loses money (−$0.44/trade). The second reaction off a zone runs further
+ * than the first, not shorter.
+ * Every ZONE_RETEST_LONG row written before CD carries the old geometry and is
+ * excluded from the forward book via inputs.geometryVersion (Item CE).
+ */
+export const ZONE_RETEST_GEOMETRY = { sl: 25, tp: 25, timeStopBars: 192 } as const;
 
-/** Per-candidate tested geometry — single source of truth for prices + inputs. */
-export function geometryForStrategy(name: ShadowCandidateName): { readonly sl: 12 | 15; readonly tp: 10; readonly timeStopBars: 96 } {
+/**
+ * Per-candidate tested geometry — single source of truth for prices + inputs.
+ * Item CD: return type is numeric (not a literal union) so a future geometry
+ * re-derivation cannot become a type error in an unrelated file.
+ */
+export function geometryForStrategy(name: ShadowCandidateName): { readonly sl: number; readonly tp: number; readonly timeStopBars: number } {
   return name === "ZONE_RETEST_LONG" ? ZONE_RETEST_GEOMETRY : SHADOW_STRATEGY_GEOMETRY;
 }
 
@@ -554,10 +581,12 @@ export async function persistShadowStrategy(params: {
 }): Promise<void> {
   const { supabaseClient, signalId, candidateName, direction, entryPrice, emittedAt, score, scoreVerdict, metadata } = params;
   try {
-    // ITEM CA: geometry is PER-CANDIDATE (ZONE_RETEST_LONG is SL $15 / TP $10,
-    // the other two SL $12 / TP $10) — both the written prices and the
-    // inputs.geometry blob must come from geometryForStrategy, never a shared
-    // constant, or the ZONE book's EV math (CB reads inputs.geometry.sl) lies.
+    // ITEM CD (supersedes the CA note): geometry is PER-CANDIDATE and now
+    // comes from geometryForStrategy — ZONE_RETEST_LONG is SL $25 / TP $25 /
+    // T192 (re-derived 2026-09-08, see the derivation record above), the other
+    // two SL $12 / TP $10 / T96. Both the written prices and the inputs.geometry
+    // blob must come from geometryForStrategy, never a shared constant, or the
+    // forward book's EV math (SECTION 12 reads inputs.geometry.sl) lies.
     const geometry = geometryForStrategy(candidateName);
     const r2 = (v: number): number => Math.round(v * 100) / 100;
     const slPrice = direction === "SELL"
