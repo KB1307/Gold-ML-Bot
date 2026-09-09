@@ -95,7 +95,17 @@ export function writeCounterTrendSuppression(input: CounterTrendSuppressionInput
         tp1: r2(input.tp1),
         tp2: r2(input.tp2),
         tp3: r2(input.tp3),
-        inputs: input.inputs,
+        inputs: {
+          ...input.inputs,
+          // ITEM DD — resolver prerequisite: the Item DA shadow resolver only
+          // resolves rows carrying geometryVersion >= 2 and grades them against
+          // the row's OWN flat geometry (inputs.geometry {sl, tp, timeStopBars}).
+          // Without these keys the two counter-trend suppressed books
+          // (DRIFT_VETO_SUPPRESSED, MID_RSI_SUPPRESSED) can never accrue decided
+          // outcomes — SECTION 12 rendered them with no EV and no gate status.
+          geometryVersion: 2,
+          geometry: { sl: 12, tp: 10, timeStopBars: 96 },
+        },
       });
       if (error) {
         writeFailures += 1;

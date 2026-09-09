@@ -231,6 +231,13 @@ async function writeSuppressedCandidate(client: SupabaseClient | null, suppresse
         opposing_zone_fraction: fp.opp,
       },
       candidate_confidence: Math.round(input.confidence * 1000) / 1000,
+      // ITEM DD — resolver prerequisite (same keys as counterTrendShadow.ts):
+      // without geometryVersion >= 2 + flat geometry the BAND_VETO_SUPPRESSED
+      // book can never accrue decided outcomes through the Item DA resolver
+      // (the P.3 abort gate reads them). The sl/tp1 columns above stay the
+      // recorded live prices; resolution uses THIS flat geometry, not those.
+      geometryVersion: 2,
+      geometry: { sl: 12, tp: 10, timeStopBars: 96 },
     },
   });
   if (error) console.warn(`[BandProximityVeto] shadow write FAILED (non-blocking): ${error.message}`);

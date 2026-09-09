@@ -920,6 +920,9 @@ interface ShadowCandidateRow {
     geometryVersion?: number;
     geometry?: { sl?: number } | null;
     mfe?: number | null;
+    /** Item DD — Item DA resolver write-back (suppressed-gate books). */
+    resolvedOutcome?: string | null;
+    resolvedPnlPrice?: number | null;
   } | null;
 }
 
@@ -950,9 +953,47 @@ export interface ShadowForwardBookStats {
   mfeSampleCount: number;
 }
 
+/** ITEM DD — the three suppressed-gate candidate names (strict equality, never a range). */
+export type SuppressedBookName =
+  | "BAND_VETO_SUPPRESSED"
+  | "DRIFT_VETO_SUPPRESSED"
+  | "MID_RSI_SUPPRESSED";
+
+/**
+ * ITEM DD — one suppressed-gate book. "Decided" = the Item DA shadow resolver
+ * wrote resolvedOutcome TP/SL/TIME; resolvedPnlPrice is ALREADY $ of price
+ * movement sign-correct for direction (−sl / +tp / TIME close delta), so
+ * sumPnl$ accumulates it directly. Win/stop-out/flat classify by OUTCOME
+ * (TIME can carry either sign — its $ lands in sumPnl$ regardless).
+ */
+export interface SuppressedBookStats {
+  candidateName: SuppressedBookName;
+  firstEntryAt: string | null;
+  totalRows: number;
+  /** Resolver step-2 skips (pre-CD geometry, marked UNRESOLVED with a note). */
+  excludedPreV2: number;
+  /** v2 rows with a malformed outcome/pnl — counted, never silently dropped. */
+  malformedV2: number;
+  /** resolvedOutcome null — still open or not yet reached by the resolver. */
+  unresolved: number;
+  decided: number;
+  wins: number;
+  stopOuts: number;
+  flat: number;
+  sumPnl$: number;
+  evPerTrade$: number | null;
+}
+
 export interface ShadowForwardBooksStats {
   generatedAt: string;
   books: Record<ShadowForwardCandidateName, ShadowForwardBookStats>;
+  /**
+   * ITEM DD — the three suppressed-gate books. Their rows are never emitted
+   * (no signalId), so their outcomes do NOT come from the trade_outcomes_v1
+   * join: the Item DA shadow resolver resolves each row against its own flat
+   * geometry and writes resolvedOutcome + resolvedPnlPrice into inputs.
+   */
+  suppressedBooks: Record<SuppressedBookName, SuppressedBookStats>;
   combined: {
     aboveRows: number;
     decidedAbove: number;
@@ -999,16 +1040,33 @@ const SECTION12_BOOKS: ReadonlyArray<{
 ];
 
 /**
- * DIRECT paginated anon-key read of the three shadow forward books plus the
- * outcome corpus, joined in-memory on signalId (Item 12 pagination pattern;
- * `.in` with the three exact names preserves candidate-name isolation — the
- * item249 strict-equality rule generalized from one name to three, never a
- * range or prefix match).
+ * ITEM DD — the suppressed-gate forward books: the gates' own refutation
+ * instrument. Pre-registered gate per book (the P.3 abort-gate contract
+ * generalized to all three): at forward n >= 30 decided rows, EV_net > 0 means
+ * the gate is suppressing net winners → the section prints the refutation
+ * line. REPORT-ONLY; nothing auto-acts on it.
+ */
+const SUPPRESSED_BOOKS: ReadonlyArray<{
+  name: SuppressedBookName;
+  tag: string;
+  gateDecided: number;
+}> = [
+  { name: "BAND_VETO_SUPPRESSED", tag: "BAND", gateDecided: 30 },
+  { name: "DRIFT_VETO_SUPPRESSED", tag: "DRIFT", gateDecided: 30 },
+  { name: "MID_RSI_SUPPRESSED", tag: "MID", gateDecided: 30 },
+];
+
+/**
+ * DIRECT paginated anon-key read of the three shadow forward books, the three
+ * suppressed-gate books (Item DD) and the outcome corpus, joined in-memory on
+ * signalId (Item 12 pagination pattern; `.in` with the SIX exact names
+ * preserves candidate-name isolation — the item249 strict-equality rule
+ * generalized, never a range or prefix match).
  */
 export async function fetchShadowForwardBooksStats(
   client: SupabaseClient,
 ): Promise<ShadowForwardBooksStats> {
-  const names = SECTION12_BOOKS.map((b) => b.name);
+  const names = [...SECTION12_BOOKS.map((b) => b.name), ...SUPPRESSED_BOOKS.map((b) => b.name)];
 
   const candidateRows: ShadowCandidateRow[] = [];
   for (let offset = 0; ; offset += 1000) {
@@ -1115,6 +1173,59 @@ export async function fetchShadowForwardBooksStats(
     books[book.name] = stats;
   }
 
+  // ITEM DD — suppressed-gate books: outcomes come from the Item DA resolver's
+  // write-back (resolvedOutcome/resolvedPnlPrice), NOT the trade_outcomes join
+  // (suppressed candidates are never emitted — they have no signalId).
+  const suppressedBooks = {} as Record<SuppressedBookName, SuppressedBookStats>;
+  for (const book of SUPPRESSED_BOOKS) {
+    const rows = candidateRows.filter((r) => r.candidate_name === book.name);
+    const s: SuppressedBookStats = {
+      candidateName: book.name,
+      firstEntryAt: rows[0]?.evaluated_at ?? null,
+      totalRows: rows.length,
+      excludedPreV2: 0,
+      malformedV2: 0,
+      unresolved: 0,
+      decided: 0,
+      wins: 0,
+      stopOuts: 0,
+      flat: 0,
+      sumPnl$: 0,
+      evPerTrade$: null,
+    };
+    for (const row of rows) {
+      const inputs = row.inputs ?? {};
+      const gv = Number(inputs.geometryVersion);
+      if (!Number.isFinite(gv) || gv < 2) {
+        s.excludedPreV2 += 1;
+        continue;
+      }
+      const outcome = inputs.resolvedOutcome;
+      if (outcome === null || outcome === undefined) {
+        // Still open, or not yet reached by the resolver (oldest-first, 200/pass).
+        s.unresolved += 1;
+        continue;
+      }
+      if (outcome === "UNRESOLVED") {
+        // Resolver step-2 skip note (pre-CD geometry or malformed row).
+        s.excludedPreV2 += 1;
+        continue;
+      }
+      const pnl = Number(inputs.resolvedPnlPrice);
+      if ((outcome !== "TP" && outcome !== "SL" && outcome !== "TIME") || !Number.isFinite(pnl)) {
+        s.malformedV2 += 1;
+        continue;
+      }
+      s.decided += 1;
+      s.sumPnl$ += pnl;
+      if (outcome === "TP") s.wins += 1;
+      else if (outcome === "SL") s.stopOuts += 1;
+      else s.flat += 1;
+    }
+    if (s.decided > 0) s.evPerTrade$ = s.sumPnl$ / s.decided;
+    suppressedBooks[book.name] = s;
+  }
+
   const combined = SECTION12_BOOKS.reduce(
     (acc, book) => {
       const s = books[book.name];
@@ -1131,7 +1242,7 @@ export async function fetchShadowForwardBooksStats(
   const combinedDecidedWithR = combined.decidedAbove - combinedNoR;
   if (combinedDecidedWithR > 0) combined.evPerTrade$ = combined.sumR$ / combinedDecidedWithR;
 
-  return { generatedAt: new Date().toISOString(), books, combined };
+  return { generatedAt: new Date().toISOString(), books, suppressedBooks, combined };
 }
 
 function formatShadowForwardBooksSection(stats: ShadowForwardBooksStats | null | undefined): string {
@@ -1213,6 +1324,44 @@ function formatShadowForwardBooksSection(stats: ShadowForwardBooksStats | null |
   );
   if (combinedAbove > 0 && combinedDecided === 0) {
     lines.push("  NOT RESOLVED — no shadow resolution path exists (see Item CE)");
+  }
+
+  // ITEM DD — the suppressed-gate books: what the gates' rejections WOULD have done.
+  lines.push("");
+  lines.push("SUPPRESSED-GATE FORWARD BOOKS (ITEM DD — outcomes from the Item DA shadow resolver):");
+  lines.push("  These gates suppress real setups; these books record what the suppressed setups");
+  lines.push("  WOULD have done (flat 12/10/96 geometry, resolved against gold_m1_bars M5).");
+  lines.push("  Pre-registered gate: at n >= 30 decided, EV_net > 0 refutes the gate (REPORT-ONLY).");
+  for (const book of SUPPRESSED_BOOKS) {
+    const s = stats.suppressedBooks[book.name];
+    if (!s) continue;
+    lines.push("");
+    lines.push(`${book.name} (${book.tag}):`);
+    if (s.totalRows === 0) {
+      lines.push("  no rows yet");
+      continue;
+    }
+    lines.push(
+      `  rows ${s.totalRows} since ${s.firstEntryAt ?? "?"} | pre-CD excluded ${s.excludedPreV2} | malformed ${s.malformedV2} | still open ${s.unresolved}`,
+    );
+    if (s.decided === 0) {
+      lines.push(`  GATE: NOT DECIDED — 0/${book.gateDecided} decided (no resolver outcomes yet)`);
+      continue;
+    }
+    lines.push(
+      `  decided ${s.decided} (TP ${s.wins} / SL ${s.stopOuts} / TIME ${s.flat}) | EV $${
+        (s.evPerTrade$ ?? 0).toFixed(2)
+      }/trade (resolver resolvedPnlPrice, row's own geometry)`,
+    );
+    if (s.decided >= book.gateDecided && s.evPerTrade$ !== null && s.evPerTrade$ > 0) {
+      lines.push(
+        `  GATE: ⚠️ THIS GATE IS REMOVING PROFITABLE SIGNALS. (n=${s.decided} decided, EV $${s.evPerTrade$.toFixed(2)}/trade > 0)`,
+      );
+    } else if (s.decided >= book.gateDecided) {
+      lines.push(`  GATE: VETO STANDS (EV <= 0 at n=${s.decided} decided) — REPORT ONLY`);
+    } else {
+      lines.push(`  GATE: NOT DECIDED — ${s.decided}/${book.gateDecided} decided (accumulating)`);
+    }
   }
   lines.push("  Read-only: this section REPORTS the pre-registered gates; no promotion, suppression, delay or demotion is wired to it.");
   return lines.join("\n");
