@@ -2012,6 +2012,9 @@ class SignalGenerationEngine {
     meanShift: number;
     stdShift: number;
     drift: number;
+    /** ITEM DE — set when the feature is excluded from the gating average. */
+    skipped?: boolean;
+    skipReason?: string;
   }[] = [];
   private retrainScheduled: boolean = false;
   /** ITEM 230(G5) — provenance of the CURRENT schedule, recorded purely for DISPLAY
@@ -6257,6 +6260,28 @@ class SignalGenerationEngine {
       const stdShift = Math.abs(recentStd - historicalStd) / (historicalStd + 0.01);
       
       const drift = (meanShift + stdShift) / 2;
+      // ITEM DE: skip features with near-zero historical variance. A feature that
+      // barely moves (historicalStd < 0.1) cannot carry meaningful drift information
+      // — there is nothing to drift FROM. Without this guard, dxyChange (std ≈ 0.001)
+      // and orderFlow_volumeImbalance (std ≈ 0.005-0.02) produce explosive drift
+      // scores through the +0.01 denominator, pinning driftAlertLevel at HIGH
+      // permanently and blocking ~40% of emission attempts.
+      //
+      // This is the same class of fix as ITEM BE (sentiment excluded): a feature
+      // whose nature makes it permanently non-informative for drift detection is
+      // excluded from the gating average. It is still TRACKED in
+      // featureDistributionHistory and logged per ITEM DB — just not counted
+      // toward totalDrift / driftCount.
+      //
+      // The 0.1 threshold is generous — features with std > 0.1 include rsi (std ~12),
+      // atr (std ~0.5), and volumeRatio (std ~0.15). Features below 0.1 are
+      // dxyChange (std ~0.001) and orderFlow_volumeImbalance (std ~0.005-0.02).
+      if (historicalStd < 0.1) {
+        // ITEM DB — still log the per-feature drift for visibility
+        this.liveFeatureDrift.push({ feature: key, recentMean, historicalMean, recentStd, historicalStd, meanShift, stdShift, drift, skipped: true, skipReason: 'historicalStd < 0.1' });
+        console.log(`[DRIFT] ${key}: SKIPPED (historicalStd=${historicalStd.toFixed(6)} < 0.1 — near-constant, excluded from gating average)`);
+        continue; // do NOT add to totalDrift / driftCount
+      }
       // ITEM DB — per-feature contribution, logged and stored so the export
       // can name WHICH feature drives the average. Diagnostic only: nothing
       // below (thresholds, alert level, emission) reads this line's values.
