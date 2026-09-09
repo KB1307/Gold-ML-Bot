@@ -70,6 +70,14 @@ export interface RecentSignalModelView {
   learningContext: SignalLearningContext | null;
 }
 
+/** ITEM DC — structural view of the engine's per-path M5 feed failure diagnostics. */
+interface M5FeedPathDiagnosticsInput {
+  counters: { fetch_error: number; zero_rows: number; all_stale: number; interval_guard: number };
+  lastReason: string | null;
+  lastReasonAt: number | null;
+  lastDetail: string | null;
+}
+
 export interface DiagnosticsExportInput {
   signalHistory: TradingSignal[];
   modelWeights: RawModelWeights;
@@ -144,6 +152,16 @@ export interface DiagnosticsExportInput {
     checks24h?: number | null;
     standAsides24h?: number | null;
     recent?: Array<{ ts: number; reason: string; m5Bars: number; newestM5AgeMin: number | null }> | null;
+    /**
+     * ITEM DC — per-reason M5 feed failure diagnostics
+     * (`signalEngine.getM5FeedDiagnostics()`, flowing through
+     * getDirectionalLayerStats()). Diagnostic only; counters are in-process
+     * (not persisted) and nothing in gating reads them.
+     */
+    m5FeedDiagnostics?: {
+      item3: M5FeedPathDiagnosticsInput;
+      f1: M5FeedPathDiagnosticsInput;
+    } | null;
   } | null;
   /**
    * ITEM 5(d): durable Telegram alert-delivery counters from
@@ -1368,6 +1386,10 @@ function formatDirectionalLayerSection(
     checks24h?: number | null;
     standAsides24h?: number | null;
     recent?: Array<{ ts: number; reason: string; m5Bars: number; newestM5AgeMin: number | null }> | null;
+    m5FeedDiagnostics?: {
+      item3: M5FeedPathDiagnosticsInput;
+      f1: M5FeedPathDiagnosticsInput;
+    } | null;
   } | null | undefined,
 ): string {
   const lines: string[] = [RULE, "SECTION 8 — DIRECTIONAL BAR LAYER (F6 criterion 4)", RULE];
@@ -1392,6 +1414,31 @@ function formatDirectionalLayerSection(
     lines.push("Most recent stand-aside REASONS (why, not just how often):" );
     for (const r of stats.recent.slice(-5)) {
       lines.push(`  ${new Date(r.ts).toISOString()} — ${r.reason} (m5Bars=${r.m5Bars}${r.newestM5AgeMin !== null ? `, newestBarAge=${r.newestM5AgeMin}min` : ""})`);
+    }
+  }
+  // ITEM DC — WHY the feed itself ends up empty: per-reason counters for BOTH
+  // gold_m1_bars fetch paths (item3 = refreshM5SupabaseBars; f1 = refreshBarSeries,
+  // the path whose series the ABSENT/STALE reasons above are computed from).
+  // Diagnostic only — counters are in-process (reset on app restart), never gating.
+  const feed = stats.m5FeedDiagnostics;
+  if (feed) {
+    lines.push("M5 FEED FAILURE REASONS (Item DC — in-process counters, reset on app restart):");
+    const fmtFeedPath = (p: M5FeedPathDiagnosticsInput): string =>
+      `fetch_error=${p.counters.fetch_error} zero_rows=${p.counters.zero_rows} all_stale=${p.counters.all_stale} interval_guard=${p.counters.interval_guard}`;
+    lines.push(`  ITEM 3 refresh (refreshM5SupabaseBars): ${fmtFeedPath(feed.item3)}`);
+    lines.push(`  F1 bar series (refreshBarSeries — the series the reasons above read): ${fmtFeedPath(feed.f1)}`);
+    const feedCandidates: Array<{ path: string; p: M5FeedPathDiagnosticsInput }> = [
+      { path: "item3", p: feed.item3 },
+      { path: "f1", p: feed.f1 },
+    ];
+    const lastFeedFailure = feedCandidates
+      .filter((c) => c.p.lastReason !== null)
+      .sort((a, b) => (b.p.lastReasonAt ?? 0) - (a.p.lastReasonAt ?? 0))[0];
+    if (lastFeedFailure) {
+      lines.push(`  last failure: [${lastFeedFailure.path}] ${lastFeedFailure.p.lastReason} at ${new Date(lastFeedFailure.p.lastReasonAt ?? 0).toISOString()}`);
+      if (lastFeedFailure.p.lastDetail) lines.push(`    ${lastFeedFailure.p.lastDetail}`);
+    } else {
+      lines.push("  last failure: none this process");
     }
   }
   lines.push(`Directional layer ready right now: ${stats.readyNow ? "YES" : "NO"}`);

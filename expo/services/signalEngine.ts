@@ -1130,6 +1130,31 @@ function isWithinDailyMarketClose(date: Date = new Date()): boolean {
  *   - isSundayBeforeOpen: Sunday 00:00-21:59 UTC
  *   - isDailyCloseBreak: 20:59-21:59 UTC every day (incl. Friday 20:59)
  */
+// ═══ ITEM DC — M5 FEED FAILURE INSTRUMENTATION (diagnostic only) ═══════════
+// WHY the M5 feed ends up empty — per-reason counters + last failure, for BOTH
+// independent gold_m1_bars fetch paths:
+//   (a) fetch_error    — the fetch threw or returned an error (retried 1s/3s/9s)
+//   (b) zero_rows      — the fetch succeeded but returned 0 rows
+//   (c) all_stale      — rows returned but all older than BAR_MAX_AGE_M5_MS
+//   (d) interval_guard — the refresh early-returned on its 5-min guard while
+//                        the series was still empty
+// DIAGNOSTIC ONLY: nothing in gating reads these — they surface in SECTION 8.
+export type M5FeedFailureReason = 'fetch_error' | 'zero_rows' | 'all_stale' | 'interval_guard';
+
+export interface M5FeedPathDiagnostics {
+  counters: Record<M5FeedFailureReason, number>;
+  lastReason: M5FeedFailureReason | null;
+  lastReasonAt: number | null;
+  lastDetail: string | null;
+}
+
+export interface M5FeedDiagnostics {
+  /** refreshM5SupabaseBars — the ITEM 3 bar-based feature feed. */
+  item3: M5FeedPathDiagnostics;
+  /** refreshBarSeries — the F1 series the SECTION 8 readiness check reads. */
+  f1: M5FeedPathDiagnostics;
+}
+
 export interface GoldMarketClock {
   isMarketOpen: boolean;
   isSaturday: boolean;
@@ -2018,6 +2043,16 @@ class SignalGenerationEngine {
   private static readonly M5_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
   private static readonly M5_LOOKBACK_BARS = 200; // ~16h of M5 bars, enough for all bar-based features
 
+  // ITEM DC — per-reason M5 feed failure diagnostics for BOTH gold_m1_bars fetch
+  // paths (see M5FeedDiagnostics above for the reason taxonomy). DIAGNOSTIC ONLY:
+  // nothing in gating reads this; the counters surface in SECTION 8 via
+  // getM5FeedDiagnostics(). In-process counters — not persisted (a restart
+  // restarts the instrumentation, stated honestly in the SECTION 8 label).
+  private m5FeedDiagnostics: M5FeedDiagnostics = {
+    item3: { counters: { fetch_error: 0, zero_rows: 0, all_stale: 0, interval_guard: 0 }, lastReason: null, lastReasonAt: null, lastDetail: null },
+    f1: { counters: { fetch_error: 0, zero_rows: 0, all_stale: 0, interval_guard: 0 }, lastReason: null, lastReasonAt: null, lastDetail: null },
+  };
+
   // ── ITEM F: sealed bar series for the RE-SOURCED DIRECTIONAL LAYER ────────
   //
   // F0 MEASUREMENT POSITION (also recorded in services/barIndicators.ts):
@@ -2828,14 +2863,90 @@ class SignalGenerationEngine {
     return this.m5SupabaseClient;
   }
 
+  /** ITEM DC — record one M5 feed failure against one path (diagnostic only). */
+  private recordM5FeedFailure(path: keyof M5FeedDiagnostics, reason: M5FeedFailureReason, detail: string): void {
+    const d = this.m5FeedDiagnostics[path];
+    d.counters[reason] += 1;
+    d.lastReason = reason;
+    d.lastReasonAt = Date.now();
+    d.lastDetail = detail;
+  }
+
+  /** ITEM DC — read-only SECTION 8 surface. Diagnostic only; nothing gates on it. */
+  public getM5FeedDiagnostics(): M5FeedDiagnostics {
+    return this.m5FeedDiagnostics;
+  }
+
+  /**
+   * ITEM DC — the shared gold_m1_bars paginated fetch, now with 3 attempts and
+   * 1s/3s/9s backoff between attempts. Used by BOTH fetch paths (the ITEM 3
+   * refresh and the F1 bar series). Retries TRANSPORT failures only (query
+   * error or throw); a successful fetch returning zero rows is a data
+   * condition and is returned as-is for the caller to classify. The callers
+   * already treat the refresh as best-effort — the backoff only extends one
+   * refresh call (worst case +13s after three consecutive failures).
+   */
+  private async fetchGoldM1Rows(
+    client: SupabaseClient,
+    fromIso: string,
+    toIso: string,
+    maxPages: number,
+    logTag: string,
+  ): Promise<{ rows: { timestamp: string; open: number; high: number; low: number; close: number }[]; attempts: number; lastError: string | null }> {
+    const PAGE_SIZE = 1000;
+    const BACKOFFS_MS = [1_000, 3_000, 9_000]; // ITEM DC: 1s / 3s / 9s
+    let lastError: string | null = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      lastError = null;
+      const rows: { timestamp: string; open: number; high: number; low: number; close: number }[] = [];
+      try {
+        for (let page = 0; page < maxPages; page++) {
+          const { data, error } = await client
+            .from('gold_m1_bars')
+            .select('timestamp, open, high, low, close')
+            .gte('timestamp', fromIso)
+            .lte('timestamp', toIso)
+            .order('timestamp', { ascending: true })
+            .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
+          if (error) {
+            lastError = `page ${page}: ${error.message}`;
+            break;
+          }
+          if (!data || data.length === 0) break;
+          rows.push(...(data as typeof rows));
+          if (data.length < PAGE_SIZE) break;
+        }
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : 'unknown';
+      }
+      if (lastError === null) {
+        if (attempt > 1) console.log(`✅ [${logTag}] fetch attempt ${attempt}/3 succeeded after backoff (${rows.length} M1 rows)`);
+        return { rows, attempts: attempt, lastError: null };
+      }
+      console.warn(`⚠️ [${logTag}] fetch attempt ${attempt}/3 failed: ${lastError}`);
+      if (attempt < 3) await new Promise<void>((resolve) => setTimeout(resolve, BACKOFFS_MS[attempt - 1]));
+    }
+    return { rows: [], attempts: 3, lastError };
+  }
+
   /** Fetch recent M1 bars from Supabase and aggregate into M5 bars. */
   private async refreshM5SupabaseBars(): Promise<void> {
     const now = Date.now();
-    if (now - this.lastM5BarRefreshAt < SignalGenerationEngine.M5_REFRESH_INTERVAL_MS) return;
+    if (now - this.lastM5BarRefreshAt < SignalGenerationEngine.M5_REFRESH_INTERVAL_MS) {
+      // ITEM DC (d): a guard skip is only a FEED FAILURE while this path's series
+      // is still empty — a skip over a live series is the normal steady state.
+      if (this.m5SupabaseBars.length === 0) {
+        this.recordM5FeedFailure('item3', 'interval_guard', `refresh skipped with ${Math.ceil((SignalGenerationEngine.M5_REFRESH_INTERVAL_MS - (now - this.lastM5BarRefreshAt)) / 1000)}s left on the 5-min guard, series empty`);
+      }
+      return;
+    }
     this.lastM5BarRefreshAt = now;
 
     const client = this.getM5SupabaseClient();
-    if (!client) return;
+    if (!client) {
+      this.recordM5FeedFailure('item3', 'fetch_error', 'no Supabase client (EXPO_PUBLIC_SUPABASE_URL / ANON_KEY missing)');
+      return;
+    }
 
     // Fetch enough M1 bars for M5_LOOKBACK_BARS M5 candles + buffer
     const lookbackMs = (SignalGenerationEngine.M5_LOOKBACK_BARS * 5 + 100) * 60 * 1000;
@@ -2843,28 +2954,19 @@ class SignalGenerationEngine {
     const toIso = new Date(now).toISOString();
 
     try {
-      const allM1: { timestamp: string; open: number; high: number; low: number; close: number }[] = [];
-      const PAGE_SIZE = 1000;
-      const MAX_PAGES = 12; // ~12k M1 bars = ~8h, enough for 200 M5 bars
-      for (let page = 0; page < MAX_PAGES; page++) {
-        const { data, error } = await client
-          .from('gold_m1_bars')
-          .select('timestamp, open, high, low, close')
-          .gte('timestamp', fromIso)
-          .lte('timestamp', toIso)
-          .order('timestamp', { ascending: true })
-          .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
-        if (error) {
-          console.warn(`⚠️ [M5-Supabase] Query failed (page ${page}): ${error.message}`);
-          return;
-        }
-        if (!data || data.length === 0) break;
-        allM1.push(...data as typeof allM1);
-        if (data.length < PAGE_SIZE) break;
+      // ITEM DC — the paginated fetch now goes through fetchGoldM1Rows (3
+      // attempts, 1s/3s/9s backoff on transport failures; zero rows is NOT
+      // retried). ~12k M1 bars = ~8h, enough for 200 M5 bars.
+      const { rows: allM1, lastError } = await this.fetchGoldM1Rows(client, fromIso, toIso, 12, 'M5-Supabase');
+      if (lastError !== null) {
+        this.recordM5FeedFailure('item3', 'fetch_error', `all 3 fetch attempts failed (1s/3s/9s backoff) — last: ${lastError}`);
+        return;
       }
 
       if (allM1.length === 0) {
         console.warn('⚠️ [M5-Supabase] No bars returned — standing aside (no GC=F fallback)');
+        // ITEM DC (b): transport was healthy — the table itself returned nothing.
+        this.recordM5FeedFailure('item3', 'zero_rows', `0 rows from gold_m1_bars in [${fromIso}, ${toIso}] — not retried (data condition, not transport)`);
         return;
       }
 
@@ -2887,9 +2989,18 @@ class SignalGenerationEngine {
         .sort((a, b) => a.timestamp - b.timestamp)
         .slice(-SignalGenerationEngine.M5_LOOKBACK_BARS);
 
+      // ITEM DC (c): rows came back but the newest M5 bar is older than
+      // BAR_MAX_AGE_M5_MS — the freshness gate downstream will stand aside.
+      // Recorded only; the series is still assigned and NO threshold changed.
+      const newestM5AgeMs = now - this.m5SupabaseBars[this.m5SupabaseBars.length - 1].timestamp;
+      if (newestM5AgeMs > SignalGenerationEngine.BAR_MAX_AGE_M5_MS) {
+        this.recordM5FeedFailure('item3', 'all_stale', `newest M5 bar ${(newestM5AgeMs / 60000).toFixed(1)}min old (> ${(SignalGenerationEngine.BAR_MAX_AGE_M5_MS / 60000).toFixed(0)}min BAR_MAX_AGE_M5_MS)`);
+      }
+
       console.log(`✅ [M5-Supabase] ${this.m5SupabaseBars.length} M5 bars from gold_m1_bars (no GC=F fallback)`);
     } catch (err) {
       console.warn(`⚠️ [M5-Supabase] Error: ${err instanceof Error ? err.message : 'unknown'}`);
+      this.recordM5FeedFailure('item3', 'fetch_error', `aggregation threw: ${err instanceof Error ? err.message : 'unknown'}`);
     }
   }
 
@@ -2916,11 +3027,20 @@ class SignalGenerationEngine {
    */
   private async refreshBarSeries(force: boolean = false): Promise<void> {
     const now = Date.now();
-    if (!force && now - this.barSeriesBuiltAt < SignalGenerationEngine.M5_REFRESH_INTERVAL_MS) return;
+    if (!force && now - this.barSeriesBuiltAt < SignalGenerationEngine.M5_REFRESH_INTERVAL_MS) {
+      // ITEM DC (d): same rule as the ITEM 3 path — only a failure while the
+      // readiness series is absent. THIS is the series recordStandAsideReason
+      // reports as "M5 series ABSENT (m5Bars=0)".
+      if (!this.barSeriesM5 || this.barSeriesM5.length === 0) {
+        this.recordM5FeedFailure('f1', 'interval_guard', `refresh skipped with ${Math.ceil((SignalGenerationEngine.M5_REFRESH_INTERVAL_MS - (now - this.barSeriesBuiltAt)) / 1000)}s left on the 5-min guard, barSeriesM5 absent`);
+      }
+      return;
+    }
 
     const client = this.getM5SupabaseClient();
     if (!client) {
       console.warn('⚠️ [BarSeries] No Supabase client — directional layer will stand aside');
+      this.recordM5FeedFailure('f1', 'fetch_error', 'no Supabase client (EXPO_PUBLIC_SUPABASE_URL / ANON_KEY missing) — series nulled, directional layer stands aside');
       this.barSeriesM1 = null;
       this.barSeriesM5 = null;
       this.barSeriesM15 = null;
@@ -2936,28 +3056,21 @@ class SignalGenerationEngine {
     const toIso = new Date(now).toISOString();
 
     try {
-      const rows: { timestamp: string; open: number; high: number; low: number; close: number }[] = [];
-      const PAGE_SIZE = 1000;
-      const MAX_PAGES = 5; // 72h of M1 bars = ~4320 rows; 5 x 1000 = 5000 keeps headroom
-      for (let page = 0; page < MAX_PAGES; page++) {
-        const { data, error } = await client
-          .from('gold_m1_bars')
-          .select('timestamp, open, high, low, close')
-          .gte('timestamp', fromIso)
-          .lte('timestamp', toIso)
-          .order('timestamp', { ascending: true })
-          .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
-        if (error) {
-          console.warn(`⚠️ [BarSeries] Query failed (page ${page}): ${error.message} — standing aside`);
-          return;
-        }
-        if (!data || data.length === 0) break;
-        rows.push(...(data as typeof rows));
-        if (data.length < PAGE_SIZE) break;
+      // ITEM DC — the paginated fetch now goes through fetchGoldM1Rows (3
+      // attempts, 1s/3s/9s backoff on transport failures; zero rows is NOT
+      // retried). 72h of M1 bars = ~4320 rows; 5 pages keeps headroom.
+      const { rows, lastError } = await this.fetchGoldM1Rows(client, fromIso, toIso, 5, 'BarSeries');
+      if (lastError !== null) {
+        console.warn(`⚠️ [BarSeries] all 3 fetch attempts failed (1s/3s/9s) — last: ${lastError} — standing aside`);
+        this.recordM5FeedFailure('f1', 'fetch_error', `all 3 fetch attempts failed (1s/3s/9s backoff) — last: ${lastError}`);
+        return;
       }
 
       if (rows.length === 0) {
         console.warn('⚠️ [BarSeries] gold_m1_bars returned 0 rows — directional layer stands aside (NO GC=F fallback)');
+        // ITEM DC (b): transport healthy, table empty — the series is nulled and
+        // the next readiness check reports "M5 series ABSENT (m5Bars=0)".
+        this.recordM5FeedFailure('f1', 'zero_rows', `0 rows from gold_m1_bars in [${fromIso}, ${toIso}] — series nulled, not retried (data condition, not transport)`);
         this.barSeriesM1 = null;
         this.barSeriesM5 = null;
         this.barSeriesM15 = null;
@@ -2976,6 +3089,11 @@ class SignalGenerationEngine {
 
       const newest = m1[m1.length - 1].timestamp;
       const ageMin = (now - newest) / 60000;
+      // ITEM DC (c): rows returned but ALL older than BAR_MAX_AGE_M5_MS — the
+      // freshness gate in getDirectionalM5 will stand aside. Recorded only.
+      if (now - newest > SignalGenerationEngine.BAR_MAX_AGE_M5_MS) {
+        this.recordM5FeedFailure('f1', 'all_stale', `newest bar ${ageMin.toFixed(1)}min old (> ${(SignalGenerationEngine.BAR_MAX_AGE_M5_MS / 60000).toFixed(0)}min BAR_MAX_AGE_M5_MS)`);
+      }
       const counts = `M1 ${this.barSeriesM1?.length ?? 0} / M5 ${this.barSeriesM5?.length ?? 0} / M15 ${this.barSeriesM15?.length ?? 0}`;
       console.log(
         `✅ [BarSeries] ${rows.length} M1 rows → ${counts}` +
@@ -2983,6 +3101,7 @@ class SignalGenerationEngine {
       );
     } catch (err) {
       console.warn(`⚠️ [BarSeries] Error: ${err instanceof Error ? err.message : 'unknown'} — standing aside`);
+      this.recordM5FeedFailure('f1', 'fetch_error', `aggregation threw: ${err instanceof Error ? err.message : 'unknown'}`);
     }
   }
 
@@ -3180,12 +3299,19 @@ class SignalGenerationEngine {
     return Array.from(CONSUMED_MODEL_WEIGHTS);
   }
 
-  public getDirectionalLayerStats(): { checks: number; standAsides: number; readyNow: boolean } {
+  public getDirectionalLayerStats(): {
+    checks: number;
+    standAsides: number;
+    readyNow: boolean;
+    /** ITEM DC — per-reason M5 feed failure diagnostics (diagnostic only). */
+    m5FeedDiagnostics: M5FeedDiagnostics;
+  } {
     const m5 = this.getDirectionalM5();
     return {
       checks: this.directionalStandAsideChecks,
       standAsides: this.directionalStandAsideCount,
       readyNow: m5 !== null && barRSI(m5, 14) !== null,
+      m5FeedDiagnostics: this.getM5FeedDiagnostics(),
     };
   }
 
