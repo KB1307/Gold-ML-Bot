@@ -800,6 +800,22 @@ function formatModelHealthSection(modelHealth: ModelHealthMetrics): string {
     lines.push(`Retrain schedule TRIGGER: ${modelHealth.retrainScheduledReason ?? "unknown (set before Item 230 provenance)"}`);
   }
   lines.push("");
+  // ITEM DB — the SECOND drift instrument, rendered NEXT TO the corpus table so
+  // the two are never conflated: these values come from detectConceptDrift (the
+  // live window average that SETS driftAlertLevel), while the table below comes
+  // from analyzeFeatureValueDrift (trade corpus, diagnostics only, does NOT gate).
+  lines.push("LIVE WINDOW DRIFT (detectConceptDrift — this is what sets driftAlertLevel):");
+  if (!modelHealth.liveFeatureDrift || modelHealth.liveFeatureDrift.length === 0) {
+    lines.push("  (no live drift cycle recorded since this build — renders after the next drift check)");
+  } else {
+    const v = (x: number): string => String(Number(x.toFixed(4)));
+    for (const d of modelHealth.liveFeatureDrift) {
+      lines.push(`  ${d.feature}: drift ${d.drift.toFixed(3)}  (recentMean ${v(d.recentMean)} vs historicalMean ${v(d.historicalMean)}, historicalStd ${v(d.historicalStd)})`);
+    }
+    lines.push(`  average (sentiment_score excluded per Item BE): ${modelHealth.conceptDriftScore.toFixed(4)}  ->  alert ${modelHealth.driftAlertLevel}`);
+  }
+  lines.push("");
+  lines.push("CORPUS DRIFT (analyzeFeatureValueDrift — diagnostics only, does NOT gate):");
   // ITEM 64(d): label corrected from "Feature importance drift" to "Feature value drift"
   // — this metric measures average feature VALUE among winners (central tendency),
   // not marginal contribution / predictive importance.

@@ -1971,6 +1971,23 @@ class SignalGenerationEngine {
   private featureImportanceHistory: Map<string, number[]> = new Map();
   private conceptDriftScore: number = 0;
   private driftAlertLevel: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' = 'NONE';
+  /**
+   * ITEM DB — per-feature contributions from the LAST COMPLETED live drift
+   * cycle (detectConceptDrift). Diagnostic only: the diagnostics export reads
+   * it for SECTION 3's LIVE WINDOW DRIFT block; NO gating path reads it. Each
+   * cycle REPLACES the snapshot (never merged), so the export can never mix
+   * features from two different cycles.
+   */
+  private liveFeatureDrift: {
+    feature: string;
+    recentMean: number;
+    historicalMean: number;
+    recentStd: number;
+    historicalStd: number;
+    meanShift: number;
+    stdShift: number;
+    drift: number;
+  }[] = [];
   private retrainScheduled: boolean = false;
   /** ITEM 230(G5) — provenance of the CURRENT schedule, recorded purely for DISPLAY
    *  (screen banner + export Section 3). No trigger logic reads these. */
@@ -6095,6 +6112,8 @@ class SignalGenerationEngine {
     // would BOTH stop the required tracking push AND leave the already-persisted
     // sentiment history feeding this average forever. So sentiment STAYS in
     // featureKeys (tracking) and is skipped HERE, in the averaging loop.
+    // ITEM DB — each completed drift cycle REPLACES the per-feature snapshot.
+    this.liveFeatureDrift = [];
     for (const [key, values] of this.featureDistributionHistory.entries()) {
       if (values.length < 30) continue;
       if (key === 'sentiment_score') continue;
@@ -6112,6 +6131,11 @@ class SignalGenerationEngine {
       const stdShift = Math.abs(recentStd - historicalStd) / (historicalStd + 0.01);
       
       const drift = (meanShift + stdShift) / 2;
+      // ITEM DB — per-feature contribution, logged and stored so the export
+      // can name WHICH feature drives the average. Diagnostic only: nothing
+      // below (thresholds, alert level, emission) reads this line's values.
+      this.liveFeatureDrift.push({ feature: key, recentMean, historicalMean, recentStd, historicalStd, meanShift, stdShift, drift });
+      console.log(`[DRIFT] ${key}: recentMean=${recentMean.toFixed(6)} historicalMean=${historicalMean.toFixed(6)} recentStd=${recentStd.toFixed(6)} historicalStd=${historicalStd.toFixed(6)} meanShift=${meanShift.toFixed(6)} stdShift=${stdShift.toFixed(6)} drift=${drift.toFixed(6)}`);
       totalDrift += drift;
       driftCount++;
       
@@ -11362,6 +11386,7 @@ class SignalGenerationEngine {
       confidenceDegradation,
       conceptDriftScore: this.conceptDriftScore,
       featureImportanceDrift: featureDriftMetrics,
+      liveFeatureDrift: this.liveFeatureDrift,
       driftAlertLevel: this.driftAlertLevel,
       daysSinceRetrain: parseFloat(daysSinceRetrain.toFixed(1)),
       retrainingRecommended,
