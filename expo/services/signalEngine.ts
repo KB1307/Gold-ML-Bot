@@ -2083,6 +2083,10 @@ class SignalGenerationEngine {
   private barSeriesM5: BarSeries | null = null;
   private barSeriesM15: BarSeries | null = null;
   private barSeriesBuiltAt: number = 0;
+  /** ITEM EA — timestamp of the last closed M5 bar runShadowStrategyScan evaluated (double-scan guard). */
+  private lastShadowScanBarTs: number = 0;
+  /** ITEM EA — scans that passed the guard (acceptance: invocation count + one log line per scan). */
+  private shadowScanCount: number = 0;
   private static readonly BAR_M1_LOOKBACK = 240;
   private static readonly BAR_M5_LOOKBACK = 300;
   private static readonly BAR_M15_LOOKBACK = 200;
@@ -5696,6 +5700,14 @@ class SignalGenerationEngine {
     // less often and mean far more when it does. That is the intended change,
     // and it is the main driver of the emission-volume delta in F5.
     await this.refreshBarSeries();
+    // ITEM EA — shadow strategy scan on every closed M5 bar, independent of
+    // emission. DISCREPANCY vs the prompt (live code wins): the prompt hooks
+    // after refreshM5SupabaseBars, but the detectors consume barSeriesM5 —
+    // built by refreshBarSeries, 34 lines later in this same flow — so the
+    // hook sits after THAT refresh. The double-scan guard inside dedupes.
+    void this.runShadowStrategyScan().catch((err: unknown) => {
+      console.warn(`[ShadowScan] FAILED (fire-and-forget, emission unaffected): ${err instanceof Error ? err.message : String(err)}`);
+    });
     const dirM5 = this.getDirectionalM5();
     const dirM15 = this.getDirectionalM15();
 
@@ -10393,18 +10405,11 @@ class SignalGenerationEngine {
       source: 'LIVE',
     });
 
-    // ITEMS BA/BB — SCORED_DT_SHORT / SCORED_REOPEN_LONG shadow forward books:
-    // pure detection on the exact M5 series the signal was emitted from, then
-    // at most one WRITE-ONLY row per qualifying pattern. Fire-and-forget —
-    // detection or persistence failure must never delay, crash, or alter the
-    // emission above.
-    this.detectShadowStrategies({
-      signalId: emittedSignalId,
-      direction: analysis.signalType === 'SELL' ? 'SELL' : 'BUY',
-      entryPrice: entryPriceWithSlippage,
-      rsi: Number.isFinite(features.rsi) ? features.rsi : null,
-    });
-
+    // ITEM EA — the shadow strategy detectors were REMOVED from the emission
+    // path: sidecar-on-emission gave them 7 evaluation opportunities in three
+    // weeks. They now run on every closed M5 bar via runShadowStrategyScan()
+    // (hooked after refreshBarSeries in the analysis flow), whether or not the
+    // engine emits and whether or not any emission gate passes.
     return {
       id: emittedSignalId,
       timestamp: new Date(),
@@ -11281,48 +11286,71 @@ class SignalGenerationEngine {
    * of the bar before the gap. A null/uncomputable score is NEVER persisted —
    * no fabricated book entries.
    */
-  private detectShadowStrategies(params: {
-    signalId: string;
-    direction: 'BUY' | 'SELL';
-    entryPrice: number;
-    rsi: number | null;
-  }): void {
-    const { signalId, direction, entryPrice, rsi } = params;
+  /**
+   * ITEM EA — independent shadow strategy scan on every CLOSED M5 bar. Moved
+   * out of the emission path (sidecar-on-emission gave the detectors 7
+   * evaluation opportunities in three weeks; the same 72h on a bar-close loop
+   * produced 22 signals). Reuses the existing barSeriesM5 — NO second fetch.
+   * Context inputs differ from the old emission-path call, deliberately:
+   * entryPrice = last closed bar's close (the backtest fills at the NEXT
+   * bar's open; the resolver reads bars from evaluated_at onward), rsi =
+   * barRSI(14) on the SAME series (a null rsi would null DT's feat_rsi_aligned
+   * → null score → its book would silently never accrue), signalId = null
+   * (no emission exists; rows resolve via the Item DA resolver write-back,
+   * like the suppressed books). Fire-and-forget at the call site (.catch):
+   * a scan failure can never affect emission.
+   */
+  private async runShadowStrategyScan(): Promise<void> {
     const bars = this.barSeriesM5;
     if (!bars || bars.length < 2) return;
 
+    // ITEM EA — double-scan guard: one scan per closed M5 bar, however often
+    // the refresh flow calls this.
+    const lastClosedTs = bars[bars.length - 1].timestamp;
+    if (this.lastShadowScanBarTs === lastClosedTs) {
+      console.log(`[ShadowScan] double-scan guard: bar ${new Date(lastClosedTs).toISOString()} already scanned — skipping`);
+      return;
+    }
+    this.lastShadowScanBarTs = lastClosedTs;
+    this.shadowScanCount += 1;
+
+    const entryPrice = bars[bars.length - 1].close;
+    const rsi = barRSI(bars, 14);
+    console.log(`[ShadowScan] #${this.shadowScanCount} bar=${new Date(lastClosedTs).toISOString()} bars=${bars.length} entry=${entryPrice.toFixed(2)} rsi=${rsi !== null ? rsi.toFixed(1) : 'null'}`);
+
     const persist = (
       candidateName: 'SCORED_DT_SHORT' | 'SCORED_REOPEN_LONG' | 'ZONE_RETEST_LONG',
+      direction: 'BUY' | 'SELL',
       score: number,
       scoreVerdict: 'ABOVE' | 'BELOW',
       metadata: Record<string, unknown>,
     ): void => {
       const client = this.getShadowStrategiesClient();
       if (!client) {
-        console.warn('[ShadowStrategies] Supabase not configured — shadow strategy row NOT persisted (emission unaffected)');
+        console.warn('[ShadowStrategies] Supabase not configured — shadow strategy row NOT persisted (scan unaffected)');
         return;
       }
       void persistShadowStrategy({
         supabaseClient: client,
-        signalId,
+        signalId: null,
         candidateName,
         direction,
         entryPrice,
-        emittedAt: new Date().toISOString(),
+        emittedAt: new Date(lastClosedTs).toISOString(),
         score,
         scoreVerdict,
         metadata,
       }).catch((err: unknown) => {
-        console.warn(`[ShadowStrategies] UNCAUGHT (defense-in-depth, emission unaffected): ${err instanceof Error ? err.message : String(err)}`);
+        console.warn(`[ShadowStrategies] UNCAUGHT (defense-in-depth, scan unaffected): ${err instanceof Error ? err.message : String(err)}`);
       });
     };
 
     // SCORED_DT_SHORT — SELL-only double top at a session level, scored by the
     // 7 side-relative features. Detected-with-null-score (pattern real, scoring
     // unavailable) is deliberately NOT persisted.
-    const dt = detectDoubleTop({ m5Bars: bars, entryPrice, direction, rsi });
+    const dt = detectDoubleTop({ m5Bars: bars, entryPrice, direction: 'SELL', rsi });
     if (dt.detected && dt.score !== null && Number.isFinite(dt.score) && dt.scoreVerdict !== null) {
-      persist('SCORED_DT_SHORT', dt.score, dt.scoreVerdict, {
+      persist('SCORED_DT_SHORT', 'SELL', dt.score, dt.scoreVerdict, {
         pattern: {
           swingHighPrice: dt.swingHighPrice,
           swingHighBar: dt.swingHighBar,
@@ -11340,9 +11368,9 @@ class SignalGenerationEngine {
     // at 300 bars, so the tested 960-bar trend EMA is approximated by the
     // longest available span until the cap is raised. trendEmaSpanUsed is
     // recorded so the forward book can split the two regimes (CB reads it).
-    const zr = detectZoneRetestLong({ m5Bars: bars, entryPrice, direction });
+    const zr = detectZoneRetestLong({ m5Bars: bars, entryPrice, direction: 'BUY' });
     if (zr.detected && zr.scoreVerdict !== null) {
-      persist('ZONE_RETEST_LONG', zr.scoreVerdict === 'ABOVE' ? 1 : 0, zr.scoreVerdict, {
+      persist('ZONE_RETEST_LONG', 'BUY', zr.scoreVerdict === 'ABOVE' ? 1 : 0, zr.scoreVerdict, {
         pattern: {
           swingLowPrice: zr.swingLowPrice,
           swingLowBar: zr.swingLowBar,
@@ -11360,7 +11388,10 @@ class SignalGenerationEngine {
     }
 
     // SCORED_REOPEN_LONG — LONG-only, first bar after the daily maintenance
-    // break (60–200 minute gap between the last two M5 bars).
+    // break (60–200 minute gap between the last two M5 bars). ITEM EA: the
+    // old emission path persisted the LIVE signal's direction for REOPEN rows
+    // (a SELL emission could label a long-only detection SELL); the
+    // independent scan writes the strategy's own side 'BUY'.
     const n = bars.length;
     const gapMs = bars[n - 1].timestamp - bars[n - 2].timestamp;
     const isReopen = gapMs > 60 * 60 * 1000 && gapMs < 200 * 60 * 1000;
@@ -11368,7 +11399,7 @@ class SignalGenerationEngine {
     const priorClose = bars[n - 2].close;
     const reopen = detectScoredReopen({ m5Bars: bars, isReopen, entryPrice, priorClose });
     if (reopen.detected && reopen.score !== null && Number.isFinite(reopen.score) && reopen.scoreVerdict !== null) {
-      persist('SCORED_REOPEN_LONG', reopen.score, reopen.scoreVerdict, {
+      persist('SCORED_REOPEN_LONG', 'BUY', reopen.score, reopen.scoreVerdict, {
         pattern: {
           ema20AboveEma50: reopen.ema20AboveEma50,
           gapDown: reopen.gapDown,

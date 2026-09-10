@@ -569,7 +569,8 @@ export function geometryForStrategy(name: ShadowCandidateName): { readonly sl: n
  */
 export async function persistShadowStrategy(params: {
   supabaseClient: SupabaseClient;
-  signalId: string;
+  /** ITEM EA — null for independent bar-close scan rows (no emitted signal exists; the row resolves via the Item DA resolver write-back, like the suppressed books). */
+  signalId: string | null;
   candidateName: ShadowCandidateName;
   direction: "BUY" | "SELL";
   entryPrice: number;
@@ -605,7 +606,7 @@ export async function persistShadowStrategy(params: {
       tp2: null,
       tp3: null,
       inputs: {
-        signalId,
+        signalId, // ITEM EA: null on scan rows — CF's signalId join sees no link (correct; EE's reader uses resolver write-back instead)
         score,
         scoreVerdict,
         geometry,
