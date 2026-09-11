@@ -1819,13 +1819,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             shouldRecord = true;
           } else if (currentPrice <= signal.sl - SL_CONFIRMATION_MIN_PENETRATION_PIPS && confirmFallbackBreach('SL', (signal.sl - currentPrice))) {
             console.log(`   🚨 CATCH-UP (Fallback): Original SL hit @ ${currentPrice.toFixed(1)} (SL: ${signal.sl.toFixed(1)}) - penetration ${(signal.sl - currentPrice).toFixed(2)} confirmed across separate catch-up passes`);
-            if (targetsHit >= 2) {
+            // SETTINGS TOGGLE (BUG FIX) — the frozen per-signal policy governs the
+            // protected classifications here (resolver-identical): a signal stamped
+            // breakevenPolicy:false takes a FULL LOSS at the original SL even after
+            // TP1/TP2 have banked.
+            if (getSignalBreakevenPolicy(signal) && targetsHit >= 2) {
               newStatus = "PARTIAL_WIN_SL_HIT";
               targetsHit = Math.max(targetsHit, 2);
               outcomeResult = 'WIN';
               exitPrice = getProtectedExitPrice(signal, targetsHit);
               console.log(`   ✅ Managed runner was already breakeven-protected after TP2 - recording partial win @ ${exitPrice.toFixed(1)}`);
-            } else if (signal.breakevenReached || targetsHit >= 1) {
+            } else if (getSignalBreakevenPolicy(signal) && (signal.breakevenReached || targetsHit >= 1)) {
               newStatus = "SL_AFTER_BE";
               targetsHit = Math.max(targetsHit, 1);
               outcomeResult = 'WIN';
@@ -1870,13 +1874,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
             shouldRecord = true;
           } else if (currentPrice >= signal.sl + SL_CONFIRMATION_MIN_PENETRATION_PIPS && confirmFallbackBreach('SL', (currentPrice - signal.sl))) {
             console.log(`   🚨 CATCH-UP (Fallback): Original SL hit @ ${currentPrice.toFixed(1)} (SL: ${signal.sl.toFixed(1)}) - penetration ${(currentPrice - signal.sl).toFixed(2)} confirmed across separate catch-up passes`);
-            if (targetsHit >= 2) {
+            // SETTINGS TOGGLE (BUG FIX) — the frozen per-signal policy governs the
+            // protected classifications here (resolver-identical): a signal stamped
+            // breakevenPolicy:false takes a FULL LOSS at the original SL even after
+            // TP1/TP2 have banked.
+            if (getSignalBreakevenPolicy(signal) && targetsHit >= 2) {
               newStatus = "PARTIAL_WIN_SL_HIT";
               targetsHit = Math.max(targetsHit, 2);
               outcomeResult = 'WIN';
               exitPrice = getProtectedExitPrice(signal, targetsHit);
               console.log(`   ✅ Managed runner was already breakeven-protected after TP2 - recording partial win @ ${exitPrice.toFixed(1)}`);
-            } else if (signal.breakevenReached || targetsHit >= 1) {
+            } else if (getSignalBreakevenPolicy(signal) && (signal.breakevenReached || targetsHit >= 1)) {
               newStatus = "SL_AFTER_BE";
               targetsHit = Math.max(targetsHit, 1);
               outcomeResult = 'WIN';
@@ -3160,7 +3168,15 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
 
         // Effective SL level: after TP1 we switch to the 15-pip profit lock;
         // after TP2 we switch to entry (existing behavior).
-        const hasTP1 = (signal.targetsHit >= 1) || signal.breakevenReached === true;
+        // SETTINGS TOGGLE (BUG FIX) — the frozen per-signal policy governs ALL
+        // protection on this path, resolver-identical: a signal stamped
+        // breakevenPolicy:false has NO profit lock and NO entry stop — the
+        // original SL applies at every stage. hasTP1 gates the +0.35R lock
+        // and the effective SL, so it must be policy-aware (previously a
+        // toggle-OFF trade still armed the lock after TP1 and the original
+        // SL was never checked — the reported bug).
+        const breakevenActive = getSignalBreakevenPolicy(signal);
+        const hasTP1 = breakevenActive && ((signal.targetsHit >= 1) || signal.breakevenReached === true);
         const hasTP2 = signal.targetsHit >= 2;
         const postTP1Lock = getPostTP1LockPrice(signal);
         const effectiveSLPrice = hasTP2
@@ -3363,13 +3379,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           } else if (price >= signal.tp1 && targetsHit < 1) {
             newStatus = "TP1_HIT";
             targetsHit = 1;
-            breakevenReached = true;
-            breakevenTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-            trailingSLPrice = signal.entryPrice;
-            trailingSLLevel = 'ENTRY';
+            if (breakevenActive) {
+              breakevenReached = true;
+              breakevenTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+              trailingSLPrice = signal.entryPrice;
+              trailingSLLevel = 'ENTRY';
+            }
             updated = true;
             console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)})`);
-            console.log(`⚖️ BREAKEVEN INDICATOR activated at ${breakevenTime} - entry ${signal.entryPrice.toFixed(1)} (indicator only, trade stays open)`);
+            console.log(breakevenActive
+              ? `⚖️ BREAKEVEN INDICATOR activated at ${breakevenTime} - entry ${signal.entryPrice.toFixed(1)} (indicator only, trade stays open)`
+              : `🔕 Breakeven disabled for this signal (breakevenPolicy:false) — original SL ${signal.sl.toFixed(1)} stays; TP1 banked as partial only`);
             console.log(`🧠 Trade continues to TP3 (${signal.tp3.toFixed(1)}) or original SL (${signal.sl.toFixed(1)}) for ML learning`);
           }
 
@@ -3416,13 +3436,17 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           } else if (price <= signal.tp1 && targetsHit < 1) {
             newStatus = "TP1_HIT";
             targetsHit = 1;
-            breakevenReached = true;
-            breakevenTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-            trailingSLPrice = signal.entryPrice;
-            trailingSLLevel = 'ENTRY';
+            if (breakevenActive) {
+              breakevenReached = true;
+              breakevenTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+              trailingSLPrice = signal.entryPrice;
+              trailingSLLevel = 'ENTRY';
+            }
             updated = true;
             console.log(`🎯 TP1 HIT: Signal ${signal.id.slice(-6)} @ ${price.toFixed(1)} (TP1: ${signal.tp1.toFixed(1)})`);
-            console.log(`⚖️ BREAKEVEN INDICATOR activated at ${breakevenTime} - entry ${signal.entryPrice.toFixed(1)} (indicator only, trade stays open)`);
+            console.log(breakevenActive
+              ? `⚖️ BREAKEVEN INDICATOR activated at ${breakevenTime} - entry ${signal.entryPrice.toFixed(1)} (indicator only, trade stays open)`
+              : `🔕 Breakeven disabled for this signal (breakevenPolicy:false) — original SL ${signal.sl.toFixed(1)} stays; TP1 banked as partial only`);
             console.log(`🧠 Trade continues to TP3 (${signal.tp3.toFixed(1)}) or original SL (${signal.sl.toFixed(1)}) for ML learning`);
           }
 

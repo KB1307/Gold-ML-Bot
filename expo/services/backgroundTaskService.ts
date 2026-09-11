@@ -143,6 +143,13 @@ try {
 
       if (signal) {
         console.log(`✅ Background: New signal generated - ${signal.type} @ ${signal.entryPrice.toFixed(1)}`);
+
+        // SETTINGS TOGGLE (BUG FIX) — stamp the frozen Breakeven policy onto the
+        // background-emitted signal (same contract as the foreground emission
+        // site in TradingContext). Without the stamp the resolver defaults the
+        // signal to PROTECTED (getSignalBreakevenPolicy → true for unstamped
+        // signals), so background emissions ignored the toggle.
+        signal.breakevenPolicy = settings.breakevenEnabled !== false;
         
         // Telegram alert — fire-and-forget, dispatched before any await.
         // Gated by the dedicated notifier toggle so it can be muted during testing.
