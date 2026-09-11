@@ -387,14 +387,14 @@ const ZRL_NOT_DETECTED: ZoneRetestSignal = {
  * emission bar). Long-only — returns `detected: false` for SELL emissions.
  * Pure function: no state, no side effects, no suppression of anything.
  *
- * TREND-EMA NOTE (Item CA live-code discrepancy, reported): the tested config
- * uses a 960-bar (4h) EMA, but the live barSeriesM5 is CAPPED at 300 bars
- * (BAR_M5_LOOKBACK), so emaSpan(closes, 960) returns null on every live
- * emission and a strict implementation would write BELOW-only rows forever.
- * The detector therefore uses span min(960, n-1) — the tested 960 the moment
- * the series is long enough, otherwise the longest horizon the live series
- * supports — and the engine records `trendEmaSpanUsed` in the persisted
- * metadata so the forward book can split the two regimes.
+ * TREND-EMA NOTE (Item CA live-code discrepancy → RESOLVED by Item FG, 2026-09-11):
+ * the tested config uses a 960-bar (4h) EMA, and the live barSeriesM5 was CAPPED
+ * at 300 bars (BAR_M5_LOOKBACK), so emaSpan(closes, 960) returned null on every
+ * live emission and a strict implementation would have written BELOW-only rows
+ * forever. BAR_M5_LOOKBACK is now 1000, so a full live series runs the TRUE 960
+ * span. The detector's span min(960, n-1) remains only as the short-data /
+ * cold-start fallback, and the engine records `trendEmaSpanUsed` in the
+ * persisted metadata so the forward book can still split the two regimes.
  */
 export function detectZoneRetestLong(params: {
   m5Bars: ReadonlyArray<ShadowM5Bar>;

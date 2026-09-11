@@ -54,7 +54,7 @@ import {
 } from "../services/shadowStrategies";
 import { aggregateBars, barRSI, sealBarSeries, type Bar } from "../services/barIndicators";
 
-const BAR_M5_LOOKBACK = 300; // signalEngine.ts:2091 (private) — verified live; not re-exported (scope)
+const BAR_M5_LOOKBACK = 1000; // ITEM FG mirror of signalEngine BAR_M5_LOOKBACK (raised 300 → 1000): the window the live scan now consumes; 1100-bar full-window start still exceeds it
 const COST_PER_TRADE = 0.2;
 const TRAIN_CUTOFF_MS = Date.UTC(2026, 2, 1); // 2026-03-01 — every reference figure's train/holdout split
 const PAGE_SIZE = 1000;
@@ -262,6 +262,14 @@ async function main(): Promise<void> {
   let minGapDT = Number.POSITIVE_INFINITY;
   let minGapZone = Number.POSITIVE_INFINITY;
 
+  // ITEM FG PROBE (measurement-only, affects no record/persist): per scanned bar,
+  // run ZONE and DT under the APPROXIMATED regime — the exact FD-era call on the
+  // last 300 bars (span 299) — and compare against the tested regime (full
+  // 1000-bar window, span 960). Proves whether the widened window (and the true
+  // trend span) actually changed the detectors on THIS tape.
+  let fgZoneTested = 0; let fgZoneApprox = 0; let fgZoneAgree = 0; let fgZoneVerdictFlip = 0;
+  let fgDtTested = 0; let fgDtApprox = 0; let fgDtAgree = 0;
+
   for (let i = startIdx; i < m5.length; i += 1) {
     const window = m5.slice(Math.max(0, i - BAR_M5_LOOKBACK + 1), i + 1);
     const n = window.length;
@@ -305,12 +313,23 @@ async function main(): Promise<void> {
       if (dt.swingHighBar !== null) minGapDT = Math.min(minGapDT, currentBarIndex - (dt.swingHighBar + 2));
       record("SCORED_DT_SHORT", "SELL", dt.scoreVerdict, sellGate());
     }
+    // ITEM FG PROBE — approximated-regime mirror (300-bar window + its own RSI = FD basis).
+    const dtApprox = detectDoubleTop({ m5Bars: window.slice(-300), entryPrice, direction: "SELL", rsi: barRSI(sealBarSeries(window.slice(-300)), 14) });
+    if (dt.detected && dt.score !== null && Number.isFinite(dt.score) && dt.scoreVerdict !== null) fgDtTested += 1;
+    if (dtApprox.detected && dtApprox.score !== null && Number.isFinite(dtApprox.score) && dtApprox.scoreVerdict !== null) fgDtApprox += 1;
+    if ((dt.scoreVerdict !== null) === (dtApprox.scoreVerdict !== null)) fgDtAgree += 1;
     // 2) ZONE_RETEST_LONG — persist condition 11421 + ITEM FD dedup.
     const zr = detectZoneRetestLong({ m5Bars: window, entryPrice, direction: "BUY" });
     if (zr.detected && zr.scoreVerdict !== null && dedupAllows("ZONE_RETEST_LONG", window[n - 1].timestamp)) {
       if (zr.confirmationBar !== null) minGapZone = Math.min(minGapZone, currentBarIndex - zr.confirmationBar);
       record("ZONE_RETEST_LONG", "BUY", zr.scoreVerdict, buyGate());
     }
+    // ITEM FG PROBE — approximated-regime mirror (300-bar window = FD basis).
+    const zrApprox = detectZoneRetestLong({ m5Bars: window.slice(-300), entryPrice, direction: "BUY" });
+    if (zr.detected) fgZoneTested += 1;
+    if (zrApprox.detected) fgZoneApprox += 1;
+    if (zr.detected === zrApprox.detected) fgZoneAgree += 1;
+    if (zr.detected && zrApprox.detected && zr.scoreVerdict !== zrApprox.scoreVerdict) fgZoneVerdictFlip += 1;
     // 3) SCORED_REOPEN_LONG — 60–200 min gap, early-`continue` mirrors the live early-return (11444–11447).
     const gapMs = window[n - 1].timestamp - window[n - 2].timestamp;
     const isReopen = gapMs > 60 * 60 * 1000 && gapMs < 200 * 60 * 1000;
@@ -392,6 +411,7 @@ async function main(): Promise<void> {
   console.log(`  ALLOWED EV $${r1(evOf(allowedDs))}   BLOCKED EV $${r1(evOf(blockedDs))}   reference: ${r1(REF_SWING_EV.allowed)} / ${r1(REF_SWING_EV.blocked)}`);
   console.log(`cap: taken ${takenDs.length}  skipped ${skippedDs.length} (${pct(skippedDs.length, detections.length)})   reference: ${REF_CAP_SKIPPED_PCT}% skipped`);
   console.log(`dedup (ITEM FD, mode ${dedupMode}): suppressed ${dedupSuppressed.SCORED_DT_SHORT} DT / ${dedupSuppressed.ZONE_RETEST_LONG} ZONE / ${dedupSuppressed.SCORED_REOPEN_LONG} REOPEN`);
+  console.log(`ITEM FG PROBE (tested 1000-bar vs approximated 300-bar window, per bar): ZONE detected tested ${fgZoneTested} / approx ${fgZoneApprox} (agree ${fgZoneAgree}, verdict flips ${fgZoneVerdictFlip}) — DT scored tested ${fgDtTested} / approx ${fgDtApprox} (agree ${fgDtAgree})`);
 
   const portfolioTrades = trades.filter((t) => {
     const d = detections.find((x) => x.signalIdx === t.signalIdx && x.name === t.name);

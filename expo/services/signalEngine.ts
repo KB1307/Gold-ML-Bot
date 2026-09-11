@@ -2097,18 +2097,35 @@ class SignalGenerationEngine {
   /** ITEM EA — scans that passed the guard (acceptance: invocation count + one log line per scan). */
   private shadowScanCount: number = 0;
   private static readonly BAR_M1_LOOKBACK = 240;
-  private static readonly BAR_M5_LOOKBACK = 300;
+  /**
+   * ITEM FG — 1000 M5 bars ≈ 3.5 days. ZRL_EMA_4H_SPAN (960) must fit INSIDE the
+   * live series for the ZONE trend filter to run the tested 960-bar span instead
+   * of the min(960, n-1) = 299 approximation (FA measured the consequence: ZONE
+   * 139.8/mo vs reference 17.7/mo, EV −$0.35). 970 bars is the reference
+   * detector's hard-guard minimum. FG consumer audit: every M5 consumer is
+   * fixed-period (RSI 14 / MACD / Bollinger 20 / divergence 5-14 / LTF trend)
+   * or coverage-guarded (computeSideRelativeFeatures counts only FULLY covered
+   * sessions — widening the window moves live emission onto the same basis the
+   * corpus backfill used); trendEmaSpanUsed = min(960, n-1) reads 960 from a
+   * full series automatically. Cost: ~1000 Bar objects, aggregation unchanged.
+   */
+  private static readonly BAR_M5_LOOKBACK = 1000;
   private static readonly BAR_M15_LOOKBACK = 200;
   /**
-   * WEEKEND COLD START: the M1 fetch window must span the Fri-close → Sun-reopen
-   * gap. A 50h window anchored to `now` reaches only the Friday TAIL at reopen,
-   * so the aggregated M5 series sits below the 60-bar floor of
-   * getDirectionalM5() for hours and the engine stands aside blind. 72h reaches
-   * back into the previous session's full Friday tape at the earliest reopen
-   * (Sun 22:00 UTC → Thu 22:00), so the series is built ACROSS the gap from
-   * pre-close bars. Row cap: 72h of M1 bars = 4320 rows ≤ MAX_PAGES × PAGE_SIZE.
+   * WEEKEND COLD START + ITEM FG: the M1 fetch window must actually FEED the M5
+   * cap. 1000 M5 bars = 5000 M1 rows ≈ 83.3h of TRADED time. Across the
+   * Fri-close → Sun-reopen gap (49h) a window anchored to `now` must reach
+   * ~80.8h (970 bars) before Friday's close at the earliest reopen — the old
+   * 72h window stopped at ~864 bars and the ZONE trend EMA would have stayed
+   * approximated (min(960, n-1) = 863). 144h guarantees ≥ ~1140 traded bars at
+   * the worst reopen and ~1728 midweek (the M5 slice caps at 1000). The cold-start
+   * rationale is unchanged — 144h ⊃ 72h, so the series is still built ACROSS the
+   * gap from the previous session's bars instead of requiring 60 post-reopen bars.
+   * Row budget: 144h ≈ 8640 M1 rows ≤ 9 pages × PAGE_SIZE (F1 page cap raised
+   * 5 → 9 in refreshBarSeries — under-provisioning it would silently truncate
+   * the window and re-create the same short-series problem).
    */
-  private static readonly BAR_SERIES_LOOKBACK_MIN = 72 * 60;
+  private static readonly BAR_SERIES_LOOKBACK_MIN = 144 * 60;
   /** A timeframe's newest bar may be at most 3 of its own periods old. */
   private static readonly BAR_MAX_AGE_M1_MS = 3 * 60 * 1000;
   private static readonly BAR_MAX_AGE_M5_MS = 15 * 60 * 1000;
@@ -3064,9 +3081,11 @@ class SignalGenerationEngine {
     }
     this.barSeriesBuiltAt = now;
 
-    // WEEKEND COLD START: see BAR_SERIES_LOOKBACK_MIN. 72h spans the
-    // Fri-close → Sun-reopen gap so the M5/M15 series is built ACROSS the gap
-    // from the previous session's bars instead of requiring 60 post-reopen bars.
+    // WEEKEND COLD START: see BAR_SERIES_LOOKBACK_MIN. 144h (Item FG) spans the
+    // Fri-close → Sun-reopen gap AND feeds the raised BAR_M5_LOOKBACK = 1000
+    // (72h topped out at ~864 M5 bars — below the 970-bar reference guard),
+    // so the M5/M15 series is built ACROSS the gap from the previous
+    // session's bars instead of requiring 60 post-reopen bars.
     const lookbackMs = SignalGenerationEngine.BAR_SERIES_LOOKBACK_MIN * 60 * 1000;
     const fromIso = new Date(now - lookbackMs).toISOString();
     const toIso = new Date(now).toISOString();
@@ -3074,8 +3093,10 @@ class SignalGenerationEngine {
     try {
       // ITEM DC — the paginated fetch now goes through fetchGoldM1Rows (3
       // attempts, 1s/3s/9s backoff on transport failures; zero rows is NOT
-      // retried). 72h of M1 bars = ~4320 rows; 5 pages keeps headroom.
-      const { rows, lastError } = await this.fetchGoldM1Rows(client, fromIso, toIso, 5, 'BarSeries');
+      // retried). ITEM FG: 144h of M1 bars = ~8640 rows; 9 pages keeps headroom
+      // (the old 5-page cap would truncate the window midweek and shrink the
+      // series back below the 970-bar trend-EMA guard).
+      const { rows, lastError } = await this.fetchGoldM1Rows(client, fromIso, toIso, 9, 'BarSeries');
       if (lastError !== null) {
         console.warn(`⚠️ [BarSeries] all 3 fetch attempts failed (1s/3s/9s) — last: ${lastError} — standing aside`);
         this.recordM5FeedFailure('f1', 'fetch_error', `all 3 fetch attempts failed (1s/3s/9s backoff) — last: ${lastError}`);
@@ -11456,10 +11477,11 @@ class SignalGenerationEngine {
     // ZONE_RETEST_LONG — long-only, first retest of a confirmed swing low
     // with a strong first reaction, trend-filtered. Causality asserted in
     // the detector (confirmationBar < retestBar on every signal).
-    // NOTE (Item CA live-code discrepancy): BAR_M5_LOOKBACK caps the series
-    // at 300 bars, so the tested 960-bar trend EMA is approximated by the
-    // longest available span until the cap is raised. trendEmaSpanUsed is
-    // recorded so the forward book can split the two regimes (CB reads it).
+    // NOTE (Item FG, resolving the Item CA live-code discrepancy): the
+    // BAR_M5_LOOKBACK cap is raised 300 → 1000 ≥ 970 (the reference guard), so
+    // trendEmaSpanUsed reads 960 — the TESTED span — on every full live series.
+    // min(960, n-1) remains the documented short-data/cold-start fallback and
+    // trendEmaSpanUsed still lets the forward book split the two regimes.
     const zr = detectZoneRetestLong({ m5Bars: bars, entryPrice, direction: 'BUY' });
     if (zr.detected && zr.scoreVerdict !== null && this.shadowDedupAllows('ZONE_RETEST_LONG', lastClosedTs)) {
       persist('ZONE_RETEST_LONG', 'BUY', zr.scoreVerdict === 'ABOVE' ? 1 : 0, zr.scoreVerdict, {

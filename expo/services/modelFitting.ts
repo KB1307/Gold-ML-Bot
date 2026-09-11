@@ -381,10 +381,11 @@ function utcDayStartMs(anchorMs: number): number {
  * trailing 72h (anchor day + the three previous days). The bar-coverage guard
  * below is UNCHANGED — a session counts ONLY when the passed bars FULLY cover
  * it, so the effective window is the CALLER's bar window: at emission that is
- * barSeriesM5 (BAR_M5_LOOKBACK = 300 M5 bars, ~25h), so live emissions keep
- * ~25h coverage until the engine's bar window itself widens (out of scope
- * here, reported); the corpus backfill passes a window wide enough to cover
- * the 72h of candidates. feat_zone_max_react keeps its available-bar-window
+ * it, so the effective window is the CALLER's bar window: at emission that is
+ * barSeriesM5 (BAR_M5_LOOKBACK = 1000 M5 bars, ~3.5 days since Item FG), so live
+ * emissions now FULLY cover the 72h of candidates — the emission basis matches
+ * the corpus backfill basis (which passes a window wide enough to cover the
+ * 72h of candidates). feat_zone_max_react keeps its available-bar-window
  * semantics. Nothing looks ahead.
  */
 export function computeSideRelativeFeatures(
