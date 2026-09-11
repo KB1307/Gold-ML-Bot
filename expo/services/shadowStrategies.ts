@@ -689,6 +689,30 @@ export function computeSwingStructure(m5Bars: ReadonlyArray<ShadowM5Bar>): Swing
  */
 export const SHADOW_CONCURRENCY_CAP = 2;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ITEM FD — PER-STRATEGY DEDUP INTERVALS (scan-level, measured basis)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ITEM FD — minimum closed-M5-bar gap between consecutive signals per strategy,
+ * matching the Python reference's measured basis exactly: every reference
+ * figure was measured WITH a per-strategy dedup; FA (backfill_replay_fa.ts)
+ * proved the live scan had NONE — ZONE fired 7.9× the reference rate
+ * (139.8/mo vs 17.7) with an EV SIGN FLIP (−$0.35 vs +$3.63) and saturated the
+ * 2-slot cap (72.6% skipped vs 16%), because a zone retest persists over many
+ * consecutive bars and every one of them wrote a row.
+ * A detection inside the interval is NOT a signal under the measured
+ * definition: NOTHING is written — not report-only (unlike the swing gate and
+ * the concurrency cap, whose rows are still written for measurement).
+ * Consumed by runShadowStrategyScan (signalEngine shadowDedupAllows) and
+ * mirrored byte-exact in the FA replay harness.
+ */
+export const SHADOW_DEDUP_INTERVAL_BARS: Record<ShadowCandidateName, number> = {
+  SCORED_DT_SHORT: 12,
+  SCORED_REOPEN_LONG: 1,
+  ZONE_RETEST_LONG: 12,
+};
+
 /**
  * Inserts one row into shadow_candidates_v1. WRITE-ONLY shadow telemetry —
  * mirrors counterTrendShadow.ts exactly: log-and-swallow on failure, never

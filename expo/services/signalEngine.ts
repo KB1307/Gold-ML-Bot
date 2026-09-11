@@ -1,7 +1,7 @@
 import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC, SignalLearningContext, DetectedSRZone } from "@/types/trading";
 import { pushShadowSellRecord, type ShadowSellRecord } from "@/services/shadowSignalService";
 import { writeCounterTrendSuppression } from "@/services/counterTrendShadow";
-import { computeSwingStructure, detectDoubleTop, detectScoredReopen, detectZoneRetestLong, persistShadowStrategy, SHADOW_CONCURRENCY_CAP, SWING_TOLERANCE } from "@/services/shadowStrategies";
+import { computeSwingStructure, detectDoubleTop, detectScoredReopen, detectZoneRetestLong, persistShadowStrategy, SHADOW_CONCURRENCY_CAP, SHADOW_DEDUP_INTERVAL_BARS, SWING_TOLERANCE } from "@/services/shadowStrategies";
 import { resolveShadowRows } from "@/services/shadowResolver";
 import { pushEmittedSignalRecord } from "@/services/emittedSignalService";
 import { BAND_PROXIMITY_VETO_ENABLED, evaluateBandProximityVeto } from "@/services/bandProximityVeto";
@@ -2085,6 +2085,8 @@ class SignalGenerationEngine {
   private barSeriesBuiltAt: number = 0;
   /** ITEM EA — timestamp of the last closed M5 bar runShadowStrategyScan evaluated (double-scan guard). */
   private lastShadowScanBarTs: number = 0;
+  /** ITEM FD — last WRITTEN signal bar ts per candidate (per-strategy dedup, shadowDedupAllows). In-memory: resets on restart, so the first detection after a restart always writes. */
+  private shadowLastSignalBarTs: Partial<Record<'SCORED_DT_SHORT' | 'SCORED_REOPEN_LONG' | 'ZONE_RETEST_LONG', number>> = {};
   /** ITEM EA — scans that passed the guard (acceptance: invocation count + one log line per scan). */
   private shadowScanCount: number = 0;
   private static readonly BAR_M1_LOOKBACK = 240;
@@ -11398,7 +11400,7 @@ class SignalGenerationEngine {
     // 7 side-relative features. Detected-with-null-score (pattern real, scoring
     // unavailable) is deliberately NOT persisted.
     const dt = detectDoubleTop({ m5Bars: bars, entryPrice, direction: 'SELL', rsi });
-    if (dt.detected && dt.score !== null && Number.isFinite(dt.score) && dt.scoreVerdict !== null) {
+    if (dt.detected && dt.score !== null && Number.isFinite(dt.score) && dt.scoreVerdict !== null && this.shadowDedupAllows('SCORED_DT_SHORT', lastClosedTs)) {
       persist('SCORED_DT_SHORT', 'SELL', dt.score, dt.scoreVerdict, {
         pattern: {
           swingHighPrice: dt.swingHighPrice,
@@ -11418,7 +11420,7 @@ class SignalGenerationEngine {
     // longest available span until the cap is raised. trendEmaSpanUsed is
     // recorded so the forward book can split the two regimes (CB reads it).
     const zr = detectZoneRetestLong({ m5Bars: bars, entryPrice, direction: 'BUY' });
-    if (zr.detected && zr.scoreVerdict !== null) {
+    if (zr.detected && zr.scoreVerdict !== null && this.shadowDedupAllows('ZONE_RETEST_LONG', lastClosedTs)) {
       persist('ZONE_RETEST_LONG', 'BUY', zr.scoreVerdict === 'ABOVE' ? 1 : 0, zr.scoreVerdict, {
         pattern: {
           swingLowPrice: zr.swingLowPrice,
@@ -11447,7 +11449,7 @@ class SignalGenerationEngine {
     if (!isReopen) return;
     const priorClose = bars[n - 2].close;
     const reopen = detectScoredReopen({ m5Bars: bars, isReopen, entryPrice, priorClose });
-    if (reopen.detected && reopen.score !== null && Number.isFinite(reopen.score) && reopen.scoreVerdict !== null) {
+    if (reopen.detected && reopen.score !== null && Number.isFinite(reopen.score) && reopen.scoreVerdict !== null && this.shadowDedupAllows('SCORED_REOPEN_LONG', lastClosedTs)) {
       persist('SCORED_REOPEN_LONG', 'BUY', reopen.score, reopen.scoreVerdict, {
         pattern: {
           ema20AboveEma50: reopen.ema20AboveEma50,
@@ -11459,6 +11461,32 @@ class SignalGenerationEngine {
         rsi,
       }, swingGateFor('BUY'), capState());
     }
+  }
+
+  /**
+   * ITEM FD — per-strategy dedup (scan-level, measured basis; intervals in
+   * SHADOW_DEDUP_INTERVAL_BARS: DT 12, REOPEN 1, ZONE 12 closed-M5 bars).
+   * Returns true when this candidate may write a signal on this bar; records
+   * the bar when it does. A detection inside the interval is NOT a signal
+   * under the measured definition — NOTHING is written (not report-only,
+   * unlike the swing gate and the concurrency cap). FA measured the live scan
+   * WITHOUT dedup: ZONE fired 7.9× the reference rate with an EV sign flip and
+   * saturated the 2-slot cap (72.6% skipped vs 16%). Convention: a gap of
+   * exactly the interval satisfies the minimum (skip iff barsSince < interval).
+   * Called exactly once per detection, after the null-score guard passes.
+   */
+  private shadowDedupAllows(candidateName: 'SCORED_DT_SHORT' | 'SCORED_REOPEN_LONG' | 'ZONE_RETEST_LONG', barTs: number): boolean {
+    const intervalBars = SHADOW_DEDUP_INTERVAL_BARS[candidateName];
+    const lastTs = this.shadowLastSignalBarTs[candidateName];
+    if (lastTs !== undefined) {
+      const barsSince = Math.round((barTs - lastTs) / (5 * 60 * 1000));
+      if (barsSince < intervalBars) {
+        console.log(`[ShadowScan] DEDUP: ${candidateName} ${barsSince} bars since last signal (interval ${intervalBars}) — not written`);
+        return false;
+      }
+    }
+    this.shadowLastSignalBarTs[candidateName] = barTs;
+    return true;
   }
 
   /**

@@ -20,9 +20,14 @@
  *     intra-scan openedThisScan counter, skipped rows never consume a slot.
  *   - detector order DT → ZONE → REOPEN with the `if (!isReopen) return;`
  *     early exit (11400–11461); null-score guards byte-matched (11401/11421/11450).
- *   - DEDUP: the live scan applies NO dedup beyond the double-scan guard (one
- *     scan per closed M5 bar). The replay therefore evaluates every closed bar
- *     exactly once — matching live behaviour.
+ *   - DEDUP (updated ITEM FD): the shipped scan now applies a per-strategy
+ *     minimum-bar interval (SHADOW_DEDUP_INTERVAL_BARS: DT 12, REOPEN 1,
+ *     ZONE 12) BEFORE swing/cap — a detection inside the interval is NOT a
+ *     signal under the measured definition and is never recorded (no count,
+ *     no swing arm, no cap interaction). The replay mirrors the shipped
+ *     shadowDedupAllows byte-exact. --dedup-mode selects the boundary
+ *     convention for the FD measurement: min = allowed iff barsSince >=
+ *     interval; strict = allowed iff barsSince > interval.
  *   - RESOLUTION (FA spec = the Python-reference convention): fill at the open
  *     of the bar AFTER the detection bar, stop checked BEFORE target (same-bar
  *     both → LOSS), $0.20 cost, TIME at the last walked bar's close.
@@ -44,6 +49,7 @@ import {
   geometryForStrategy,
   SWING_TOLERANCE,
   SHADOW_CONCURRENCY_CAP,
+  SHADOW_DEDUP_INTERVAL_BARS,
   type ShadowCandidateName,
 } from "../services/shadowStrategies";
 import { aggregateBars, barRSI, sealBarSeries, type Bar } from "../services/barIndicators";
@@ -143,6 +149,16 @@ async function main(): Promise<void> {
   const monthsFlagIdx = argv.indexOf("--months");
   const months = monthsFlagIdx >= 0 && argv[monthsFlagIdx + 1] ? parseFloat(argv[monthsFlagIdx + 1]) : 12;
   if (!Number.isFinite(months) || months <= 0) throw new Error("--months must be a positive number");
+  // ITEM FD — dedup boundary convention test: "min" allows barsSince >= interval
+  // (skip iff < interval); "strict" allows barsSince > interval (skip iff <= interval).
+  const dedupModeIdx = argv.indexOf("--dedup-mode");
+  const dedupMode: "min" | "strict" = dedupModeIdx >= 0 && argv[dedupModeIdx + 1] === "strict" ? "strict" : "min";
+  // FD blocker-calibration overrides — MEASUREMENT ONLY (production intervals are
+  // fixed at the prompt's 12/1/12; these exist to name what WOULD close the gate).
+  const dtOverrideIdx = argv.indexOf("--dt-interval");
+  const zoneOverrideIdx = argv.indexOf("--zone-interval");
+  const dtIntervalOverride = dtOverrideIdx >= 0 && argv[dtOverrideIdx + 1] ? parseInt(argv[dtOverrideIdx + 1], 10) : null;
+  const zoneIntervalOverride = zoneOverrideIdx >= 0 && argv[zoneOverrideIdx + 1] ? parseInt(argv[zoneOverrideIdx + 1], 10) : null;
 
   const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
@@ -160,7 +176,7 @@ async function main(): Promise<void> {
   const windowStartMs = newestMs - months * 30.44 * 24 * 3600 * 1000;
   const fromIso = new Date(windowStartMs).toISOString();
   const toIso = new Date(newestMs).toISOString();
-  console.log(`BACKFILL REPLAY — window ${fromIso} → ${toIso} (--months ${months})`);
+  console.log(`BACKFILL REPLAY — window ${fromIso} → ${toIso} (--months ${months}, dedup mode ${dedupMode}${dtIntervalOverride !== null ? `, DT interval override ${dtIntervalOverride}` : ""}${zoneIntervalOverride !== null ? `, ZONE interval override ${zoneIntervalOverride}` : ""})`);
 
   // Paginated read + INCREMENTAL aggregation (memory-safe: the M1 rows are
   // folded into 5-minute buckets as each page arrives, never held whole).
@@ -218,6 +234,29 @@ async function main(): Promise<void> {
     ZONE_RETEST_LONG: 0,
   };
   const openPositions: { readonly fillIdx: number; readonly exitIdx: number }[] = [];
+  // ITEM FD — per-strategy dedup, mirroring the shipped scan's shadowDedupAllows
+  // (signalEngine). A detection within the interval bars of the candidate's
+  // last WRITTEN signal is NOT a signal under the measured definition — never
+  // recorded here (no count, no swing arm, no cap interaction). Swing/cap stay
+  // report-only on rows that ARE written — those all update lastSignalBarTs.
+  const lastSignalBarTs: Partial<Record<ShadowCandidateName, number>> = {};
+  const dedupSuppressed: Record<ShadowCandidateName, number> = { SCORED_DT_SHORT: 0, SCORED_REOPEN_LONG: 0, ZONE_RETEST_LONG: 0 };
+  const dedupAllows = (name: ShadowCandidateName, barTs: number): boolean => {
+    const last = lastSignalBarTs[name];
+    if (last !== undefined) {
+      const barsSince = Math.round((barTs - last) / 300_000);
+      const interval = name === "SCORED_DT_SHORT" && dtIntervalOverride !== null ? dtIntervalOverride
+        : name === "ZONE_RETEST_LONG" && zoneIntervalOverride !== null ? zoneIntervalOverride
+        : SHADOW_DEDUP_INTERVAL_BARS[name];
+      const suppressed = dedupMode === "strict" ? barsSince <= interval : barsSince < interval;
+      if (suppressed) {
+        dedupSuppressed[name] += 1;
+        return false;
+      }
+    }
+    lastSignalBarTs[name] = barTs;
+    return true;
+  };
   let minGapBuy = Number.POSITIVE_INFINITY;
   let minGapSell = Number.POSITIVE_INFINITY;
   let minGapDT = Number.POSITIVE_INFINITY;
@@ -259,15 +298,16 @@ async function main(): Promise<void> {
       }
     };
 
-    // 1) SCORED_DT_SHORT — persist condition byte-matched to 11401.
+    // 1) SCORED_DT_SHORT — persist condition 11401 + ITEM FD dedup (suppressed
+    // detections are not signals: no count, no causality-audit update).
     const dt = detectDoubleTop({ m5Bars: window, entryPrice, direction: "SELL", rsi });
-    if (dt.detected && dt.score !== null && Number.isFinite(dt.score) && dt.scoreVerdict !== null) {
+    if (dt.detected && dt.score !== null && Number.isFinite(dt.score) && dt.scoreVerdict !== null && dedupAllows("SCORED_DT_SHORT", window[n - 1].timestamp)) {
       if (dt.swingHighBar !== null) minGapDT = Math.min(minGapDT, currentBarIndex - (dt.swingHighBar + 2));
       record("SCORED_DT_SHORT", "SELL", dt.scoreVerdict, sellGate());
     }
-    // 2) ZONE_RETEST_LONG — persist condition byte-matched to 11421.
+    // 2) ZONE_RETEST_LONG — persist condition 11421 + ITEM FD dedup.
     const zr = detectZoneRetestLong({ m5Bars: window, entryPrice, direction: "BUY" });
-    if (zr.detected && zr.scoreVerdict !== null) {
+    if (zr.detected && zr.scoreVerdict !== null && dedupAllows("ZONE_RETEST_LONG", window[n - 1].timestamp)) {
       if (zr.confirmationBar !== null) minGapZone = Math.min(minGapZone, currentBarIndex - zr.confirmationBar);
       record("ZONE_RETEST_LONG", "BUY", zr.scoreVerdict, buyGate());
     }
@@ -277,7 +317,7 @@ async function main(): Promise<void> {
     if (!isReopen) continue;
     const priorClose = window[n - 2].close;
     const reopen = detectScoredReopen({ m5Bars: window, isReopen, entryPrice, priorClose });
-    if (reopen.detected && reopen.score !== null && Number.isFinite(reopen.score) && reopen.scoreVerdict !== null) {
+    if (reopen.detected && reopen.score !== null && Number.isFinite(reopen.score) && reopen.scoreVerdict !== null && dedupAllows("SCORED_REOPEN_LONG", window[n - 1].timestamp)) {
       record("SCORED_REOPEN_LONG", "BUY", reopen.scoreVerdict, buyGate());
     }
   }
@@ -351,6 +391,7 @@ async function main(): Promise<void> {
   console.log(`swing gate: allowed ${allowedDs.length} (${pct(allowedDs.length, detections.length)})  blocked ${blockedDs.length} (${pct(blockedDs.length, detections.length)})   reference: ${REF_SWING_BLOCKED_PCT}% blocked`);
   console.log(`  ALLOWED EV $${r1(evOf(allowedDs))}   BLOCKED EV $${r1(evOf(blockedDs))}   reference: ${r1(REF_SWING_EV.allowed)} / ${r1(REF_SWING_EV.blocked)}`);
   console.log(`cap: taken ${takenDs.length}  skipped ${skippedDs.length} (${pct(skippedDs.length, detections.length)})   reference: ${REF_CAP_SKIPPED_PCT}% skipped`);
+  console.log(`dedup (ITEM FD, mode ${dedupMode}): suppressed ${dedupSuppressed.SCORED_DT_SHORT} DT / ${dedupSuppressed.ZONE_RETEST_LONG} ZONE / ${dedupSuppressed.SCORED_REOPEN_LONG} REOPEN`);
 
   const portfolioTrades = trades.filter((t) => {
     const d = detections.find((x) => x.signalIdx === t.signalIdx && x.name === t.name);
