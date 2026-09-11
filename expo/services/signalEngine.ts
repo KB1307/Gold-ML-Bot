@@ -6,6 +6,7 @@ import { resolveShadowRows } from "@/services/shadowResolver";
 import { pushEmittedSignalRecord } from "@/services/emittedSignalService";
 import { BAND_PROXIMITY_VETO_ENABLED, evaluateBandProximityVeto } from "@/services/bandProximityVeto";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { parseFeatureDriftSnapshot, serializeFeatureDriftSnapshot } from "@/services/featureDriftSnapshot";
 import { fetchHistoricalData, trpcClient } from "@/lib/trpc";
 import { createClient as createSupabaseClient, type SupabaseClient } from "@supabase/supabase-js";
 import { Platform } from "react-native";
@@ -490,6 +491,8 @@ const MAX_RECENT_SIGNAL_TIME_MINUTES = 4;
 const POST_TP1_COOLDOWN_MS = 3 * 60 * 1000;
 const DRIFT_CHECK_INTERVAL = 4 * 60 * 60 * 1000;
 const FEATURE_DRIFT_STORAGE_KEY = 'feature_drift_history_v1';
+/** ITEM FE — the last completed drift cycle's per-feature snapshot (featureDriftSnapshot.ts): written on every completed cycle, hydrated at boot, so SECTION 3's LIVE WINDOW DRIFT block survives rebuilds. */
+const FEATURE_DRIFT_SNAPSHOT_KEY = 'feature_drift_snapshot_v1';
 // #1 Direction-conviction gate. Raised from 0.50/0.08 to cut near-tie "coin-flip"
 // entries that historically were the lowest win-rate bucket. The winning side must
 // now show clearer dominance, and the per-regime separation floors are tightened a
@@ -2016,6 +2019,10 @@ class SignalGenerationEngine {
     skipped?: boolean;
     skipReason?: string;
   }[] = [];
+  /** ITEM FE — ISO timestamp of the cycle that produced liveFeatureDrift. Persisted WITH the snapshot (featureDriftSnapshot.ts) and hydrated at boot; SECTION 3 renders the age so a stale snapshot is obviously stale rather than silently wrong. */
+  private liveFeatureDriftCycleAt: string | null = null;
+  /** ITEM FE — consumed by the first detectConceptDrift invocation after boot: one FORCED drift check (bypasses only the 4h interval guard, not the outcome-count guard) so a fresh build has a snapshot within a minute. */
+  private bootDriftCheckPending: boolean = true;
   private retrainScheduled: boolean = false;
   /** ITEM 230(G5) — provenance of the CURRENT schedule, recorded purely for DISPLAY
    *  (screen banner + export Section 3). No trigger logic reads these. */
@@ -6164,7 +6171,12 @@ class SignalGenerationEngine {
     if (winRateDrift) {
       console.log('🚨 Rolling win-rate dropped >25% - forcing drift check');
     }
-    if (!winRateDrift && this.lastDriftCheck > 0 && now - this.lastDriftCheck < DRIFT_CHECK_INTERVAL) {
+    // ITEM FE — one forced check on the first post-boot invocation: builds reset
+    // the in-memory snapshot, so the first check runs immediately instead of
+    // waiting out the 4h interval (the outcome-count guard still applies).
+    const forceBootCheck = this.bootDriftCheckPending;
+    this.bootDriftCheckPending = false;
+    if (!forceBootCheck && !winRateDrift && this.lastDriftCheck > 0 && now - this.lastDriftCheck < DRIFT_CHECK_INTERVAL) {
       const nextCheck = new Date(this.lastDriftCheck + DRIFT_CHECK_INTERVAL);
       const hoursRemaining = ((this.lastDriftCheck + DRIFT_CHECK_INTERVAL - now) / (1000 * 60 * 60)).toFixed(1);
       console.log(`⏰ Next Drift Check in ${hoursRemaining}h (scheduled: ${nextCheck.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })})`);
@@ -6351,6 +6363,9 @@ class SignalGenerationEngine {
     
     console.log('='.repeat(60) + '\n');
     
+    // ITEM FE — timestamp the completed cycle; saveFeatureDriftHistory persists
+    // the per-feature snapshot alongside the existing drift history.
+    this.liveFeatureDriftCycleAt = new Date().toISOString();
     await this.saveFeatureDriftHistory();
     this.updateModelHealthScore();
   }
@@ -6521,6 +6536,19 @@ class SignalGenerationEngine {
     } catch (error) {
       console.error('Failed to save drift history:', error);
     }
+    // ITEM FE — the last completed cycle's per-feature snapshot in its OWN key:
+    // a snapshot write failure must not take down the existing history save.
+    try {
+      await AsyncStorage.setItem(
+        FEATURE_DRIFT_SNAPSHOT_KEY,
+        serializeFeatureDriftSnapshot({
+          cycleAt: this.liveFeatureDriftCycleAt ?? new Date().toISOString(),
+          entries: this.liveFeatureDrift,
+        }),
+      );
+    } catch (error) {
+      console.error('Failed to save feature-drift snapshot:', error);
+    }
   }
   
   private async loadFeatureDriftHistory(): Promise<void> {
@@ -6533,6 +6561,19 @@ class SignalGenerationEngine {
         this.driftAlertLevel = parsed.driftAlertLevel || 'NONE';
         this.lastDriftCheck = parsed.lastDriftCheck || 0;
         console.log('✓ Loaded drift detection history');
+      }
+      // ITEM FE — hydrate the last completed cycle's snapshot so SECTION 3's
+      // LIVE WINDOW DRIFT block renders immediately after a rebuild instead of
+      // staying empty until the next 4h cycle. cycleAt labels the snapshot's
+      // age; the forced post-boot check then replaces it with fresh data.
+      const snapshotRaw = await AsyncStorage.getItem(FEATURE_DRIFT_SNAPSHOT_KEY);
+      const snapshot = parseFeatureDriftSnapshot(snapshotRaw);
+      if (snapshot) {
+        this.liveFeatureDrift = snapshot.entries;
+        this.liveFeatureDriftCycleAt = snapshot.cycleAt;
+        console.log(`✓ Hydrated feature-drift snapshot from ${snapshot.cycleAt} (${snapshot.entries.length} features)`);
+      } else {
+        console.log('✓ No persisted feature-drift snapshot (fresh install or pre-FE build)');
       }
     } catch (error) {
       console.error('Failed to load drift history:', error);
@@ -11685,6 +11726,7 @@ class SignalGenerationEngine {
       conceptDriftScore: this.conceptDriftScore,
       featureImportanceDrift: featureDriftMetrics,
       liveFeatureDrift: this.liveFeatureDrift,
+      liveFeatureDriftCycleAt: this.liveFeatureDriftCycleAt,
       driftAlertLevel: this.driftAlertLevel,
       daysSinceRetrain: parseFloat(daysSinceRetrain.toFixed(1)),
       retrainingRecommended,

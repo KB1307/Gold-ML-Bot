@@ -28,6 +28,7 @@ const FALLBACK_TELEMETRY: TelemetrySnapshot = {
     conceptDriftScore: 0,
     featureImportanceDrift: [],
     liveFeatureDrift: [], // ITEM DB — empty until the engine completes its first drift cycle
+    liveFeatureDriftCycleAt: null, // ITEM FE — snapshot provenance; null = no completed cycle
     driftAlertLevel: 'NONE' as const,
     daysSinceRetrain: 0,
     retrainingRecommended: false,

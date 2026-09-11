@@ -826,6 +826,18 @@ function formatModelHealthSection(modelHealth: ModelHealthMetrics): string {
   if (!modelHealth.liveFeatureDrift || modelHealth.liveFeatureDrift.length === 0) {
     lines.push("  (no live drift cycle recorded since this build — renders after the next drift check)");
   } else {
+    // ITEM FE — provenance label: the snapshot's cycle timestamp + age, so a
+    // stale (hydrated-after-rebuild) snapshot is obviously stale rather than
+    // silently wrong. cycleAt is null only for pre-FE in-memory snapshots.
+    const cycleAt = modelHealth.liveFeatureDriftCycleAt ?? null;
+    const parsedAt = cycleAt !== null ? Date.parse(cycleAt) : NaN;
+    if (!Number.isNaN(parsedAt)) {
+      const ageHours = Math.max(0, (Date.now() - parsedAt) / 3_600_000);
+      const stale = ageHours > 8; // > 2× the 4h drift cadence — more than one missed cycle
+      lines.push(`  snapshot from ${cycleAt} (${ageHours.toFixed(1)}h ago${stale ? " — STALE: >8h since the last completed cycle (4h cadence)" : ""})`);
+    } else {
+      lines.push("  snapshot time unknown (in-memory snapshot from before Item FE — no timestamp recorded)");
+    }
     const v = (x: number): string => String(Number(x.toFixed(4)));
     for (const d of modelHealth.liveFeatureDrift) {
       lines.push(`  ${d.feature}: drift ${d.drift.toFixed(3)}  (recentMean ${v(d.recentMean)} vs historicalMean ${v(d.historicalMean)}, historicalStd ${v(d.historicalStd)})`);
