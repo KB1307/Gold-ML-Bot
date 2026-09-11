@@ -883,26 +883,25 @@ function formatModelShadowPerformanceSection(stats: ModelShadowStats | null | un
 // REPORTS the pre-registered PROMOTION/ABORT gates — it never acts on them:
 // no promotion, suppression, delay or demotion is wired to these numbers.
 //
-// Data sources (verified against live code 2026-09-08):
+// Data sources (verified against live code; ITEM EE revision 2026-09-09):
 //  • shadow_candidates_v1 rows for the three candidate names, EXCLUDING every
-//    row without inputs.geometryVersion === 2 (pre-CD ZONE rows carry SL $15;
-//    pre-CE rows lack the key entirely — Items CD/CE).
-//  • trade_outcomes_v1 joined on signal_id === inputs.signalId (shadow rows
-//    carry the LIVE emitted signalId — Item CE finding, so outcomes are the
-//    LIVE ladder's, an approximation CC anticipated). DISCREPANCY (live code
-//    wins): the corpus has NO status column — result is WIN/LOSS and
-//    learningStore F-8 makes the realized_r SIGN authoritative — so decided
-//    rows are classified by realized_r: >0 win (TP side), <0 stop-out (SL
-//    side), ===0 breakeven (SL_AFTER_BREAKEVEN-like), null = no R (excluded
-//    from EV, counted separately).
-//  • FINGERPRINT median MFE reads max_favourable_excursion_before_exit_r
-//    (Item 224, backfilled) × the row's own inputs.geometry.sl — the shadow
-//    rows' inputs.mfe is written NULL and stays NULL until a dedicated
-//    resolver exists (Item CE), so $ MFE comes from the corpus.
+//    row with inputs.geometryVersion < 3 (ITEM EB: pre-EB DT/REOPEN rows carry
+//    SL12/TP10, pre-CD ZONE rows carry SL $15, pre-CE rows lack the key
+//    entirely — Items CD/CE/EB).
+//  • ITEM EE — strategy-book outcomes come from the ITEM DA resolver's jsonb
+//    write-back (inputs.resolvedOutcome TP/SL/TIME + resolvedPnlPrice, already
+//    $ of the row's OWN geometry and sign-correct for direction) — NOT a
+//    trade_outcomes_v1 join. The join is GONE: EA rows carry signalId: null
+//    (no emitted signal exists to join), and the resolver's resolved $ is the
+//    row's own flat-geometry outcome, superseding the CF-era realized_r × sl
+//    approximation. The corpus fetch is removed with it.
+//  • FINGERPRINT median MFE reads inputs.mfe — written by the DA resolver at
+//    resolution time (own-$ MFE), no longer a corpus approximation.
 //
-// EV$ = realized_r × inputs.geometry.sl PER ROW — ZONE $25, DT/REOPEN $12;
-// never a shared constant. EV is computed ONLY over decided rows; unresolved
-// rows never contribute a cent.
+// EV$ = sum(resolvedPnlPrice) / resolved — each row's OWN $, never a shared
+// constant. EV is computed ONLY over resolved rows; unresolved rows never
+// contribute a cent. Per-arm verdicts print INSUFFICIENT DATA below their
+// pre-registered n (swing arms ≥100 decided, cap arm ≥50).
 
 export type ShadowForwardCandidateName =
   | "SCORED_DT_SHORT"
@@ -918,38 +917,60 @@ interface ShadowCandidateRow {
     signalId?: string;
     scoreVerdict?: "ABOVE" | "BELOW" | null;
     geometryVersion?: number;
-    geometry?: { sl?: number } | null;
+    geometry?: { sl?: number; tp?: number; timeStopBars?: number } | null;
     mfe?: number | null;
-    /** Item DD — Item DA resolver write-back (suppressed-gate books). */
+    /** Item EC — swing gate (report-only), both arms written. */
+    swingBlocked?: boolean | null;
+    lastSwingHigh?: number | null;
+    lastSwingLow?: number | null;
+    swingCausalGap?: number | null;
+    /** Item ED — concurrency cap (report-only); null = count unavailable that scan. */
+    capSkipped?: boolean | null;
+    openPositionsAtSignal?: number | null;
+    /** Item DA resolver write-back (suppressed-gate books + Item EE strategy books). */
     resolvedOutcome?: string | null;
     resolvedPnlPrice?: number | null;
   } | null;
 }
 
-interface OutcomeRow {
-  signal_id: string;
-  realized_r: number | string | null;
-  max_favourable_excursion_before_exit_r: number | string | null;
+/** ITEM EE — one cohort arm of a strategy book (resolver write-back outcomes). */
+export interface ShadowForwardArmStats {
+  rows: number;
+  /** resolvedOutcome TP/SL/TIME with finite resolvedPnlPrice. */
+  resolved: number;
+  wins: number;
+  stopOuts: number;
+  flat: number;
+  /** resolvedOutcome null — still open or not yet reached by the resolver. */
+  unresolved: number;
+  /** Outcome present but not TP/SL/TIME, or pnl not finite — counted, never dropped. */
+  malformed: number;
+  sumPnl$: number;
+  evPerTrade$: number | null;
+  winRate: number | null;
 }
 
 export interface ShadowForwardBookStats {
   candidateName: ShadowForwardCandidateName;
   firstEntryAt: string | null;
   totalRows: number;
-  excludedPreV2: number;
-  malformedV2: number;
-  aboveRows: number;
-  belowRows: number;
-  decidedAbove: number;
-  unresolvedAbove: number;
-  winsAbove: number;
-  stopOutsAbove: number;
-  flatAbove: number;
-  noRAbove: number;
-  sumR$: number;
-  evPerTrade$: number | null;
-  stopOutRate: number | null;
-  medianMfeBeforeExit$: number | null;
+  /** ITEM EB — rows below geometryVersion 3 excluded (see the block header). */
+  excludedPreV3: number;
+  /** Geometry read from the rows' OWN inputs.geometry (e.g. "SL$10/TP$12/T96"); null when no v3 rows. */
+  geometryLabel: string | null;
+  above: ShadowForwardArmStats;
+  below: ShadowForwardArmStats;
+  swingAllowed: ShadowForwardArmStats;
+  swingBlocked: ShadowForwardArmStats;
+  capSkipped: ShadowForwardArmStats;
+  /** v3 rows without a swingBlocked key (EB→EC deploy gap) — never force-classified. */
+  swingUnmeasured: number;
+  /** v3 rows without a capSkipped key (EB→ED deploy gap). */
+  capUnmeasured: number;
+  /** ITEM EE — the tradeable cohort: ABOVE + swing-allowed + not cap-skipped. */
+  portfolio: ShadowForwardArmStats;
+  /** FINGERPRINT — median inputs.mfe ($, resolver-written) over resolved ABOVE rows. */
+  medianMfe$: number | null;
   mfeSampleCount: number;
 }
 
@@ -994,17 +1015,31 @@ export interface ShadowForwardBooksStats {
    * geometry and writes resolvedOutcome + resolvedPnlPrice into inputs.
    */
   suppressedBooks: Record<SuppressedBookName, SuppressedBookStats>;
-  combined: {
-    aboveRows: number;
-    decidedAbove: number;
+  /** ITEM EE — portfolio across the three books (same cohort definition). */
+  portfolio: {
+    decided: number;
     wins: number;
     stopOuts: number;
-    sumR$: number;
+    sumPnl$: number;
     evPerTrade$: number | null;
+    winRate: number | null;
+  };
+  /** ITEM EE — mean pairwise monthly correlation of the books' portfolio PnL. */
+  correlation: {
+    /** null = INSUFFICIENT DATA (needs ≥6 shared months per pair). */
+    value: number | null;
+    monthsUsed: number;
+    detail: string;
   };
 }
 
-/** Pre-registered gates + backtest reference figures, locked per candidate. */
+/**
+ * Pre-registered promotion/abort gates, locked per candidate. The backtest
+ * reference figures are the BD-era corpus values — retained as labelled
+ * context ONLY; ITEM EE's reporting computes NOTHING against them (the EB
+ * measured-basis figures are n=633 55% +$1.95 / n=147 71% +$6.73 / n=318 58%
+ * +$3.63).
+ */
 const SECTION12_BOOKS: ReadonlyArray<{
   name: ShadowForwardCandidateName;
   tag: string;
@@ -1056,12 +1091,82 @@ const SUPPRESSED_BOOKS: ReadonlyArray<{
   { name: "MID_RSI_SUPPRESSED", tag: "MID", gateDecided: 30 },
 ];
 
+/** ITEM EE — pre-registered verdict thresholds (locked): swing arms and cap arm. */
+const SWING_VERDICT_MIN_DECIDED = 100;
+const CAP_VERDICT_MIN_DECIDED = 50;
+
+/** ITEM EE — a zeroed cohort arm. */
+function emptyArm(): ShadowForwardArmStats {
+  return { rows: 0, resolved: 0, wins: 0, stopOuts: 0, flat: 0, unresolved: 0, malformed: 0, sumPnl$: 0, evPerTrade$: null, winRate: null };
+}
+
 /**
- * DIRECT paginated anon-key read of the three shadow forward books, the three
- * suppressed-gate books (Item DD) and the outcome corpus, joined in-memory on
- * signalId (Item 12 pagination pattern; `.in` with the SIX exact names
- * preserves candidate-name isolation — the item249 strict-equality rule
- * generalized, never a range or prefix match).
+ * ITEM EE — route one row into a cohort arm. Resolution state per the Item DA
+ * write-back: resolvedOutcome null → unresolved; TP/SL/TIME with finite
+ * resolvedPnlPrice → decided (pnl accumulated as written — each row's OWN $,
+ * never a shared constant); anything else → malformed (counted, never dropped).
+ */
+function routeArm(arm: ShadowForwardArmStats, inputs: NonNullable<ShadowCandidateRow["inputs"]>): void {
+  arm.rows += 1;
+  const outcome = inputs.resolvedOutcome;
+  if (outcome === null || outcome === undefined) {
+    arm.unresolved += 1;
+    return;
+  }
+  const pnl = Number(inputs.resolvedPnlPrice);
+  if ((outcome !== "TP" && outcome !== "SL" && outcome !== "TIME") || !Number.isFinite(pnl)) {
+    arm.malformed += 1;
+    return;
+  }
+  arm.resolved += 1;
+  arm.sumPnl$ += pnl;
+  if (outcome === "TP") arm.wins += 1;
+  else if (outcome === "SL") arm.stopOuts += 1;
+  else arm.flat += 1;
+}
+
+/** ITEM EE — derived arm stats; EV/WR over RESOLVED rows only. */
+function finalizeArm(arm: ShadowForwardArmStats): void {
+  if (arm.resolved > 0) {
+    arm.evPerTrade$ = arm.sumPnl$ / arm.resolved;
+    arm.winRate = arm.wins / arm.resolved;
+  }
+}
+
+/** ITEM EE — Pearson r; null when degenerate (constant series / length < 2). */
+function pearson(xs: number[], ys: number[]): number | null {
+  const n = Math.min(xs.length, ys.length);
+  if (n < 2) return null;
+  let sx = 0;
+  let sy = 0;
+  for (let i = 0; i < n; i += 1) {
+    sx += xs[i];
+    sy += ys[i];
+  }
+  const mx = sx / n;
+  const my = sy / n;
+  let sxy = 0;
+  let sxx = 0;
+  let syy = 0;
+  for (let i = 0; i < n; i += 1) {
+    const dx = xs[i] - mx;
+    const dy = ys[i] - my;
+    sxy += dx * dy;
+    sxx += dx * dx;
+    syy += dy * dy;
+  }
+  if (sxx === 0 || syy === 0) return null;
+  return sxy / Math.sqrt(sxx * syy);
+}
+
+/**
+ * DIRECT paginated anon-key read of the three shadow forward books and the
+ * three suppressed-gate books (Item DD). ITEM EE: strategy-book outcomes come
+ * from the Item DA resolver's write-back (resolvedOutcome/resolvedPnlPrice) —
+ * the trade_outcomes_v1 corpus join is REMOVED (EA rows carry signalId: null;
+ * the resolver's resolved $ supersedes the realized_r × sl approximation).
+ * `.in` with the SIX exact names preserves candidate-name isolation — the
+ * item249 strict-equality rule generalized, never a range or prefix match.
  */
 export async function fetchShadowForwardBooksStats(
   client: SupabaseClient,
@@ -1082,92 +1187,101 @@ export async function fetchShadowForwardBooksStats(
     if (rows.length < 1000) break;
   }
 
-  const outcomesBySignalId = new Map<string, OutcomeRow>();
-  for (let offset = 0; ; offset += 500) {
-    const { data, error } = await client
-      .from("trade_outcomes_v1")
-      .select("signal_id, realized_r, max_favourable_excursion_before_exit_r")
-      .range(offset, offset + 499);
-    if (error) throw error;
-    const rows = (data ?? []) as unknown as OutcomeRow[];
-    for (const row of rows) {
-      if (row?.signal_id) outcomesBySignalId.set(String(row.signal_id), row);
-    }
-    if (rows.length < 500) break;
-  }
-
   const books = {} as Record<ShadowForwardCandidateName, ShadowForwardBookStats>;
+  // ITEM EE — monthly resolved portfolio PnL per book, for the correlation check.
+  const monthlyPnl = new Map<ShadowForwardCandidateName, Map<string, { sum: number; n: number }>>();
   for (const book of SECTION12_BOOKS) {
     const rows = candidateRows.filter((r) => r.candidate_name === book.name);
     const stats: ShadowForwardBookStats = {
       candidateName: book.name,
       firstEntryAt: rows[0]?.evaluated_at ?? null,
       totalRows: rows.length,
-      excludedPreV2: 0,
-      malformedV2: 0,
-      aboveRows: 0,
-      belowRows: 0,
-      decidedAbove: 0,
-      unresolvedAbove: 0,
-      winsAbove: 0,
-      stopOutsAbove: 0,
-      flatAbove: 0,
-      noRAbove: 0,
-      sumR$: 0,
-      evPerTrade$: null,
-      stopOutRate: null,
-      medianMfeBeforeExit$: null,
+      excludedPreV3: 0,
+      geometryLabel: null,
+      above: emptyArm(),
+      below: emptyArm(),
+      swingAllowed: emptyArm(),
+      swingBlocked: emptyArm(),
+      capSkipped: emptyArm(),
+      swingUnmeasured: 0,
+      capUnmeasured: 0,
+      portfolio: emptyArm(),
+      medianMfe$: null,
       mfeSampleCount: 0,
     };
     const mfeSamples: number[] = [];
-    let decidedWithR = 0;
     for (const row of rows) {
       const inputs = row.inputs ?? {};
-      if (inputs.geometryVersion !== 2) {
-        stats.excludedPreV2 += 1;
+      // ITEM EB — the geometry era moved 2 → 3 (per-strategy DT/REOPEN split);
+      // every row below 3 carries superseded geometry and is excluded, alongside
+      // the pre-CD/pre-CE rows the v2 line already caught.
+      const gv = Number(inputs.geometryVersion);
+      if (!Number.isFinite(gv) || gv < 3) {
+        stats.excludedPreV3 += 1;
         continue;
       }
-      const verdict = inputs.scoreVerdict;
-      if (verdict === "ABOVE") stats.aboveRows += 1;
-      else if (verdict === "BELOW") stats.belowRows += 1;
-      if (verdict !== "ABOVE") continue;
-      const sl =
-        typeof inputs.geometry?.sl === "number" && Number.isFinite(inputs.geometry.sl)
-          ? inputs.geometry.sl
-          : null;
-      const signalId = typeof inputs.signalId === "string" ? inputs.signalId : null;
-      if (sl === null || signalId === null) {
-        stats.malformedV2 += 1;
-        continue;
+      const geo = inputs.geometry;
+      if (
+        stats.geometryLabel === null &&
+        typeof geo?.sl === "number" && typeof geo?.tp === "number" && typeof geo?.timeStopBars === "number"
+      ) {
+        stats.geometryLabel = `SL$${geo.sl}/TP$${geo.tp}/T${geo.timeStopBars}`;
       }
-      const outcome = outcomesBySignalId.get(signalId);
-      if (!outcome) {
-        stats.unresolvedAbove += 1;
-        continue;
+      const above = inputs.scoreVerdict === "ABOVE";
+      routeArm(above ? stats.above : stats.below, inputs);
+      // ITEM EC — swing gate, both arms written; unmeasured rows (EB→EC deploy
+      // gap) are counted separately, never force-classified.
+      if (inputs.swingBlocked === true) routeArm(stats.swingBlocked, inputs);
+      else if (inputs.swingBlocked === false) routeArm(stats.swingAllowed, inputs);
+      else stats.swingUnmeasured += 1;
+      // ITEM ED — the cap arm receives ONLY genuinely skipped rows; unmeasured
+      // rows (EB→ED deploy gap) counted separately.
+      if (inputs.capSkipped === true) routeArm(stats.capSkipped, inputs);
+      else if (inputs.capSkipped !== false) stats.capUnmeasured += 1;
+      // ITEM EE — portfolio: the tradeable cohort (ABOVE + swing-allowed + not
+      // cap-skipped). Its monthly resolved PnL feeds the correlation check.
+      if (above && inputs.swingBlocked === false && inputs.capSkipped !== true) {
+        routeArm(stats.portfolio, inputs);
+        const pnl = Number(inputs.resolvedPnlPrice);
+        if (
+          (inputs.resolvedOutcome === "TP" || inputs.resolvedOutcome === "SL" || inputs.resolvedOutcome === "TIME") &&
+          Number.isFinite(pnl)
+        ) {
+          const month = row.evaluated_at.slice(0, 7);
+          let series = monthlyPnl.get(book.name);
+          if (!series) {
+            series = new Map<string, { sum: number; n: number }>();
+            monthlyPnl.set(book.name, series);
+          }
+          const entry = series.get(month) ?? { sum: 0, n: 0 };
+          entry.sum += pnl;
+          entry.n += 1;
+          series.set(month, entry);
+        }
       }
-      stats.decidedAbove += 1;
-      const realizedR = outcome.realized_r === null ? null : Number(outcome.realized_r);
-      if (realizedR === null || !Number.isFinite(realizedR)) {
-        stats.noRAbove += 1;
-      } else {
-        decidedWithR += 1;
-        stats.sumR$ += realizedR * sl;
-        if (realizedR > 0) stats.winsAbove += 1;
-        else if (realizedR < 0) stats.stopOutsAbove += 1;
-        else stats.flatAbove += 1;
-      }
-      const mfeR = outcome.max_favourable_excursion_before_exit_r;
-      if (mfeR !== null && Number.isFinite(Number(mfeR))) {
-        mfeSamples.push(Number(mfeR) * sl);
+      // FINGERPRINT — resolver-written own-$ MFE on resolved ABOVE rows.
+      if (above) {
+        const mfe = Number(inputs.mfe);
+        const outcome = inputs.resolvedOutcome;
+        if (
+          (outcome === "TP" || outcome === "SL" || outcome === "TIME") &&
+          Number.isFinite(Number(inputs.resolvedPnlPrice)) &&
+          Number.isFinite(mfe)
+        ) {
+          mfeSamples.push(mfe);
+        }
       }
     }
-    if (decidedWithR > 0) stats.evPerTrade$ = stats.sumR$ / decidedWithR;
-    if (stats.decidedAbove > 0) stats.stopOutRate = stats.stopOutsAbove / stats.decidedAbove;
+    finalizeArm(stats.above);
+    finalizeArm(stats.below);
+    finalizeArm(stats.swingAllowed);
+    finalizeArm(stats.swingBlocked);
+    finalizeArm(stats.capSkipped);
+    finalizeArm(stats.portfolio);
     if (mfeSamples.length > 0) {
       const sorted = [...mfeSamples].sort((a, b) => a - b);
       const mid = Math.floor(sorted.length / 2);
-      stats.medianMfeBeforeExit$ =
-        sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+      stats.medianMfe$ = sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
       stats.mfeSampleCount = sorted.length;
     }
     books[book.name] = stats;
@@ -1226,23 +1340,79 @@ export async function fetchShadowForwardBooksStats(
     suppressedBooks[book.name] = s;
   }
 
-  const combined = SECTION12_BOOKS.reduce(
-    (acc, book) => {
-      const s = books[book.name];
-      acc.aboveRows += s.aboveRows;
-      acc.decidedAbove += s.decidedAbove;
-      acc.wins += s.winsAbove;
-      acc.stopOuts += s.stopOutsAbove;
-      acc.sumR$ += s.sumR$;
-      return acc;
-    },
-    { aboveRows: 0, decidedAbove: 0, wins: 0, stopOuts: 0, sumR$: 0, evPerTrade$: null as number | null },
-  );
-  const combinedNoR = SECTION12_BOOKS.reduce((n, b) => n + books[b.name].noRAbove, 0);
-  const combinedDecidedWithR = combined.decidedAbove - combinedNoR;
-  if (combinedDecidedWithR > 0) combined.evPerTrade$ = combined.sumR$ / combinedDecidedWithR;
+  // ITEM EE — combined portfolio across the three books.
+  const portfolio = {
+    decided: 0,
+    wins: 0,
+    stopOuts: 0,
+    sumPnl$: 0,
+    evPerTrade$: null as number | null,
+    winRate: null as number | null,
+  };
+  for (const book of SECTION12_BOOKS) {
+    const p = books[book.name].portfolio;
+    portfolio.decided += p.resolved;
+    portfolio.wins += p.wins;
+    portfolio.stopOuts += p.stopOuts;
+    portfolio.sumPnl$ += p.sumPnl$;
+  }
+  if (portfolio.decided > 0) {
+    portfolio.evPerTrade$ = portfolio.sumPnl$ / portfolio.decided;
+    portfolio.winRate = portfolio.wins / portfolio.decided;
+  }
 
-  return { generatedAt: new Date().toISOString(), books, suppressedBooks, combined };
+  // ITEM EE — mean pairwise monthly correlation (portfolio cohort, resolved $).
+  // A pair contributes only with ≥6 SHARED months (both books resolved ≥1 row
+  // that month); the reported value is the mean over contributing pairs.
+  // Backtest reference: mean −0.11 (DT × ZONE −0.47 strongest).
+  const tagOf = Object.fromEntries(SECTION12_BOOKS.map((b) => [b.name, b.tag])) as Record<ShadowForwardCandidateName, string>;
+  const pairs: ReadonlyArray<[ShadowForwardCandidateName, ShadowForwardCandidateName]> = [
+    ["SCORED_DT_SHORT", "SCORED_REOPEN_LONG"],
+    ["SCORED_DT_SHORT", "ZONE_RETEST_LONG"],
+    ["SCORED_REOPEN_LONG", "ZONE_RETEST_LONG"],
+  ];
+  const pairDetails: string[] = [];
+  let corrSum = 0;
+  let corrPairs = 0;
+  let minMonths = Number.POSITIVE_INFINITY;
+  for (const [a, b] of pairs) {
+    const ma = monthlyPnl.get(a);
+    const mb = monthlyPnl.get(b);
+    if (!ma || !mb) {
+      pairDetails.push(`${tagOf[a]}×${tagOf[b]}: no data`);
+      continue;
+    }
+    const months = [...new Set([...ma.keys()].filter((m) => mb.has(m)))].sort();
+    if (months.length < 6) {
+      pairDetails.push(`${tagOf[a]}×${tagOf[b]}: ${months.length}mo`);
+      continue;
+    }
+    const r = pearson(months.map((m) => ma.get(m)!.sum), months.map((m) => mb.get(m)!.sum));
+    if (r === null) {
+      pairDetails.push(`${tagOf[a]}×${tagOf[b]}: degenerate`);
+      continue;
+    }
+    corrSum += r;
+    corrPairs += 1;
+    minMonths = Math.min(minMonths, months.length);
+    pairDetails.push(`${tagOf[a]}×${tagOf[b]} r=${r.toFixed(2)} (${months.length}mo)`);
+  }
+  const correlation = {
+    value: corrPairs > 0 ? corrSum / corrPairs : null,
+    monthsUsed: corrPairs > 0 ? minMonths : 0,
+    detail: pairDetails.join("; "),
+  };
+
+  return { generatedAt: new Date().toISOString(), books, suppressedBooks, portfolio, correlation };
+}
+
+/** ITEM EE — one arm line; WR shown only where the spec asks for it. */
+function formatArmLine(label: string, arm: ShadowForwardArmStats, showWinRate: boolean): string {
+  const parts = [`  ${label.padEnd(16)} [${arm.rows}]  resolved [${arm.resolved}]`];
+  if (showWinRate) parts.push(arm.winRate !== null ? `WR ${(arm.winRate * 100).toFixed(1)}%` : "WR n/a");
+  parts.push(arm.evPerTrade$ !== null ? `EV $${arm.evPerTrade$.toFixed(2)}` : "EV n/a");
+  if (arm.malformed > 0) parts.push(`malformed ${arm.malformed}`);
+  return parts.join("  ");
 }
 
 function formatShadowForwardBooksSection(stats: ShadowForwardBooksStats | null | undefined): string {
@@ -1253,77 +1423,89 @@ function formatShadowForwardBooksSection(stats: ShadowForwardBooksStats | null |
     lines.push("  The pre-registered gates below are REPORT-ONLY; nothing acts on them.");
     return lines.join("\n");
   }
-  let combinedAbove = 0;
-  let combinedDecided = 0;
+  // ITEM EE — reporting revision: strategy-book outcomes come from the Item DA
+  // resolver's jsonb write-back (resolvedPnlPrice, each row's own geometry);
+  // the trade_outcomes_v1 join is REMOVED (EA rows carry signalId: null and
+  // the resolved $ supersedes the realized_r × sl approximation). Rows below
+  // geometryVersion 3 are excluded (EB). Per-arm books + portfolio + the
+  // correlation check render per the EE spec; verdicts print INSUFFICIENT DATA
+  // below their pre-registered n.
+  lines.push("  ITEM EE — outcomes: Item DA resolver write-back (resolvedPnlPrice, row's own geometry); strategy rows below geometryVersion 3 excluded (EB).");
   for (const book of SECTION12_BOOKS) {
     const s = stats.books[book.name];
     if (!s) continue;
     lines.push("");
-    lines.push(`${book.name} (${book.tag}):`);
+    lines.push(`${book.name}  (${s.geometryLabel ?? "geometry n/a"}, v3)`);
     if (s.totalRows === 0) {
       lines.push(`  no entries yet — expected ~${book.expectedPerDay}/day (${book.tag})`);
       continue;
     }
-    lines.push(`  rows ${s.totalRows} since ${s.firstEntryAt ?? "?"} | excluded pre-v2 ${s.excludedPreV2} | malformed ${s.malformedV2}`);
-    lines.push(`  verdict split (v2): ABOVE ${s.aboveRows} | BELOW ${s.belowRows}`);
-    if (s.aboveRows === 0) {
-      lines.push("  no ABOVE rows yet");
-      continue;
-    }
-    lines.push(`  decided-ABOVE ${s.decidedAbove} (win ${s.winsAbove} / stop-out ${s.stopOutsAbove} / BE ${s.flatAbove} / no-R ${s.noRAbove}) | unresolved ${s.unresolvedAbove}`);
-    if (s.decidedAbove === 0) {
-      lines.push("  NOT RESOLVED — no shadow resolution path exists (see Item CE)");
+    const notes: string[] = [];
+    if (s.swingUnmeasured > 0) notes.push(`swing-unmeasured ${s.swingUnmeasured}`);
+    if (s.capUnmeasured > 0) notes.push(`cap-unmeasured ${s.capUnmeasured}`);
+    lines.push(`  entries [${s.totalRows - s.excludedPreV3}]  excluded (v<3) [${s.excludedPreV3}]  since ${s.firstEntryAt ?? "?"}${notes.length > 0 ? `  ${notes.join("  ")}` : ""}`);
+    lines.push(formatArmLine("ABOVE:", s.above, true));
+    lines.push(formatArmLine("BELOW:", s.below, true));
+    lines.push(formatArmLine("swing-ALLOWED:", s.swingAllowed, true));
+    lines.push(formatArmLine("swing-BLOCKED:", s.swingBlocked, false));
+    if (
+      s.swingAllowed.resolved >= SWING_VERDICT_MIN_DECIDED &&
+      s.swingBlocked.resolved >= SWING_VERDICT_MIN_DECIDED &&
+      s.swingAllowed.evPerTrade$ !== null &&
+      s.swingBlocked.evPerTrade$ !== null
+    ) {
+      lines.push(
+        s.swingBlocked.evPerTrade$ < s.swingAllowed.evPerTrade$
+          ? `    → gate verdict: gate is working, keep (BLOCKED EV $${s.swingBlocked.evPerTrade$.toFixed(2)} < ALLOWED EV $${s.swingAllowed.evPerTrade$.toFixed(2)})`
+          : `    → ⚠️ THE SWING GATE IS REMOVING PROFITABLE SIGNALS (BLOCKED EV $${s.swingBlocked.evPerTrade$.toFixed(2)} >= ALLOWED EV $${s.swingAllowed.evPerTrade$.toFixed(2)}) — remove the gate`,
+      );
     } else {
       lines.push(
-        `  win rate ${((s.winsAbove / s.decidedAbove) * 100).toFixed(1)}% | EV ${
-          s.evPerTrade$ !== null ? `$${s.evPerTrade$.toFixed(2)}/trade` : "n/a"
-        } (realized_r × own inputs.geometry.sl)`,
+        `    → INSUFFICIENT DATA — swing verdict needs >=${SWING_VERDICT_MIN_DECIDED} decided per arm (allowed ${s.swingAllowed.resolved}, blocked ${s.swingBlocked.resolved})`,
       );
     }
-    const ev = s.evPerTrade$;
-    if (s.decidedAbove >= book.promoDecidedAbove && ev !== null && ev > 0) {
+    lines.push(formatArmLine("cap-SKIPPED:", s.capSkipped, false));
+    if (s.capSkipped.resolved >= CAP_VERDICT_MIN_DECIDED && s.capSkipped.evPerTrade$ !== null) {
+      lines.push(
+        s.capSkipped.evPerTrade$ > 0
+          ? `    → the cap is costing money — skipped-cohort EV $${s.capSkipped.evPerTrade$.toFixed(2)} > 0 at n>=${CAP_VERDICT_MIN_DECIDED} — raise the cap`
+          : `    → cap cost contained (skipped-cohort EV $${s.capSkipped.evPerTrade$.toFixed(2)} <= 0 at n>=${CAP_VERDICT_MIN_DECIDED})`,
+      );
+    } else {
+      lines.push(`    → INSUFFICIENT DATA — cap verdict needs >=${CAP_VERDICT_MIN_DECIDED} decided skipped rows (have ${s.capSkipped.resolved})`);
+    }
+    // Pre-registered promotion/abort gates (locked, Items BC/CB) — now read
+    // the resolver write-back instead of the corpus join.
+    if (s.above.resolved >= book.promoDecidedAbove && s.above.evPerTrade$ !== null && s.above.evPerTrade$ > 0) {
       lines.push(`  GATE: PROMOTION CLEARED (pre-registered: >=${book.promoDecidedAbove} decided-ABOVE AND EV>0) — REPORT ONLY`);
-    } else if (s.decidedAbove >= book.abortWindowDecidedAbove && ev !== null && ev <= 0) {
+    } else if (s.above.resolved >= book.abortWindowDecidedAbove && s.above.evPerTrade$ !== null && s.above.evPerTrade$ <= 0) {
       lines.push(`  GATE: ABORT WINDOW MET (EV<=0 within first ${book.abortWindowDecidedAbove} decided-ABOVE) — REPORT ONLY`);
     } else {
       lines.push(
-        `  GATE: ACCUMULATING — decided-ABOVE ${s.decidedAbove}/${book.promoDecidedAbove} toward promotion, ${Math.min(s.decidedAbove, book.abortWindowDecidedAbove)}/${book.abortWindowDecidedAbove} through abort window`,
+        `  GATE: ACCUMULATING — decided-ABOVE ${s.above.resolved}/${book.promoDecidedAbove} toward promotion, ${Math.min(s.above.resolved, book.abortWindowDecidedAbove)}/${book.abortWindowDecidedAbove} through abort window`,
       );
     }
-    if (s.decidedAbove < 20) {
-      lines.push(`  FINGERPRINT: INSUFFICIENT DATA (needs >=20 decided-ABOVE, have ${s.decidedAbove})`);
+    if (s.mfeSampleCount < 20) {
+      lines.push(`  FINGERPRINT: INSUFFICIENT DATA (needs >=20 resolved-ABOVE rows with mfe, have ${s.mfeSampleCount})`);
     } else {
-      const divergent: string[] = [];
-      if (s.stopOutRate !== null && Math.abs(s.stopOutRate - book.backtest.stopOutRate) > 0.15) {
-        divergent.push(
-          `stop-out ${(s.stopOutRate * 100).toFixed(1)}% vs backtest ${(book.backtest.stopOutRate * 100).toFixed(1)}% (>15pp)`,
-        );
-      }
-      if (s.medianMfeBeforeExit$ !== null && s.medianMfeBeforeExit$ > book.backtest.medianMfe * 1.5) {
-        divergent.push(
-          `median MFE $${s.medianMfeBeforeExit$.toFixed(2)} vs backtest $${book.backtest.medianMfe.toFixed(2)} (>50%)`,
-        );
-      }
-      const mfeNote =
-        s.medianMfeBeforeExit$ === null
-          ? " | MFE half: no corpus before-exit MFE for these rows (shadow inputs.mfe null — see Item CE)"
-          : "";
-      lines.push(
-        `  FINGERPRINT: ${divergent.length > 0 ? `DIVERGENT (${divergent.join("; ")})` : "CONSISTENT"}${mfeNote}`,
-      );
+      lines.push(`  FINGERPRINT: median MFE $${(s.medianMfe$ as number).toFixed(2)} over ${s.mfeSampleCount} resolved-ABOVE rows (resolver-written inputs.mfe)`);
     }
-    combinedAbove += s.aboveRows;
-    combinedDecided += s.decidedAbove;
   }
   lines.push("");
-  lines.push("COMBINED (ABOVE-only):");
-  lines.push(
-    `  ABOVE rows ${combinedAbove} | decided ${combinedDecided} (win ${stats.combined.wins} / stop-out ${stats.combined.stopOuts}) | EV ${
-      stats.combined.evPerTrade$ !== null ? `$${stats.combined.evPerTrade$.toFixed(2)}/trade` : "n/a"
-    }`,
-  );
-  if (combinedAbove > 0 && combinedDecided === 0) {
-    lines.push("  NOT RESOLVED — no shadow resolution path exists (see Item CE)");
+  lines.push("PORTFOLIO (ABOVE + swing-allowed + not cap-skipped):");
+  const p = stats.portfolio;
+  if (p.decided === 0) {
+    lines.push("  INSUFFICIENT DATA — no resolved portfolio rows yet");
+  } else {
+    lines.push(
+      `  decided [${p.decided}]  WR ${p.winRate !== null ? `${(p.winRate * 100).toFixed(1)}%` : "n/a"}  EV ${p.evPerTrade$ !== null ? `$${p.evPerTrade$.toFixed(2)}` : "n/a"}  sum $${p.sumPnl$.toFixed(2)}`,
+    );
+  }
+  lines.push("  backtest expectation: 47 trades/month, WR 46%, EV +$3.27/0.01 lot");
+  if (stats.correlation.value !== null) {
+    lines.push(`  correlation check (needs >=6 months): mean pairwise monthly ${stats.correlation.value.toFixed(2)}  (backtest -0.11)  [${stats.correlation.detail}]`);
+  } else {
+    lines.push(`  correlation check (needs >=6 months): INSUFFICIENT DATA  (backtest -0.11)${stats.correlation.detail ? `  [${stats.correlation.detail}]` : ""}`);
   }
 
   // ITEM DD — the suppressed-gate books: what the gates' rejections WOULD have done.

@@ -57,7 +57,11 @@ function syntheticStats(): ShadowForwardBooksStats {
         sumPnl$: -16, evPerTrade$: -16 / 40,
       }),
     },
-    combined: { aboveRows: 0, decidedAbove: 0, wins: 0, stopOuts: 0, sumR$: 0, evPerTrade$: null },
+    // ITEM EE — the strategy-books reshape replaced `combined` with portfolio +
+    // correlation; the synthetic literal carries zeroed stand-ins (state A
+    // asserts the SUPPRESSED block only).
+    portfolio: { decided: 0, wins: 0, stopOuts: 0, sumPnl$: 0, evPerTrade$: null, winRate: null },
+    correlation: { value: null, monthsUsed: 0, detail: "" },
   } as unknown as ShadowForwardBooksStats;
 }
 

@@ -1,7 +1,7 @@
 import { TradingSignal, SignalType, MarketOutlook, FibonacciLevel, SentimentData, PositionSizing, FeatureConfidence, MacroEvent, FeatureDriftMetric, DailyOHLC, SignalLearningContext, DetectedSRZone } from "@/types/trading";
 import { pushShadowSellRecord, type ShadowSellRecord } from "@/services/shadowSignalService";
 import { writeCounterTrendSuppression } from "@/services/counterTrendShadow";
-import { detectDoubleTop, detectScoredReopen, detectZoneRetestLong, persistShadowStrategy } from "@/services/shadowStrategies";
+import { computeSwingStructure, detectDoubleTop, detectScoredReopen, detectZoneRetestLong, persistShadowStrategy, SHADOW_CONCURRENCY_CAP, SWING_TOLERANCE } from "@/services/shadowStrategies";
 import { resolveShadowRows } from "@/services/shadowResolver";
 import { pushEmittedSignalRecord } from "@/services/emittedSignalService";
 import { BAND_PROXIMITY_VETO_ENABLED, evaluateBandProximityVeto } from "@/services/bandProximityVeto";
@@ -11318,13 +11318,56 @@ class SignalGenerationEngine {
     const rsi = barRSI(bars, 14);
     console.log(`[ShadowScan] #${this.shadowScanCount} bar=${new Date(lastClosedTs).toISOString()} bars=${bars.length} entry=${entryPrice.toFixed(2)} rsi=${rsi !== null ? rsi.toFixed(1) : 'null'}`);
 
+    // ITEM EC — swing-structure gate (report-only), computed ONCE per scan on
+    // the same series the detectors consume. BUY is blocked when price sits
+    // above the last confirmed swing high; SELL when below the last confirmed
+    // swing low; tolerance $1.00 (train-derived, see shadowStrategies.ts).
+    // Rows are written EITHER WAY (swingBlocked true/false) — both arms must
+    // resolve so the gate can be judged on real forward outcomes. A throw from
+    // the causality assertion aborts only this scan (call-site .catch).
+    const swing = computeSwingStructure(bars);
+    const currentBarIndex = bars.length - 1;
+    const swingGateFor = (side: 'BUY' | 'SELL'): { swingBlocked: boolean; swingCausalGap: number | null } => {
+      if (side === 'SELL') {
+        if (swing.lastSwingLow === null || swing.confirmationBarLow === null) return { swingBlocked: false, swingCausalGap: null };
+        return {
+          swingBlocked: entryPrice < swing.lastSwingLow + SWING_TOLERANCE,
+          swingCausalGap: currentBarIndex - swing.confirmationBarLow,
+        };
+      }
+      if (swing.lastSwingHigh === null || swing.confirmationBarHigh === null) return { swingBlocked: false, swingCausalGap: null };
+      return {
+        swingBlocked: entryPrice > swing.lastSwingHigh - SWING_TOLERANCE,
+        swingCausalGap: currentBarIndex - swing.confirmationBarHigh,
+      };
+    };
+
+    // ITEM ED — concurrency cap (report-only): count open positions BEFORE the
+    // detectors fire. null = unmeasured (rows still written, capSkipped null —
+    // never a fake 0). Positions opened earlier in THIS scan count toward the
+    // cap for subsequent persists in the same bar.
+    const openAtSignal = await this.countOpenShadowPositions();
+    let openedThisScan = 0;
+    const capState = (): { capSkipped: boolean | null; openPositionsAtSignal: number | null } => {
+      if (openAtSignal === null) return { capSkipped: null, openPositionsAtSignal: null };
+      const total = openAtSignal + openedThisScan;
+      const skipped = total >= SHADOW_CONCURRENCY_CAP;
+      if (!skipped) openedThisScan += 1;
+      return { capSkipped: skipped, openPositionsAtSignal: total };
+    };
+
     const persist = (
       candidateName: 'SCORED_DT_SHORT' | 'SCORED_REOPEN_LONG' | 'ZONE_RETEST_LONG',
       direction: 'BUY' | 'SELL',
       score: number,
       scoreVerdict: 'ABOVE' | 'BELOW',
       metadata: Record<string, unknown>,
+      swingGate: { swingBlocked: boolean; swingCausalGap: number | null },
+      cap: { capSkipped: boolean | null; openPositionsAtSignal: number | null },
     ): void => {
+      if (cap.capSkipped === true) {
+        console.log(`[ShadowScan] CAP: ${candidateName} skipped (open=${cap.openPositionsAtSignal}, cap=${SHADOW_CONCURRENCY_CAP}) — row still written (report-only)`);
+      }
       const client = this.getShadowStrategiesClient();
       if (!client) {
         console.warn('[ShadowStrategies] Supabase not configured — shadow strategy row NOT persisted (scan unaffected)');
@@ -11340,6 +11383,12 @@ class SignalGenerationEngine {
         score,
         scoreVerdict,
         metadata,
+        swingBlocked: swingGate.swingBlocked,
+        lastSwingHigh: swing.lastSwingHigh,
+        lastSwingLow: swing.lastSwingLow,
+        swingCausalGap: swingGate.swingCausalGap,
+        capSkipped: cap.capSkipped,
+        openPositionsAtSignal: cap.openPositionsAtSignal,
       }).catch((err: unknown) => {
         console.warn(`[ShadowStrategies] UNCAUGHT (defense-in-depth, scan unaffected): ${err instanceof Error ? err.message : String(err)}`);
       });
@@ -11358,7 +11407,7 @@ class SignalGenerationEngine {
           sessionLevelDistance: dt.sessionLevelDistance,
         },
         rsi,
-      });
+      }, swingGateFor('SELL'), capState());
     }
 
     // ZONE_RETEST_LONG — long-only, first retest of a confirmed swing low
@@ -11384,7 +11433,7 @@ class SignalGenerationEngine {
         trendEmaSpanUsed: Math.min(960, bars.length - 1),
         barsInSeries: bars.length,
         rsi,
-      });
+      }, swingGateFor('BUY'), capState());
     }
 
     // SCORED_REOPEN_LONG — LONG-only, first bar after the daily maintenance
@@ -11408,8 +11457,47 @@ class SignalGenerationEngine {
         priorClose,
         gapMinutes: Math.round(gapMs / 60000),
         rsi,
-      });
+      }, swingGateFor('BUY'), capState());
     }
+  }
+
+  /**
+   * ITEM ED — count currently OPEN shadow positions (portfolio-wide across the
+   * three strategy names). A position is open from evaluated_at until the Item
+   * DA resolver writes resolvedOutcome, or its OWN inputs.geometry.timeStopBars
+   * elapse (fallback: the longest window, ZONE's 192 bars). capSkipped rows are
+   * EXCLUDED in-memory (they were never taken, so they must not fill the cap —
+   * but the resolver still resolves them, so the filter cannot be a PostgREST
+   * predicate without risking jsonb-operator drift). Returns null when Supabase
+   * is unconfigured or the read fails — the cap is then UNMEASURED for that
+   * scan (capSkipped written null, never a fabricated 0).
+   */
+  private async countOpenShadowPositions(): Promise<number | null> {
+    const client = this.getShadowStrategiesClient();
+    if (!client) return null;
+    const windowMs = 192 * 5 * 60 * 1000; // ZONE T192 — the longest geometry window
+    const fromIso = new Date(Date.now() - windowMs).toISOString();
+    const { data, error } = await client
+      .from('shadow_candidates_v1')
+      .select('candidate_name, evaluated_at, inputs')
+      .in('candidate_name', ['SCORED_DT_SHORT', 'SCORED_REOPEN_LONG', 'ZONE_RETEST_LONG'])
+      .gte('evaluated_at', fromIso)
+      .filter('inputs->>resolvedOutcome', 'is', null)
+      .range(0, 999);
+    if (error) {
+      console.warn(`[ShadowScan] open-position count failed (cap UNMEASURED this scan): ${error.message}`);
+      return null;
+    }
+    const now = Date.now();
+    let open = 0;
+    for (const row of (data ?? []) as Array<{ evaluated_at: string; inputs: { geometry?: { timeStopBars?: number } | null; capSkipped?: boolean | null } | null }>) {
+      if (row.inputs?.capSkipped === true) continue;
+      const timeStopBars = row.inputs?.geometry?.timeStopBars;
+      const bars = typeof timeStopBars === 'number' && Number.isFinite(timeStopBars) ? timeStopBars : 192;
+      const evaluatedAt = Date.parse(row.evaluated_at);
+      if (Number.isFinite(evaluatedAt) && now - evaluatedAt < bars * 5 * 60 * 1000) open += 1;
+    }
+    return open;
   }
 
   private computeRecentDrift(candles: number = DRIFT_LOOKBACK_CANDLES): number | null {

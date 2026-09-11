@@ -520,12 +520,35 @@ export type ShadowCandidateName = "SCORED_DT_SHORT" | "SCORED_REOPEN_LONG" | "ZO
  * partial exits. The core resolver's standard geometry does NOT match — see
  * Items CB/CC for how the books are read.
  *
- * ITEM CD: re-derivation RAN on 2026-09-08 and CHANGED NOTHING — DT: 260 cells,
- * best train t 3.91, holdout improvement +$0.08 (nothing); REOPEN: 155 cells,
- * best pick LOST $1.17 on holdout (overfit). Both keep SL $12 / TP $10 / T96.
- * Do not re-run this sweep for these two.
+ * ITEM CD: re-derivation RAN on 2026-09-08 on DT/REOPEN and CHANGED NOTHING —
+ * DT: 260 cells, best train t 3.91, holdout improvement +$0.08 (nothing);
+ * REOPEN: 155 cells, best pick LOST $1.17 on holdout (overfit). CD's record
+ * stands as history; ITEM EB's 625-cell grid (below) superseded it the next
+ * day by splitting the pair.
  */
-export const SHADOW_STRATEGY_GEOMETRY = { sl: 12, tp: 10, timeStopBars: 96 } as const;
+/**
+ * ITEM EB — SCORED_DT_SHORT's corrected tested geometry — SL $10 / TP $12 / T96.
+ *
+ * DERIVATION RECORD (2026-09-09; 625-cell grid, TP $10–250 × SL $10–250 per
+ * strategy; pick on TRAIN only; holdout read ONCE):
+ *   SL 12 / TP 10 / T96 (previous live)  →  SL 10 / TP 12 / T96 (CORRECT)
+ *   correct geometry: full +$1.95 | train +$2.11 | holdout +$1.69 (n=633, WR 55%).
+ * Every DT row written before EB carries the old geometry and is excluded from
+ * the forward book via inputs.geometryVersion < 3 (Item CE reader semantics).
+ */
+export const DT_GEOMETRY = { sl: 10, tp: 12, timeStopBars: 96 } as const;
+
+/**
+ * ITEM EB — SCORED_REOPEN_LONG's corrected tested geometry — SL $23 / TP $19 / T96.
+ *
+ * DERIVATION RECORD (2026-09-09; same 625-cell grid; train-only pick; holdout
+ * read ONCE):
+ *   SL 12 / TP 10 / T96 (previous live)  →  SL 23 / TP 19 / T96 (CORRECT)
+ *   correct geometry: full +$6.73 | train +$8.10 | holdout +$3.53 (n=147, WR 71%).
+ * Every REOPEN row written before EB carries the old geometry and is excluded
+ * from the forward book via inputs.geometryVersion < 3.
+ */
+export const REOPEN_GEOMETRY = { sl: 23, tp: 19, timeStopBars: 96 } as const;
 /**
  * Item CD: ZONE_RETEST_LONG's corrected tested geometry — SL $25 / TP $25 / T192.
  *
@@ -544,17 +567,127 @@ export const SHADOW_STRATEGY_GEOMETRY = { sl: 12, tp: 10, timeStopBars: 96 } as 
  * than the first, not shorter.
  * Every ZONE_RETEST_LONG row written before CD carries the old geometry and is
  * excluded from the forward book via inputs.geometryVersion (Item CE).
+ * ITEM EB: the 2026-09-09 625-cell grid RE-AFFIRMED 25/25/192 — full +$3.63 |
+ * train +$5.11 | holdout +$1.52 (n=318, WR 58%). Unchanged.
  */
 export const ZONE_RETEST_GEOMETRY = { sl: 25, tp: 25, timeStopBars: 192 } as const;
 
 /**
  * Per-candidate tested geometry — single source of truth for prices + inputs.
  * Item CD: return type is numeric (not a literal union) so a future geometry
- * re-derivation cannot become a type error in an unrelated file.
+ * re-derivation cannot become a type error in an unrelated file. ITEM EB:
+ * per-candidate for ALL THREE (DT/REOPEN split off the old shared constant).
  */
 export function geometryForStrategy(name: ShadowCandidateName): { readonly sl: number; readonly tp: number; readonly timeStopBars: number } {
-  return name === "ZONE_RETEST_LONG" ? ZONE_RETEST_GEOMETRY : SHADOW_STRATEGY_GEOMETRY;
+  if (name === "SCORED_DT_SHORT") return DT_GEOMETRY;
+  if (name === "SCORED_REOPEN_LONG") return REOPEN_GEOMETRY;
+  return ZONE_RETEST_GEOMETRY;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ITEM EC — SWING-STRUCTURE GATE (report-only)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ITEM EC — train-derived tolerance: the sweep ran −$2.00 to +$5.00 and −$1.00
+ * maximised train EV (1,554 signals over 18 months).
+ */
+export const SWING_TOLERANCE = 1.0;
+
+export interface SwingStructure {
+  lastSwingHigh: number | null;
+  lastSwingLow: number | null;
+  /** Index of the SWING bar j, not the confirmation bar. */
+  lastSwingHighBar: number | null;
+  lastSwingLowBar: number | null;
+  /** j + 2 — the bar whose close first reveals the swing. */
+  confirmationBarHigh: number | null;
+  confirmationBarLow: number | null;
+}
+
+/**
+ * ITEM EC — five-bar fractal swing structure over an M5 series, strictly
+ * causal. Bar j is a swing high when high[j] exceeds high[j-1], high[j-2],
+ * high[j+1], high[j+2]; a swing low mirrors on lows. A swing at j is knowable
+ * only from bar j+2, so the scan runs j strictly below length-3 — the
+ * confirmation bar j+2 is then at most length-2, one bar BEFORE the current
+ * (last) bar, the prompt's swingCausalGap ≥ 1 holds by construction, and the
+ * causality assertion below can never fire legitimately (Item CA precedent:
+ * assertions exist to catch violations, not to trip on valid input).
+ *
+ * The lookahead this guards against is real: a prior version of the ZONE
+ * detector created its zone at j (instead of j+2) and produced 86% lookahead
+ * signals (+$2.66/trade, retracted; strictly causal it was −$0.06).
+ */
+export function computeSwingStructure(m5Bars: ReadonlyArray<ShadowM5Bar>): SwingStructure {
+  const structure: SwingStructure = {
+    lastSwingHigh: null,
+    lastSwingLow: null,
+    lastSwingHighBar: null,
+    lastSwingLowBar: null,
+    confirmationBarHigh: null,
+    confirmationBarLow: null,
+  };
+  const n = m5Bars.length;
+  if (n < 5) return structure;
+  const currentBarIndex = n - 1;
+  // Backward scan keeps the MOST RECENT swing of each side; stop when both found.
+  for (let j = n - 4; j >= 2; j -= 1) {
+    const bar = m5Bars[j];
+    const prev1 = m5Bars[j - 1];
+    const prev2 = m5Bars[j - 2];
+    const next1 = m5Bars[j + 1];
+    const next2 = m5Bars[j + 2];
+    if (
+      structure.lastSwingHighBar === null &&
+      bar.high > prev1.high && bar.high > prev2.high && bar.high > next1.high && bar.high > next2.high
+    ) {
+      structure.lastSwingHigh = bar.high;
+      structure.lastSwingHighBar = j;
+      structure.confirmationBarHigh = j + 2;
+    }
+    if (
+      structure.lastSwingLowBar === null &&
+      bar.low < prev1.low && bar.low < prev2.low && bar.low < next1.low && bar.low < next2.low
+    ) {
+      structure.lastSwingLow = bar.low;
+      structure.lastSwingLowBar = j;
+      structure.confirmationBarLow = j + 2;
+    }
+    if (structure.lastSwingHighBar !== null && structure.lastSwingLowBar !== null) break;
+  }
+  // The 5-bar fractal at j is not knowable until j+2. A prior version of the
+  // ZONE detector created its zone at j and produced 86% lookahead signals
+  // (+$2.66/trade, retracted; strictly causal it was -$0.06). This assertion
+  // is what prevents a repeat — never remove it.
+  if (structure.confirmationBarHigh !== null && structure.confirmationBarHigh >= currentBarIndex) {
+    throw new Error(`LOOKAHEAD: swing confirms at ${structure.confirmationBarHigh}, current bar ${currentBarIndex}`);
+  }
+  if (structure.confirmationBarLow !== null && structure.confirmationBarLow >= currentBarIndex) {
+    throw new Error(`LOOKAHEAD: swing confirms at ${structure.confirmationBarLow}, current bar ${currentBarIndex}`);
+  }
+  return structure;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ITEM ED — CONCURRENCY CAP (report-only)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ITEM ED — portfolio-wide cap on simultaneously open shadow positions.
+ * Backtest (18-month M5): peak 8 open positions = $240 at risk on $1,000 at
+ * 0.02 lot (24%). Cap 2 skips 16% of signals, keeps $5,493 of $6,878 profit,
+ * LOWERS max drawdown $515 → $382, and cuts peak risk to $60 (6%):
+ *   cap 1: 637 taken, 39% skipped, EV +$2.94, DD $440, risk 3%
+ *   cap 2: 885 taken, 16% skipped, EV +$3.10, DD $382, risk 6%  ← SHIPPED
+ *   cap 3: 980 taken,  7% skipped, EV +$3.10, DD $454, risk 9%
+ *   none: 1052 taken,  0% skipped, EV +$3.27, DD $515, risk 24%
+ * REPORT-ONLY: when the cap is full the detector's row is STILL written with
+ * capSkipped: true — both arms resolve so the cap's cost is MEASURED forward,
+ * never assumed. Pre-registered gate: ≥50 skipped decided; skipped EV > 0 →
+ * raise the cap.
+ */
+export const SHADOW_CONCURRENCY_CAP = 2;
 
 /**
  * Inserts one row into shadow_candidates_v1. WRITE-ONLY shadow telemetry —
@@ -579,15 +712,27 @@ export async function persistShadowStrategy(params: {
   score: number;
   scoreVerdict: "ABOVE" | "BELOW";
   metadata: Record<string, unknown>;
+  /** ITEM EC — swing gate (report-only): side/price evaluated by the caller; rows are written EITHER WAY. */
+  swingBlocked?: boolean | null;
+  /** ITEM EC — the side's swing level at signal time (null = no swing found in the series). */
+  lastSwingHigh?: number | null;
+  lastSwingLow?: number | null;
+  /** ITEM EC — current bar index − confirmation bar of the side's swing; ≥ 1 by construction (never lookahead). */
+  swingCausalGap?: number | null;
+  /** ITEM ED — concurrency cap (report-only): true when the cap was full at signal time — the row is STILL written. null = open-position count unavailable this scan. */
+  capSkipped?: boolean | null;
+  /** ITEM ED — snapshot of open shadow positions at signal time (the cap measurement). */
+  openPositionsAtSignal?: number | null;
 }): Promise<void> {
-  const { supabaseClient, signalId, candidateName, direction, entryPrice, emittedAt, score, scoreVerdict, metadata } = params;
+  const { supabaseClient, signalId, candidateName, direction, entryPrice, emittedAt, score, scoreVerdict, metadata, swingBlocked, lastSwingHigh, lastSwingLow, swingCausalGap, capSkipped, openPositionsAtSignal } = params;
   try {
-    // ITEM CD (supersedes the CA note): geometry is PER-CANDIDATE and now
-    // comes from geometryForStrategy — ZONE_RETEST_LONG is SL $25 / TP $25 /
-    // T192 (re-derived 2026-09-08, see the derivation record above), the other
-    // two SL $12 / TP $10 / T96. Both the written prices and the inputs.geometry
-    // blob must come from geometryForStrategy, never a shared constant, or the
-    // forward book's EV math (SECTION 12 reads inputs.geometry.sl) lies.
+    // ITEM EB (supersedes the CD note): geometry is PER-CANDIDATE for ALL
+    // THREE and comes from geometryForStrategy — DT SL $10 / TP $12 / T96,
+    // REOPEN SL $23 / TP $19 / T96 (both re-derived 2026-09-09 on a 625-cell
+    // grid, derivation records above), ZONE_RETEST_LONG SL $25 / TP $25 /
+    // T192. Both the written prices and the inputs.geometry blob must come
+    // from geometryForStrategy, never a shared constant, or the forward
+    // book's EV math (SECTION 12 reads inputs.geometry) lies.
     const geometry = geometryForStrategy(candidateName);
     const r2 = (v: number): number => Math.round(v * 100) / 100;
     const slPrice = direction === "SELL"
@@ -610,18 +755,25 @@ export async function persistShadowStrategy(params: {
         score,
         scoreVerdict,
         geometry,
-        // ITEM CE — forward-book self-diagnosis keys. geometryVersion marks the
-        // post-CD geometry era: pre-CD ZONE rows carry SL $15 and are excluded
-        // by SECTION 12; DT/REOPEN rows written before CE simply lack the key
-        // and are excluded the same way. The three excursion fields are written
-        // NULL at emission and are to be FILLED IN by whatever resolves the row
-        // (CE resolver report: no dedicated shadow resolver exists yet — the
-        // shared live-path resolver is deliberately NOT modified). mfe/mae in
-        // $; barsHeld in M5 bars from fill to resolution.
-        geometryVersion: 2,
+        // ITEM CE — forward-book self-diagnosis keys. geometryVersion marks
+        // the geometry era (ITEM EB: 3 = post-EB per-strategy geometry;
+        // SECTION 12 excludes every row below 3 — pre-EB DT/REOPEN carry
+        // SL12/TP10, pre-CD ZONE rows carry SL $15, and pre-CE rows lack the
+        // key entirely). The three excursion fields are written NULL at
+        // emission and are FILLED IN by the Item DA resolver on resolution.
+        // mfe/mae in $; barsHeld in M5 bars from fill to resolution.
+        geometryVersion: 3,
         mfe: null,
         mae: null,
         barsHeld: null,
+        // ITEM EC — swing gate (report-only), both arms written; null = no swing found for the side.
+        swingBlocked: swingBlocked ?? null,
+        lastSwingHigh: lastSwingHigh ?? null,
+        lastSwingLow: lastSwingLow ?? null,
+        swingCausalGap: swingCausalGap ?? null,
+        // ITEM ED — concurrency cap (report-only); null = count unavailable this scan.
+        capSkipped: capSkipped ?? null,
+        openPositionsAtSignal: openPositionsAtSignal ?? null,
         ...metadata,
       },
     });
