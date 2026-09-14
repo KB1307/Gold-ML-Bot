@@ -935,6 +935,13 @@ const DEDUP_TIME_WINDOW_MS = 225 * 60 * 1000;
 /** ITEM 105 — Zone cluster proximity for dedup. Same as ZONE_MERGE_THRESHOLD_ATR:
  * if two signals' entries are within 1.5 ATR, they are in the same zone cluster. */
 const DEDUP_CLUSTER_BAND_ATR = 1.5;
+/** ITEM 2 (five-fix prompt, 2026-09-14) — OPPOSITE-DIRECTION COOLDOWN. A signal
+ * whose direction contradicts the PREVIOUS emission is suppressed within this
+ * window (production: BUY @ 4275.4 at 13:52:00Z and SELL @ 4277.3 at 13:53:25Z —
+ * 85 s / $2 apart, opposite directions; the BUY lost). A genuine reversal
+ * re-qualifies after the cooldown; same-direction dedup stays with the cluster
+ * guard below. */
+const OPPOSITE_COOLDOWN_MS = 15 * 60 * 1000;
 /** ITEM 107 — SESSION-LIQUIDITY TELEMETRY.
  * Pre-open (0-15 min before session open): n=7, WR=28.6%, EV=-0.6516R.
  * UNDERPOWERED (< 15). Expansion measurement: avg range 60min AFTER 07:00 UTC
@@ -9217,6 +9224,40 @@ class SignalGenerationEngine {
     const htfTrend = this.detectHTFTrend(features);
     const ltfTrendForGate = this.detectLTFTrend();
 
+    // ITEM 5 (five-fix prompt, 2026-09-14) — DIRECTIONAL CONSENSUS GATE: when HTF
+    // and LTF agree on direction AND RSI is not extreme against, suppress the
+    // opposing signal. A zone feature should not override a full directional
+    // consensus (production: BUY @ 4275.4 13:52Z — HTF BEARISH + LTF BEARISH +
+    // RSI 47.69, yet a +37.5 zone feature outvoted the stack; hit SL in 11 min).
+    // Trend-aligned signals, HTF/LTF disagreements, and RSI-extreme counter-trend
+    // setups are all untouched. Runs BEFORE the stand-aside gate so a vetoed
+    // signal never reaches the counter-trend gate, the dedup, or emission.
+    const rsiOversoldForGate = features.rsi < 30;
+    const rsiOverboughtForGate = features.rsi > 70;
+
+    if (htfTrend === 'BEARISH' && ltfTrendForGate === 'BEARISH' && !rsiOversoldForGate && analysis.signalType === 'BUY') {
+      this.recordFunnelRejection('DIRECTIONAL_CONSENSUS_VETO');
+      console.log(`\n${'='.repeat(80)}`);
+      console.log(`❌ REJECTED [DirectionalConsensusVeto]: BUY suppressed — HTF BEARISH + LTF BEARISH consensus (RSI ${features.rsi.toFixed(1)} not oversold)`);
+      console.log(`   Confidence: ${(analysis.confidence * 100).toFixed(1)}% | HTF: ${htfTrend} | LTF: ${ltfTrendForGate}`);
+      console.log(`${'='.repeat(80)}\n`);
+      this.recordNearMiss('BUY', analysis.confidence, this.lastSignalStrengthDifference, 'directional consensus veto: HTF+LTF bearish', {
+        entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips,
+      });
+      return null;
+    }
+    if (htfTrend === 'BULLISH' && ltfTrendForGate === 'BULLISH' && !rsiOverboughtForGate && analysis.signalType === 'SELL') {
+      this.recordFunnelRejection('DIRECTIONAL_CONSENSUS_VETO');
+      console.log(`\n${'='.repeat(80)}`);
+      console.log(`❌ REJECTED [DirectionalConsensusVeto]: SELL suppressed — HTF BULLISH + LTF BULLISH consensus (RSI ${features.rsi.toFixed(1)} not overbought)`);
+      console.log(`   Confidence: ${(analysis.confidence * 100).toFixed(1)}% | HTF: ${htfTrend} | LTF: ${ltfTrendForGate}`);
+      console.log(`${'='.repeat(80)}\n`);
+      this.recordNearMiss('SELL', analysis.confidence, this.lastSignalStrengthDifference, 'directional consensus veto: HTF+LTF bullish', {
+        entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips,
+      });
+      return null;
+    }
+
     // ── PHASE B2: STAND-ASIDE SAFETY GATE ───────────────────────────────
     // When allowShortSignals is FALSE and HTF trend is BEARISH, the system
     // cannot trade the correct direction (SELL is suppressed) and must NOT
@@ -10333,6 +10374,22 @@ class SignalGenerationEngine {
         this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'cluster-dedup: active signal in same zone cluster', {
           entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips,
         });
+        return null;
+      }
+    }
+    // ITEM 2 — OPPOSITE-DIRECTION COOLDOWN: suppress a signal that contradicts the
+    // previous emission within a short window. If the market genuinely reversed,
+    // the contradiction will re-qualify after the cooldown.
+    if (this.lastEmittedSignal && this.lastEmittedSignal.direction !== analysis.signalType) {
+      const timeSinceLast = now - this.lastEmittedSignal.timestamp;
+      if (timeSinceLast < OPPOSITE_COOLDOWN_MS) {
+        this.dedupBlocks += 1;
+        this.recordFunnelRejection('OPPOSITE_DIRECTION_COOLDOWN');
+        console.log(`❌ REJECTED [OppositeDirectionCooldown]: ${analysis.signalType} @ ${this.currentPrice.toFixed(1)} within ${(timeSinceLast / 60000).toFixed(1)} min of opposite ${this.lastEmittedSignal.direction}`);
+        this.recordNearMiss(analysis.signalType, analysis.confidence, this.lastSignalStrengthDifference, 'opposite-direction cooldown', {
+          entryPrice: this.currentPrice, atr: features.atr, tp1Pips: settings.tp1Pips, tp2Pips: settings.tp2Pips, tp3Pips: settings.tp3Pips, slPips: settings.slPips,
+        });
+        console.log(`${'='.repeat(80)}\n`);
         return null;
       }
     }

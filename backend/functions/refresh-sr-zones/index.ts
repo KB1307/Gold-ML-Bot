@@ -20,10 +20,19 @@ const corsHeaders = {
 
 // ── Constants (mirrors expo/backend/trpc/routes/srZones.ts) ──────────────────
 
-const LOOKBACK_HOURS = 24; // ITEM 99: 24h trailing window. Gate passed: short-horizon reversal persistence
-// is positive at all three tested horizons (4h=+0.3644, 8h=+0.4117, 12h=+0.4507,
-// all with tight CIs). The 120h window produced 9S/2R (dense, overlapping); 24h
-// produces a more balanced 7S/10R map. User requirement.
+// ITEM 4 (five-fix prompt, 2026-09-14): 24 → 96 hours. Cross-weekend zones were
+// invisible (Friday's rejection levels gone by Monday open — user-verified miss;
+// the engine reads sr_zones_v1 DIRECTLY per B2(a), so this window IS the zone map).
+// The staleness decay (ZONE_STALENESS_HALF_LIFE_HOURS = 18) ages a 72h-old touch
+// to ~6% of original strength, so only genuinely strong multi-day levels survive
+// the CONSUMER_THRESHOLD = 0.3 cut — the map does not flood with stale zones.
+// PRIOR ITEM 99 gate (kept for the record): short-horizon reversal persistence
+// positive at 4h=+0.3644 / 8h=+0.4117 / 12h=+0.4507; 120h produced a dense 9S/2R
+// map. Superseded 2026-09-14 by the user directive; the 24h-vs-96h offline
+// comparison (expo/scripts/verify_zone_lookback_item4.ts, read-only) is the
+// acceptance evidence. Pagination: 96h ≈ 5,760 M1 bars ≈ 6 pages of 1,000 —
+// fetchBarsPaginated loops (hard ceiling 200,000 rows), unchanged.
+const LOOKBACK_HOURS = 96;
 const ZONE_STALENESS_HALF_LIFE_HOURS = 18;
 const CONSUMER_THRESHOLD = 0.3;
 // B22 REVERTED 2026-08-17 (CORRECTION 19). The 0.12 narrowing shipped last round is

@@ -83,7 +83,15 @@ const DEFAULT_SETTINGS: Settings = {
   // gated. Stamped onto every NEW signal at emission (breakevenPolicy); past
   // signals are never re-resolved under a new setting.
   breakevenEnabled: true,
-  maxSLPips: 90,
+  // ITEM 3 (five-fix prompt, 2026-09-14): 90 → 120. The ATR scaling reaches its
+  // natural 1.6x multiplier ceiling at 70 × 1.6 = 112 pips; a 90 cap clamped it
+  // whenever atrMultiplier > 1.2857 (ATR ≳ 7.8), defeating the scaling in exactly
+  // the volatile sessions it exists for. 120 sits ABOVE the multiplier maximum
+  // as a safety net without binding in normal operation.
+  // NOTE: this is the DEFAULT only — sanitizeSettings keeps a persisted value,
+  // and the settings screen's save-clamp was raised to match (settings.tsx), so
+  // the device's stored maxSLPips must be ≥ 112 (Settings → Max SL Cap → 120).
+  maxSLPips: 120,
   // ITEM 82 R3 / A16 — allowShortSignals default flipped FALSE -> TRUE.
   // The 17 Aug live signal WAS a SELL (4387.4), so the persisted value is
   // evidently TRUE. The code DEFAULT contradicted the project's own reversal
@@ -1448,7 +1456,131 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
       console.log(`   [Bar ${i+1}] ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })} - H:${bar.high.toFixed(1)} L:${bar.low.toFixed(1)} C:${bar.close.toFixed(1)}`);
       
       if (signal.type === "BUY") {
-        if (bar.low <= signal.sl) {
+        // ITEM 1 PART B — HARD TP3 GUARD: once all three targets are banked the
+        // trade is CLOSED at TP3 and NO further SL check may run. Previously a
+        // later SL breach could overwrite a fully-banked trade (production
+        // 2026-09-14: signals #2/#4 — targetsHit 3 recorded with status SL_HIT
+        // at the original SL). This guard runs BEFORE every SL check below.
+        if (currentTargetsHit === 3) {
+          currentStatus = "ALL_TARGETS_HIT";
+          exitPrice = signal.tp3;
+          outcomeResult = 'WIN';
+          console.log(`   🔒 TP3 ALREADY BANKED (bar ${i + 1}/${historicalBars.length}) — closing ALL_TARGETS_HIT @ ${signal.tp3.toFixed(1)}; no SL check runs after TP3`);
+          break;
+        }
+
+        const origSlHitThisBar = bar.low <= signal.sl;
+        const tp3HitThisBar = bar.high >= signal.tp3 && currentTargetsHit < 3;
+        const tp2HitThisBar = bar.high >= signal.tp2 && currentTargetsHit < 2;
+        const tp1HitThisBar = bar.high >= signal.tp1 && currentTargetsHit < 1;
+        const newTargetLevelThisBar = tp3HitThisBar ? signal.tp3 : tp2HitThisBar ? signal.tp2 : tp1HitThisBar ? signal.tp1 : null;
+
+        if (origSlHitThisBar && newTargetLevelThisBar !== null) {
+          // ITEM 1 PART A — SAME-BAR TP/SL DISAMBIGUATION (resolver-identical,
+          // signalResolver.ts:388-468): this bar's range spans BOTH the
+          // applicable SL-side level AND a still-unbanked TP. Intra-bar
+          // sequence is unknowable from M1 OHLC, so proximity to the bar OPEN
+          // decides which level price reached first.
+          const slBreachLevel = breakevenActive
+            ? (currentTargetsHit >= 2 ? postTP2StopPrice : currentTargetsHit >= 1 ? computePostTP1LockPrice(signal) : signal.sl)
+            : signal.sl;
+          const targetDist = Math.abs(bar.open - newTargetLevelThisBar);
+          const slDist = Math.abs(bar.open - slBreachLevel);
+          console.log(`   🔀 SAME-BAR AMBIGUITY on bar ${i + 1}: SL-side ${slBreachLevel.toFixed(1)} (${slDist.toFixed(2)} from open) vs target ${newTargetLevelThisBar.toFixed(1)} (${targetDist.toFixed(2)} from open)`);
+          if (slDist <= targetDist) {
+            console.log(`   🚨 ORIGINAL SL HIT on bar ${i + 1}/${historicalBars.length} (same-bar ambiguity resolved SL-first)`);
+            console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
+            console.log(`      Bar Low: ${bar.low.toFixed(1)} <= Original SL: ${signal.sl.toFixed(1)}`);
+            if (breakevenActive && currentTargetsHit >= 2) {
+              currentStatus = "PARTIAL_WIN_SL_HIT";
+              currentTargetsHit = Math.max(currentTargetsHit, 2);
+              exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
+              outcomeResult = 'WIN';
+              console.log(`      ✅ Managed runner protected after TP2 - closing as partial win at breakeven-weighted exit ${exitPrice.toFixed(1)}`);
+            } else if (breakevenActive && (breakevenReached || currentTargetsHit >= 1)) {
+              currentStatus = "SL_AFTER_BE";
+              currentTargetsHit = Math.max(currentTargetsHit, 1);
+              exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
+              outcomeResult = 'WIN';
+              console.log(`      ⚖️ SL HIT AFTER BREAKEVEN - no capital loss, TP1 banked @ ${exitPrice.toFixed(1)}`);
+            } else {
+              currentStatus = "SL_HIT";
+              exitPrice = signal.sl;
+              outcomeResult = 'LOSS';
+              console.log(`      📊 Result: LOSS (Original SL hit before breakeven)`);
+            }
+            break;
+          }
+          // Target level sits closer to the open -> bank it first, then check
+          // whether the NEW post-target SL level was ALSO breached later in
+          // this same bar (resolver-identical post-bank checks).
+          console.log(`   🔀 Same-bar ambiguity resolved target-first — banking before any SL classification`);
+          if (tp3HitThisBar) {
+            console.log(`   🎯🎯🎯 TP3 HIT on bar ${i + 1}/${historicalBars.length} (same-bar, target first)`);
+            console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
+            console.log(`      Bar High: ${bar.high.toFixed(1)} >= TP3: ${signal.tp3.toFixed(1)}`);
+            currentStatus = "ALL_TARGETS_HIT";
+            currentTargetsHit = 3;
+            exitPrice = signal.tp3;
+            outcomeResult = 'WIN';
+            console.log(`      📊 Result: FULL WIN (All targets hit)`);
+            break;
+          }
+          if (tp2HitThisBar) {
+            console.log(`   🎯🎯 TP2 HIT on bar ${i + 1}/${historicalBars.length} (same-bar, target first)`);
+            console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
+            console.log(`      Bar High: ${bar.high.toFixed(1)} >= TP2: ${signal.tp2.toFixed(1)}`);
+            currentStatus = "TP2_HIT";
+            currentTargetsHit = 2;
+            exitPrice = signal.tp2;
+            console.log(`      🔓 Lock released - Can generate new signals`);
+            console.log(`      📋 Breakeven indicator active at entry - trade continues to TP3 or original SL`);
+            const postSlLevelAfterTp2 = breakevenActive ? postTP2StopPrice : signal.sl;
+            if (bar.low <= postSlLevelAfterTp2) {
+              if (breakevenActive) {
+                currentStatus = "PARTIAL_WIN_SL_HIT";
+                currentTargetsHit = Math.max(currentTargetsHit, 2);
+                exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
+                outcomeResult = 'WIN';
+                console.log(`      ⚖️ Same bar: runner also retraced to its protective stop after banking TP2 → PARTIAL_WIN_SL_HIT @ ${exitPrice.toFixed(1)}`);
+              } else {
+                currentStatus = "SL_HIT";
+                exitPrice = signal.sl;
+                outcomeResult = 'LOSS';
+                console.log(`      🚨 Same bar: breakeven disabled — original SL breached after banking TP2 → SL_HIT @ ${signal.sl.toFixed(1)}`);
+              }
+              break;
+            }
+          } else if (tp1HitThisBar) {
+            console.log(`   🎯 TP1 HIT on bar ${i + 1}/${historicalBars.length} (same-bar, target first)`);
+            console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
+            console.log(`      Bar High: ${bar.high.toFixed(1)} >= TP1: ${signal.tp1.toFixed(1)}`);
+            currentStatus = "TP1_HIT";
+            currentTargetsHit = 1;
+            exitPrice = signal.tp1;
+            tp1HitTime = bar.timestamp;
+            if (breakevenActive) {
+              breakevenReached = true;
+              breakevenTime = new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+            }
+            const postSlLevelAfterTp1 = breakevenActive ? computePostTP1LockPrice(signal) : signal.sl;
+            if (bar.low <= postSlLevelAfterTp1) {
+              if (breakevenActive) {
+                currentStatus = "SL_AFTER_BE";
+                currentTargetsHit = Math.max(currentTargetsHit, 1);
+                exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
+                outcomeResult = 'WIN';
+                console.log(`      ⚖️ Same bar: also retraced to the profit lock after banking TP1 → SL_AFTER_BE @ ${exitPrice.toFixed(1)}`);
+              } else {
+                currentStatus = "SL_HIT";
+                exitPrice = signal.sl;
+                outcomeResult = 'LOSS';
+                console.log(`      🚨 Same bar: breakeven disabled — original SL breached after banking TP1 → SL_HIT @ ${signal.sl.toFixed(1)}`);
+              }
+              break;
+            }
+          }
+        } else if (origSlHitThisBar) {
           console.log(`   🚨 ORIGINAL SL HIT on bar ${i + 1}/${historicalBars.length}`);
           console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
           console.log(`      Bar Low: ${bar.low.toFixed(1)} <= Original SL: ${signal.sl.toFixed(1)}`);
@@ -1475,7 +1607,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           break;
         }
         
-        if (bar.high >= signal.tp3 && currentTargetsHit < 3) {
+        if (tp3HitThisBar) {
           console.log(`   🎯🎯🎯 TP3 HIT on bar ${i + 1}/${historicalBars.length}`);
           console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
           console.log(`      Bar High: ${bar.high.toFixed(1)} >= TP3: ${signal.tp3.toFixed(1)}`);
@@ -1524,7 +1656,121 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           console.log(`      📋 BREAKEVEN NOTIFICATION: Price touched entry ${signal.entryPrice.toFixed(1)} (indicator only - trade remains open)`);
         }
       } else {
-        if (bar.high >= signal.sl) {
+        // ITEM 1 PART B (SELL mirror) — HARD TP3 GUARD, runs BEFORE every SL check.
+        if (currentTargetsHit === 3) {
+          currentStatus = "ALL_TARGETS_HIT";
+          exitPrice = signal.tp3;
+          outcomeResult = 'WIN';
+          console.log(`   🔒 TP3 ALREADY BANKED (bar ${i + 1}/${historicalBars.length}) — closing ALL_TARGETS_HIT @ ${signal.tp3.toFixed(1)}; no SL check runs after TP3`);
+          break;
+        }
+
+        const origSlHitThisBar = bar.high >= signal.sl;
+        const tp3HitThisBar = bar.low <= signal.tp3 && currentTargetsHit < 3;
+        const tp2HitThisBar = bar.low <= signal.tp2 && currentTargetsHit < 2;
+        const tp1HitThisBar = bar.low <= signal.tp1 && currentTargetsHit < 1;
+        const newTargetLevelThisBar = tp3HitThisBar ? signal.tp3 : tp2HitThisBar ? signal.tp2 : tp1HitThisBar ? signal.tp1 : null;
+
+        if (origSlHitThisBar && newTargetLevelThisBar !== null) {
+          // ITEM 1 PART A (SELL mirror) — SAME-BAR TP/SL DISAMBIGUATION
+          // (resolver-identical, signalResolver.ts:388-468).
+          const slBreachLevel = breakevenActive
+            ? (currentTargetsHit >= 2 ? postTP2StopPrice : currentTargetsHit >= 1 ? computePostTP1LockPrice(signal) : signal.sl)
+            : signal.sl;
+          const targetDist = Math.abs(bar.open - newTargetLevelThisBar);
+          const slDist = Math.abs(bar.open - slBreachLevel);
+          console.log(`   🔀 SAME-BAR AMBIGUITY on bar ${i + 1}: SL-side ${slBreachLevel.toFixed(1)} (${slDist.toFixed(2)} from open) vs target ${newTargetLevelThisBar.toFixed(1)} (${targetDist.toFixed(2)} from open)`);
+          if (slDist <= targetDist) {
+            console.log(`   🚨 ORIGINAL SL HIT on bar ${i + 1}/${historicalBars.length} (same-bar ambiguity resolved SL-first)`);
+            console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
+            console.log(`      Bar High: ${bar.high.toFixed(1)} >= Original SL: ${signal.sl.toFixed(1)}`);
+            if (breakevenActive && currentTargetsHit >= 2) {
+              currentStatus = "PARTIAL_WIN_SL_HIT";
+              currentTargetsHit = Math.max(currentTargetsHit, 2);
+              exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
+              outcomeResult = 'WIN';
+              console.log(`      ✅ Managed runner protected after TP2 - closing as partial win at breakeven-weighted exit ${exitPrice.toFixed(1)}`);
+            } else if (breakevenActive && (breakevenReached || currentTargetsHit >= 1)) {
+              currentStatus = "SL_AFTER_BE";
+              currentTargetsHit = Math.max(currentTargetsHit, 1);
+              exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
+              outcomeResult = 'WIN';
+              console.log(`      ⚖️ SL HIT AFTER BREAKEVEN - no capital loss, TP1 banked @ ${exitPrice.toFixed(1)}`);
+            } else {
+              currentStatus = "SL_HIT";
+              exitPrice = signal.sl;
+              outcomeResult = 'LOSS';
+              console.log(`      📊 Result: LOSS (Original SL hit before breakeven)`);
+            }
+            break;
+          }
+          console.log(`   🔀 Same-bar ambiguity resolved target-first — banking before any SL classification`);
+          if (tp3HitThisBar) {
+            console.log(`   🎯🎯🎯 TP3 HIT on bar ${i + 1}/${historicalBars.length} (same-bar, target first)`);
+            console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
+            console.log(`      Bar Low: ${bar.low.toFixed(1)} <= TP3: ${signal.tp3.toFixed(1)}`);
+            currentStatus = "ALL_TARGETS_HIT";
+            currentTargetsHit = 3;
+            exitPrice = signal.tp3;
+            outcomeResult = 'WIN';
+            console.log(`      📊 Result: FULL WIN (All targets hit)`);
+            break;
+          }
+          if (tp2HitThisBar) {
+            console.log(`   🎯🎯 TP2 HIT on bar ${i + 1}/${historicalBars.length} (same-bar, target first)`);
+            console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
+            console.log(`      Bar Low: ${bar.low.toFixed(1)} <= TP2: ${signal.tp2.toFixed(1)}`);
+            currentStatus = "TP2_HIT";
+            currentTargetsHit = 2;
+            exitPrice = signal.tp2;
+            console.log(`      🔓 Lock released - Can generate new signals`);
+            console.log(`      📋 Breakeven indicator active at entry - trade continues to TP3 or original SL`);
+            const postSlLevelAfterTp2 = breakevenActive ? postTP2StopPrice : signal.sl;
+            if (bar.high >= postSlLevelAfterTp2) {
+              if (breakevenActive) {
+                currentStatus = "PARTIAL_WIN_SL_HIT";
+                currentTargetsHit = Math.max(currentTargetsHit, 2);
+                exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
+                outcomeResult = 'WIN';
+                console.log(`      ⚖️ Same bar: runner also retraced to its protective stop after banking TP2 → PARTIAL_WIN_SL_HIT @ ${exitPrice.toFixed(1)}`);
+              } else {
+                currentStatus = "SL_HIT";
+                exitPrice = signal.sl;
+                outcomeResult = 'LOSS';
+                console.log(`      🚨 Same bar: breakeven disabled — original SL breached after banking TP2 → SL_HIT @ ${signal.sl.toFixed(1)}`);
+              }
+              break;
+            }
+          } else if (tp1HitThisBar) {
+            console.log(`   🎯 TP1 HIT on bar ${i + 1}/${historicalBars.length} (same-bar, target first)`);
+            console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
+            console.log(`      Bar Low: ${bar.low.toFixed(1)} <= TP1: ${signal.tp1.toFixed(1)}`);
+            currentStatus = "TP1_HIT";
+            currentTargetsHit = 1;
+            exitPrice = signal.tp1;
+            tp1HitTime = bar.timestamp;
+            if (breakevenActive) {
+              breakevenReached = true;
+              breakevenTime = new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+            }
+            const postSlLevelAfterTp1 = breakevenActive ? computePostTP1LockPrice(signal) : signal.sl;
+            if (bar.high >= postSlLevelAfterTp1) {
+              if (breakevenActive) {
+                currentStatus = "SL_AFTER_BE";
+                currentTargetsHit = Math.max(currentTargetsHit, 1);
+                exitPrice = getProtectedExitPrice(signal, currentTargetsHit);
+                outcomeResult = 'WIN';
+                console.log(`      ⚖️ Same bar: also retraced to the profit lock after banking TP1 → SL_AFTER_BE @ ${exitPrice.toFixed(1)}`);
+              } else {
+                currentStatus = "SL_HIT";
+                exitPrice = signal.sl;
+                outcomeResult = 'LOSS';
+                console.log(`      🚨 Same bar: breakeven disabled — original SL breached after banking TP1 → SL_HIT @ ${signal.sl.toFixed(1)}`);
+              }
+              break;
+            }
+          }
+        } else if (origSlHitThisBar) {
           console.log(`   🚨 ORIGINAL SL HIT on bar ${i + 1}/${historicalBars.length}`);
           console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
           console.log(`      Bar High: ${bar.high.toFixed(1)} >= Original SL: ${signal.sl.toFixed(1)}`);
@@ -1551,7 +1797,7 @@ export const [TradingProvider, useTrading] = createContextHook(() => {
           break;
         }
         
-        if (bar.low <= signal.tp3 && currentTargetsHit < 3) {
+        if (tp3HitThisBar) {
           console.log(`   🎯🎯🎯 TP3 HIT on bar ${i + 1}/${historicalBars.length}`);
           console.log(`      Time: ${new Date(bar.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`);
           console.log(`      Bar Low: ${bar.low.toFixed(1)} <= TP3: ${signal.tp3.toFixed(1)}`);

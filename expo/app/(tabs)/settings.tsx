@@ -205,7 +205,10 @@ export default function SettingsScreen() {
       tp2Pips: parseFloat(tp2Pips) || settings.tp2Pips,
       tp3Pips: parseFloat(tp3Pips) || settings.tp3Pips,
       slPips: parseFloat(slPips) || settings.slPips,
-      maxSLPips: Math.min(90, parseFloat(maxSLPips) || settings.maxSLPips),
+      // ITEM 3 (five-fix prompt, 2026-09-14): clamp raised 90 → 120 alongside
+      // DEFAULT_SETTINGS.maxSLPips — the old 90 clamp silently re-capped the
+      // ceiling on every Save, which would have made the default change inert.
+      maxSLPips: Math.min(120, parseFloat(maxSLPips) || settings.maxSLPips),
       useDynamicSL,
       breakevenEnabled,
       minConfidence: normalizedMinConfidence,
