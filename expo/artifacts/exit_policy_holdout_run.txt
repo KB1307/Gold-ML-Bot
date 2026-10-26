@@ -1,0 +1,46 @@
+emitted=578 outcomes=565 decided=553
+  bars fetched: 1000
+  bars fetched: 21000
+  bars fetched: 41000
+  bars fetched: 61000
+  bars fetched: 81000
+bars fetched: 89297 (2026-06-29T08:25:00.000Z → 2026-09-25T20:56:00.000Z)
+paired population (all arms decided): n=519  excluded: low coverage 32, undecided-in-some-arm 2
+HARNESS: BE-ON replay vs stored realized_r — exact (±0.02R) 378/519 (72.8%), same sign 507/519 (97.7%); mean stored 0.0320R vs replay 0.0069R
+  (disagreements = tape/resolver drift since booking, e.g. tick-path exits, Item 1 same-bar fix, P-1 corrections; the ARMS below are all replayed on the same tape so paired deltas vs the BE-ON replay are also printed)
+
+SPLIT: TRAIN n=311 (2026-06-29 → 2026-07-29)  HOLDOUT n=208 (2026-07-29 → 2026-09-25)
+
+TRAIN BOOKS:
+  LIVE (stored)   n=311 WR=65.9% EV=0.0494R  $0.28/trade  $3.63/day over 24d
+  HOLD_TP3        n=311 WR=44.1% EV=0.0015R  $0.03/trade  $0.33/day over 24d
+  HOLD_TP2        n=311 WR=52.7% EV=-0.0276R  $-0.19/trade  $-2.47/day over 24d
+  LOCK_ENTRY      n=311 WR=40.5% EV=0.0816R  $0.43/trade  $5.52/day over 24d
+  LOCK_MINUS_05   n=311 WR=49.2% EV=0.0932R  $0.49/trade  $6.29/day over 24d
+
+TRAIN PAIRED Δ vs LIVE (MDE first):
+  HOLD_TP3        MDE ±0.1316R  ΔEV=-0.0479R  improved 76 degraded 68 unchanged 167   | vs BE-ON replay Δ=-0.0479R
+  HOLD_TP2        MDE ±0.0991R  ΔEV=-0.0771R  improved 103 degraded 102 unchanged 106   | vs BE-ON replay Δ=-0.0771R
+  LOCK_ENTRY      MDE ±0.0644R  ΔEV=+0.0321R  improved 47 degraded 79 unchanged 185   | vs BE-ON replay Δ=+0.0321R
+  LOCK_MINUS_05   MDE ±0.0902R  ΔEV=+0.0438R  improved 74 degraded 52 unchanged 185   | vs BE-ON replay Δ=+0.0438R
+
+TRAIN-CHOSEN ARM: LOCK_MINUS_05  (G1 PASS: train ΔEV +0.0438R)
+
+HOLDOUT (read once, chosen arm only):
+  LIVE (stored)   n=208 WR=58.7% EV=0.0061R  $0.12/trade  $0.57/day over 42d
+  LOCK_MINUS_05   n=208 WR=48.6% EV=-0.0107R  $-0.12/trade  $-0.61/day over 42d
+  MDE ±0.1023R  ΔEV=-0.0168R  → G2 FAIL
+
+FULL SAMPLE paired bootstrap (n=519, 20k, seed 20261026): ΔEV=+0.0195R  95% CI [-0.0272, 0.0661]  → G3 FAIL
+  LIVE full       n=519 WR=63.0% EV=0.0320R  $0.21/trade  $1.71/day over 65d
+  LOCK_MINUS_05   n=519 WR=48.9% EV=0.0516R  $0.24/trade  $1.93/day over 65d
+  Δ$ = +$0.21/day over 65 trading days
+  RISK SHAPE: LIVE loss streak 8 / maxDD 20.30R   LOCK_MINUS_05: loss streak 13 / maxDD 27.08R
+
+ALL-ARM FULL-SAMPLE BOOKS (context only — not used for selection):
+  HOLD_TP3        n=519 WR=45.1% EV=-0.0038R  $-0.06/trade  $-0.49/day over 65d  Δ=-0.0358R CI [-0.1013, 0.0300]
+  HOLD_TP2        n=519 WR=52.6% EV=-0.0592R  $-0.47/trade  $-3.79/day over 65d  Δ=-0.0913R CI [-0.1428, -0.0412]
+  LOCK_ENTRY      n=519 WR=40.1% EV=0.0392R  $0.18/trade  $1.41/day over 65d  Δ=+0.0071R CI [-0.0304, 0.0448]
+  LOCK_MINUS_05   n=519 WR=48.9% EV=0.0516R  $0.24/trade  $1.93/day over 65d  Δ=+0.0195R CI [-0.0272, 0.0661]
+
+SHIP GATE for LOCK_MINUS_05: G1 PASS · G2 FAIL · G3 FAIL  →  DO NOT SHIP
