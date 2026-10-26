@@ -10,7 +10,7 @@
         "@hono/trpc-server": "^0.4.1",
         "@nkzw/create-context-hook": "^1.1.0",
         "@react-native-async-storage/async-storage": "2.2.0",
-        "@rork-ai/toolkit-sdk": "0.3.0",
+        "@rork-ai/toolkit-sdk": "0.3.5",
         "@stardazed/streams-text-encoding": "^1.0.2",
         "@supabase/supabase-js": "^2.99.3",
         "@tanstack/eslint-plugin-query": "^5.91.2",
@@ -506,7 +506,7 @@
 
     "@revenuecat/purchases-typescript-internal": ["@revenuecat/purchases-typescript-internal@17.40.0", "", {}, "sha512-gN//9+5fKW6R55NderB/F+cgo1OabZg7g/ywOr5Ei8hG50yNmYY1oV4pzWHTyUzMKUPPzS8hki7V7J5wDxuWVg=="],
 
-    "@rork-ai/toolkit-sdk": ["@rork-ai/toolkit-sdk@0.3.0", "", { "dependencies": { "@ai-sdk/react": "2.0.116", "@blazejkustra/react-native-alert": "^1.0.0", "@stardazed/streams-text-encoding": "1.0.2", "@teovilla/react-native-web-maps": "^0.9.5", "@ungap/structured-clone": "1.3.1", "ai": "5.0.114", "posthog-react-native": "4.13.0" }, "peerDependencies": { "expo": "*", "expo-blur": "*", "expo-router": "*", "lucide-react-native": "*", "react": "*", "react-native": "*", "react-native-safe-area-context": "*", "react-native-web": "*", "zod": "^4" } }, "sha512-nyfisoarwaNkVFwyXOe0ALDjTrI5Jvgy79gO4ayx8Qar0f0Ys/Z9TQlF/UiX+ITdUYMn64X+Ftz0ubuemGHfzg=="],
+    "@rork-ai/toolkit-sdk": ["@rork-ai/toolkit-sdk@0.3.5", "", { "dependencies": { "@ai-sdk/react": "2.0.116", "@blazejkustra/react-native-alert": "^1.0.0", "@stardazed/streams-text-encoding": "1.0.2", "@teovilla/react-native-web-maps": "^0.9.5", "@ungap/structured-clone": "1.3.1", "ai": "5.0.114", "posthog-react-native": "4.13.0" }, "peerDependencies": { "expo": "*", "expo-blur": "*", "expo-router": "*", "lucide-react-native": "*", "react": "*", "react-native": "*", "react-native-safe-area-context": "*", "react-native-web": "*", "zod": "^4" } }, "sha512-8aO/yqTOJ0udyQ7Zplvc/plwvTBNZwjuUch/ZSNRpeNNR25CMN50eNgDu0YGcrJwJRRijyQz+HM7sghNk75o+g=="],
 
     "@rtsao/scc": ["@rtsao/scc@1.1.0", "", {}, "sha512-zt6OdqaDoOnJ1ZYsCYGt9YmWzDXl4vQdKTyJev62gFhRGKdx7mcT54V9KIjg+d2wi9EXsPvAPKe7i7WjfVWB8g=="],
 
@@ -1986,8 +1986,6 @@
 
     "zod": ["zod@4.2.1", "", {}, "sha512-0wZ1IRqGGhMP76gLqz8EyfBXKk0J2qo2+H3fi4mcUP/KtTocoX08nmIAHl1Z2kJIZbZee8KOpBCSNPRgauucjw=="],
 
-    "zod-to-json-schema": ["zod-to-json-schema@3.24.6", "", { "peerDependencies": { "zod": "^3.24.1" } }, "sha512-h/z3PKvcTcTetyjl1fkj79MHNEjm+HpD6NXheWjzOekY7kV+lwDYnHw+ivHkijnCSMz1yJaWBD9vu/Fcmk+vEg=="],
-
     "zustand": ["zustand@5.0.3", "", { "peerDependencies": { "@types/react": ">=18.0.0", "immer": ">=9.0.6", "react": ">=18.0.0", "use-sync-external-store": ">=1.2.0" }, "optionalPeers": ["@types/react", "immer", "react", "use-sync-external-store"] }, "sha512-14fwWQtU3pH4dE0dOpdMiWjddcH+QzKIgk1cl8epwSE7yag43k/AD/m4L6+K7DytAOr9gGBe3/EXj9g7cdostg=="],
 
     "@babel/helper-define-polyfill-provider/resolve": ["resolve@1.22.10", "", { "dependencies": { "is-core-module": "^2.16.0", "path-parse": "^1.0.7", "supports-preserve-symlinks-flag": "^1.0.0" }, "bin": { "resolve": "bin/resolve" } }, "sha512-NPRy+/ncIMeDlTAsuqwKIiferiawhefFJtkNSW0qZJEqMEb+qBt/77B/jGeeek+F0uOeN05CDa6HXbbIgtVX4w=="],
@@ -2055,6 +2053,8 @@
     "@expo/mcp-tunnel/ws": ["ws@8.18.3", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-PEIGCY5tSlUt50cqyMXfCzX+oOPqN0vuGqWzbcJ2xvnkzkq46oOpz7dQaTDBdfICb4N14+GARUDw2XV2N4tvzg=="],
 
     "@expo/mcp-tunnel/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
+
+    "@expo/mcp-tunnel/zod-to-json-schema": ["zod-to-json-schema@3.24.6", "", { "peerDependencies": { "zod": "^3.24.1" } }, "sha512-h/z3PKvcTcTetyjl1fkj79MHNEjm+HpD6NXheWjzOekY7kV+lwDYnHw+ivHkijnCSMz1yJaWBD9vu/Fcmk+vEg=="],
 
     "@expo/metro-config/browserslist": ["browserslist@4.27.0", "", { "dependencies": { "baseline-browser-mapping": "^2.8.19", "caniuse-lite": "^1.0.30001751", "electron-to-chromium": "^1.5.238", "node-releases": "^2.0.26", "update-browserslist-db": "^1.1.4" }, "bin": { "browserslist": "cli.js" } }, "sha512-AXVQwdhot1eqLihwasPElhX2tAZiBjWdJ9i/Zcj2S6QYIjkx62OKSfnobkriB81C3l4w0rVy3Nt4jaTBltYEpw=="],
 
