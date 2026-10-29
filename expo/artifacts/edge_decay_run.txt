@@ -1,0 +1,59 @@
+decided=553  bars=89297 (2026-06-29 → 2026-09-25)
+
+A. IS EITHER PERIOD'S EDGE REAL? (paired-free bootstrap CIs, 20k)
+  EARLY 06-29→07-28      n=321 days=23 trades/day=14.0  WR=65.7%  avgWin=+0.6076R avgLoss=-1.0322R  EV=+0.0457R  CI[-0.0511, +0.1418]  $3.72/day  avgRisk=$5.50
+  LATE  07-29→09-25      n=232 days=42 trades/day=5.5  WR=59.1%  avgWin=+0.7046R avgLoss=-1.0009R  EV=+0.0062R  CI[-0.1098, +0.1236]  $0.59/day  avgRisk=$7.96
+  EARLY−LATE ΔEV = +0.0394R  (Welch SE ±0.0770, t=0.51)  — MDE at 80% power ≈ ±0.2156R
+
+B. EV DECOMPOSITION  EV = WR·avgWin − (1−WR)·|avgLoss|
+  EARLY: win-term +0.3994R  loss-term -0.3537R
+  LATE : win-term +0.4161R  loss-term -0.4099R
+  counterfactuals: LATE with EARLY's WR → EV +0.1202R | LATE with EARLY's avgWin → -0.0511R | LATE with EARLY's avgLoss → -0.0066R
+
+C. OUTCOME-LABEL MIX (resolver replay, same tape)
+  ALL_TARGETS_HIT        early  62 (19.3%) EV +1.2956R   late  40 (17.2%) EV +1.1519R
+  PARTIAL_WIN_SL_HIT     early  18 ( 5.6%) EV +0.4676R   late  15 ( 6.5%) EV +0.3308R
+  SL_AFTER_BE            early 131 (40.8%) EV +0.3012R   late  85 (36.6%) EV +0.3788R
+  SL_HIT                 early 109 (34.0%) EV -1.0400R   late  88 (37.9%) EV -0.9283R
+  UNRESOLVED_IN_8H       early   1 ( 0.3%) EV -0.1784R   late   4 ( 1.7%) EV -0.0227R
+
+D. COMPOSITION
+  BUY                early n=134 (41.7%) WR 63.4% EV +0.0739R | late n=133 (57.3%) WR 56.4% EV +0.0066R
+  SELL               early n=187 (58.3%) WR 67.4% EV +0.0254R | late n= 99 (42.7%) WR 62.6% EV +0.0057R
+  00-07 UTC          early n= 76 (23.7%) WR 72.4% EV +0.2324R | late n= 52 (22.4%) WR 48.1% EV -0.2408R
+  07-12 UTC          early n= 73 (22.7%) WR 65.8% EV -0.0901R | late n= 64 (27.6%) WR 56.3% EV -0.0581R
+  12-17 UTC          early n=128 (39.9%) WR 61.7% EV +0.0335R | late n= 74 (31.9%) WR 64.9% EV +0.1790R
+  17-24 UTC          early n= 44 (13.7%) WR 65.9% EV -0.0163R | late n= 42 (18.1%) WR 66.7% EV +0.1058R
+  risk<$6            early n=241 (75.1%) WR 64.3% EV +0.0371R | late n= 14 ( 6.0%) WR 50.0% EV -0.2545R
+  risk $6-9          early n= 76 (23.7%) WR 69.7% EV +0.0777R | late n=171 (73.7%) WR 61.4% EV +0.0270R
+  risk>=$9           early n=  4 ( 1.2%) WR 75.0% EV -0.0472R | late n= 47 (20.3%) WR 53.2% EV +0.0086R
+  htf NEUTRAL        early n=  0 ( 0.0%) WR  0.0% EV +0.0000R | late n= 57 (24.6%) WR 56.1% EV +0.0420R
+  htf aligned        early n=  0 ( 0.0%) WR  0.0% EV +0.0000R | late n=159 (68.5%) WR 61.0% EV +0.0144R
+  htf counter        early n=  0 ( 0.0%) WR  0.0% EV +0.0000R | late n=  6 ( 2.6%) WR 33.3% EV -0.4128R
+
+E. MARKET REGIME (gold_m1_bars)
+  EARLY: days=21 avgDailyRange=$87.2 medianRange=$83.7  M5 ATR14 mean=$4.42  up-days 11/21  net move +10.1  mean|drift|=$41.9
+  LATE: days=43 avgDailyRange=$99.8 medianRange=$91.5  M5 ATR14 mean=$4.78  up-days 20/43  net move +261.2  mean|drift|=$53.2
+  BOOK vs TAPE — WR conditioned on the day's net drift sign (does the book fight the day?):
+    EARLY: WITH day-drift n=167 WR 68.3% EV +0.0848R | AGAINST n=150 WR 64.0% EV +0.0131R  (share against: 47.3%)
+    LATE: WITH day-drift n=133 WR 64.7% EV +0.0951R | AGAINST n=98 WR 51.0% EV -0.1233R  (share against: 42.4%)
+
+F. WEEKLY EV SERIES + CHANGE POINT (max |t| over all week splits, n≥40 each side)
+  2026-06-29  n=111  WR 64.0%  EV -0.0291R  $-0.33/day
+  2026-07-06  n= 56  WR 73.2%  EV +0.1554R  $7.67/day
+  2026-07-13  n=105  WR 65.7%  EV +0.0605R  $6.34/day
+  2026-07-20  n= 47  WR 59.6%  EV +0.0202R  $0.46/day
+  2026-07-27  n= 28  WR 42.9%  EV -0.2923R  $-14.71/day
+  2026-08-03  n= 30  WR 63.3%  EV +0.3081R  $14.70/day
+  2026-08-10  n= 14  WR 50.0%  EV +0.1143R  $2.56/day
+  2026-08-17  n= 29  WR 51.7%  EV -0.2250R  $-10.80/day
+  2026-08-24  n= 43  WR 76.7%  EV +0.1001R  $6.94/day
+  2026-08-31  n= 21  WR 66.7%  EV +0.2721R  $11.43/day
+  2026-09-07  n= 29  WR 55.2%  EV -0.2262R  $-11.02/day
+  2026-09-14  n= 20  WR 55.0%  EV +0.0463R  $1.67/day
+  2026-09-21  n= 20  WR 60.0%  EV +0.1408R  $5.07/day
+  change point: week of 2026-07-06  t=-0.83  (|t|>~2.8 would be needed after scanning 13 candidate splits — multiple-comparison inflated)
+
+G. ENGINE CHURN (commits touching signalEngine/signalResolver/TradingContext per period — the rules were NOT constant)
+  EARLY: 37 commits
+  LATE: 74 commits
